@@ -465,6 +465,9 @@ export default function DashboardPage() {
     function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
+        // Persistir en sessionStorage con clave por tienda+fecha para sobrevivir recargas
+        const key = `cyclic_finished__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.setItem(key, "1");
         showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
@@ -517,8 +520,8 @@ export default function DashboardPage() {
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            // Usar costo del assignment si existe y > 0, si no el del producto
-            cost: (a.cost && a.cost > 0) ? a.cost : (a.cyclic_products?.cost || 0),
+            // Prioridad: cost del assignment > cost del producto maestro
+            cost: (a.cost != null && Number(a.cost) > 0) ? Number(a.cost) : (Number(a.cyclic_products?.cost) || 0),
         }));
         setAssignments(rows);
 
@@ -532,6 +535,21 @@ export default function DashboardPage() {
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
         });
         setCounts(enriched);
+
+        // Restaurar estado de "sesión finalizada" desde sessionStorage
+        const finishedKey = `cyclic_finished__${storeId}__${date}`;
+        if (sessionStorage.getItem(finishedKey) === "1") {
+            setSessionFinished(true);
+            // También restaurar showRecount si había un reconteo activo
+            const recountKey = `cyclic_recount__${storeId}__${date}`;
+            if (sessionStorage.getItem(recountKey) === "1") {
+                setShowRecount(true);
+            }
+        } else {
+            // Si cambiaron de fecha o es un nuevo día, resetear estado
+            setSessionFinished(false);
+            setShowRecount(false);
+        }
     }
 
     async function loadValidadorData(storeId: string, date: string) {
@@ -547,8 +565,8 @@ export default function DashboardPage() {
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            // Usar costo del assignment si existe y > 0, si no el del producto
-            cost: (a.cost && a.cost > 0) ? a.cost : (a.cyclic_products?.cost || 0),
+            // Prioridad: cost del assignment > cost del producto maestro
+            cost: (a.cost != null && Number(a.cost) > 0) ? Number(a.cost) : (Number(a.cyclic_products?.cost) || 0),
             store_name: a.stores?.name,
         }));
         setAssignments(rows);
@@ -810,6 +828,9 @@ export default function DashboardPage() {
         setShowRecount(true);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
+        // Persistir que el operario está en reconteo
+        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.setItem(recountKey, "1");
         clearMessage();
     }
 
@@ -874,6 +895,9 @@ export default function DashboardPage() {
                 .update({ status: "Corregido", updated_at: new Date().toISOString() })
                 .in("id", difCounts.map(c => c.id));
         }
+        // Limpiar flag de reconteo activo
+        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.removeItem(recountKey);
         setShowRecount(false);
         setRecountAssignment(null);
         showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
@@ -1665,7 +1689,12 @@ export default function DashboardPage() {
                                 <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
                             </div>
                             <button
-                                onClick={() => { setShowRecount(false); setRecountAssignment(null); }}
+                                onClick={() => {
+                                    const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+                                    sessionStorage.removeItem(recountKey);
+                                    setShowRecount(false);
+                                    setRecountAssignment(null);
+                                }}
                                 className="px-4 py-2 rounded-2xl border text-sm font-semibold"
                             >
                                 ← Volver
