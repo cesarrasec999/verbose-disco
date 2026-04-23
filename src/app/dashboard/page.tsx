@@ -517,7 +517,8 @@ export default function DashboardPage() {
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            cost: a.cyclic_products?.cost,
+            // Usar costo del assignment si existe y > 0, si no el del producto
+            cost: (a.cost && a.cost > 0) ? a.cost : (a.cyclic_products?.cost || 0),
         }));
         setAssignments(rows);
 
@@ -546,7 +547,9 @@ export default function DashboardPage() {
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            cost: a.cyclic_products?.cost, store_name: a.stores?.name,
+            // Usar costo del assignment si existe y > 0, si no el del producto
+            cost: (a.cost && a.cost > 0) ? a.cost : (a.cyclic_products?.cost || 0),
+            store_name: a.stores?.name,
         }));
         setAssignments(rows);
 
@@ -929,18 +932,27 @@ export default function DashboardPage() {
             const data = await bulkAssignFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            // raw:false para obtener valores formateados, header:1 para array de arrays
-            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
-            // Ignorar primera fila (encabezado) y leer por posición de columna
-            // Col A=0: codigo, Col B=1: descripcion, Col C=2: unidad, Col D=3: costo, Col E=4: stock
+            // Leer como array de arrays para acceso por posición (A=0, B=1, C=2, D=3, E=4)
+            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, header: 1 });
+            // La fila 1 es el encabezado — detectar posiciones reales por nombre de columna
+            const headerRow = allRows[0] || [];
+            // Buscar columnas por nombre (flexible) o usar posición por defecto
+            const findCol = (names: string[]): number => {
+                const idx = headerRow.findIndex((h: any) => names.some(n => String(h || "").toLowerCase().includes(n.toLowerCase())));
+                return idx >= 0 ? idx : -1;
+            };
+            const colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
+            const colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
+            const colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
+
             const dataRows = allRows.slice(1);
-            let ok = 0, skip = 0, notFound = 0;
+            let ok = 0, updated = 0, skip = 0, notFound = 0;
             for (let i = 0; i < dataRows.length; i++) {
                 const row = dataRows[i];
                 setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
-                const rawSku = cleanCode(String(row[0] || ""));
-                const stock = Number(row[4] || 0);
-                const cost = Number(row[3] || 0);
+                const rawSku = cleanCode(String(row[colCodigo] || ""));
+                const stock = Number(row[colStock] || 0);
+                const cost = Number(row[colCosto] || 0);
                 if (!rawSku) { skip++; continue; }
                 let prod: Product | null = null;
                 const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
@@ -950,20 +962,33 @@ export default function DashboardPage() {
                     if (byB) prod = byB as Product;
                 }
                 if (!prod) { notFound++; continue; }
-                const { data: existing } = await supabase.from("cyclic_assignments")
-                    .select("id").eq("store_id", valStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
-                if (existing) { skip++; continue; }
+
+                // Siempre actualizar el costo en el maestro si viene en el Excel
                 if (cost > 0) {
                     await supabase.from("cyclic_products").update({ cost, updated_at: new Date().toISOString() }).eq("id", prod.id);
                 }
+
+                const { data: existing } = await supabase.from("cyclic_assignments")
+                    .select("id").eq("store_id", valStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
+                if (existing) {
+                    // Actualizar stock y costo aunque ya exista el assignment
+                    await supabase.from("cyclic_assignments").update({
+                        system_stock: stock,
+                        cost: cost > 0 ? cost : undefined,
+                    }).eq("id", existing.id);
+                    updated++;
+                    continue;
+                }
+
                 await supabase.from("cyclic_assignments").insert({
                     store_id: valStoreId, product_id: prod.id, system_stock: stock,
+                    cost: cost > 0 ? cost : null,
                     assigned_date: valDate, assigned_by: user?.id,
                 });
                 ok++;
             }
             setBulkAssignProgress(null);
-            showMessage(`✅ ${ok} productos asignados. ${skip} duplicados. ${notFound} no encontrados en maestro.`, ok > 0 ? "success" : "error");
+            showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.`, ok > 0 || updated > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             loadValidadorData(valStoreId, valDate);
         } catch (e: any) {
@@ -1533,14 +1558,6 @@ export default function DashboardPage() {
                                     >
                                         <span>🏁</span> Terminar conteo
                                     </button>
-                                    {difAssignments.length > 0 && (
-                                        <button
-                                            onClick={() => setShowRecountConfirmModal(true)}
-                                            className="flex-1 py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
-                                        >
-                                            <span>🔄</span> Iniciar reconteo ({difAssignments.length})
-                                        </button>
-                                    )}
                                 </div>
                             ) : (
                                 <div className="space-y-2 mt-2">
@@ -2521,7 +2538,7 @@ export default function DashboardPage() {
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Registrar conteo</h3>
                                 <p className="text-slate-600 text-sm mt-0.5">{activeAssignment.sku} — {activeAssignment.description}</p>
-                                <p className="text-xs text-slate-400 mt-0.5">UM: {activeAssignment.unit} · Stock sistema: <b>{activeAssignment.system_stock}</b></p>
+                                <p className="text-xs text-slate-400 mt-0.5">UM: {activeAssignment.unit}</p>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
                         </div>
