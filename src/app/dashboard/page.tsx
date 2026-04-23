@@ -94,6 +94,23 @@ type ResumenRow = {
     dif_valorizada: number;
 };
 
+// Dashboard: datos por tienda para el período
+type DashboardRow = {
+    store_id: string;
+    store_name: string;
+    date: string;
+    total_asignados: number;
+    total_ok: number;
+    total_sobrantes: number;
+    total_faltantes: number;
+    total_no_contados: number;
+    eri: number;
+    cumplio: boolean;
+    hora_inicio: string | null;
+    hora_fin: string | null;
+    duracion_min: number | null;
+};
+
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
@@ -133,6 +150,14 @@ function formatDateTime(v: string) {
     const d = new Date(v);
     if (isNaN(d.getTime())) return v;
     return d.toLocaleString("es-PE");
+}
+
+function formatDuration(minutes: number | null): string {
+    if (minutes === null || minutes < 0) return "—";
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (h === 0) return `${m} min`;
+    return `${h}h ${m}m`;
 }
 
 function statusBadge(status: CountRecord["status"]) {
@@ -180,12 +205,17 @@ export default function DashboardPage() {
     const [loading, setLoading]         = useState(true);
     const messageTimerRef               = useRef<ReturnType<typeof setTimeout>|null>(null);
 
-    // ─── Operario: conteo activo — ahora con múltiples filas ─
+    // ─── Operario: conteo activo — múltiples filas ─
     const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
     const [locationRows, setLocationRows]         = useState<LocationRow[]>([{ location: "", qty: "" }]);
 
+    // ─── Operario: reconteo ──────────────────────────────────
+    const [showRecount, setShowRecount]           = useState(false);
+    const [recountAssignment, setRecountAssignment] = useState<Assignment | null>(null);
+    const [recountRows, setRecountRows]           = useState<LocationRow[]>([{ location: "", qty: "" }]);
+
     // ─── Escáner ─────────────────────────────────────────────
-    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|null>(null);
+    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|null>(null);
     const [scannerRunning, setScannerRunning] = useState(false);
     const [torchAvailable, setTorchAvailable] = useState(false);
     const [torchOn, setTorchOn]               = useState(false);
@@ -196,7 +226,6 @@ export default function DashboardPage() {
     const scannerContainerId = "cyclic-scanner";
 
     // ─── Validador: filtros ──────────────────────────────────
-    // valTab ahora tiene 3 valores: "asignar" | "registros" | "resumen"
     const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen">("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
@@ -221,7 +250,7 @@ export default function DashboardPage() {
     const [editNote, setEditNote]           = useState("");
 
     // ─── Admin: maestro productos ────────────────────────────
-    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
+    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios"|"dashboard">("productos");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
     const [masterFileName, setMasterFileName] = useState("");
@@ -264,8 +293,16 @@ export default function DashboardPage() {
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
 
+    // ─── Dashboard ───────────────────────────────────────────
+    const [dashPeriod, setDashPeriod] = useState<"dia"|"mes">("dia");
+    const [dashDate, setDashDate]     = useState(todayISO());
+    const [dashMonth, setDashMonth]   = useState(todayISO().slice(0, 7));
+    const [dashData, setDashData]     = useState<DashboardRow[]>([]);
+    const [dashLoading, setDashLoading] = useState(false);
+    const [dashStoreFilter, setDashStoreFilter] = useState("");
+
     // ════════════════════════════════════════════════════════
-    //  INIT — con persistencia de tab activo en sessionStorage
+    //  INIT
     // ════════════════════════════════════════════════════════
     useEffect(() => {
         const raw = localStorage.getItem("cyclic_user");
@@ -281,10 +318,8 @@ export default function DashboardPage() {
                 localStorage.setItem("cyclic_user", JSON.stringify(u));
                 setUser(u);
 
-                // Restaurar tab guardado o usar el default según rol
                 const savedTab = sessionStorage.getItem("cyclic_active_tab") as TabKey | null;
                 if (savedTab) {
-                    // Validar que el tab guardado sea accesible según rol
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
                         (savedTab === "validador" && (u.role === "Validador" || u.role === "Administrador")) ||
@@ -301,7 +336,6 @@ export default function DashboardPage() {
                     else setActiveTab("operario");
                 }
 
-                // Restaurar sub-tab del validador
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
                 if (savedValTab) setValTab(savedValTab);
 
@@ -327,7 +361,6 @@ export default function DashboardPage() {
         }
     }, [user]);
 
-    // Guardar tab activo en sessionStorage cuando cambia
     useEffect(() => {
         if (activeTab) sessionStorage.setItem("cyclic_active_tab", activeTab);
     }, [activeTab]);
@@ -380,7 +413,7 @@ export default function DashboardPage() {
 
     // Botón atrás del celular cierra overlays
     useEffect(() => {
-        const anyOpen = !!scannerTarget || !!editingCount || !!editingProduct || !!activeAssignment || !!editingUser;
+        const anyOpen = !!scannerTarget || !!editingCount || !!editingProduct || !!activeAssignment || !!editingUser || showRecount;
         if (anyOpen && !overlayOpenedRef.current) {
             window.history.pushState({ overlay: true }, "");
             overlayOpenedRef.current = true;
@@ -393,10 +426,11 @@ export default function DashboardPage() {
             if (editingProduct)   { setEditingProduct(null); return; }
             if (activeAssignment) { setActiveAssignment(null); return; }
             if (editingUser)      { setEditingUser(null); return; }
+            if (showRecount)      { setShowRecount(false); setRecountAssignment(null); return; }
         };
         window.addEventListener("popstate", handler);
         return () => window.removeEventListener("popstate", handler);
-    }, [scannerTarget, editingCount, editingProduct, activeAssignment, editingUser]);
+    }, [scannerTarget, editingCount, editingProduct, activeAssignment, editingUser, showRecount]);
 
     // ════════════════════════════════════════════════════════
     //  HELPERS UI
@@ -427,7 +461,7 @@ export default function DashboardPage() {
     function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
-        showMessage(`✅ Sesión de conteo finalizada. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
+        showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
     // ════════════════════════════════════════════════════════
@@ -525,6 +559,136 @@ export default function DashboardPage() {
     }
 
     // ════════════════════════════════════════════════════════
+    //  DASHBOARD — CARGA
+    // ════════════════════════════════════════════════════════
+    async function loadDashboard() {
+        setDashLoading(true);
+        try {
+            let dateFilter: { from: string; to: string };
+            if (dashPeriod === "dia") {
+                dateFilter = { from: dashDate, to: dashDate };
+            } else {
+                const [yr, mo] = dashMonth.split("-").map(Number);
+                const from = `${dashMonth}-01`;
+                const lastDay = new Date(yr, mo, 0).getDate();
+                const to = `${dashMonth}-${String(lastDay).padStart(2, "0")}`;
+                dateFilter = { from, to };
+            }
+
+            // Traer asignaciones del período
+            const { data: asgnData } = await supabase
+                .from("cyclic_assignments")
+                .select("id, store_id, product_id, system_stock, assigned_date, stores(name)")
+                .gte("assigned_date", dateFilter.from)
+                .lte("assigned_date", dateFilter.to);
+
+            if (!asgnData || asgnData.length === 0) { setDashData([]); setDashLoading(false); return; }
+
+            const asgnIds = asgnData.map((a: any) => a.id);
+            const { data: cntData } = await supabase
+                .from("cyclic_counts")
+                .select("*")
+                .in("assignment_id", asgnIds);
+
+            const counts = (cntData || []) as CountRecord[];
+
+            // Agrupar por tienda+fecha (para período día) o tienda+mes (para mes)
+            const keyFn = (a: any): string =>
+                dashPeriod === "dia"
+                    ? `${a.store_id}__${a.assigned_date}`
+                    : `${a.store_id}__${(a.assigned_date as string).slice(0,7)}`;
+
+            const groups = new Map<string, { store_id: string; store_name: string; date: string; asgns: any[]; cnts: CountRecord[] }>();
+
+            for (const a of asgnData as any[]) {
+                const k = keyFn(a);
+                if (!groups.has(k)) {
+                    groups.set(k, {
+                        store_id: a.store_id,
+                        store_name: a.stores?.name || a.store_id,
+                        date: dashPeriod === "dia" ? a.assigned_date : (a.assigned_date as string).slice(0,7),
+                        asgns: [],
+                        cnts: [],
+                    });
+                }
+                groups.get(k)!.asgns.push(a);
+            }
+
+            // Asignar conteos a sus grupos
+            for (const c of counts) {
+                const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                if (!asgn) continue;
+                const k = keyFn(asgn);
+                groups.get(k)?.cnts.push(c);
+            }
+
+            const rows: DashboardRow[] = [];
+            for (const [, g] of groups) {
+                // Agrupar por product_id para calcular métricas por código único
+                const prodMap = new Map<string, { system_stock: number; total_counted: number }>();
+                for (const a of g.asgns) {
+                    if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
+                }
+                for (const c of g.cnts) {
+                    const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                    if (!asgn) continue;
+                    const entry = prodMap.get(asgn.product_id);
+                    if (entry) entry.total_counted += Number(c.counted_quantity);
+                }
+
+                const countedPids = new Set(g.cnts.map(c => {
+                    const a = (asgnData as any[]).find((x: any) => x.id === c.assignment_id);
+                    return a?.product_id;
+                }));
+
+                let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
+                for (const [pid, entry] of prodMap) {
+                    if (!countedPids.has(pid)) { noContados++; continue; }
+                    const diff = entry.total_counted - entry.system_stock;
+                    if (diff === 0) ok++;
+                    else if (diff > 0) sobrantes++;
+                    else faltantes++;
+                }
+
+                const total = prodMap.size;
+                const eri = total > 0 ? Math.round((ok / total) * 100) : 0;
+
+                // Hora inicio y fin
+                const timestamps = g.cnts.map(c => new Date(c.counted_at).getTime()).filter(t => !isNaN(t));
+                const updatedAt = g.cnts.map(c => new Date(c.updated_at).getTime()).filter(t => !isNaN(t));
+                const allTs = [...timestamps, ...updatedAt];
+                const horaInicio = allTs.length > 0 ? new Date(Math.min(...allTs)).toISOString() : null;
+                const horaFin = allTs.length > 0 ? new Date(Math.max(...allTs)).toISOString() : null;
+                const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
+
+                // Cumplió = algún conteo tiene status "Corregido" (reconteo finalizado) o todos contados
+                const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
+
+                rows.push({
+                    store_id: g.store_id,
+                    store_name: g.store_name,
+                    date: g.date,
+                    total_asignados: total,
+                    total_ok: ok,
+                    total_sobrantes: sobrantes,
+                    total_faltantes: faltantes,
+                    total_no_contados: noContados,
+                    eri,
+                    cumplio,
+                    hora_inicio: horaInicio,
+                    hora_fin: horaFin,
+                    duracion_min: duracion,
+                });
+            }
+
+            rows.sort((a, b) => a.store_name.localeCompare(b.store_name) || a.date.localeCompare(b.date));
+            setDashData(rows);
+        } finally {
+            setDashLoading(false);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
     //  OPERARIO — CONTEO (múltiples ubicaciones)
     // ════════════════════════════════════════════════════════
     function openCount(asgn: Assignment) {
@@ -587,6 +751,83 @@ export default function DashboardPage() {
     }
 
     // ════════════════════════════════════════════════════════
+    //  OPERARIO — RECONTEO
+    // ════════════════════════════════════════════════════════
+    function openRecountPanel() {
+        setShowRecount(true);
+        setRecountAssignment(null);
+        setRecountRows([{ location: "", qty: "" }]);
+        clearMessage();
+    }
+
+    function openRecountItem(asgn: Assignment) {
+        const existing = counts.filter(c => c.assignment_id === asgn.id);
+        if (existing.length > 0) {
+            setRecountRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
+        } else {
+            setRecountRows([{ location: "", qty: "" }]);
+        }
+        setRecountAssignment(asgn);
+    }
+
+    function addRecountRow() { setRecountRows(prev => [...prev, { location: "", qty: "" }]); }
+    function removeRecountRow(i: number) { setRecountRows(prev => prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)); }
+    function updateRecountRow(i: number, field: keyof LocationRow, value: string) {
+        setRecountRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
+    }
+
+    async function saveRecount() {
+        if (!recountAssignment || !user) return;
+        for (let i = 0; i < recountRows.length; i++) {
+            const row = recountRows[i];
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); return; }
+            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); return; }
+            const qty = Number(row.qty);
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); return; }
+        }
+
+        await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
+
+        for (const row of recountRows) {
+            const qty = Number(row.qty);
+            const diff = qty - Number(recountAssignment.system_stock || 0);
+            const status: CountRecord["status"] = diff === 0 ? "Corregido" : "Diferencia";
+            const { error } = await supabase.from("cyclic_counts").insert({
+                assignment_id: recountAssignment.id,
+                store_id: recountAssignment.store_id,
+                product_id: recountAssignment.product_id,
+                counted_quantity: qty,
+                location: row.location.trim(),
+                user_id: user.id,
+                user_name: user.full_name,
+                status,
+                counted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
+            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); return; }
+        }
+
+        showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
+        setRecountAssignment(null);
+        setRecountRows([{ location: "", qty: "" }]);
+        loadOperarioData(selectedStoreId, selectedDate);
+    }
+
+    async function finalizeRecount() {
+        // Marcar todos los conteos con diferencia del día como "Corregido"
+        const difCounts = counts.filter(c => c.difference !== 0);
+        if (difCounts.length > 0) {
+            await supabase.from("cyclic_counts")
+                .update({ status: "Corregido", updated_at: new Date().toISOString() })
+                .in("id", difCounts.map(c => c.id));
+        }
+        setShowRecount(false);
+        setRecountAssignment(null);
+        showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
+        loadOperarioData(selectedStoreId, selectedDate);
+    }
+
+    // ════════════════════════════════════════════════════════
     //  VALIDADOR — ASIGNAR PRODUCTOS
     // ════════════════════════════════════════════════════════
     async function searchProductsForAssign(text: string) {
@@ -638,14 +879,18 @@ export default function DashboardPage() {
             const data = await bulkAssignFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+            // raw:false para obtener valores formateados, header:1 para array de arrays
+            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            // Ignorar primera fila (encabezado) y leer por posición de columna
+            // Col A=0: codigo, Col B=1: descripcion, Col C=2: unidad, Col D=3: costo, Col E=4: stock
+            const dataRows = allRows.slice(1);
             let ok = 0, skip = 0, notFound = 0;
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
-                setBulkAssignProgress({ step: `Procesando ${i + 1} / ${rows.length}...`, pct: Math.round(((i + 1) / rows.length) * 100) });
-                const rawSku = cleanCode(String(row["CODIGO"] || ""));
-                const stock = Number(row["Stock"] || row["STOCK"] || 0);
-                const cost = Number(row["COSTO"] || 0);
+            for (let i = 0; i < dataRows.length; i++) {
+                const row = dataRows[i];
+                setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
+                const rawSku = cleanCode(String(row[0] || ""));
+                const stock = Number(row[4] || 0);
+                const cost = Number(row[3] || 0);
                 if (!rawSku) { skip++; continue; }
                 let prod: Product | null = null;
                 const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
@@ -724,23 +969,27 @@ export default function DashboardPage() {
             const data = await masterFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+            // Leer como array de arrays para ignorar la fila 1 y leer por posición de columna
+            // Col A=0: codigo, Col B=1: descripcion, Col C=2: unidad, Col D=3: costo, Col E=4: stock
+            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const dataRows = allRows.slice(1); // ignorar fila 1 (encabezado)
+
             const map = new Map<string, any>();
-            for (const row of rows) {
-                const rawSku = (row["CODIGO SHELL"] || row["CODIGO"] || row["SKU"] || row["sku"] || row["codigo"] || "");
-                const sku = cleanCode(String(rawSku));
-                if (!sku) continue;
-                const desc = String(row["Descripcion 1"] || row["DESCRIPCION"] || row["description"] || "").trim();
+            for (const row of dataRows) {
+                const rawSku = cleanCode(String(row[0] || ""));
+                if (!rawSku) continue;
+                const desc = String(row[1] || "").trim();
                 if (!desc) continue;
-                const unit = String(row["U.Minima"] || row["Un.Min."] || row["UNIDAD DE MEDIDA"] || row["unit"] || "NIU").trim() || "NIU";
-                const cost = Number(row["Costo Prom"] || row["Ult Costo"] || row["COSTO"] || row["cost"] || 0);
-                const barcode = cleanCode(String(row["Cod.Barra"] || row["UPC"] || row["BARCODE"] || row["barcode"] || "")) || null;
-                map.set(normalizeText(sku), {
-                    sku, barcode, description: desc, unit, cost, is_active: true,
+                const unit = String(row[2] || "NIU").trim() || "NIU";
+                const cost = Number(row[3]) || 0;
+                // Col E (índice 4) es stock - lo guardamos en system_stock si existe, pero en maestro no se usa stock
+                const barcode: string | null = null; // barcode viene del archivo separado
+                map.set(normalizeText(rawSku), {
+                    sku: rawSku, barcode, description: desc, unit, cost, is_active: true,
                     updated_at: new Date().toISOString(),
                 });
             }
-            if (map.size === 0) { showMessage("Archivo sin filas válidas. Columnas buscadas: CODIGO SHELL (o SKU), Descripcion 1 (o DESCRIPCION).", "error"); return; }
+            if (map.size === 0) { showMessage("Archivo sin filas válidas. Verifica que tenga datos desde la fila 2.", "error"); return; }
             const items = Array.from(map.values());
             let ok = 0;
             const BATCH = 500;
@@ -945,9 +1194,15 @@ export default function DashboardPage() {
             showMessage("Ubicación escaneada.", "success");
             closeScanner();
         }
+
+        if (scannerTarget === "recount_location") {
+            setRecountRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
+            showMessage("Ubicación escaneada.", "success");
+            closeScanner();
+        }
     }
 
-    function openScanner(target: "product"|"location", rowIndex: number = 0) {
+    function openScanner(target: "product"|"location"|"recount_location", rowIndex: number = 0) {
         clearMessage();
         scanHandledRef.current = false;
         setScanningRowIndex(rowIndex);
@@ -989,6 +1244,27 @@ export default function DashboardPage() {
         XLSX.writeFile(wbk, `resumen_ciclico_${storeName}_${valDate}.xlsx`);
     }
 
+    function exportDashboard() {
+        const rows = filteredDashData.map(r => ({
+            TIENDA: r.store_name,
+            FECHA: r.date,
+            ASIGNADOS: r.total_asignados,
+            OK: r.total_ok,
+            SOBRANTES: r.total_sobrantes,
+            FALTANTES: r.total_faltantes,
+            NO_CONTADOS: r.total_no_contados,
+            ERI_PCT: r.eri,
+            CUMPLIO: r.cumplio ? "SÍ" : "NO",
+            HORA_INICIO: r.hora_inicio ? formatDateTime(r.hora_inicio) : "—",
+            HORA_FIN: r.hora_fin ? formatDateTime(r.hora_fin) : "—",
+            DURACION_MIN: r.duracion_min ?? "—",
+        }));
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wbk = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbk, ws, "Dashboard");
+        XLSX.writeFile(wbk, `dashboard_ciclicos_${dashPeriod === "dia" ? dashDate : dashMonth}.xlsx`);
+    }
+
     // ════════════════════════════════════════════════════════
     //  COMPUTED
     // ════════════════════════════════════════════════════════
@@ -1000,7 +1276,14 @@ export default function DashboardPage() {
     const pendingAssignments = useMemo(() => myAssignments.filter(a => !a.counted), [myAssignments]);
     const doneAssignments    = useMemo(() => myAssignments.filter(a =>  a.counted), [myAssignments]);
 
-    // Filtro para la vista "Registros" (sin diferencia/stock, solo registros individuales)
+    // Asignaciones con diferencia para el reconteo
+    const difAssignments = useMemo(() => {
+        return doneAssignments.filter(a => {
+            const aCounts = counts.filter(c => c.assignment_id === a.id);
+            return aCounts.some(c => c.difference !== 0);
+        });
+    }, [doneAssignments, counts]);
+
     const filteredCounts = useMemo(() => {
         return counts.filter(c => {
             const text = [c.sku, c.description, c.location, c.user_name, c.validator_name].join(" ").toLowerCase();
@@ -1010,11 +1293,8 @@ export default function DashboardPage() {
         });
     }, [counts, valSearchText, valStatusFilter]);
 
-    // Resumen agrupado por product_id (suma conteos del mismo código)
     const resumenPorCodigo = useMemo((): ResumenRow[] => {
         const map = new Map<string, ResumenRow>();
-
-        // Primero cargar todos los asignados
         for (const asg of assignments) {
             if (!map.has(asg.product_id)) {
                 map.set(asg.product_id, {
@@ -1030,25 +1310,17 @@ export default function DashboardPage() {
                 });
             }
         }
-
-        // Sumar conteos por product_id
         for (const c of counts) {
             const entry = map.get(c.product_id);
-            if (entry) {
-                entry.total_counted += Number(c.counted_quantity);
-            }
+            if (entry) { entry.total_counted += Number(c.counted_quantity); }
         }
-
-        // Calcular diferencia y diferencia valorizada
         for (const entry of map.values()) {
             entry.difference = entry.total_counted - entry.system_stock;
             entry.dif_valorizada = entry.difference * entry.cost;
         }
-
         return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
     }, [assignments, counts]);
 
-    // Filtro para el resumen por código
     const filteredResumen = useMemo(() => {
         if (!resumenSearch.trim()) return resumenPorCodigo;
         const q = resumenSearch.trim().toLowerCase();
@@ -1057,13 +1329,9 @@ export default function DashboardPage() {
         );
     }, [resumenPorCodigo, resumenSearch]);
 
-    // Productos sin contar (ningún conteo registrado para su assignment)
     const notCountedAssignments = useMemo(() => {
-        const countedProductIds = new Set(counts.map(c => c.product_id));
-        // Necesitamos los que no tienen NINGÚN conteo para ese product_id en el día
         const countedPids = new Set<string>();
         for (const c of counts) countedPids.add(c.product_id);
-        // Devolver assignments únicos por product_id que no fueron contados
         const seen = new Set<string>();
         return assignments.filter(a => {
             if (seen.has(a.product_id)) return false;
@@ -1073,12 +1341,10 @@ export default function DashboardPage() {
     }, [assignments, counts]);
 
     const resumenStats = useMemo(() => {
-        const total = resumenPorCodigo.length; // conteo por código único
+        const total = resumenPorCodigo.length;
         const contados = resumenPorCodigo.filter(r => r.total_counted > 0 || counts.some(c => c.product_id === r.product_id)).length;
         const pendientes = total - contados;
-        // conDif: por código (diferencia != 0)
         const conDif = resumenPorCodigo.filter(r => {
-            // solo considerar si fue contado
             const wasCounted = counts.some(c => c.product_id === r.product_id);
             return wasCounted && r.difference !== 0;
         }).length;
@@ -1091,6 +1357,22 @@ export default function DashboardPage() {
         if (!text) return products.slice(0, 100);
         return products.filter(p => [p.sku, p.description, p.barcode].join(" ").toLowerCase().includes(text)).slice(0, 100);
     }, [products, prodSearch]);
+
+    const filteredDashData = useMemo(() => {
+        if (!dashStoreFilter) return dashData;
+        return dashData.filter(r => r.store_id === dashStoreFilter);
+    }, [dashData, dashStoreFilter]);
+
+    // Métricas promedio para vista mes
+    const dashSummary = useMemo(() => {
+        if (filteredDashData.length === 0) return null;
+        const avgEri = Math.round(filteredDashData.reduce((s, r) => s + r.eri, 0) / filteredDashData.length);
+        const cumplidos = filteredDashData.filter(r => r.cumplio).length;
+        const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
+            ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
+            : null;
+        return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin };
+    }, [filteredDashData]);
 
     // ════════════════════════════════════════════════════════
     //  RENDER
@@ -1107,7 +1389,7 @@ export default function DashboardPage() {
     const isValOrAdm = user?.role === "Validador" || isAdmin;
 
     return (
-        <main className="min-h-screen bg-slate-50">
+        <main className="min-h-screen bg-slate-50 text-slate-900">
             {/* ── TOPBAR ──────────────────────────────────────────────── */}
             <div className="bg-white border-b sticky top-0 z-30 px-4 py-3 flex items-center justify-between gap-3">
                 <div>
@@ -1143,7 +1425,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && user?.role === "Operario" && (
+            {activeTab === "operario" && user?.role === "Operario" && !showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1152,7 +1434,7 @@ export default function DashboardPage() {
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
                             </div>
                             <div className="flex gap-3 items-center">
-                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); loadOperarioData(selectedStoreId, e.target.value); }} />
+                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); loadOperarioData(selectedStoreId, e.target.value); }} />
                                 <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
                                     <QrCode size={16} /> Escanear
                                 </button>
@@ -1172,16 +1454,38 @@ export default function DashboardPage() {
                                 <span className="text-amber-600 font-semibold">⏳ {pendingAssignments.length} pendientes</span>
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
+
+                            {/* Botones Terminar conteo / Iniciar reconteo */}
                             {!sessionFinished ? (
-                                <button
-                                    onClick={handleFinishSessionClick}
-                                    className="w-full mt-2 py-3 rounded-2xl font-bold text-sm border-2 border-green-600 text-green-700 bg-green-50 hover:bg-green-100 transition-colors flex items-center justify-center gap-2"
-                                >
-                                    <span>🏁</span> Terminar mi conteo de hoy
-                                </button>
+                                <div className="flex gap-2 mt-2">
+                                    <button
+                                        onClick={handleFinishSessionClick}
+                                        className="flex-1 py-3 rounded-2xl font-bold text-sm border-2 border-slate-700 text-slate-800 bg-slate-100 hover:bg-slate-200 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        <span>🏁</span> Terminar conteo
+                                    </button>
+                                    {difAssignments.length > 0 && (
+                                        <button
+                                            onClick={openRecountPanel}
+                                            className="flex-1 py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            <span>🔄</span> Iniciar reconteo ({difAssignments.length})
+                                        </button>
+                                    )}
+                                </div>
                             ) : (
-                                <div className="w-full mt-2 py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
-                                    <span>✅</span> Sesión finalizada — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
+                                <div className="space-y-2 mt-2">
+                                    <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
+                                        <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
+                                    </div>
+                                    {difAssignments.length > 0 && (
+                                        <button
+                                            onClick={openRecountPanel}
+                                            className="w-full py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            <span>🔄</span> Iniciar reconteo ({difAssignments.length} con diferencia)
+                                        </button>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -1215,12 +1519,14 @@ export default function DashboardPage() {
                             <div className="space-y-2">
                                 {doneAssignments.map(a => {
                                     const asgCounts = counts.filter(c => c.assignment_id === a.id);
+                                    const hasDiff = asgCounts.some(c => (c.difference ?? 0) !== 0);
                                     return (
-                                        <div key={a.id} className="border rounded-2xl p-3 bg-green-50 border-green-200">
+                                        <div key={a.id} className={`border rounded-2xl p-3 ${hasDiff ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="flex-1 min-w-0">
                                                     <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
                                                     <div className="text-xs text-slate-600 truncate">{a.description}</div>
+                                                    {hasDiff && <div className="text-xs text-red-600 font-semibold mt-0.5">⚠️ Con diferencia</div>}
                                                 </div>
                                                 <button className="px-3 py-2 rounded-xl border text-xs font-semibold" onClick={() => openCount(a)}>Recontar</button>
                                             </div>
@@ -1255,6 +1561,132 @@ export default function DashboardPage() {
             )}
 
             {/* ════════════════════════════════════════════════════════
+                PANEL RECONTEO (Operario)
+            ════════════════════════════════════════════════════════ */}
+            {activeTab === "operario" && user?.role === "Operario" && showRecount && (
+                <>
+                    <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                <h2 className="text-xl font-bold text-slate-900">🔄 Reconteo</h2>
+                                <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
+                            </div>
+                            <button
+                                onClick={() => { setShowRecount(false); setRecountAssignment(null); }}
+                                className="px-4 py-2 rounded-2xl border text-sm font-semibold"
+                            >
+                                ← Volver
+                            </button>
+                        </div>
+
+                        {/* Panel de edición de producto seleccionado */}
+                        {recountAssignment ? (
+                            <div className="rounded-2xl border bg-orange-50 border-orange-200 p-4 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <p className="font-bold text-slate-900">{recountAssignment.sku}</p>
+                                        <p className="text-xs text-slate-600">{recountAssignment.description}</p>
+                                        <p className="text-xs text-slate-400">UM: {recountAssignment.unit} · Stock sistema: <b>{recountAssignment.system_stock}</b></p>
+                                    </div>
+                                    <button onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }} className="text-slate-400 text-xl">×</button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <label className="block font-semibold text-sm text-slate-700">Ubicaciones y cantidades</label>
+                                        <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addRecountRow}>+ Agregar ubicación</button>
+                                    </div>
+                                    {recountRows.map((row, i) => (
+                                        <div key={i} className="rounded-2xl border bg-white p-3 space-y-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-xs font-semibold text-slate-500">Ubicación {recountRows.length > 1 ? i + 1 : ""}</span>
+                                                {recountRows.length > 1 && (
+                                                    <button className="text-xs text-red-500 font-semibold" onClick={() => removeRecountRow(i)}>Quitar</button>
+                                                )}
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <div className="flex-1">
+                                                    <div className="flex gap-1">
+                                                        <input
+                                                            className="flex-1 border rounded-xl p-2.5 text-sm text-slate-900 bg-white"
+                                                            placeholder="Ej: A-01-03"
+                                                            value={row.location}
+                                                            onChange={e => updateRecountRow(i, "location", e.target.value)}
+                                                        />
+                                                        <button className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs" onClick={() => openScanner("recount_location", i)} title="Escanear ubicación">
+                                                            <QrCode size={14} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div className="w-24">
+                                                    <input
+                                                        className="w-full border rounded-xl p-2.5 text-sm text-center font-semibold text-slate-900 bg-white"
+                                                        type="number" min="0" placeholder="0"
+                                                        value={row.qty}
+                                                        onChange={e => updateRecountRow(i, "qty", e.target.value)}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <button className="flex-1 py-3 rounded-2xl bg-orange-600 text-white font-bold text-sm" onClick={saveRecount}>
+                                        Guardar reconteo
+                                    </button>
+                                    <button className="px-5 py-3 rounded-2xl border font-semibold text-sm" onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }}>
+                                        Cancelar
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <p className="text-sm text-slate-500 text-center py-2">Selecciona un producto de abajo para recontar.</p>
+                        )}
+                    </section>
+
+                    {/* Lista de productos con diferencia */}
+                    <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                        <h3 className="font-bold text-slate-900">Productos con diferencia ({difAssignments.length})</h3>
+                        <div className="space-y-2">
+                            {difAssignments.map(a => {
+                                const aCounts = counts.filter(c => c.assignment_id === a.id);
+                                const totalContado = aCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
+                                const diff = totalContado - a.system_stock;
+                                const isSelected = recountAssignment?.id === a.id;
+                                return (
+                                    <div
+                                        key={a.id}
+                                        className={`border rounded-2xl p-3 cursor-pointer transition-all ${isSelected ? "bg-orange-100 border-orange-400" : "bg-red-50 border-red-200 hover:bg-red-100"}`}
+                                        onClick={() => openRecountItem(a)}
+                                    >
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
+                                                <div className="text-xs text-slate-600 truncate">{a.description}</div>
+                                                <div className="text-xs text-slate-400 mt-0.5">
+                                                    Stock: <b>{a.system_stock}</b> · Contado: <b>{totalContado}</b> · Dif: {diffBadge(diff)}
+                                                </div>
+                                            </div>
+                                            <span className="text-xs font-semibold text-orange-700 bg-orange-100 px-3 py-1.5 rounded-xl border border-orange-200">{isSelected ? "Editando" : "Recontar"}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </section>
+
+                    {/* Botón finalizar reconteo */}
+                    <button
+                        onClick={finalizeRecount}
+                        className="w-full py-4 rounded-2xl font-bold text-base bg-green-600 text-white shadow hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+                    >
+                        ✅ Finalizar reconteo
+                    </button>
+                </>
+            )}
+
+            {/* ════════════════════════════════════════════════════════
                 TAB VALIDADOR
             ════════════════════════════════════════════════════════ */}
             {activeTab === "validador" && isValOrAdm && (
@@ -1264,14 +1696,14 @@ export default function DashboardPage() {
                         <div className="flex flex-wrap gap-3 items-end">
                             <div className="flex-1 min-w-[160px]">
                                 <label className="block text-xs font-semibold text-slate-600 mb-1">Tienda</label>
-                                <select className="w-full border rounded-2xl p-3 text-sm" value={valStoreId} onChange={e => { setValStoreId(e.target.value); loadValidadorData(e.target.value, valDate); }}>
+                                <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valStoreId} onChange={e => { setValStoreId(e.target.value); loadValidadorData(e.target.value, valDate); }}>
                                     <option value="">— Selecciona tienda —</option>
                                     {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
-                                <input type="date" className="border rounded-2xl p-3 text-sm" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
+                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
                             </div>
                             {valStoreId && (
                                 <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
@@ -1284,7 +1716,6 @@ export default function DashboardPage() {
                                     <span className="text-red-600">Con dif: <b>{resumenStats.conDif}</b></span>
                                 </div>
                             )}
-                            {/* Barra de progreso del validador */}
                             {valStoreId && resumenStats.total > 0 && (
                                 <div className="w-full space-y-1 pt-1">
                                     <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
@@ -1320,10 +1751,9 @@ export default function DashboardPage() {
                                     <p className="text-slate-500 text-sm mt-1">Busca un producto del maestro global y asígnalo a la tienda/fecha seleccionada. También puedes cargar masivamente por Excel.</p>
                                 </div>
 
-                                {/* Búsqueda individual */}
                                 <div className="space-y-2">
                                     <input
-                                        className="w-full border rounded-2xl p-3 text-sm"
+                                        className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
                                         placeholder="Buscar por SKU, descripción o código de barra..."
                                         value={assignSearch}
                                         onChange={e => searchProductsForAssign(e.target.value)}
@@ -1344,7 +1774,7 @@ export default function DashboardPage() {
                                                                 <div>
                                                                     <label className="text-xs text-slate-500 block">Stock sistema</label>
                                                                     <input
-                                                                        className="w-24 border rounded-xl p-1.5 text-sm"
+                                                                        className="w-24 border rounded-xl p-1.5 text-sm text-slate-900 bg-white"
                                                                         type="number"
                                                                         placeholder="Stock"
                                                                         value={assignStockMap[p.id] ?? ""}
@@ -1369,7 +1799,7 @@ export default function DashboardPage() {
                                 <div className="border-t pt-4 space-y-3">
                                     <div>
                                         <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                        <p className="text-xs text-slate-400 mt-0.5">Columnas: <b>CODIGO</b>, <b>DESCRIPCION</b>, <b>COSTO</b>, <b>UNIDAD DE MEDIDA</b>, <b>Stock</b>.</p>
+                                        <p className="text-xs text-slate-400 mt-0.5">Columnas por posición: <b>A: Código</b>, <b>B: Descripción</b>, <b>C: Unidad</b>, <b>D: Costo</b>, <b>E: Stock</b>. La fila 1 (encabezado) se ignora automáticamente.</p>
                                     </div>
                                     {bulkAssignProgress && (
                                         <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1">
@@ -1380,7 +1810,7 @@ export default function DashboardPage() {
                                         </div>
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
-                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm" onClick={() => bulkAssignRef.current?.click()}>
+                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => bulkAssignRef.current?.click()}>
                                             {bulkAssignFileName || "Seleccionar Excel"}
                                         </button>
                                         <input ref={bulkAssignRef} type="file" accept=".xlsx,.xls" className="hidden"
@@ -1436,11 +1866,7 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* ── SUB-TAB: REGISTROS ───────────────────────────────
-                        Muestra cada registro individual: SKU, Descripción,
-                        Ubicación, Cantidad contada, Usuario, Hora.
-                        SIN diferencia ni stock de sistema.
-                    ════════════════════════════════════════════════════ */}
+                    {/* ── SUB-TAB: REGISTROS ─────────────────────────── */}
                     {valTab === "registros" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
@@ -1448,13 +1874,12 @@ export default function DashboardPage() {
                                     <h3 className="text-lg font-bold text-slate-900">Registros de conteo</h3>
                                     <p className="text-slate-500 text-xs mt-0.5">{filteredCounts.length} registro{filteredCounts.length !== 1 ? "s" : ""} encontrado{filteredCounts.length !== 1 ? "s" : ""}</p>
                                 </div>
-                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportCounts}>↓ Excel registros</button>
+                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>↓ Excel registros</button>
                             </div>
 
-                            {/* Filtros */}
                             <div className="flex gap-3 flex-wrap">
-                                <input className="flex-1 border rounded-2xl p-3 text-sm min-w-[180px]" placeholder="Buscar SKU, descripción, usuario..." value={valSearchText} onChange={e => setValSearchText(e.target.value)} />
-                                <select className="border rounded-2xl p-3 text-sm" value={valStatusFilter} onChange={e => setValStatusFilter(e.target.value)}>
+                                <input className="flex-1 border rounded-2xl p-3 text-sm text-slate-900 bg-white min-w-[180px]" placeholder="Buscar SKU, descripción, usuario..." value={valSearchText} onChange={e => setValSearchText(e.target.value)} />
+                                <select className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valStatusFilter} onChange={e => setValStatusFilter(e.target.value)}>
                                     <option value="todos">Todos los estados</option>
                                     <option value="pendiente">Pendiente</option>
                                     <option value="diferencia">Diferencia</option>
@@ -1463,7 +1888,6 @@ export default function DashboardPage() {
                                 </select>
                             </div>
 
-                            {/* Tabla de registros individuales */}
                             <div className="border rounded-2xl overflow-hidden">
                                 <div className="max-h-[500px] overflow-auto">
                                     <table className="w-full text-sm">
@@ -1505,15 +1929,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {/* ── SUB-TAB: RESUMEN POR CÓDIGO ──────────────────────
-                        Agrupa conteos por SKU, suma cantidades de múltiples
-                        registros del mismo código, calcula diferencia
-                        (total_contado - stock_sistema) y diferencia
-                        valorizada (diferencia × costo).
-                        Incluye tabla de productos NO contados con datos
-                        completos: código, descripción, UM, costo, stock,
-                        diferencia valorizada potencial.
-                    ════════════════════════════════════════════════════ */}
+                    {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
                     {valTab === "resumen" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
@@ -1526,18 +1942,16 @@ export default function DashboardPage() {
                                         </b>
                                     </p>
                                 </div>
-                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportResumen}>↓ Excel resumen</button>
+                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>↓ Excel resumen</button>
                             </div>
 
-                            {/* Búsqueda en resumen */}
                             <input
-                                className="w-full border rounded-2xl p-3 text-sm"
+                                className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
                                 placeholder="Buscar SKU o descripción..."
                                 value={resumenSearch}
                                 onChange={e => setResumenSearch(e.target.value)}
                             />
 
-                            {/* Tabla resumen por código (solo contados) */}
                             {filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length > 0 && (
                                 <>
                                     <p className="text-sm font-semibold text-slate-700">✅ Códigos contados ({filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length})</p>
@@ -1582,7 +1996,6 @@ export default function DashboardPage() {
                                 </>
                             )}
 
-                            {/* Tabla productos NO contados con datos completos */}
                             {notCountedAssignments.length > 0 && (
                                 <div className="space-y-3">
                                     <p className="text-sm font-semibold text-amber-700">⏳ Sin contar ({notCountedAssignments.length})</p>
@@ -1643,9 +2056,9 @@ export default function DashboardPage() {
                 <>
                     {/* Sub-tabs admin */}
                     <div className="flex gap-2 flex-wrap">
-                        {(["productos","tiendas","usuarios"] as const).map(t => (
+                        {(["productos","tiendas","usuarios","dashboard"] as const).map(t => (
                             <button key={t} onClick={() => setAdminTab(t)} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border capitalize transition ${adminTab === t ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>
-                                {t === "productos" ? "🗃 Maestro" : t === "tiendas" ? "🏪 Tiendas" : "👤 Usuarios"}
+                                {t === "productos" ? "🗃 Maestro" : t === "tiendas" ? "🏪 Tiendas" : t === "usuarios" ? "👤 Usuarios" : "📊 Dashboard"}
                             </button>
                         ))}
                     </div>
@@ -1662,7 +2075,7 @@ export default function DashboardPage() {
                                 {/* ARCHIVO 1: Maestro de productos */}
                                 <div className="rounded-2xl bg-slate-50 border p-4 space-y-2">
                                     <p className="text-sm font-semibold text-slate-700">📋 Archivo 1 — Maestro de productos</p>
-                                    <p className="text-xs text-slate-400">Columnas: <b>CODIGO</b> (o CODIGO SHELL / SKU), <b>DESCRIPCION</b> (o Descripcion 1), <b>UNIDAD DE MEDIDA</b></p>
+                                    <p className="text-xs text-slate-400">Columnas por posición (la fila 1 se ignora): <b>A: Código</b> · <b>B: Descripción</b> · <b>C: Unidad de medida</b> · <b>D: Costo</b> · <b>E: Stock</b>. El encabezado no importa, solo el orden de columnas.</p>
                                     {uploadProgress && (
                                         <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 space-y-1">
                                             <p className="text-xs font-semibold text-blue-800">{uploadProgress.step}</p>
@@ -1672,7 +2085,7 @@ export default function DashboardPage() {
                                         </div>
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
-                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white" onClick={() => masterInputRef.current?.click()}>
+                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => masterInputRef.current?.click()}>
                                             {masterFileName || "Seleccionar Excel"}
                                         </button>
                                         <input ref={masterInputRef} type="file" accept=".xlsx,.xls" className="hidden"
@@ -1697,7 +2110,7 @@ export default function DashboardPage() {
                                         </div>
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
-                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white" onClick={() => barcodesInputRef.current?.click()}>
+                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => barcodesInputRef.current?.click()}>
                                             {barcodesFileName || "Seleccionar Excel"}
                                         </button>
                                         <input ref={barcodesInputRef} type="file" accept=".xlsx,.xls" className="hidden"
@@ -1713,7 +2126,7 @@ export default function DashboardPage() {
                             <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                 <div className="flex items-center justify-between gap-3 flex-wrap">
                                     <h3 className="font-bold text-slate-900">Productos del maestro</h3>
-                                    <input className="border rounded-2xl px-3 py-2 text-sm w-64" placeholder="Buscar SKU o descripción..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
+                                    <input className="border rounded-2xl px-3 py-2 text-sm w-64 text-slate-900 bg-white" placeholder="Buscar SKU o descripción..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
                                 </div>
                                 <div className="border rounded-2xl overflow-hidden">
                                     <div className="max-h-[450px] overflow-auto">
@@ -1760,8 +2173,8 @@ export default function DashboardPage() {
                             <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700">Nueva tienda</p>
                                 <div className="flex gap-3 flex-wrap">
-                                    <input className="flex-1 border rounded-2xl p-3 text-sm bg-white min-w-[160px]" placeholder="Nombre de la tienda" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
-                                    <input className="w-32 border rounded-2xl p-3 text-sm bg-white" placeholder="Código" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
+                                    <input className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[160px]" placeholder="Nombre de la tienda" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
+                                    <input className="w-32 border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Código" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
                                     <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createStore}>+ Crear</button>
                                 </div>
                             </div>
@@ -1802,12 +2215,12 @@ export default function DashboardPage() {
                             <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700">Crear nuevo usuario</p>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <input className="border rounded-2xl p-3 text-sm bg-white" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
                                     <div>
                                         <label className="text-xs text-slate-500 block mb-1">Rol</label>
-                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
+                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
                                             <option value="Operario">Operario</option>
                                             <option value="Validador">Validador</option>
                                             <option value="Administrador">Administrador</option>
@@ -1816,7 +2229,7 @@ export default function DashboardPage() {
                                     {newRole === "Operario" && (
                                         <div>
                                             <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
-                                            <select className="w-full border rounded-2xl p-3 text-sm bg-white" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)}>
+                                            <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)}>
                                                 <option value="">— Sin asignar —</option>
                                                 {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                             </select>
@@ -1867,6 +2280,140 @@ export default function DashboardPage() {
                             </div>
                         </section>
                     )}
+
+                    {/* ── ADMIN: DASHBOARD ──────────────────────────────── */}
+                    {adminTab === "dashboard" && (
+                        <>
+                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-900">📊 Dashboard por tienda</h2>
+                                    <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cíclico por período.</p>
+                                </div>
+
+                                {/* Controles */}
+                                <div className="flex gap-3 flex-wrap items-end">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Período</label>
+                                        <div className="flex gap-1">
+                                            <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por día</button>
+                                            <button onClick={() => setDashPeriod("mes")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "mes" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por mes</button>
+                                        </div>
+                                    </div>
+                                    {dashPeriod === "dia" ? (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
+                                            <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Mes</label>
+                                            <input type="month" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashMonth} onChange={e => setDashMonth(e.target.value)} />
+                                        </div>
+                                    )}
+                                    <div className="flex-1 min-w-[160px]">
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Filtrar tienda</label>
+                                        <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashStoreFilter} onChange={e => setDashStoreFilter(e.target.value)}>
+                                            <option value="">Todas las tiendas</option>
+                                            {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
+                                        {dashLoading ? "Cargando..." : "🔍 Consultar"}
+                                    </button>
+                                    {dashData.length > 0 && (
+                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel</button>
+                                    )}
+                                </div>
+                            </section>
+
+                            {/* Tarjetas resumen */}
+                            {dashSummary && (
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
+                                        <div className="text-xs text-slate-500 mt-1">ERI promedio</div>
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-green-700">{dashSummary.cumplidos}</div>
+                                        <div className="text-xs text-slate-500 mt-1">Inventarios cumplidos</div>
+                                        <div className="text-xs text-slate-400">de {dashSummary.total}</div>
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.total}</div>
+                                        <div className="text-xs text-slate-500 mt-1">Registros en período</div>
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Tabla dashboard */}
+                            {filteredDashData.length > 0 ? (
+                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                    <h3 className="font-bold text-slate-900">Detalle por tienda{dashPeriod === "mes" ? " y día" : ""}</h3>
+                                    <div className="border rounded-2xl overflow-hidden">
+                                        <div className="overflow-auto">
+                                            <table className="w-full text-sm min-w-[900px]">
+                                                <thead className="bg-slate-100 sticky top-0">
+                                                    <tr>
+                                                        <th className="p-2 border text-left">Tienda</th>
+                                                        <th className="p-2 border">{dashPeriod === "mes" ? "Día" : "Fecha"}</th>
+                                                        <th className="p-2 border">Asignados</th>
+                                                        <th className="p-2 border text-green-700">OK</th>
+                                                        <th className="p-2 border text-blue-700">Sobrantes</th>
+                                                        <th className="p-2 border text-red-600">Faltantes</th>
+                                                        <th className="p-2 border text-amber-600">No contados</th>
+                                                        <th className="p-2 border">ERI %</th>
+                                                        <th className="p-2 border">Cumplió</th>
+                                                        {dashPeriod === "dia" && <>
+                                                            <th className="p-2 border">Hora inicio</th>
+                                                            <th className="p-2 border">Hora fin</th>
+                                                            <th className="p-2 border">Duración</th>
+                                                        </>}
+                                                        {dashPeriod === "mes" && <th className="p-2 border">Duración</th>}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {filteredDashData.map((r, i) => (
+                                                        <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
+                                                            <td className="p-2 border font-medium">{r.store_name}</td>
+                                                            <td className="p-2 border text-center text-xs">{r.date}</td>
+                                                            <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
+                                                            <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
+                                                            <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
+                                                            <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
+                                                            <td className="p-2 border text-center text-amber-600 font-semibold">{r.total_no_contados}</td>
+                                                            <td className="p-2 border text-center">
+                                                                <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
+                                                            </td>
+                                                            <td className="p-2 border text-center">
+                                                                {r.cumplio
+                                                                    ? <span className="text-xs bg-green-100 text-green-700 font-semibold px-2 py-0.5 rounded-full">✓ Sí</span>
+                                                                    : <span className="text-xs bg-red-50 text-red-600 font-semibold px-2 py-0.5 rounded-full">✗ No</span>
+                                                                }
+                                                            </td>
+                                                            {dashPeriod === "dia" && <>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
+                                                            </>}
+                                                            {dashPeriod === "mes" && <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </section>
+                            ) : dashData.length === 0 && !dashLoading ? (
+                                <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
+                                    Presiona <b>Consultar</b> para cargar los datos del período seleccionado.
+                                </div>
+                            ) : null}
+                        </>
+                    )}
                 </>
             )}
 
@@ -1887,7 +2434,6 @@ export default function DashboardPage() {
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
                         </div>
 
-                        {/* Filas de ubicación + cantidad */}
                         <div className="space-y-3 mb-4">
                             <div className="flex items-center justify-between">
                                 <label className="block font-semibold text-sm text-slate-700">Ubicaciones y cantidades</label>
@@ -1911,7 +2457,7 @@ export default function DashboardPage() {
                                             <label className="text-xs text-slate-500 block mb-1">Ubicación</label>
                                             <div className="flex gap-1">
                                                 <input
-                                                    className="flex-1 border rounded-xl p-2.5 text-sm"
+                                                    className="flex-1 border rounded-xl p-2.5 text-sm text-slate-900 bg-white"
                                                     placeholder="Ej: A-01-03"
                                                     value={row.location}
                                                     onChange={e => updateLocationRow(i, "location", e.target.value)}
@@ -1928,7 +2474,7 @@ export default function DashboardPage() {
                                         <div className="w-24">
                                             <label className="text-xs text-slate-500 block mb-1">Cantidad</label>
                                             <input
-                                                className="w-full border rounded-xl p-2.5 text-sm text-center font-semibold"
+                                                className="w-full border rounded-xl p-2.5 text-sm text-center font-semibold text-slate-900 bg-white"
                                                 type="number"
                                                 min="0"
                                                 placeholder="0"
@@ -1945,7 +2491,7 @@ export default function DashboardPage() {
                             <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm" onClick={saveCount}>
                                 Guardar conteo
                             </button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm" onClick={() => setActiveAssignment(null)}>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => setActiveAssignment(null)}>
                                 Cancelar
                             </button>
                         </div>
@@ -1968,16 +2514,16 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-3">
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Cantidad contada</label>
-                                <input className="w-full border rounded-2xl p-3 text-center font-semibold" type="number" min="0" value={editQty} onChange={e => setEditQty(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Cantidad contada</label>
+                                <input className="w-full border rounded-2xl p-3 text-center font-semibold text-slate-900 bg-white" type="number" min="0" value={editQty} onChange={e => setEditQty(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Ubicación</label>
-                                <input className="w-full border rounded-2xl p-3 font-mono" value={editLocation} onChange={e => setEditLocation(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Ubicación</label>
+                                <input className="w-full border rounded-2xl p-3 font-mono text-slate-900 bg-white" value={editLocation} onChange={e => setEditLocation(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Estado</label>
-                                <select className="w-full border rounded-2xl p-3" value={editStatus} onChange={e => setEditStatus(e.target.value as CountRecord["status"])}>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
+                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editStatus} onChange={e => setEditStatus(e.target.value as CountRecord["status"])}>
                                     <option value="Pendiente">Pendiente</option>
                                     <option value="Diferencia">Diferencia</option>
                                     <option value="Validado">Validado</option>
@@ -1985,13 +2531,13 @@ export default function DashboardPage() {
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Nota</label>
-                                <input className="w-full border rounded-2xl p-3" placeholder="Opcional..." value={editNote} onChange={e => setEditNote(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nota</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Opcional..." value={editNote} onChange={e => setEditNote(e.target.value)} />
                             </div>
                         </div>
                         <div className="flex gap-3 pt-1">
                             <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditCount}>Guardar</button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold" onClick={() => setEditingCount(null)}>Cancelar</button>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700" onClick={() => setEditingCount(null)}>Cancelar</button>
                         </div>
                     </div>
                 </div>
@@ -2012,29 +2558,29 @@ export default function DashboardPage() {
                         </div>
                         <div className="grid md:grid-cols-2 gap-4">
                             <div>
-                                <label className="block font-semibold text-sm mb-1">SKU</label>
-                                <input className="w-full border rounded-2xl p-3" value={editProdSku} onChange={e => setEditProdSku(e.target.value)} />
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">SKU</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editProdSku} onChange={e => setEditProdSku(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Código de barra</label>
-                                <input className="w-full border rounded-2xl p-3 font-mono" value={editProdBarcode} onChange={e => setEditProdBarcode(e.target.value)} placeholder="Opcional" />
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">Código de barra</label>
+                                <input className="w-full border rounded-2xl p-3 font-mono text-slate-900 bg-white" value={editProdBarcode} onChange={e => setEditProdBarcode(e.target.value)} placeholder="Opcional" />
                             </div>
                             <div className="md:col-span-2">
-                                <label className="block font-semibold text-sm mb-1">Descripción</label>
-                                <input className="w-full border rounded-2xl p-3" value={editProdDesc} onChange={e => setEditProdDesc(e.target.value)} />
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">Descripción</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editProdDesc} onChange={e => setEditProdDesc(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Unidad de medida</label>
-                                <input className="w-full border rounded-2xl p-3" value={editProdUnit} onChange={e => setEditProdUnit(e.target.value)} />
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">Unidad de medida</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editProdUnit} onChange={e => setEditProdUnit(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Costo unitario</label>
-                                <input className="w-full border rounded-2xl p-3" type="number" value={editProdCost} onChange={e => setEditProdCost(e.target.value)} />
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">Costo unitario</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" type="number" value={editProdCost} onChange={e => setEditProdCost(e.target.value)} />
                             </div>
                         </div>
                         <div className="flex gap-3 pt-1">
                             <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditProduct}>Guardar cambios</button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold" onClick={() => setEditingProduct(null)}>Cancelar</button>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700" onClick={() => setEditingProduct(null)}>Cancelar</button>
                         </div>
                     </div>
                 </div>
@@ -2055,8 +2601,8 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-3">
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Rol</label>
-                                <select className="w-full border rounded-2xl p-3" value={editUserRole} onChange={e => { setEditUserRole(e.target.value as Role); if (e.target.value !== "Operario") setEditUserAllStores(true); }}>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
+                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={e => { setEditUserRole(e.target.value as Role); if (e.target.value !== "Operario") setEditUserAllStores(true); }}>
                                     <option value="Operario">Operario</option>
                                     <option value="Validador">Validador</option>
                                     <option value="Administrador">Administrador</option>
@@ -2064,19 +2610,19 @@ export default function DashboardPage() {
                             </div>
                             {editUserRole === "Operario" && (
                                 <div>
-                                    <label className="block text-sm font-semibold mb-1">Tienda asignada</label>
-                                    <select className="w-full border rounded-2xl p-3" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)}>
+                                    <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
+                                    <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)}>
                                         <option value="">— Sin asignar —</option>
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 </div>
                             )}
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
-                                <input className="w-full border rounded-2xl p-3" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1">Estado</label>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
                                 <div className="flex gap-3">
                                     <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${editUserActive ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(true)}>✓ Activo</button>
                                     <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${!editUserActive ? "bg-red-500 text-white border-red-500" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(false)}>Inactivo</button>
@@ -2085,14 +2631,14 @@ export default function DashboardPage() {
                         </div>
                         <div className="flex gap-3 pt-1">
                             <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditUser}>Guardar cambios</button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold" onClick={() => setEditingUser(null)}>Cancelar</button>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700" onClick={() => setEditingUser(null)}>Cancelar</button>
                         </div>
                     </div>
                 </div>
             )}
 
             {/* ════════════════════════════════════════════════════════
-                MODAL — TERMINAR SESIÓN DE CONTEO (Operario)
+                MODAL — TERMINAR CONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
             {showFinishModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
@@ -2102,7 +2648,7 @@ export default function DashboardPage() {
                             <h3 className="text-xl font-bold text-slate-900">¿Terminar conteo?</h3>
                             <p className="text-slate-600 text-sm leading-relaxed">
                                 Aún tienes <span className="font-bold text-amber-700">{pendingAssignments.length} código{pendingAssignments.length !== 1 ? "s" : ""} sin contar</span>.
-                                ¿Deseas terminar tu sesión de hoy de todas formas?
+                                ¿Deseas terminar de todas formas?
                             </p>
                         </div>
                         <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 max-h-40 overflow-auto">
@@ -2133,7 +2679,7 @@ export default function DashboardPage() {
                     <div className="bg-white w-full max-w-lg rounded-3xl p-5 shadow-2xl space-y-4">
                         <div>
                             <h3 className="text-xl font-bold text-slate-900">
-                                {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicación ${locationRows.length > 1 ? scanningRowIndex + 1 : ""}`}
+                                {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicación ${(locationRows.length > 1 || recountRows.length > 1) ? scanningRowIndex + 1 : ""}`}
                             </h3>
                             <p className="text-sm text-slate-500">
                                 {scannerTarget === "product" ? "Busca por código de barra del producto asignado." : "Escanea o escribe la ubicación."}
@@ -2148,7 +2694,7 @@ export default function DashboardPage() {
                                 {torchOn ? "Apagar linterna 🔦" : "Prender linterna 🔦"}
                             </button>
                         )}
-                        <button onClick={closeScanner} className="w-full px-4 py-3 rounded-2xl border font-semibold">Cerrar cámara</button>
+                        <button onClick={closeScanner} className="w-full px-4 py-3 rounded-2xl border font-semibold text-slate-700">Cerrar cámara</button>
                     </div>
                 </div>
             )}
