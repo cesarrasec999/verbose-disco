@@ -81,6 +81,19 @@ type CountRecord = {
     store_name?: string;
 };
 
+// Resumen agrupado por product_id
+type ResumenRow = {
+    product_id: string;
+    sku: string;
+    description: string;
+    unit: string;
+    cost: number;
+    system_stock: number;
+    total_counted: number;
+    difference: number;
+    dif_valorizada: number;
+};
+
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
@@ -176,7 +189,6 @@ export default function DashboardPage() {
     const [scannerRunning, setScannerRunning] = useState(false);
     const [torchAvailable, setTorchAvailable] = useState(false);
     const [torchOn, setTorchOn]               = useState(false);
-    // índice de la fila de locationRows a la que se asigna el escaneo
     const [scanningRowIndex, setScanningRowIndex] = useState<number>(0);
     const scannerRef         = useRef<any>(null);
     const scanHandledRef     = useRef(false);
@@ -184,11 +196,13 @@ export default function DashboardPage() {
     const scannerContainerId = "cyclic-scanner";
 
     // ─── Validador: filtros ──────────────────────────────────
-    const [valTab, setValTab]               = useState<"asignar"|"resultados">("asignar");
+    // valTab ahora tiene 3 valores: "asignar" | "registros" | "resumen"
+    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen">("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
     const [valSearchText, setValSearchText] = useState("");
     const [valStatusFilter, setValStatusFilter] = useState("todos");
+    const [resumenSearch, setResumenSearch] = useState("");
 
     // ─── Validador: asignación ───────────────────────────────
     const [assignSearch, setAssignSearch]     = useState("");
@@ -251,7 +265,7 @@ export default function DashboardPage() {
     const [editUserPassword, setEditUserPassword] = useState("");
 
     // ════════════════════════════════════════════════════════
-    //  INIT
+    //  INIT — con persistencia de tab activo en sessionStorage
     // ════════════════════════════════════════════════════════
     useEffect(() => {
         const raw = localStorage.getItem("cyclic_user");
@@ -266,9 +280,31 @@ export default function DashboardPage() {
                 if (!u.is_active) { localStorage.removeItem("cyclic_user"); window.location.replace("/"); return; }
                 localStorage.setItem("cyclic_user", JSON.stringify(u));
                 setUser(u);
-                if (u.role === "Administrador") setActiveTab("admin");
-                else if (u.role === "Validador") setActiveTab("validador");
-                else setActiveTab("operario");
+
+                // Restaurar tab guardado o usar el default según rol
+                const savedTab = sessionStorage.getItem("cyclic_active_tab") as TabKey | null;
+                if (savedTab) {
+                    // Validar que el tab guardado sea accesible según rol
+                    const isValid =
+                        (savedTab === "operario" && u.role === "Operario") ||
+                        (savedTab === "validador" && (u.role === "Validador" || u.role === "Administrador")) ||
+                        (savedTab === "admin" && u.role === "Administrador");
+                    if (isValid) { setActiveTab(savedTab); }
+                    else {
+                        if (u.role === "Administrador") setActiveTab("admin");
+                        else if (u.role === "Validador") setActiveTab("validador");
+                        else setActiveTab("operario");
+                    }
+                } else {
+                    if (u.role === "Administrador") setActiveTab("admin");
+                    else if (u.role === "Validador") setActiveTab("validador");
+                    else setActiveTab("operario");
+                }
+
+                // Restaurar sub-tab del validador
+                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
+                if (savedValTab) setValTab(savedValTab);
+
             } catch {
                 setUser(parsed);
                 if (parsed.role === "Administrador") setActiveTab("admin");
@@ -290,6 +326,15 @@ export default function DashboardPage() {
             if (sid) loadOperarioData(sid, selectedDate);
         }
     }, [user]);
+
+    // Guardar tab activo en sessionStorage cuando cambia
+    useEffect(() => {
+        if (activeTab) sessionStorage.setItem("cyclic_active_tab", activeTab);
+    }, [activeTab]);
+
+    useEffect(() => {
+        if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
+    }, [valTab]);
 
     // realtime para operario
     useEffect(() => {
@@ -366,6 +411,8 @@ export default function DashboardPage() {
 
     function handleLogout() {
         localStorage.removeItem("cyclic_user");
+        sessionStorage.removeItem("cyclic_active_tab");
+        sessionStorage.removeItem("cyclic_val_tab");
         window.location.replace("/");
     }
 
@@ -481,7 +528,6 @@ export default function DashboardPage() {
     //  OPERARIO — CONTEO (múltiples ubicaciones)
     // ════════════════════════════════════════════════════════
     function openCount(asgn: Assignment) {
-        // Precarga filas existentes si el producto ya fue contado antes
         const existing = counts.filter(c => c.assignment_id === asgn.id);
         if (existing.length > 0) {
             setLocationRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
@@ -506,7 +552,6 @@ export default function DashboardPage() {
 
     async function saveCount() {
         if (!activeAssignment || !user) return;
-        // Validar filas
         for (let i = 0; i < locationRows.length; i++) {
             const row = locationRows[i];
             if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); return; }
@@ -515,10 +560,8 @@ export default function DashboardPage() {
             if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); return; }
         }
 
-        // Eliminar conteos anteriores de esta asignación para reemplazarlos
         await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
 
-        // Insertar todas las filas
         for (const row of locationRows) {
             const qty = Number(row.qty);
             const diff = qty - Number(activeAssignment.system_stock || 0);
@@ -753,22 +796,17 @@ export default function DashboardPage() {
         }
     }
 
-    function openEditProduct(p: Product) {
-        setEditingProduct(p);
-        setEditProdSku(p.sku);
-        setEditProdBarcode(p.barcode || "");
-        setEditProdDesc(p.description);
-        setEditProdUnit(p.unit);
-        setEditProdCost(String(p.cost));
-    }
-
     async function saveEditProduct() {
-        if (!editingProduct) return;
-        if (!editProdSku.trim() || !editProdDesc.trim()) { showMessage("SKU y descripción son obligatorios.", "error"); return; }
+        if (!editingProduct || !user) return;
+        const sku = editProdSku.trim();
+        const desc = editProdDesc.trim();
+        if (!sku || !desc) { showMessage("SKU y descripción son obligatorios.", "error"); return; }
+        const cost = Number(editProdCost);
+        if (isNaN(cost) || cost < 0) { showMessage("Costo inválido.", "error"); return; }
         const { error } = await supabase.from("cyclic_products").update({
-            sku: editProdSku.trim(), barcode: editProdBarcode.trim() || null,
-            description: editProdDesc.trim(), unit: editProdUnit.trim() || "UND",
-            cost: Number(editProdCost) || 0, updated_at: new Date().toISOString(),
+            sku, barcode: editProdBarcode.trim() || null, description: desc,
+            unit: editProdUnit.trim() || "NIU", cost,
+            updated_at: new Date().toISOString(),
         }).eq("id", editingProduct.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Producto actualizado.", "success");
@@ -776,26 +814,24 @@ export default function DashboardPage() {
         loadProducts();
     }
 
-    async function toggleProductActive(p: Product) {
-        await supabase.from("cyclic_products").update({ is_active: !p.is_active }).eq("id", p.id);
-        loadProducts();
-    }
-
     // ════════════════════════════════════════════════════════
     //  ADMIN — TIENDAS
     // ════════════════════════════════════════════════════════
     async function createStore() {
-        if (!newStoreName.trim()) { showMessage("Escribe el nombre de la tienda.", "error"); return; }
-        const code = newStoreCode.trim() || newStoreName.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-        const { error } = await supabase.from("stores").insert({ name: newStoreName.trim(), code, is_active: true });
+        if (!newStoreName.trim()) { showMessage("Nombre de tienda requerido.", "error"); return; }
+        const { error } = await supabase.from("stores").insert({
+            name: newStoreName.trim(), code: newStoreCode.trim() || newStoreName.trim().toUpperCase().slice(0,8),
+            is_active: true,
+        });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        setNewStoreName(""); setNewStoreCode("");
         showMessage("✅ Tienda creada.", "success");
+        setNewStoreName(""); setNewStoreCode("");
         loadStores();
     }
 
-    async function toggleStoreActive(s: Store) {
-        await supabase.from("stores").update({ is_active: !s.is_active }).eq("id", s.id);
+    async function toggleStoreActive(store: Store) {
+        const { error } = await supabase.from("stores").update({ is_active: !store.is_active }).eq("id", store.id);
+        if (error) { showMessage("Error: " + error.message, "error"); return; }
         loadStores();
     }
 
@@ -803,19 +839,19 @@ export default function DashboardPage() {
     //  ADMIN — USUARIOS
     // ════════════════════════════════════════════════════════
     async function createUser() {
-        if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) {
-            showMessage("Completa usuario, contraseña y nombre.", "error"); return;
-        }
-        const canAll = newRole === "Administrador" || newRole === "Validador" || newUserAllStores;
+        if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
+        const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
+        if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
         const { error } = await supabase.from("cyclic_users").insert({
-            username: newUsername.trim(), password: newPassword.trim(),
+            username: newUsername.trim().toLowerCase(), password: newPassword.trim(),
             full_name: newFullName.trim(), role: newRole,
-            store_id: canAll ? null : (newUserStoreId || null),
-            can_access_all_stores: canAll, is_active: true,
+            store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
+            can_access_all_stores: newRole !== "Operario",
+            is_active: true,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserAllStores(false);
         showMessage("✅ Usuario creado.", "success");
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId("");
         loadAllUsers();
     }
 
@@ -830,14 +866,15 @@ export default function DashboardPage() {
 
     async function saveEditUser() {
         if (!editingUser) return;
-        const canAll = editUserRole === "Administrador" || editUserRole === "Validador" || editUserAllStores;
-        const payload: any = {
+        const updates: any = {
             role: editUserRole,
-            store_id: canAll ? null : (editUserStoreId || null),
-            can_access_all_stores: canAll, is_active: editUserActive,
+            store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
+            can_access_all_stores: editUserRole !== "Operario",
+            is_active: editUserActive,
+            updated_at: new Date().toISOString(),
         };
-        if (editUserPassword.trim()) payload.password = editUserPassword.trim();
-        const { error } = await supabase.from("cyclic_users").update(payload).eq("id", editingUser.id);
+        if (editUserPassword.trim()) updates.password = editUserPassword.trim();
+        const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario actualizado.", "success");
         setEditingUser(null);
@@ -845,9 +882,9 @@ export default function DashboardPage() {
     }
 
     async function deleteUser(u: CyclicUser) {
-        if (u.id === user?.id) { showMessage("No puedes eliminar tu propio usuario.", "error"); return; }
-        if (!confirm(`¿Eliminar usuario "${u.username}"?`)) return;
-        await supabase.from("cyclic_users").delete().eq("id", u.id);
+        if (!confirm(`¿Eliminar usuario "${u.username}"? Esta acción no se puede deshacer.`)) return;
+        const { error } = await supabase.from("cyclic_users").delete().eq("id", u.id);
+        if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario eliminado.", "success");
         loadAllUsers();
     }
@@ -904,7 +941,6 @@ export default function DashboardPage() {
         }
 
         if (scannerTarget === "location") {
-            // Asigna el valor al row correcto
             setLocationRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
             showMessage("Ubicación escaneada.", "success");
             closeScanner();
@@ -926,36 +962,26 @@ export default function DashboardPage() {
         const rows = filteredCounts.map(c => ({
             TIENDA: c.store_name || storeName,
             SKU: c.sku, DESCRIPCION: c.description, UNIDAD: c.unit,
-            STOCK_SISTEMA: c.system_stock, CONTADO: c.counted_quantity,
-            DIFERENCIA: c.difference, UBICACION: c.location,
-            USUARIO: c.user_name, VALIDADOR: c.validator_name || "",
+            CONTADO: c.counted_quantity,
+            UBICACION: c.location,
+            USUARIO: c.user_name,
             ESTADO: c.status, NOTA: c.note || "",
-            FECHA: formatDateTime(c.counted_at),
+            FECHA_HORA: formatDateTime(c.counted_at),
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
         const wbk = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wbk, ws, "Conteos");
-        XLSX.writeFile(wbk, `ciclicos_${storeName}_${valDate}.xlsx`);
+        XLSX.utils.book_append_sheet(wbk, ws, "Registros");
+        XLSX.writeFile(wbk, `registros_${storeName}_${valDate}.xlsx`);
     }
 
     function exportResumen() {
         const storeName = allStores.find(s => s.id === valStoreId)?.name || "tienda";
-        const map = new Map<string, { sku: string; desc: string; unit: string; cost: number; stock: number; contado: number }>();
-        for (const asg of assignments) {
-            if (!map.has(asg.product_id)) {
-                map.set(asg.product_id, { sku: asg.sku || "", desc: asg.description || "", unit: asg.unit || "", cost: asg.cost || 0, stock: asg.system_stock, contado: 0 });
-            }
-        }
-        for (const c of counts) {
-            const entry = map.get(c.product_id);
-            if (entry) entry.contado += c.counted_quantity;
-        }
-        const rows = Array.from(map.values()).map(r => ({
-            SKU: r.sku, DESCRIPCION: r.desc, UNIDAD: r.unit,
-            STOCK_SISTEMA: r.stock, CONTADO: r.contado,
-            DIFERENCIA: r.contado - r.stock,
-            COSTO: r.cost, DIF_VALORIZADA: (r.contado - r.stock) * r.cost,
-            ESTADO: r.contado === 0 && r.stock > 0 ? "NO CONTADO" : r.contado > r.stock ? "SOBRANTE" : r.contado < r.stock ? "FALTANTE" : "OK",
+        const rows = resumenPorCodigo.map(r => ({
+            SKU: r.sku, DESCRIPCION: r.description, UNIDAD: r.unit,
+            STOCK_SISTEMA: r.system_stock, CONTADO: r.total_counted,
+            DIFERENCIA: r.difference,
+            COSTO: r.cost, DIF_VALORIZADA: r.dif_valorizada,
+            ESTADO: r.total_counted === 0 && r.system_stock > 0 ? "NO CONTADO" : r.difference > 0 ? "SOBRANTE" : r.difference < 0 ? "FALTANTE" : "OK",
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
         const wbk = XLSX.utils.book_new();
@@ -974,6 +1000,7 @@ export default function DashboardPage() {
     const pendingAssignments = useMemo(() => myAssignments.filter(a => !a.counted), [myAssignments]);
     const doneAssignments    = useMemo(() => myAssignments.filter(a =>  a.counted), [myAssignments]);
 
+    // Filtro para la vista "Registros" (sin diferencia/stock, solo registros individuales)
     const filteredCounts = useMemo(() => {
         return counts.filter(c => {
             const text = [c.sku, c.description, c.location, c.user_name, c.validator_name].join(" ").toLowerCase();
@@ -983,14 +1010,81 @@ export default function DashboardPage() {
         });
     }, [counts, valSearchText, valStatusFilter]);
 
-    const resumenStats = useMemo(() => {
-        const total = assignments.length;
-        const contados = new Set(counts.map(c => c.assignment_id)).size;
-        const pendientes = total - contados;
-        const conDif = counts.filter(c => c.difference !== 0).length;
-        const valorizadaDif = counts.reduce((s, c) => s + (c.difference || 0) * (c.cost || 0), 0);
-        return { total, contados, pendientes, conDif, valorizadaDif };
+    // Resumen agrupado por product_id (suma conteos del mismo código)
+    const resumenPorCodigo = useMemo((): ResumenRow[] => {
+        const map = new Map<string, ResumenRow>();
+
+        // Primero cargar todos los asignados
+        for (const asg of assignments) {
+            if (!map.has(asg.product_id)) {
+                map.set(asg.product_id, {
+                    product_id: asg.product_id,
+                    sku: asg.sku || "",
+                    description: asg.description || "",
+                    unit: asg.unit || "",
+                    cost: asg.cost || 0,
+                    system_stock: asg.system_stock,
+                    total_counted: 0,
+                    difference: 0,
+                    dif_valorizada: 0,
+                });
+            }
+        }
+
+        // Sumar conteos por product_id
+        for (const c of counts) {
+            const entry = map.get(c.product_id);
+            if (entry) {
+                entry.total_counted += Number(c.counted_quantity);
+            }
+        }
+
+        // Calcular diferencia y diferencia valorizada
+        for (const entry of map.values()) {
+            entry.difference = entry.total_counted - entry.system_stock;
+            entry.dif_valorizada = entry.difference * entry.cost;
+        }
+
+        return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
     }, [assignments, counts]);
+
+    // Filtro para el resumen por código
+    const filteredResumen = useMemo(() => {
+        if (!resumenSearch.trim()) return resumenPorCodigo;
+        const q = resumenSearch.trim().toLowerCase();
+        return resumenPorCodigo.filter(r =>
+            r.sku.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)
+        );
+    }, [resumenPorCodigo, resumenSearch]);
+
+    // Productos sin contar (ningún conteo registrado para su assignment)
+    const notCountedAssignments = useMemo(() => {
+        const countedProductIds = new Set(counts.map(c => c.product_id));
+        // Necesitamos los que no tienen NINGÚN conteo para ese product_id en el día
+        const countedPids = new Set<string>();
+        for (const c of counts) countedPids.add(c.product_id);
+        // Devolver assignments únicos por product_id que no fueron contados
+        const seen = new Set<string>();
+        return assignments.filter(a => {
+            if (seen.has(a.product_id)) return false;
+            seen.add(a.product_id);
+            return !countedPids.has(a.product_id);
+        });
+    }, [assignments, counts]);
+
+    const resumenStats = useMemo(() => {
+        const total = resumenPorCodigo.length; // conteo por código único
+        const contados = resumenPorCodigo.filter(r => r.total_counted > 0 || counts.some(c => c.product_id === r.product_id)).length;
+        const pendientes = total - contados;
+        // conDif: por código (diferencia != 0)
+        const conDif = resumenPorCodigo.filter(r => {
+            // solo considerar si fue contado
+            const wasCounted = counts.some(c => c.product_id === r.product_id);
+            return wasCounted && r.difference !== 0;
+        }).length;
+        const valorizadaDif = resumenPorCodigo.reduce((s, r) => s + r.dif_valorizada, 0);
+        return { total, contados, pendientes, conDif, valorizadaDif };
+    }, [resumenPorCodigo, counts]);
 
     const filteredProducts = useMemo(() => {
         const text = prodSearch.trim().toLowerCase();
@@ -1078,7 +1172,6 @@ export default function DashboardPage() {
                                 <span className="text-amber-600 font-semibold">⏳ {pendingAssignments.length} pendientes</span>
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
-                            {/* Botón terminar sesión */}
                             {!sessionFinished ? (
                                 <button
                                     onClick={handleFinishSessionClick}
@@ -1181,7 +1274,7 @@ export default function DashboardPage() {
                                 <input type="date" className="border rounded-2xl p-3 text-sm" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
                             </div>
                             {valStoreId && (
-                                <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3">
+                                <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
                                     <span>Asignados: <b>{resumenStats.total}</b></span>
                                     <span>·</span>
                                     <span className="text-green-700">Contados: <b>{resumenStats.contados}</b></span>
@@ -1211,10 +1304,11 @@ export default function DashboardPage() {
                         </div>
                     </section>
 
-                    {/* Sub-tabs validador */}
-                    <div className="flex gap-2">
+                    {/* Sub-tabs validador: Asignar | Registros | Resumen */}
+                    <div className="flex gap-2 flex-wrap">
                         <button onClick={() => setValTab("asignar")} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "asignar" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Asignar productos</button>
-                        <button onClick={() => { setValTab("resultados"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "resultados" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Resultados</button>
+                        <button onClick={() => { setValTab("registros"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "registros" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Registros</button>
+                        <button onClick={() => { setValTab("resumen"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "resumen" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Resumen por código</button>
                     </div>
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
@@ -1342,18 +1436,19 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* ── SUB-TAB: RESULTADOS ──────────────────────────── */}
-                    {valTab === "resultados" && (
+                    {/* ── SUB-TAB: REGISTROS ───────────────────────────────
+                        Muestra cada registro individual: SKU, Descripción,
+                        Ubicación, Cantidad contada, Usuario, Hora.
+                        SIN diferencia ni stock de sistema.
+                    ════════════════════════════════════════════════════ */}
+                    {valTab === "registros" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
                                 <div>
-                                    <h3 className="text-lg font-bold text-slate-900">Resultados del conteo</h3>
-                                    <p className="text-slate-500 text-xs mt-0.5">Diferencia valorizada: <b className={resumenStats.valorizadaDif < 0 ? "text-red-600" : "text-blue-700"}>{formatMoney(resumenStats.valorizadaDif)}</b></p>
+                                    <h3 className="text-lg font-bold text-slate-900">Registros de conteo</h3>
+                                    <p className="text-slate-500 text-xs mt-0.5">{filteredCounts.length} registro{filteredCounts.length !== 1 ? "s" : ""} encontrado{filteredCounts.length !== 1 ? "s" : ""}</p>
                                 </div>
-                                <div className="flex gap-2">
-                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportCounts}>↓ Excel registros</button>
-                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportResumen}>↓ Excel resumen</button>
-                                </div>
+                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportCounts}>↓ Excel registros</button>
                             </div>
 
                             {/* Filtros */}
@@ -1368,7 +1463,7 @@ export default function DashboardPage() {
                                 </select>
                             </div>
 
-                            {/* Tabla resultados */}
+                            {/* Tabla de registros individuales */}
                             <div className="border rounded-2xl overflow-hidden">
                                 <div className="max-h-[500px] overflow-auto">
                                     <table className="w-full text-sm">
@@ -1376,27 +1471,23 @@ export default function DashboardPage() {
                                             <tr>
                                                 <th className="p-2 border text-left">SKU</th>
                                                 <th className="p-2 border text-left">Descripción</th>
-                                                <th className="p-2 border">Contado</th>
-                                                <th className="p-2 border">Stock Sis.</th>
-                                                <th className="p-2 border">Dif.</th>
-                                                <th className="p-2 border">Dif. Val.</th>
-                                                <th className="p-2 border">Ubic.</th>
+                                                <th className="p-2 border">Ubicación</th>
+                                                <th className="p-2 border">Cantidad</th>
                                                 <th className="p-2 border">Usuario</th>
+                                                <th className="p-2 border">Hora</th>
                                                 <th className="p-2 border">Estado</th>
                                                 <th className="p-2 border">Acción</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {filteredCounts.map(c => (
-                                                <tr key={c.id} className={c.difference !== 0 ? "bg-red-50" : ""}>
+                                                <tr key={c.id} className="hover:bg-slate-50">
                                                     <td className="p-2 border font-medium">{c.sku}</td>
                                                     <td className="p-2 border text-slate-600 max-w-[180px] truncate">{c.description}</td>
+                                                    <td className="p-2 border text-center font-mono text-xs">{c.location}</td>
                                                     <td className="p-2 border text-center font-semibold">{c.counted_quantity}</td>
-                                                    <td className="p-2 border text-center">{c.system_stock}</td>
-                                                    <td className="p-2 border text-center">{diffBadge(c.difference || 0)}</td>
-                                                    <td className="p-2 border text-center text-xs">{formatMoney((c.difference || 0) * (c.cost || 0))}</td>
-                                                    <td className="p-2 border text-center">{c.location}</td>
                                                     <td className="p-2 border text-xs">{c.user_name}</td>
+                                                    <td className="p-2 border text-xs text-slate-500 whitespace-nowrap">{formatDateTime(c.counted_at)}</td>
                                                     <td className="p-2 border text-center"><span className={statusBadge(c.status)}>{c.status}</span></td>
                                                     <td className="p-2 border text-center">
                                                         <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditCount(c)}>Editar</button>
@@ -1405,23 +1496,140 @@ export default function DashboardPage() {
                                                 </tr>
                                             ))}
                                             {filteredCounts.length === 0 && (
-                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={10}>No hay conteos registrados todavía.</td></tr>
+                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={8}>No hay conteos registrados todavía.</td></tr>
                                             )}
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
+                        </section>
+                    )}
 
-                            {/* No contados */}
-                            {assignments.filter(a => !counts.find(c => c.assignment_id === a.id)).length > 0 && (
-                                <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 space-y-2">
-                                    <p className="text-sm font-bold text-amber-800">⏳ Sin contar ({assignments.filter(a => !counts.find(c => c.assignment_id === a.id)).length})</p>
-                                    <div className="flex flex-wrap gap-2">
-                                        {assignments.filter(a => !counts.find(c => c.assignment_id === a.id)).map(a => (
-                                            <span key={a.id} className="text-xs bg-amber-100 text-amber-800 rounded-xl px-2 py-1 font-medium">{a.sku}</span>
-                                        ))}
+                    {/* ── SUB-TAB: RESUMEN POR CÓDIGO ──────────────────────
+                        Agrupa conteos por SKU, suma cantidades de múltiples
+                        registros del mismo código, calcula diferencia
+                        (total_contado - stock_sistema) y diferencia
+                        valorizada (diferencia × costo).
+                        Incluye tabla de productos NO contados con datos
+                        completos: código, descripción, UM, costo, stock,
+                        diferencia valorizada potencial.
+                    ════════════════════════════════════════════════════ */}
+                    {valTab === "resumen" && (
+                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <div className="flex flex-wrap gap-3 items-center justify-between">
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-900">Resumen por código</h3>
+                                    <p className="text-slate-500 text-xs mt-0.5">
+                                        Diferencia valorizada total:&nbsp;
+                                        <b className={resumenStats.valorizadaDif < 0 ? "text-red-600" : resumenStats.valorizadaDif > 0 ? "text-blue-700" : "text-green-700"}>
+                                            {formatMoney(resumenStats.valorizadaDif)}
+                                        </b>
+                                    </p>
+                                </div>
+                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold" onClick={exportResumen}>↓ Excel resumen</button>
+                            </div>
+
+                            {/* Búsqueda en resumen */}
+                            <input
+                                className="w-full border rounded-2xl p-3 text-sm"
+                                placeholder="Buscar SKU o descripción..."
+                                value={resumenSearch}
+                                onChange={e => setResumenSearch(e.target.value)}
+                            />
+
+                            {/* Tabla resumen por código (solo contados) */}
+                            {filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length > 0 && (
+                                <>
+                                    <p className="text-sm font-semibold text-slate-700">✅ Códigos contados ({filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length})</p>
+                                    <div className="border rounded-2xl overflow-hidden">
+                                        <div className="max-h-[500px] overflow-auto">
+                                            <table className="w-full text-sm">
+                                                <thead className="bg-slate-100 sticky top-0">
+                                                    <tr>
+                                                        <th className="p-2 border text-left">SKU</th>
+                                                        <th className="p-2 border text-left">Descripción</th>
+                                                        <th className="p-2 border">UM</th>
+                                                        <th className="p-2 border">Stock Sis.</th>
+                                                        <th className="p-2 border">Total Contado</th>
+                                                        <th className="p-2 border">Diferencia</th>
+                                                        <th className="p-2 border">Costo</th>
+                                                        <th className="p-2 border">Dif. Valorizada</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {filteredResumen
+                                                        .filter(r => counts.some(c => c.product_id === r.product_id))
+                                                        .map(r => (
+                                                        <tr key={r.product_id} className={r.difference !== 0 ? "bg-red-50" : "hover:bg-slate-50"}>
+                                                            <td className="p-2 border font-medium">{r.sku}</td>
+                                                            <td className="p-2 border text-slate-600 max-w-[180px] truncate">{r.description}</td>
+                                                            <td className="p-2 border text-center text-xs">{r.unit}</td>
+                                                            <td className="p-2 border text-center">{r.system_stock}</td>
+                                                            <td className="p-2 border text-center font-semibold">{r.total_counted}</td>
+                                                            <td className="p-2 border text-center">{diffBadge(r.difference)}</td>
+                                                            <td className="p-2 border text-center text-xs">{formatMoney(r.cost)}</td>
+                                                            <td className="p-2 border text-center text-xs font-semibold">
+                                                                <span className={r.dif_valorizada < 0 ? "text-red-600" : r.dif_valorizada > 0 ? "text-blue-700" : "text-green-700"}>
+                                                                    {formatMoney(r.dif_valorizada)}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+
+                            {/* Tabla productos NO contados con datos completos */}
+                            {notCountedAssignments.length > 0 && (
+                                <div className="space-y-3">
+                                    <p className="text-sm font-semibold text-amber-700">⏳ Sin contar ({notCountedAssignments.length})</p>
+                                    <div className="border border-amber-200 rounded-2xl overflow-hidden">
+                                        <div className="max-h-[400px] overflow-auto">
+                                            <table className="w-full text-sm">
+                                                <thead className="bg-amber-50 sticky top-0">
+                                                    <tr>
+                                                        <th className="p-2 border border-amber-200 text-left">SKU</th>
+                                                        <th className="p-2 border border-amber-200 text-left">Descripción</th>
+                                                        <th className="p-2 border border-amber-200">UM</th>
+                                                        <th className="p-2 border border-amber-200">Costo Unit.</th>
+                                                        <th className="p-2 border border-amber-200">Stock Sis.</th>
+                                                        <th className="p-2 border border-amber-200">Dif. Val. Potencial</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {notCountedAssignments
+                                                        .filter(a => {
+                                                            if (!resumenSearch.trim()) return true;
+                                                            const q = resumenSearch.trim().toLowerCase();
+                                                            return (a.sku || "").toLowerCase().includes(q) || (a.description || "").toLowerCase().includes(q);
+                                                        })
+                                                        .map(a => {
+                                                            const difVal = -(a.system_stock) * (a.cost || 0);
+                                                            return (
+                                                                <tr key={a.id} className="bg-amber-50/50 hover:bg-amber-100/50">
+                                                                    <td className="p-2 border border-amber-100 font-medium text-amber-900">{a.sku}</td>
+                                                                    <td className="p-2 border border-amber-100 text-slate-600 max-w-[180px] truncate">{a.description}</td>
+                                                                    <td className="p-2 border border-amber-100 text-center text-xs">{a.unit}</td>
+                                                                    <td className="p-2 border border-amber-100 text-center text-xs">{formatMoney(a.cost || 0)}</td>
+                                                                    <td className="p-2 border border-amber-100 text-center font-semibold">{a.system_stock}</td>
+                                                                    <td className="p-2 border border-amber-100 text-center text-xs text-red-600 font-semibold">
+                                                                        {formatMoney(difVal)}
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 </div>
+                            )}
+
+                            {resumenPorCodigo.length === 0 && (
+                                <div className="text-center text-slate-400 py-8">No hay productos asignados para esta tienda y fecha.</div>
                             )}
                         </section>
                     )}
@@ -1495,14 +1703,18 @@ export default function DashboardPage() {
                                         <input ref={barcodesInputRef} type="file" accept=".xlsx,.xls" className="hidden"
                                             onChange={e => { const f = e.target.files?.[0] || null; setBarcodesFile(f); setBarcodesFileName(f?.name || ""); e.target.value = ""; }} />
                                         {barcodesFile && (
-                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBarcodes}>Subir códigos de barra</button>
+                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBarcodes}>Actualizar códigos</button>
                                         )}
                                     </div>
                                 </div>
+                            </section>
 
-                                {/* Buscar producto */}
-                                <input className="w-full border rounded-2xl p-3 text-sm" placeholder="Buscar por SKU, descripción o código de barra..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
-
+                            {/* Lista de productos */}
+                            <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                <div className="flex items-center justify-between gap-3 flex-wrap">
+                                    <h3 className="font-bold text-slate-900">Productos del maestro</h3>
+                                    <input className="border rounded-2xl px-3 py-2 text-sm w-64" placeholder="Buscar SKU o descripción..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
+                                </div>
                                 <div className="border rounded-2xl overflow-hidden">
                                     <div className="max-h-[450px] overflow-auto">
                                         <table className="w-full text-sm">
@@ -1510,60 +1722,49 @@ export default function DashboardPage() {
                                                 <tr>
                                                     <th className="p-2 border text-left">SKU</th>
                                                     <th className="p-2 border text-left">Descripción</th>
-                                                    <th className="p-2 border">Código barra</th>
                                                     <th className="p-2 border">UM</th>
                                                     <th className="p-2 border">Costo</th>
-                                                    <th className="p-2 border">Estado</th>
+                                                    <th className="p-2 border">Código barra</th>
                                                     <th className="p-2 border">Acción</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {filteredProducts.map(p => (
-                                                    <tr key={p.id} className={!p.is_active ? "opacity-40" : ""}>
+                                                    <tr key={p.id} className="hover:bg-slate-50">
                                                         <td className="p-2 border font-medium">{p.sku}</td>
                                                         <td className="p-2 border text-slate-600 max-w-[200px] truncate">{p.description}</td>
-                                                        <td className="p-2 border text-center font-mono text-xs">{p.barcode || "—"}</td>
                                                         <td className="p-2 border text-center">{p.unit}</td>
                                                         <td className="p-2 border text-center">{formatMoney(p.cost)}</td>
+                                                        <td className="p-2 border text-center font-mono text-xs">{p.barcode || "—"}</td>
                                                         <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${p.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{p.is_active ? "Activo" : "Inactivo"}</span>
-                                                        </td>
-                                                        <td className="p-2 border text-center">
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditProduct(p)}>Editar</button>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-slate-500" onClick={() => toggleProductActive(p)}>{p.is_active ? "Desact." : "Activar"}</button>
+                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold" onClick={() => { setEditingProduct(p); setEditProdSku(p.sku); setEditProdBarcode(p.barcode || ""); setEditProdDesc(p.description); setEditProdUnit(p.unit); setEditProdCost(String(p.cost)); }}>Editar</button>
                                                         </td>
                                                     </tr>
                                                 ))}
-                                                {filteredProducts.length === 0 && (
-                                                    <tr><td colSpan={7} className="p-6 text-center text-slate-400">No hay productos. Carga el maestro por Excel.</td></tr>
-                                                )}
+                                                {filteredProducts.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">No hay productos.</td></tr>}
                                             </tbody>
                                         </table>
                                     </div>
-                                    {products.length > 100 && !prodSearch && (
-                                        <div className="text-xs text-center text-slate-400 p-2 border-t">Mostrando 100 de {products.length}. Usa el buscador para filtrar.</div>
-                                    )}
                                 </div>
+                                {!prodSearch && products.length > 100 && (
+                                    <p className="text-xs text-slate-400 text-center">Mostrando primeros 100 de {products.length.toLocaleString()}. Usa el buscador para filtrar.</p>
+                                )}
                             </section>
                         </>
                     )}
 
-                    {/* ── ADMIN: TIENDAS ───────────────────────────────── */}
+                    {/* ── ADMIN: TIENDAS ────────────────────────────────── */}
                     {adminTab === "tiendas" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Tiendas</h2>
-                            <div className="grid md:grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Nombre de la tienda</label>
-                                    <input className="w-full border rounded-2xl p-3 text-sm" placeholder="Ej. Tienda Centro Lima" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-semibold text-slate-600 mb-1">Código (opcional)</label>
-                                    <input className="w-full border rounded-2xl p-3 text-sm" placeholder="Ej. T01 (se genera automático)" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
+                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
+                                <p className="text-sm font-semibold text-slate-700">Nueva tienda</p>
+                                <div className="flex gap-3 flex-wrap">
+                                    <input className="flex-1 border rounded-2xl p-3 text-sm bg-white min-w-[160px]" placeholder="Nombre de la tienda" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
+                                    <input className="w-32 border rounded-2xl p-3 text-sm bg-white" placeholder="Código" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
+                                    <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createStore}>+ Crear</button>
                                 </div>
                             </div>
-                            <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createStore}>+ Crear tienda</button>
-
                             <div className="border rounded-2xl overflow-hidden">
                                 <table className="w-full text-sm">
                                     <thead className="bg-slate-100">
@@ -1583,26 +1784,25 @@ export default function DashboardPage() {
                                                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${s.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{s.is_active ? "Activa" : "Inactiva"}</span>
                                                 </td>
                                                 <td className="p-2 border text-center">
-                                                    <button className="text-xs font-semibold text-slate-500 border px-3 py-1.5 rounded-lg" onClick={() => toggleStoreActive(s)}>{s.is_active ? "Desactivar" : "Activar"}</button>
+                                                    <button className="text-xs underline text-slate-600" onClick={() => toggleStoreActive(s)}>{s.is_active ? "Desactivar" : "Activar"}</button>
                                                 </td>
                                             </tr>
                                         ))}
-                                        {allStores.length === 0 && <tr><td colSpan={4} className="p-6 text-center text-slate-400">No hay tiendas creadas.</td></tr>}
+                                        {allStores.length === 0 && <tr><td colSpan={4} className="p-6 text-center text-slate-400">No hay tiendas.</td></tr>}
                                     </tbody>
                                 </table>
                             </div>
                         </section>
                     )}
 
-                    {/* ── ADMIN: USUARIOS ─────────────────────────────── */}
+                    {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
                     {adminTab === "usuarios" && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-5">
+                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Usuarios</h2>
-
-                            <div className="rounded-2xl border p-4 space-y-3 bg-slate-50">
-                                <p className="font-semibold text-slate-800 text-sm">Nuevo usuario</p>
-                                <div className="grid md:grid-cols-2 gap-3">
-                                    <input className="border rounded-2xl p-3 text-sm bg-white" placeholder="Usuario (login)" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
+                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
+                                <p className="text-sm font-semibold text-slate-700">Crear nuevo usuario</p>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <input className="border rounded-2xl p-3 text-sm bg-white" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
                                     <div>
@@ -1698,42 +1898,56 @@ export default function DashboardPage() {
                                     + Agregar ubicación
                                 </button>
                             </div>
-
                             {locationRows.map((row, i) => (
-                                <div key={i} className="rounded-2xl border p-3 space-y-2 bg-slate-50">
-                                    <div className="flex items-center justify-between gap-1">
-                                        <span className="text-xs font-semibold text-slate-500">Ubicación {i + 1}</span>
+                                <div key={i} className="rounded-2xl border bg-slate-50 p-3 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-xs font-semibold text-slate-500">Ubicación {locationRows.length > 1 ? i + 1 : ""}</span>
                                         {locationRows.length > 1 && (
-                                            <button className="text-red-400 text-xs font-semibold" onClick={() => removeLocationRow(i)}>✕ Quitar</button>
+                                            <button className="text-xs text-red-500 hover:text-red-700 font-semibold" onClick={() => removeLocationRow(i)}>Quitar</button>
                                         )}
                                     </div>
                                     <div className="flex gap-2">
-                                        <input
-                                            className="flex-1 border rounded-xl p-2.5 text-sm bg-white"
-                                            placeholder="Ej. A-3-2"
-                                            value={row.location}
-                                            onChange={e => updateLocationRow(i, "location", e.target.value)}
-                                        />
-                                        <button className="px-2.5 py-2 rounded-xl border bg-white" onClick={() => openScanner("location", i)} title="Escanear ubicación">
-                                            <QrCode size={18} />
-                                        </button>
+                                        <div className="flex-1">
+                                            <label className="text-xs text-slate-500 block mb-1">Ubicación</label>
+                                            <div className="flex gap-1">
+                                                <input
+                                                    className="flex-1 border rounded-xl p-2.5 text-sm"
+                                                    placeholder="Ej: A-01-03"
+                                                    value={row.location}
+                                                    onChange={e => updateLocationRow(i, "location", e.target.value)}
+                                                />
+                                                <button
+                                                    className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs"
+                                                    onClick={() => openScanner("location", i)}
+                                                    title="Escanear ubicación"
+                                                >
+                                                    <QrCode size={14} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div className="w-24">
+                                            <label className="text-xs text-slate-500 block mb-1">Cantidad</label>
+                                            <input
+                                                className="w-full border rounded-xl p-2.5 text-sm text-center font-semibold"
+                                                type="number"
+                                                min="0"
+                                                placeholder="0"
+                                                value={row.qty}
+                                                onChange={e => updateLocationRow(i, "qty", e.target.value)}
+                                            />
+                                        </div>
                                     </div>
-                                    <input
-                                        className="w-full border rounded-xl p-2.5 text-base font-semibold bg-white"
-                                        type="number"
-                                        placeholder="Cantidad"
-                                        value={row.qty}
-                                        onChange={e => updateLocationRow(i, "qty", e.target.value)}
-                                        onKeyDown={e => { if (e.key === "Enter" && i === locationRows.length - 1) saveCount(); }}
-                                        autoFocus={i === 0}
-                                    />
                                 </div>
                             ))}
                         </div>
 
                         <div className="flex gap-3">
-                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveCount}>✅ Guardar conteo</button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold" onClick={() => setActiveAssignment(null)}>Cancelar</button>
+                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm" onClick={saveCount}>
+                                Guardar conteo
+                            </button>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm" onClick={() => setActiveAssignment(null)}>
+                                Cancelar
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1744,26 +1958,25 @@ export default function DashboardPage() {
             ════════════════════════════════════════════════════════ */}
             {editingCount && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                    <div className="bg-white rounded-3xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
                         <div className="flex items-start justify-between gap-3">
                             <div>
-                                <h3 className="text-xl font-bold text-slate-900">Editar conteo</h3>
+                                <h3 className="text-xl font-bold text-slate-900">Editar registro</h3>
                                 <p className="text-slate-600 text-sm">{editingCount.sku} — {editingCount.description}</p>
-                                <p className="text-xs text-slate-400">Stock sistema: {editingCount.system_stock}</p>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingCount(null)}>×</button>
                         </div>
-                        <div className="grid md:grid-cols-2 gap-4">
+                        <div className="space-y-3">
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Cantidad contada</label>
-                                <input className="w-full border rounded-2xl p-3" type="number" value={editQty} onChange={e => setEditQty(e.target.value)} autoFocus />
+                                <label className="block text-sm font-semibold mb-1">Cantidad contada</label>
+                                <input className="w-full border rounded-2xl p-3 text-center font-semibold" type="number" min="0" value={editQty} onChange={e => setEditQty(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Ubicación</label>
-                                <input className="w-full border rounded-2xl p-3" value={editLocation} onChange={e => setEditLocation(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1">Ubicación</label>
+                                <input className="w-full border rounded-2xl p-3 font-mono" value={editLocation} onChange={e => setEditLocation(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Estado</label>
+                                <label className="block text-sm font-semibold mb-1">Estado</label>
                                 <select className="w-full border rounded-2xl p-3" value={editStatus} onChange={e => setEditStatus(e.target.value as CountRecord["status"])}>
                                     <option value="Pendiente">Pendiente</option>
                                     <option value="Diferencia">Diferencia</option>
@@ -1772,12 +1985,12 @@ export default function DashboardPage() {
                                 </select>
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1">Nota / Observación</label>
-                                <input className="w-full border rounded-2xl p-3" value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Opcional..." />
+                                <label className="block text-sm font-semibold mb-1">Nota</label>
+                                <input className="w-full border rounded-2xl p-3" placeholder="Opcional..." value={editNote} onChange={e => setEditNote(e.target.value)} />
                             </div>
                         </div>
                         <div className="flex gap-3 pt-1">
-                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditCount}>Guardar cambios</button>
+                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditCount}>Guardar</button>
                             <button className="px-5 py-3 rounded-2xl border font-semibold" onClick={() => setEditingCount(null)}>Cancelar</button>
                         </div>
                     </div>
@@ -1789,11 +2002,11 @@ export default function DashboardPage() {
             ════════════════════════════════════════════════════════ */}
             {editingProduct && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-lg space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                    <div className="bg-white rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar producto</h3>
-                                <p className="text-slate-500 text-xs">Cambios aplican a todas las tiendas automáticamente.</p>
+                                <p className="text-slate-600 text-sm">{editingProduct.sku}</p>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingProduct(null)}>×</button>
                         </div>
@@ -1892,7 +2105,6 @@ export default function DashboardPage() {
                                 ¿Deseas terminar tu sesión de hoy de todas formas?
                             </p>
                         </div>
-                        {/* Lista de pendientes */}
                         <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 max-h-40 overflow-auto">
                             <p className="text-xs font-bold text-amber-800 mb-2">Códigos pendientes:</p>
                             <div className="flex flex-wrap gap-1.5">
@@ -1902,16 +2114,10 @@ export default function DashboardPage() {
                             </div>
                         </div>
                         <div className="flex gap-3">
-                            <button
-                                className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm"
-                                onClick={() => setShowFinishModal(false)}
-                            >
+                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm" onClick={() => setShowFinishModal(false)}>
                                 Volver a contar
                             </button>
-                            <button
-                                className="flex-1 py-3 rounded-2xl bg-red-500 text-white font-bold text-sm"
-                                onClick={confirmFinishSession}
-                            >
+                            <button className="flex-1 py-3 rounded-2xl bg-red-500 text-white font-bold text-sm" onClick={confirmFinishSession}>
                                 Sí, terminar
                             </button>
                         </div>
