@@ -1330,12 +1330,13 @@ export default function DashboardPage() {
 
     // Asignaciones con diferencia para el reconteo (contados con dif + no contados)
     const difAssignments = useMemo(() => {
-        // Contados con diferencia
+        // Contados con diferencia: comparar la SUMA total de todas las ubicaciones vs system_stock
         const withDiff = doneAssignments.filter(a => {
             const aCounts = counts.filter(c => c.assignment_id === a.id);
-            return aCounts.some(c => (c.difference ?? 0) !== 0);
+            const totalContado = aCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
+            return totalContado !== Number(a.system_stock);
         });
-        // No contados (también tienen "diferencia" implícita ya que el contado = 0 vs stock)
+        // No contados (tienen diferencia implícita ya que el contado = 0 vs stock)
         const uncounted = pendingAssignments.filter(a => a.system_stock > 0);
         // Combinar, evitando duplicados
         const seen = new Set(withDiff.map(a => a.id));
@@ -1587,16 +1588,23 @@ export default function DashboardPage() {
                             <div className="space-y-2">
                                 {doneAssignments.map(a => {
                                     const asgCounts = counts.filter(c => c.assignment_id === a.id);
-                                    const hasDiff = asgCounts.some(c => (c.difference ?? 0) !== 0);
+                                    const totalContado = asgCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
+                                    const hasDiff = totalContado !== Number(a.system_stock);
                                     return (
                                         <div key={a.id} className={`border rounded-2xl p-3 ${hasDiff ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="flex-1 min-w-0">
                                                     <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
                                                     <div className="text-xs text-slate-600 truncate">{a.description}</div>
-                                                    {hasDiff && <div className="text-xs text-red-600 font-semibold mt-0.5">⚠️ Con diferencia</div>}
+                                                    <div className="text-xs text-slate-500 mt-0.5">
+                                                        Stock: <b>{a.system_stock}</b> · Total contado: <b>{totalContado}</b>
+                                                        {hasDiff
+                                                            ? <span className="text-red-600 font-semibold"> · Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{totalContado - Number(a.system_stock)} ⚠️</span>
+                                                            : <span className="text-green-600 font-semibold"> · ✓ OK</span>
+                                                        }
+                                                    </div>
                                                 </div>
-                                                <button className="px-3 py-2 rounded-xl border text-xs font-semibold" onClick={() => openCount(a)}>Recontar</button>
+                                                <button className="px-3 py-2 rounded-xl border text-xs font-semibold" onClick={() => openCount(a)}>Editar</button>
                                             </div>
                                             {asgCounts.length > 0 && (
                                                 <div className="mt-2 space-y-1">
