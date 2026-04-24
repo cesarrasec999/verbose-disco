@@ -492,46 +492,67 @@ export default function DashboardPage() {
         }
     }
 
-    // ── Helper: escribir/borrar flags de sesión en BD ────────
-    async function setSessionFlag(storeId: string, date: string, flag: "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
-        // Usamos el primer assignment de la tienda+fecha como anchor del flag
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
+    // ── Helpers: leer/escribir estado de sesión en Supabase ──
+    // Guarda el estado como un registro especial en cyclic_counts.
+    // Usa user_name='__session__' para identificarlos (no afecta FK porque user_id es nullable).
+    // El note contiene el flag: 'finished' | 'recount_started' | 'recount_done'
+    async function writeSessionState(storeId: string, date: string, state: "finished" | "recount_started" | "recount_done") {
+        // Obtener primer assignment de tienda+fecha para anclar el registro
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments")
+            .select("id, product_id")
+            .eq("store_id", storeId)
+            .eq("assigned_date", date)
+            .limit(1);
         if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
-        if (active) {
-            // Upsert: insertar solo si no existe ya
-            const { data: existing } = await supabase.from("cyclic_counts").select("id").eq("assignment_id", anchorId).eq("location", flag).maybeSingle();
-            if (!existing) {
-                await supabase.from("cyclic_counts").insert({
-                    assignment_id: anchorId,
-                    store_id: storeId,
-                    product_id: asgns[0].id, // dummy, no importa
-                    counted_quantity: 0,
-                    location: flag,
-                    status: "Pendiente",
-                    counted_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                });
-            }
-        } else {
-            await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
-        }
+        const anchor = asgns[0];
+        // Borrar estado anterior de esta tienda+fecha
+        await supabase.from("cyclic_counts")
+            .delete()
+            .eq("store_id", storeId)
+            .eq("user_name", "__session__")
+            .eq("location", date);
+        // Insertar nuevo estado
+        await supabase.from("cyclic_counts").insert({
+            assignment_id: anchor.id,
+            store_id: storeId,
+            product_id: anchor.product_id,
+            counted_quantity: 0,
+            location: date,
+            user_id: null,
+            user_name: "__session__",
+            note: state,
+            status: "Pendiente",
+            counted_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+        });
     }
 
-    async function clearSessionFlags(storeId: string, date: string) {
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
-        if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
-        await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).like("location", "__session_%");
+    async function readSessionState(storeId: string, date: string): Promise<"none" | "finished" | "recount_started" | "recount_done"> {
+        const { data } = await supabase
+            .from("cyclic_counts")
+            .select("note")
+            .eq("store_id", storeId)
+            .eq("user_name", "__session__")
+            .eq("location", date)
+            .maybeSingle();
+        if (!data) return "none";
+        return (data.note as any) || "none";
+    }
+
+    async function clearSessionState(storeId: string, date: string) {
+        await supabase.from("cyclic_counts")
+            .delete()
+            .eq("store_id", storeId)
+            .eq("user_name", "__session__")
+            .eq("location", date);
     }
 
     async function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
         setRecountFinished(false);
-        // Limpiar flags anteriores y escribir __session_finished__ en BD
-        await clearSessionFlags(selectedStoreId, selectedDate);
-        await setSessionFlag(selectedStoreId, selectedDate, "__session_finished__", true);
+        await writeSessionState(selectedStoreId, selectedDate, "finished");
         showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
@@ -593,17 +614,8 @@ export default function DashboardPage() {
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
 
-        // Leer flags de sesión guardados como registros especiales en cyclic_counts
-        // location = '__session_finished__'  → conteo terminado
-        // location = '__recount_started__'   → reconteo iniciado
-        // location = '__recount_done__'      → reconteo finalizado
-        const sessionFlags = cRows.filter(c => c.location?.startsWith("__session_"));
-        const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
-        const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
-        const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
-
-        // Conteos reales (excluir filas de flags)
-        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
+        // Filtrar filas de estado de sesión (user_name = '__session__')
+        const realCounts = cRows.filter(c => c.user_name !== "__session__");
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
@@ -611,19 +623,20 @@ export default function DashboardPage() {
         });
         setCounts(enriched);
 
-        // Restaurar estado UI desde flags de BD
-        if (isFinished) {
+        // Leer estado de sesión desde Supabase (funciona en cualquier dispositivo)
+        const sessionState = await readSessionState(storeId, date);
+        if (sessionState === "recount_done") {
             setSessionFinished(true);
-            if (isRecountDone) {
-                setRecountFinished(true);
-                setShowRecount(false);
-            } else if (isRecounting) {
-                setRecountFinished(false);
-                setShowRecount(true);
-            } else {
-                setRecountFinished(false);
-                setShowRecount(false);
-            }
+            setRecountFinished(true);
+            setShowRecount(false);
+        } else if (sessionState === "recount_started") {
+            setSessionFinished(true);
+            setRecountFinished(false);
+            setShowRecount(true);
+        } else if (sessionState === "finished") {
+            setSessionFinished(true);
+            setRecountFinished(false);
+            setShowRecount(false);
         } else {
             setSessionFinished(false);
             setRecountFinished(false);
@@ -654,8 +667,7 @@ export default function DashboardPage() {
         const assignIds = rows.map(r => r.id);
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
-        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
-        const enriched = realCounts.map(c => {
+        const enriched = cRows.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
@@ -740,7 +752,7 @@ export default function DashboardPage() {
                 cntAll = cntAll.concat((cChunk || []) as CountRecord[]);
             }
 
-            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_"));
+            const counts = cntAll;
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -962,14 +974,13 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  OPERARIO — RECONTEO
     // ════════════════════════════════════════════════════════
-    async function openRecountPanel() {
+    function openRecountPanel() {
         setShowRecount(true);
-        setRecountFinished(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
-        // Escribir flag __recount_started__ en BD
-        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
-        await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
+        // Persistir que el operario está en reconteo
+        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.setItem(recountKey, "1");
         clearMessage();
     }
 
@@ -1027,18 +1038,17 @@ export default function DashboardPage() {
     }
 
     async function finalizeRecount() {
-        // Marcar todos los conteos reales con diferencia como "Corregido"
+        // Marcar todos los conteos con diferencia del día como "Corregido"
         const difCounts = counts.filter(c => c.difference !== 0);
         if (difCounts.length > 0) {
             await supabase.from("cyclic_counts")
                 .update({ status: "Corregido", updated_at: new Date().toISOString() })
                 .in("id", difCounts.map(c => c.id));
         }
-        // Actualizar flags en BD: reconteo terminado
-        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
-        await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", true);
+        // Limpiar flag de reconteo activo
+        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.removeItem(recountKey);
         setShowRecount(false);
-        setRecountFinished(true);
         setRecountAssignment(null);
         showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
         loadOperarioData(selectedStoreId, selectedDate);
@@ -1579,7 +1589,7 @@ export default function DashboardPage() {
             }
 
             const countMap = new Map<string, CountRecord[]>();
-            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_"))) {
+            for (const c of allCounts) {
                 if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
                 countMap.get(c.assignment_id)!.push(c);
             }
@@ -1816,10 +1826,7 @@ export default function DashboardPage() {
                         <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-3 py-1.5 rounded-xl">{user.role}</span>
                     )}
                     {isValOrAdm && (
-                        <div className="flex gap-1 flex-wrap">
-                            {isAdmin && (
-                                <button onClick={() => { setActiveTab("operario"); if (!selectedStoreId && allStores.filter(s=>s.is_active).length > 0) { const first = allStores.filter(s => s.is_active)[0]; setSelectedStoreId(first.id); loadOperarioData(first.id, selectedDate); } }} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "operario" ? "bg-amber-600 text-white border-amber-600" : "bg-white text-slate-700 border-slate-300"}`}>Operario</button>
-                            )}
+                        <div className="flex gap-1">
                             <button onClick={() => setActiveTab("validador")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "validador" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-700 border-slate-300"}`}>Validador</button>
                             {isAdmin && (
                                 <button onClick={() => setActiveTab("admin")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "admin" ? "bg-purple-600 text-white border-purple-600" : "bg-white text-slate-700 border-slate-300"}`}>Admin</button>
@@ -1843,26 +1850,16 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && !showRecount && (
+            {activeTab === "operario" && user?.role === "Operario" && !showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3 flex-wrap">
                             <div>
-                                <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
+                                <h2 className="text-xl font-bold text-slate-900">Mis conteos de hoy</h2>
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
                             </div>
-                            <div className="flex gap-3 items-center flex-wrap">
-                                {isAdmin && (
-                                    <select
-                                        className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white"
-                                        value={selectedStoreId}
-                                        onChange={e => { setSelectedStoreId(e.target.value); if (e.target.value) loadOperarioData(e.target.value, selectedDate); }}
-                                    >
-                                        <option value="">— Selecciona tienda —</option>
-                                        {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                    </select>
-                                )}
-                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
+                            <div className="flex gap-3 items-center">
+                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); loadOperarioData(selectedStoreId, e.target.value); }} />
                                 <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
                                     <QrCode size={16} /> Escanear
                                 </button>
@@ -1883,7 +1880,7 @@ export default function DashboardPage() {
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
 
-                            {/* Botones de estado: Terminar conteo / Reconteo / Sesión finalizada */}
+                            {/* Botones Terminar conteo / Iniciar reconteo */}
                             {!sessionFinished ? (
                                 <div className="flex gap-2 mt-2">
                                     <button
@@ -1893,30 +1890,7 @@ export default function DashboardPage() {
                                         <span>🏁</span> Terminar conteo
                                     </button>
                                 </div>
-                            ) : recountFinished ? (
-                                /* Estado: reconteo ya finalizado */
-                                <div className="space-y-2 mt-2">
-                                    <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
-                                        <span>✅</span> Sesión finalizada — reconteo completado
-                                    </div>
-                                    <button
-                                        onClick={async () => {
-                                            if (confirm("¿Deseas volver a modificar el reconteo?")) {
-                                                await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
-                                                await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
-                                                setRecountFinished(false);
-                                                setShowRecount(true);
-                                                setRecountAssignment(null);
-                                                setRecountRows([{ location: "", qty: "" }]);
-                                            }
-                                        }}
-                                        className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
-                                    >
-                                        ✏️ ¿Deseas modificar?
-                                    </button>
-                                </div>
                             ) : (
-                                /* Estado: conteo finalizado, puede iniciar reconteo */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
@@ -2013,7 +1987,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 PANEL RECONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && showRecount && (
+            {activeTab === "operario" && user?.role === "Operario" && showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3">
@@ -2022,8 +1996,9 @@ export default function DashboardPage() {
                                 <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
                             </div>
                             <button
-                                onClick={async () => {
-                                    await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
+                                onClick={() => {
+                                    const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+                                    sessionStorage.removeItem(recountKey);
                                     setShowRecount(false);
                                     setRecountAssignment(null);
                                 }}
@@ -2171,14 +2146,6 @@ export default function DashboardPage() {
                                 <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
                                 <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
                             </div>
-                            {valStoreId && (
-                                <button
-                                    className="px-4 py-3 rounded-2xl border font-semibold text-sm text-slate-700 bg-white hover:bg-slate-50 transition flex items-center gap-2"
-                                    onClick={() => loadValidadorData(valStoreId, valDate)}
-                                >
-                                    🔄 Actualizar
-                                </button>
-                            )}
                             {valStoreId && (
                                 <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
                                     <span>Asignados: <b>{resumenStats.total}</b></span>
@@ -2806,11 +2773,6 @@ export default function DashboardPage() {
                                     <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
                                         {dashLoading ? "Cargando..." : "🔍 Consultar"}
                                     </button>
-                                    {dashData.length > 0 && (
-                                        <button onClick={loadDashboard} disabled={dashLoading} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700 flex items-center gap-2 disabled:opacity-50">
-                                            🔄 Actualizar
-                                        </button>
-                                    )}
                                     {dashData.length > 0 && (
                                         <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
                                     )}
