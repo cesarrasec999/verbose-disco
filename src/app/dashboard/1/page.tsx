@@ -318,7 +318,6 @@ export default function DashboardPage() {
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
-    const [recountFinished, setRecountFinished] = useState(false);
     const [editUserStoreId, setEditUserStoreId] = useState("");
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
@@ -495,13 +494,9 @@ export default function DashboardPage() {
     function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
-        setRecountFinished(false);
-        // Persistir en localStorage con clave por tienda+fecha (sobrevive F5 y recargas)
+        // Persistir en sessionStorage con clave por tienda+fecha para sobrevivir recargas
         const key = `cyclic_finished__${selectedStoreId}__${selectedDate}`;
-        localStorage.setItem(key, "1");
-        // Limpiar flags de reconteo por si los había
-        localStorage.removeItem(`cyclic_recount__${selectedStoreId}__${selectedDate}`);
-        localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
+        sessionStorage.setItem(key, "1");
         showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
@@ -570,30 +565,18 @@ export default function DashboardPage() {
         });
         setCounts(enriched);
 
-        // Restaurar estado desde localStorage (persiste F5 y recarga de página)
-        const finishedKey    = `cyclic_finished__${storeId}__${date}`;
-        const recountKey     = `cyclic_recount__${storeId}__${date}`;
-        const recountDoneKey = `cyclic_recount_done__${storeId}__${date}`;
-
-        const isFinished     = localStorage.getItem(finishedKey) === "1";
-        const isRecounting   = localStorage.getItem(recountKey) === "1";
-        const isRecountDone  = localStorage.getItem(recountDoneKey) === "1";
-
-        if (isFinished) {
+        // Restaurar estado de "sesión finalizada" desde sessionStorage
+        const finishedKey = `cyclic_finished__${storeId}__${date}`;
+        if (sessionStorage.getItem(finishedKey) === "1") {
             setSessionFinished(true);
-            if (isRecountDone) {
-                setRecountFinished(true);
-                setShowRecount(false);
-            } else if (isRecounting) {
-                setRecountFinished(false);
+            // También restaurar showRecount si había un reconteo activo
+            const recountKey = `cyclic_recount__${storeId}__${date}`;
+            if (sessionStorage.getItem(recountKey) === "1") {
                 setShowRecount(true);
-            } else {
-                setRecountFinished(false);
-                setShowRecount(false);
             }
         } else {
+            // Si cambiaron de fecha o es un nuevo día, resetear estado
             setSessionFinished(false);
-            setRecountFinished(false);
             setShowRecount(false);
         }
     }
@@ -930,13 +913,11 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     function openRecountPanel() {
         setShowRecount(true);
-        setRecountFinished(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
-        // Persistir en localStorage que el operario está en reconteo
+        // Persistir que el operario está en reconteo
         const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        localStorage.setItem(recountKey, "1");
-        localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
+        sessionStorage.setItem(recountKey, "1");
         clearMessage();
     }
 
@@ -1001,13 +982,10 @@ export default function DashboardPage() {
                 .update({ status: "Corregido", updated_at: new Date().toISOString() })
                 .in("id", difCounts.map(c => c.id));
         }
-        // Persistir estado finalizado en localStorage
-        const recountDoneKey = `cyclic_recount_done__${selectedStoreId}__${selectedDate}`;
-        const recountKey     = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        localStorage.setItem(recountDoneKey, "1");
-        localStorage.removeItem(recountKey);
+        // Limpiar flag de reconteo activo
+        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        sessionStorage.removeItem(recountKey);
         setShowRecount(false);
-        setRecountFinished(true);
         setRecountAssignment(null);
         showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
         loadOperarioData(selectedStoreId, selectedDate);
@@ -1785,7 +1763,10 @@ export default function DashboardPage() {
                         <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-3 py-1.5 rounded-xl">{user.role}</span>
                     )}
                     {isValOrAdm && (
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 flex-wrap">
+                            {isAdmin && (
+                                <button onClick={() => { setActiveTab("operario"); if (!selectedStoreId && allStores.length > 0) { const first = allStores.filter(s => s.is_active)[0]; if (first) { setSelectedStoreId(first.id); loadOperarioData(first.id, selectedDate); } } }} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "operario" ? "bg-amber-600 text-white border-amber-600" : "bg-white text-slate-700 border-slate-300"}`}>Operario</button>
+                            )}
                             <button onClick={() => setActiveTab("validador")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "validador" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-700 border-slate-300"}`}>Validador</button>
                             {isAdmin && (
                                 <button onClick={() => setActiveTab("admin")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "admin" ? "bg-purple-600 text-white border-purple-600" : "bg-white text-slate-700 border-slate-300"}`}>Admin</button>
@@ -1809,16 +1790,26 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && user?.role === "Operario" && !showRecount && (
+            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && !showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3 flex-wrap">
                             <div>
-                                <h2 className="text-xl font-bold text-slate-900">Mis conteos de hoy</h2>
+                                <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
                             </div>
-                            <div className="flex gap-3 items-center">
-                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); loadOperarioData(selectedStoreId, e.target.value); }} />
+                            <div className="flex gap-3 items-center flex-wrap">
+                                {isAdmin && (
+                                    <select
+                                        className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                        value={selectedStoreId}
+                                        onChange={e => { setSelectedStoreId(e.target.value); if (e.target.value) loadOperarioData(e.target.value, selectedDate); }}
+                                    >
+                                        <option value="">— Selecciona tienda —</option>
+                                        {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                    </select>
+                                )}
+                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
                                 <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
                                     <QrCode size={16} /> Escanear
                                 </button>
@@ -1839,7 +1830,7 @@ export default function DashboardPage() {
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
 
-                            {/* Botones de estado: Terminar conteo / Reconteo / Sesión finalizada */}
+                            {/* Botones Terminar conteo / Iniciar reconteo */}
                             {!sessionFinished ? (
                                 <div className="flex gap-2 mt-2">
                                     <button
@@ -1849,31 +1840,7 @@ export default function DashboardPage() {
                                         <span>🏁</span> Terminar conteo
                                     </button>
                                 </div>
-                            ) : recountFinished ? (
-                                /* Estado: reconteo ya finalizado */
-                                <div className="space-y-2 mt-2">
-                                    <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
-                                        <span>✅</span> Sesión finalizada — reconteo completado
-                                    </div>
-                                    <button
-                                        onClick={() => {
-                                            if (confirm("¿Deseas volver a modificar el reconteo?")) {
-                                                // Reabrir panel de reconteo
-                                                localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
-                                                localStorage.setItem(`cyclic_recount__${selectedStoreId}__${selectedDate}`, "1");
-                                                setRecountFinished(false);
-                                                setShowRecount(true);
-                                                setRecountAssignment(null);
-                                                setRecountRows([{ location: "", qty: "" }]);
-                                            }
-                                        }}
-                                        className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
-                                    >
-                                        ✏️ ¿Deseas modificar?
-                                    </button>
-                                </div>
                             ) : (
-                                /* Estado: conteo finalizado, puede iniciar reconteo */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
@@ -1960,8 +1927,12 @@ export default function DashboardPage() {
 
                     {myAssignments.length === 0 && (
                         <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
-                            No hay productos asignados para hoy en tu tienda.
-                            <br />Contacta al validador para que asigne los conteos.
+                            {!selectedStoreId
+                                ? "Selecciona una tienda para ver los conteos."
+                                : isAdmin
+                                    ? "No hay productos asignados para esta tienda y fecha."
+                                    : <>No hay productos asignados para hoy en tu tienda.<br />Contacta al validador para que asigne los conteos.</>
+                            }
                         </div>
                     )}
                 </>
@@ -1970,7 +1941,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 PANEL RECONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && user?.role === "Operario" && showRecount && (
+            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3">
@@ -1981,7 +1952,7 @@ export default function DashboardPage() {
                             <button
                                 onClick={() => {
                                     const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-                                    sessionStorage.removeItem(recountKey);
+                                    localStorage.removeItem(recountKey);
                                     setShowRecount(false);
                                     setRecountAssignment(null);
                                 }}

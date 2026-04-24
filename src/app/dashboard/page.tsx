@@ -318,6 +318,7 @@ export default function DashboardPage() {
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
+    const [recountFinished, setRecountFinished] = useState(false);
     const [editUserStoreId, setEditUserStoreId] = useState("");
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
@@ -491,12 +492,46 @@ export default function DashboardPage() {
         }
     }
 
-    function confirmFinishSession() {
+    // ── Helper: escribir/borrar flags de sesión en BD ────────
+    async function setSessionFlag(storeId: string, date: string, flag: "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
+        // Usamos el primer assignment de la tienda+fecha como anchor del flag
+        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
+        if (!asgns || asgns.length === 0) return;
+        const anchorId = asgns[0].id;
+        if (active) {
+            // Upsert: insertar solo si no existe ya
+            const { data: existing } = await supabase.from("cyclic_counts").select("id").eq("assignment_id", anchorId).eq("location", flag).maybeSingle();
+            if (!existing) {
+                await supabase.from("cyclic_counts").insert({
+                    assignment_id: anchorId,
+                    store_id: storeId,
+                    product_id: asgns[0].id, // dummy, no importa
+                    counted_quantity: 0,
+                    location: flag,
+                    status: "Pendiente",
+                    counted_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                });
+            }
+        } else {
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
+        }
+    }
+
+    async function clearSessionFlags(storeId: string, date: string) {
+        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
+        if (!asgns || asgns.length === 0) return;
+        const anchorId = asgns[0].id;
+        await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).like("location", "__session_%");
+    }
+
+    async function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
-        // Persistir en sessionStorage con clave por tienda+fecha para sobrevivir recargas
-        const key = `cyclic_finished__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.setItem(key, "1");
+        setRecountFinished(false);
+        // Limpiar flags anteriores y escribir __session_finished__ en BD
+        await clearSessionFlags(selectedStoreId, selectedDate);
+        await setSessionFlag(selectedStoreId, selectedDate, "__session_finished__", true);
         showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
@@ -549,34 +584,49 @@ export default function DashboardPage() {
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            // Prioridad: cost del assignment > cost del producto maestro
             cost: Number(a.cyclic_products?.cost) || 0,
         }));
         setAssignments(rows);
 
-        if (rows.length === 0) { setCounts([]); return; }
+        if (rows.length === 0) { setCounts([]); setSessionFinished(false); setRecountFinished(false); setShowRecount(false); return; }
         const assignIds = rows.map(r => r.id);
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
-        const enriched = cRows.map(c => {
+
+        // Leer flags de sesión guardados como registros especiales en cyclic_counts
+        // location = '__session_finished__'  → conteo terminado
+        // location = '__recount_started__'   → reconteo iniciado
+        // location = '__recount_done__'      → reconteo finalizado
+        const sessionFlags = cRows.filter(c => c.location?.startsWith("__session_"));
+        const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
+        const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
+        const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
+
+        // Conteos reales (excluir filas de flags)
+        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
+        const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
         });
         setCounts(enriched);
 
-        // Restaurar estado de "sesión finalizada" desde sessionStorage
-        const finishedKey = `cyclic_finished__${storeId}__${date}`;
-        if (sessionStorage.getItem(finishedKey) === "1") {
+        // Restaurar estado UI desde flags de BD
+        if (isFinished) {
             setSessionFinished(true);
-            // También restaurar showRecount si había un reconteo activo
-            const recountKey = `cyclic_recount__${storeId}__${date}`;
-            if (sessionStorage.getItem(recountKey) === "1") {
+            if (isRecountDone) {
+                setRecountFinished(true);
+                setShowRecount(false);
+            } else if (isRecounting) {
+                setRecountFinished(false);
                 setShowRecount(true);
+            } else {
+                setRecountFinished(false);
+                setShowRecount(false);
             }
         } else {
-            // Si cambiaron de fecha o es un nuevo día, resetear estado
             setSessionFinished(false);
+            setRecountFinished(false);
             setShowRecount(false);
         }
     }
@@ -604,7 +654,8 @@ export default function DashboardPage() {
         const assignIds = rows.map(r => r.id);
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
-        const enriched = cRows.map(c => {
+        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
+        const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
@@ -689,7 +740,7 @@ export default function DashboardPage() {
                 cntAll = cntAll.concat((cChunk || []) as CountRecord[]);
             }
 
-            const counts = cntAll;
+            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_"));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -911,13 +962,14 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  OPERARIO — RECONTEO
     // ════════════════════════════════════════════════════════
-    function openRecountPanel() {
+    async function openRecountPanel() {
         setShowRecount(true);
+        setRecountFinished(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
-        // Persistir que el operario está en reconteo
-        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.setItem(recountKey, "1");
+        // Escribir flag __recount_started__ en BD
+        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
+        await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
         clearMessage();
     }
 
@@ -975,17 +1027,18 @@ export default function DashboardPage() {
     }
 
     async function finalizeRecount() {
-        // Marcar todos los conteos con diferencia del día como "Corregido"
+        // Marcar todos los conteos reales con diferencia como "Corregido"
         const difCounts = counts.filter(c => c.difference !== 0);
         if (difCounts.length > 0) {
             await supabase.from("cyclic_counts")
                 .update({ status: "Corregido", updated_at: new Date().toISOString() })
                 .in("id", difCounts.map(c => c.id));
         }
-        // Limpiar flag de reconteo activo
-        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.removeItem(recountKey);
+        // Actualizar flags en BD: reconteo terminado
+        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
+        await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", true);
         setShowRecount(false);
+        setRecountFinished(true);
         setRecountAssignment(null);
         showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
         loadOperarioData(selectedStoreId, selectedDate);
@@ -1526,7 +1579,7 @@ export default function DashboardPage() {
             }
 
             const countMap = new Map<string, CountRecord[]>();
-            for (const c of allCounts) {
+            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_"))) {
                 if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
                 countMap.get(c.assignment_id)!.push(c);
             }
@@ -1765,7 +1818,7 @@ export default function DashboardPage() {
                     {isValOrAdm && (
                         <div className="flex gap-1 flex-wrap">
                             {isAdmin && (
-                                <button onClick={() => { setActiveTab("operario"); if (!selectedStoreId && allStores.length > 0) { const first = allStores.filter(s => s.is_active)[0]; if (first) { setSelectedStoreId(first.id); loadOperarioData(first.id, selectedDate); } } }} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "operario" ? "bg-amber-600 text-white border-amber-600" : "bg-white text-slate-700 border-slate-300"}`}>Operario</button>
+                                <button onClick={() => { setActiveTab("operario"); if (!selectedStoreId && allStores.filter(s=>s.is_active).length > 0) { const first = allStores.filter(s => s.is_active)[0]; setSelectedStoreId(first.id); loadOperarioData(first.id, selectedDate); } }} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "operario" ? "bg-amber-600 text-white border-amber-600" : "bg-white text-slate-700 border-slate-300"}`}>Operario</button>
                             )}
                             <button onClick={() => setActiveTab("validador")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "validador" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-700 border-slate-300"}`}>Validador</button>
                             {isAdmin && (
@@ -1830,7 +1883,7 @@ export default function DashboardPage() {
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
 
-                            {/* Botones Terminar conteo / Iniciar reconteo */}
+                            {/* Botones de estado: Terminar conteo / Reconteo / Sesión finalizada */}
                             {!sessionFinished ? (
                                 <div className="flex gap-2 mt-2">
                                     <button
@@ -1840,7 +1893,30 @@ export default function DashboardPage() {
                                         <span>🏁</span> Terminar conteo
                                     </button>
                                 </div>
+                            ) : recountFinished ? (
+                                /* Estado: reconteo ya finalizado */
+                                <div className="space-y-2 mt-2">
+                                    <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
+                                        <span>✅</span> Sesión finalizada — reconteo completado
+                                    </div>
+                                    <button
+                                        onClick={async () => {
+                                            if (confirm("¿Deseas volver a modificar el reconteo?")) {
+                                                await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
+                                                await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
+                                                setRecountFinished(false);
+                                                setShowRecount(true);
+                                                setRecountAssignment(null);
+                                                setRecountRows([{ location: "", qty: "" }]);
+                                            }
+                                        }}
+                                        className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        ✏️ ¿Deseas modificar?
+                                    </button>
+                                </div>
                             ) : (
+                                /* Estado: conteo finalizado, puede iniciar reconteo */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
@@ -1927,12 +2003,8 @@ export default function DashboardPage() {
 
                     {myAssignments.length === 0 && (
                         <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
-                            {!selectedStoreId
-                                ? "Selecciona una tienda para ver los conteos."
-                                : isAdmin
-                                    ? "No hay productos asignados para esta tienda y fecha."
-                                    : <>No hay productos asignados para hoy en tu tienda.<br />Contacta al validador para que asigne los conteos.</>
-                            }
+                            No hay productos asignados para hoy en tu tienda.
+                            <br />Contacta al validador para que asigne los conteos.
                         </div>
                     )}
                 </>
@@ -1950,9 +2022,8 @@ export default function DashboardPage() {
                                 <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
                             </div>
                             <button
-                                onClick={() => {
-                                    const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-                                    localStorage.removeItem(recountKey);
+                                onClick={async () => {
+                                    await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
                                     setShowRecount(false);
                                     setRecountAssignment(null);
                                 }}
@@ -2104,7 +2175,6 @@ export default function DashboardPage() {
                                 <button
                                     className="px-4 py-3 rounded-2xl border font-semibold text-sm text-slate-700 bg-white hover:bg-slate-50 transition flex items-center gap-2"
                                     onClick={() => loadValidadorData(valStoreId, valDate)}
-                                    title="Actualizar datos"
                                 >
                                     🔄 Actualizar
                                 </button>
@@ -2736,6 +2806,11 @@ export default function DashboardPage() {
                                     <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
                                         {dashLoading ? "Cargando..." : "🔍 Consultar"}
                                     </button>
+                                    {dashData.length > 0 && (
+                                        <button onClick={loadDashboard} disabled={dashLoading} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700 flex items-center gap-2 disabled:opacity-50">
+                                            🔄 Actualizar
+                                        </button>
+                                    )}
                                     {dashData.length > 0 && (
                                         <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
                                     )}
