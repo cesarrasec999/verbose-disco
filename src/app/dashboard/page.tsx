@@ -764,19 +764,29 @@ export default function DashboardPage() {
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
 
-            // ── Paso 3: traer counts en chunks ────────────────────────
+            // ── Paso 3: traer counts paginando (evitar límite 1000 de Supabase) ──
             const asgnIds = asgnData.map((a: any) => a.id);
+            const asgnIdSet = new Set<string>(asgnIds);
             let cntAll: CountRecord[] = [];
-            const CHUNK_CNT = 900;
+            const CHUNK_CNT = 500;
+            const CNT_PAGE_SIZE = 1000;
             for (let i = 0; i < asgnIds.length; i += CHUNK_CNT) {
-                const { data: cChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", asgnIds.slice(i, i + CHUNK_CNT));
-                cntAll = cntAll.concat((cChunk || []) as CountRecord[]);
+                const chunk = asgnIds.slice(i, i + CHUNK_CNT);
+                let cntPage = 0;
+                while (true) {
+                    const { data: cChunk } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(cntPage * CNT_PAGE_SIZE, (cntPage + 1) * CNT_PAGE_SIZE - 1);
+                    if (!cChunk || cChunk.length === 0) break;
+                    cntAll = cntAll.concat(cChunk as CountRecord[]);
+                    if (cChunk.length < CNT_PAGE_SIZE) break;
+                    cntPage++;
+                }
             }
 
-            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_"));
+            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -799,9 +809,13 @@ export default function DashboardPage() {
                 dayGroups.get(k)!.asgns.push(a);
             }
 
+            // Construir mapa de assignment_id → asignación para lookups O(1)
+            const asgnById = new Map<string, any>();
+            for (const a of asgnData as any[]) asgnById.set(a.id, a);
+
             // Asignar conteos a sus grupos por día
             for (const c of counts) {
-                const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                const asgn = asgnById.get(c.assignment_id);
                 if (!asgn) continue;
                 const k = dayKeyFn(asgn);
                 dayGroups.get(k)?.cnts.push(c);
@@ -817,13 +831,13 @@ export default function DashboardPage() {
                     if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
                 }
                 for (const c of g.cnts) {
-                    const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                    const asgn = asgnById.get(c.assignment_id);
                     if (!asgn) continue;
                     const entry = prodMap.get(asgn.product_id);
                     if (entry) entry.total_counted += Number(c.counted_quantity);
                 }
                 const countedPids = new Set(g.cnts.map(c => {
-                    const a = (asgnData as any[]).find((x: any) => x.id === c.assignment_id);
+                    const a = asgnById.get(c.assignment_id);
                     return a?.product_id;
                 }));
                 let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
@@ -840,7 +854,7 @@ export default function DashboardPage() {
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
                     if (countedPids.has(pid)) {
-                        const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id && a.assigned_date === g.date);
+                        const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
                         const costo = parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = entry.total_counted - entry.system_stock;
                         difValDay += diff * costo;
@@ -1707,11 +1721,23 @@ export default function DashboardPage() {
             });
 
             const asgnIds = asgnData.map((a: any) => a.id);
-            const CHUNK = 900;
+            const EXP_CNT_CHUNK = 500;
+            const EXP_CNT_PAGE = 1000;
             let allCounts: CountRecord[] = [];
-            for (let i = 0; i < asgnIds.length; i += CHUNK) {
-                const { data: cData } = await supabase.from("cyclic_counts").select("*").in("assignment_id", asgnIds.slice(i, i + CHUNK));
-                allCounts = allCounts.concat((cData || []) as CountRecord[]);
+            for (let i = 0; i < asgnIds.length; i += EXP_CNT_CHUNK) {
+                const chunk = asgnIds.slice(i, i + EXP_CNT_CHUNK);
+                let cntPage = 0;
+                while (true) {
+                    const { data: cData } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(cntPage * EXP_CNT_PAGE, (cntPage + 1) * EXP_CNT_PAGE - 1);
+                    if (!cData || cData.length === 0) break;
+                    allCounts = allCounts.concat(cData as CountRecord[]);
+                    if (cData.length < EXP_CNT_PAGE) break;
+                    cntPage++;
+                }
             }
 
             const countMap = new Map<string, CountRecord[]>();
@@ -1792,6 +1818,10 @@ export default function DashboardPage() {
             // Agrupar assignments por tienda+día+producto
             type DayProdEntry = { stock: number; costo: number; totalContado: number; tienConteo: boolean; };
             const dayProdMap = new Map<string, DayProdEntry>();
+
+            // Construir mapa de assignment_id → asignación para exportGlobal
+            const expAsgnById = new Map<string, any>();
+            for (const a of asgnData as any[]) expAsgnById.set(a.id, a);
 
             for (const asg of asgnData as any[]) {
                 const dayKey = `${asg.store_id}__${asg.assigned_date}`;
