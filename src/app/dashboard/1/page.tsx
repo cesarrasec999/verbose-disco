@@ -631,26 +631,52 @@ export default function DashboardPage() {
                 dateFilter = { from, to };
             }
 
-            // Traer asignaciones del período con costo (paginado)
-            const PAGE_SIZE = 1000;
-            let asgnAll: any[] = [];
-            let asgnPage = 0;
+            // ── Paso 1: traer assignments paginado (sin join) ──────────
+            const DASH_PAGE = 1000;
+            let asgnRaw: any[] = [];
+            let dashP = 0;
             while (true) {
-                const { data: chunk } = await supabase
+                const { data: chunk, error: eA } = await supabase
                     .from("cyclic_assignments")
-                    .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(cost)")
+                    .select("id, store_id, product_id, system_stock, assigned_date, cost")
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
-                    .range(asgnPage * PAGE_SIZE, (asgnPage + 1) * PAGE_SIZE - 1);
+                    .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
+                if (eA) { console.error("loadDashboard asgn error", eA); break; }
                 if (!chunk || chunk.length === 0) break;
-                asgnAll = asgnAll.concat(chunk);
-                if (chunk.length < PAGE_SIZE) break;
-                asgnPage++;
+                asgnRaw = asgnRaw.concat(chunk);
+                if (chunk.length < DASH_PAGE) break;
+                dashP++;
             }
-            const asgnData = asgnAll;
 
-            if (!asgnData || asgnData.length === 0) { setDashData([]); setDashLoading(false); return; }
+            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); return; }
 
+            // ── Paso 2: traer stores y products por IDs únicos ────────
+            const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
+            const uniqueProdIds  = [...new Set(asgnRaw.map((a: any) => a.product_id))];
+
+            let storesList: any[] = [];
+            for (let i = 0; i < uniqueStoreIds.length; i += 500) {
+                const { data: sc } = await supabase.from("stores").select("id, name").in("id", uniqueStoreIds.slice(i, i+500));
+                storesList = storesList.concat(sc || []);
+            }
+            const storeMap = new Map(storesList.map((s: any) => [s.id, s.name]));
+
+            let prodsList: any[] = [];
+            for (let i = 0; i < uniqueProdIds.length; i += 500) {
+                const { data: pc } = await supabase.from("cyclic_products").select("id, cost").in("id", uniqueProdIds.slice(i, i+500));
+                prodsList = prodsList.concat(pc || []);
+            }
+            const prodCostMap = new Map(prodsList.map((p: any) => [p.id, parseCost(p.cost)]));
+
+            // Enriquecer assignments
+            const asgnData = asgnRaw.map((a: any) => ({
+                ...a,
+                stores: { name: storeMap.get(a.store_id) || a.store_id },
+                cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
+            }));
+
+            // ── Paso 3: traer counts en chunks ────────────────────────
             const asgnIds = asgnData.map((a: any) => a.id);
             let cntAll: CountRecord[] = [];
             const CHUNK_CNT = 900;
@@ -1439,29 +1465,57 @@ export default function DashboardPage() {
                 from = dashRangeFrom; to = dashRangeTo;
             }
 
-            // Traer assignments del período con join a productos y tiendas (paginado)
+            // ── Paso 1: assignments paginado sin joins ────────────────
             const EXP_PAGE = 1000;
-            let asgnAll2: any[] = [];
+            let asgnRaw2: any[] = [];
             let expPage = 0;
             while (true) {
-                const { data: expChunk } = await supabase
+                const { data: expChunk, error: eExp } = await supabase
                     .from("cyclic_assignments")
-                    .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(sku, description, unit, cost, barcode)")
+                    .select("id, store_id, product_id, system_stock, assigned_date, cost")
                     .gte("assigned_date", from)
                     .lte("assigned_date", to)
                     .order("assigned_date")
                     .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
+                if (eExp) { console.error("exportGlobal asgn error", eExp); break; }
                 if (!expChunk || expChunk.length === 0) break;
-                asgnAll2 = asgnAll2.concat(expChunk);
+                asgnRaw2 = asgnRaw2.concat(expChunk);
                 if (expChunk.length < EXP_PAGE) break;
                 expPage++;
             }
-            const asgnData = asgnAll2;
 
-            if (!asgnData || asgnData.length === 0) {
+            if (asgnRaw2.length === 0) {
                 showMessage("No hay asignaciones en ese período.", "error");
                 setGlobalExportLoading(false); return;
             }
+
+            // ── Paso 2: stores y products por IDs únicos ─────────────
+            const expStoreIds = [...new Set(asgnRaw2.map((a: any) => a.store_id))];
+            const expProdIds  = [...new Set(asgnRaw2.map((a: any) => a.product_id))];
+
+            let expStores: any[] = [];
+            for (let i = 0; i < expStoreIds.length; i += 500) {
+                const { data: sc } = await supabase.from("stores").select("id, name").in("id", expStoreIds.slice(i, i+500));
+                expStores = expStores.concat(sc || []);
+            }
+            const expStoreMap = new Map(expStores.map((s: any) => [s.id, s.name]));
+
+            let expProds: any[] = [];
+            for (let i = 0; i < expProdIds.length; i += 500) {
+                const { data: pc } = await supabase.from("cyclic_products").select("id, sku, description, unit, cost").in("id", expProdIds.slice(i, i+500));
+                expProds = expProds.concat(pc || []);
+            }
+            const expProdMap = new Map(expProds.map((p: any) => [p.id, p]));
+
+            // Enriquecer assignments
+            const asgnData = asgnRaw2.map((a: any) => {
+                const prod = expProdMap.get(a.product_id) || {};
+                return {
+                    ...a,
+                    stores: { name: expStoreMap.get(a.store_id) || a.store_id },
+                    cyclic_products: prod,
+                };
+            });
 
             const asgnIds = asgnData.map((a: any) => a.id);
             const CHUNK = 900;
