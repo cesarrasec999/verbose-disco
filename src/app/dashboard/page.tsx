@@ -318,6 +318,7 @@ export default function DashboardPage() {
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
+    const [recountFinished, setRecountFinished] = useState(false);
     const [editUserStoreId, setEditUserStoreId] = useState("");
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
@@ -494,9 +495,13 @@ export default function DashboardPage() {
     function confirmFinishSession() {
         setShowFinishModal(false);
         setSessionFinished(true);
-        // Persistir en sessionStorage con clave por tienda+fecha para sobrevivir recargas
+        setRecountFinished(false);
+        // Persistir en localStorage con clave por tienda+fecha (sobrevive F5 y recargas)
         const key = `cyclic_finished__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.setItem(key, "1");
+        localStorage.setItem(key, "1");
+        // Limpiar flags de reconteo por si los había
+        localStorage.removeItem(`cyclic_recount__${selectedStoreId}__${selectedDate}`);
+        localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
         showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
     }
 
@@ -565,18 +570,30 @@ export default function DashboardPage() {
         });
         setCounts(enriched);
 
-        // Restaurar estado de "sesión finalizada" desde sessionStorage
-        const finishedKey = `cyclic_finished__${storeId}__${date}`;
-        if (sessionStorage.getItem(finishedKey) === "1") {
+        // Restaurar estado desde localStorage (persiste F5 y recarga de página)
+        const finishedKey    = `cyclic_finished__${storeId}__${date}`;
+        const recountKey     = `cyclic_recount__${storeId}__${date}`;
+        const recountDoneKey = `cyclic_recount_done__${storeId}__${date}`;
+
+        const isFinished     = localStorage.getItem(finishedKey) === "1";
+        const isRecounting   = localStorage.getItem(recountKey) === "1";
+        const isRecountDone  = localStorage.getItem(recountDoneKey) === "1";
+
+        if (isFinished) {
             setSessionFinished(true);
-            // También restaurar showRecount si había un reconteo activo
-            const recountKey = `cyclic_recount__${storeId}__${date}`;
-            if (sessionStorage.getItem(recountKey) === "1") {
+            if (isRecountDone) {
+                setRecountFinished(true);
+                setShowRecount(false);
+            } else if (isRecounting) {
+                setRecountFinished(false);
                 setShowRecount(true);
+            } else {
+                setRecountFinished(false);
+                setShowRecount(false);
             }
         } else {
-            // Si cambiaron de fecha o es un nuevo día, resetear estado
             setSessionFinished(false);
+            setRecountFinished(false);
             setShowRecount(false);
         }
     }
@@ -913,11 +930,13 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     function openRecountPanel() {
         setShowRecount(true);
+        setRecountFinished(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
-        // Persistir que el operario está en reconteo
+        // Persistir en localStorage que el operario está en reconteo
         const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.setItem(recountKey, "1");
+        localStorage.setItem(recountKey, "1");
+        localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
         clearMessage();
     }
 
@@ -982,10 +1001,13 @@ export default function DashboardPage() {
                 .update({ status: "Corregido", updated_at: new Date().toISOString() })
                 .in("id", difCounts.map(c => c.id));
         }
-        // Limpiar flag de reconteo activo
-        const recountKey = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
-        sessionStorage.removeItem(recountKey);
+        // Persistir estado finalizado en localStorage
+        const recountDoneKey = `cyclic_recount_done__${selectedStoreId}__${selectedDate}`;
+        const recountKey     = `cyclic_recount__${selectedStoreId}__${selectedDate}`;
+        localStorage.setItem(recountDoneKey, "1");
+        localStorage.removeItem(recountKey);
         setShowRecount(false);
+        setRecountFinished(true);
         setRecountAssignment(null);
         showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
         loadOperarioData(selectedStoreId, selectedDate);
@@ -1033,22 +1055,6 @@ export default function DashboardPage() {
         const { error } = await supabase.from("cyclic_assignments").delete().eq("id", asgn.id);
         if (error) { showMessage("Error al eliminar: " + error.message, "error"); return; }
         showMessage("✅ Asignación eliminada.", "success");
-        loadValidadorData(valStoreId, valDate);
-    }
-
-    async function removeAllAssignments() {
-        if (!valStoreId || !valDate) return;
-        if (!confirm(`¿Eliminar TODAS las asignaciones de esta tienda para ${valDate}? Esta acción también eliminará los conteos asociados y no se puede deshacer.`)) return;
-        const ids = assignments.map(a => a.id);
-        if (ids.length === 0) return;
-        const CHUNK = 900;
-        for (let i = 0; i < ids.length; i += CHUNK) {
-            await supabase.from("cyclic_counts").delete().in("assignment_id", ids.slice(i, i + CHUNK));
-        }
-        for (let i = 0; i < ids.length; i += CHUNK) {
-            await supabase.from("cyclic_assignments").delete().in("id", ids.slice(i, i + CHUNK));
-        }
-        showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
         loadValidadorData(valStoreId, valDate);
     }
 
@@ -1741,19 +1747,14 @@ export default function DashboardPage() {
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        // ERI: solo tiendas que cumplieron
-        const cumplieronRows = filteredDashData.filter(r => r.cumplio);
-        const totalOkCumplio = cumplieronRows.reduce((s, r) => s + r.total_ok, 0);
-        const totalCodesCumplio = cumplieronRows.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = totalCodesCumplio > 0 ? Math.round((totalOkCumplio / totalCodesCumplio) * 100) : 0;
+        const totalOk = filteredDashData.reduce((s, r) => s + r.total_ok, 0);
+        const totalCodes = filteredDashData.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = totalCodes > 0 ? Math.round((totalOk / totalCodes) * 100) : 0;
         const cumplidos = filteredDashData.filter(r => r.cumplio).length;
-        // Duración: siempre promedio de las que tienen datos
-        const rowsConDur = filteredDashData.filter(r => r.duracion_min !== null);
-        const avgDurMin = rowsConDur.length > 0
-            ? Math.round(rowsConDur.reduce((s, r) => s + (r.duracion_min || 0), 0) / rowsConDur.length)
+        const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
+            ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
             : null;
-        // Dif. valorizada: solo tiendas que cumplieron
-        const totalDifVal = cumplieronRows.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
         return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
     }, [filteredDashData]);
 
@@ -1838,7 +1839,7 @@ export default function DashboardPage() {
                                 <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
                             </div>
 
-                            {/* Botones Terminar conteo / Iniciar reconteo */}
+                            {/* Botones de estado: Terminar conteo / Reconteo / Sesión finalizada */}
                             {!sessionFinished ? (
                                 <div className="flex gap-2 mt-2">
                                     <button
@@ -1848,7 +1849,31 @@ export default function DashboardPage() {
                                         <span>🏁</span> Terminar conteo
                                     </button>
                                 </div>
+                            ) : recountFinished ? (
+                                /* Estado: reconteo ya finalizado */
+                                <div className="space-y-2 mt-2">
+                                    <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
+                                        <span>✅</span> Sesión finalizada — reconteo completado
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            if (confirm("¿Deseas volver a modificar el reconteo?")) {
+                                                // Reabrir panel de reconteo
+                                                localStorage.removeItem(`cyclic_recount_done__${selectedStoreId}__${selectedDate}`);
+                                                localStorage.setItem(`cyclic_recount__${selectedStoreId}__${selectedDate}`, "1");
+                                                setRecountFinished(false);
+                                                setShowRecount(true);
+                                                setRecountAssignment(null);
+                                                setRecountRows([{ location: "", qty: "" }]);
+                                            }
+                                        }}
+                                        className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        ✏️ ¿Deseas modificar?
+                                    </button>
+                                </div>
                             ) : (
+                                /* Estado: conteo finalizado, puede iniciar reconteo */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
@@ -2105,6 +2130,15 @@ export default function DashboardPage() {
                                 <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
                             </div>
                             {valStoreId && (
+                                <button
+                                    className="px-4 py-3 rounded-2xl border font-semibold text-sm text-slate-700 bg-white hover:bg-slate-50 transition flex items-center gap-2"
+                                    onClick={() => loadValidadorData(valStoreId, valDate)}
+                                    title="Actualizar datos"
+                                >
+                                    🔄 Actualizar
+                                </button>
+                            )}
+                            {valStoreId && (
                                 <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
                                     <span>Asignados: <b>{resumenStats.total}</b></span>
                                     <span>·</span>
@@ -2224,15 +2258,7 @@ export default function DashboardPage() {
                             {/* Lista asignados del día */}
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                                        <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
-                                        <button
-                                            className="px-4 py-2 rounded-2xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition"
-                                            onClick={removeAllAssignments}
-                                        >
-                                            🗑 Quitar todos
-                                        </button>
-                                    </div>
+                                    <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-96 overflow-auto">
                                             <table className="w-full text-sm">
@@ -2758,7 +2784,7 @@ export default function DashboardPage() {
                                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
-                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
+                                        <div className="text-xs text-slate-500 mt-1">ERI promedio</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-green-700">
@@ -2773,7 +2799,7 @@ export default function DashboardPage() {
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                        <div className="text-xs text-slate-500 mt-1">Duración promedio</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
@@ -2794,7 +2820,7 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        {dashPeriod === "rango" && <th className="p-2 border">Fecha</th>}
+                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <th className="p-2 border">Fecha</th>}
                                                         <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
@@ -2813,7 +2839,7 @@ export default function DashboardPage() {
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            {dashPeriod === "rango" && <td className="p-2 border text-center text-xs">{r.date}</td>}
+                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <td className="p-2 border text-center text-xs">{r.date}</td>}
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
