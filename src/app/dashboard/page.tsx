@@ -1126,35 +1126,82 @@ export default function DashboardPage() {
         loadValidadorData(valStoreId, valDate);
     }
 
+    async function removeAllAssignments() {
+        if (assignments.length === 0) return;
+        if (!confirm(`¿Eliminar TODAS las ${assignments.length} asignaciones de este día? También se eliminarán todos los conteos asociados.`)) return;
+        const ids = assignments.map(a => a.id);
+        const CHUNK = 400;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            await supabase.from("cyclic_counts").delete().in("assignment_id", ids.slice(i, i + CHUNK));
+            await supabase.from("cyclic_assignments").delete().in("id", ids.slice(i, i + CHUNK));
+        }
+        showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
+        loadValidadorData(valStoreId, valDate);
+    }
+
     async function uploadBulkAssign() {
         if (!bulkAssignFile) { showMessage("Selecciona un archivo Excel.", "error"); return; }
-        if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha antes.", "error"); return; }
+        const isMultiStore = !valStoreId; // Si no hay tienda seleccionada, asumimos multi-tienda
+        if (!valDate) { showMessage("Selecciona una fecha antes.", "error"); return; }
         try {
             const data = await bulkAssignFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            // Leer como array de arrays para acceso por posición (A=0, B=1, C=2, D=3, E=4)
             const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, header: 1 });
-            // La fila 1 es el encabezado — detectar posiciones reales por nombre de columna
             const headerRow = allRows[0] || [];
-            // Buscar columnas por nombre (flexible) o usar posición por defecto
+
+            // Detectar si hay columna de tienda en la posición A
+            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "local"].some(n => String(h || "").toLowerCase().includes(n)));
+
             const findCol = (names: string[]): number => {
                 const idx = headerRow.findIndex((h: any) => names.some(n => String(h || "").toLowerCase().includes(n.toLowerCase())));
                 return idx >= 0 ? idx : -1;
             };
-            const colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
-            const colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
-            const colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
+
+            let colTienda = -1;
+            let colCodigo: number, colCosto: number, colStock: number;
+
+            if (hasStoreCol) {
+                colTienda = findCol(["tienda", "store", "almacen", "local"]);
+                const offset = colTienda >= 0 ? 1 : 0;
+                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : offset;
+                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : offset + 3;
+                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : offset + 4;
+            } else {
+                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
+                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
+                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
+            }
+
+            // Precargar mapa de tiendas por nombre
+            const storeNameMap = new Map<string, string>(); // nombre normalizado → id
+            for (const s of allStores) {
+                storeNameMap.set(s.name.trim().toLowerCase(), s.id);
+            }
 
             const dataRows = allRows.slice(1);
-            let ok = 0, updated = 0, skip = 0, notFound = 0;
+            let ok = 0, updated = 0, skip = 0, notFound = 0, storeNotFound = 0;
+
             for (let i = 0; i < dataRows.length; i++) {
                 const row = dataRows[i];
                 setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
+
+                // Determinar tienda objetivo
+                let targetStoreId = valStoreId;
+                if (hasStoreCol && colTienda >= 0) {
+                    const rawStoreName = String(row[colTienda] || "").trim();
+                    if (!rawStoreName) { skip++; continue; }
+                    const foundStoreId = storeNameMap.get(rawStoreName.toLowerCase());
+                    if (!foundStoreId) { storeNotFound++; continue; }
+                    targetStoreId = foundStoreId;
+                }
+                if (!targetStoreId) { skip++; continue; }
+
                 const rawSku = cleanCode(String(row[colCodigo] || ""));
                 const stock = Number(row[colStock] || 0);
                 const cost = parseCost(row[colCosto]);
                 if (!rawSku) { skip++; continue; }
+
                 let prod: Product | null = null;
                 const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
                 if (byS) prod = byS as Product;
@@ -1164,32 +1211,29 @@ export default function DashboardPage() {
                 }
                 if (!prod) { notFound++; continue; }
 
-                // Siempre actualizar el costo en el maestro si viene en el Excel
                 if (cost > 0) {
                     await supabase.from("cyclic_products").update({ cost, updated_at: new Date().toISOString() }).eq("id", prod.id);
                 }
 
                 const { data: existing } = await supabase.from("cyclic_assignments")
-                    .select("id").eq("store_id", valStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
+                    .select("id").eq("store_id", targetStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
                 if (existing) {
-                    // Actualizar stock y costo aunque ya exista el assignment
-                    await supabase.from("cyclic_assignments").update({
-                        system_stock: stock,
-                    }).eq("id", existing.id);
+                    await supabase.from("cyclic_assignments").update({ system_stock: stock }).eq("id", existing.id);
                     updated++;
                     continue;
                 }
 
                 await supabase.from("cyclic_assignments").insert({
-                    store_id: valStoreId, product_id: prod.id, system_stock: stock,
+                    store_id: targetStoreId, product_id: prod.id, system_stock: stock,
                     assigned_date: valDate, assigned_by: user?.id,
                 });
                 ok++;
             }
             setBulkAssignProgress(null);
-            showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.`, ok > 0 || updated > 0 ? "success" : "error");
+            const storeMsg = storeNotFound > 0 ? ` ${storeNotFound} tiendas no encontradas.` : "";
+            showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, ok > 0 || updated > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
-            loadValidadorData(valStoreId, valDate);
+            if (valStoreId) loadValidadorData(valStoreId, valDate);
         } catch (e: any) {
             setBulkAssignProgress(null);
             showMessage("Error leyendo el archivo: " + e.message, "error");
@@ -1519,19 +1563,27 @@ export default function DashboardPage() {
     }
 
     function exportDashboard() {
-        const rows = filteredDashData.map(r => ({
-            TIENDA: r.store_name,
-            ASIGNADOS: r.total_asignados,
-            OK: r.total_ok,
-            SOBRANTES: r.total_sobrantes,
-            FALTANTES: r.total_faltantes,
-            DIF_VALORIZADA: r.dif_valorizada || 0,
-            ERI_PCT: r.eri,
-            CUMPLIMIENTO_PCT: r.cumplimiento_pct,
-            DIAS_CUMPLIDOS: r.dias_cumplidos,
-            DIAS_TOTALES: r.dias_totales,
-            DURACION: r.duracion_min !== null ? formatDuration(r.duracion_min) : "—",
-        }));
+        const rows = filteredDashData.map(r => {
+            const base: any = {
+                TIENDA: r.store_name,
+                FECHA: r.date,
+                ASIGNADOS: r.total_asignados,
+                OK: r.total_ok,
+                SOBRANTES: r.total_sobrantes,
+                FALTANTES: r.total_faltantes,
+                DIF_VALORIZADA: r.dif_valorizada || 0,
+                ERI_PCT: r.eri,
+                CUMPLIMIENTO_PCT: r.cumplimiento_pct,
+                DIAS_CUMPLIDOS: r.dias_cumplidos,
+                DIAS_TOTALES: r.dias_totales,
+            };
+            if (dashPeriod === "dia" || dashPeriod === "rango") {
+                base.HORA_INICIO = r.hora_inicio ? formatDateTime(r.hora_inicio) : "—";
+                base.HORA_FIN = r.hora_fin ? formatDateTime(r.hora_fin) : "—";
+            }
+            base.DURACION = r.duracion_min !== null ? formatDuration(r.duracion_min) : "—";
+            return base;
+        });
         const ws = XLSX.utils.json_to_sheet(rows);
         const wbk = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wbk, ws, "Dashboard");
@@ -1683,11 +1735,71 @@ export default function DashboardPage() {
                 });
             }
 
-            exportRows.sort((a, b) => (a.TIENDA + a.FECHA + a.SKU).localeCompare(b.TIENDA + b.FECHA + b.SKU));
+            exportRows.sort((a, b) => (a.TIENDA + a.FECHA_ASIGNACION + a.SKU).localeCompare(b.TIENDA + b.FECHA_ASIGNACION + b.SKU));
+
+            // Hoja 2: Resumen por tienda+día (igual que el dashboard)
+            type DaySum = { tienda: string; fecha: string; asignados: number; ok: number; sobrantes: number; faltantes: number; difVal: number; cumplio: boolean; duracion: number | null; horaInicio: string | null; horaFin: string | null; };
+            const daySumMap = new Map<string, DaySum>();
+
+            for (const asg of asgnData as any[]) {
+                const k = `${asg.store_id}__${asg.assigned_date}`;
+                const tienda = asg.stores?.name || asg.store_id;
+                if (!daySumMap.has(k)) {
+                    daySumMap.set(k, { tienda, fecha: asg.assigned_date, asignados: 0, ok: 0, sobrantes: 0, faltantes: 0, difVal: 0, cumplio: false, duracion: null, horaInicio: null, horaFin: null });
+                }
+                const ds = daySumMap.get(k)!;
+                const prod = asg.cyclic_products || {};
+                const costo = parseCost(prod.cost);
+                const stock = Number(asg.system_stock || 0);
+                const cnts = (countMap.get(asg.id) || []);
+                const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
+                const tienConteo = cnts.length > 0;
+                const diff = tienConteo ? totalContado - stock : -stock;
+
+                ds.asignados++;
+                if (!tienConteo) { ds.faltantes++; }
+                else if (diff === 0) { ds.ok++; }
+                else if (diff > 0) { ds.sobrantes++; }
+                else { ds.faltantes++; }
+                if (tienConteo) { ds.difVal += diff * costo; }
+
+                // Horas
+                for (const c of cnts) {
+                    const t = new Date(c.counted_at).getTime();
+                    if (!isNaN(t)) {
+                        if (ds.horaInicio === null || t < new Date(ds.horaInicio).getTime()) ds.horaInicio = c.counted_at;
+                        if (ds.horaFin === null || t > new Date(ds.horaFin).getTime()) ds.horaFin = c.counted_at;
+                    }
+                }
+            }
+
+            for (const ds of daySumMap.values()) {
+                ds.cumplio = ds.faltantes === 0;
+                if (ds.horaInicio && ds.horaFin) {
+                    ds.duracion = Math.round((new Date(ds.horaFin).getTime() - new Date(ds.horaInicio).getTime()) / 60000);
+                }
+            }
+
+            const summaryRows = Array.from(daySumMap.values()).sort((a, b) => (a.tienda + a.fecha).localeCompare(b.tienda + b.fecha)).map(ds => ({
+                TIENDA: ds.tienda,
+                FECHA: ds.fecha,
+                ASIGNADOS: ds.asignados,
+                OK: ds.ok,
+                SOBRANTES: ds.sobrantes,
+                FALTANTES: ds.faltantes,
+                DIF_VALORIZADA: ds.difVal,
+                ERI_PCT: ds.asignados > 0 && ds.cumplio ? Math.round((ds.ok / ds.asignados) * 100) : 0,
+                CUMPLIMIENTO: ds.cumplio ? "SI" : "NO",
+                HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "—",
+                HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "—",
+                DURACION: ds.duracion !== null ? formatDuration(ds.duracion) : "—",
+            }));
 
             const ws = XLSX.utils.json_to_sheet(exportRows);
+            const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
             const wbk = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wbk, ws, "Global");
+            XLSX.utils.book_append_sheet(wbk, wsSummary, "Resumen Dashboard");
+            XLSX.utils.book_append_sheet(wbk, ws, "Detalle Códigos");
             const fname = `ciclicos_global_${from}_${to}.xlsx`;
             XLSX.writeFile(wbk, fname);
             showMessage(`✅ Excel global descargado: ${exportRows.length} filas.`, "success");
@@ -2328,7 +2440,10 @@ export default function DashboardPage() {
                                 <div className="border-t pt-4 space-y-3">
                                     <div>
                                         <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                        <p className="text-xs text-slate-400 mt-0.5">Columnas por posición: <b>A: Código</b>, <b>B: Descripción</b>, <b>C: Unidad</b>, <b>D: Costo</b>, <b>E: Stock</b>. La fila 1 (encabezado) se ignora automáticamente.</p>
+                                        <p className="text-xs text-slate-400 mt-0.5">
+                                            <b>Formato estándar:</b> <b>A: Código</b>, <b>B: Descripción</b>, <b>C: Unidad</b>, <b>D: Costo</b>, <b>E: Stock</b>. La fila 1 (encabezado) se ignora.<br/>
+                                            <b>Formato multi-tienda:</b> <b>A: Tienda</b>, <b>B: Código</b>, <b>C: Descripción</b>, <b>D: Unidad</b>, <b>E: Costo</b>, <b>F: Stock</b>. Asigna a varias tiendas en un solo archivo (el nombre de tienda debe coincidir exactamente).
+                                        </p>
                                     </div>
                                     {bulkAssignProgress && (
                                         <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1">
@@ -2354,7 +2469,15 @@ export default function DashboardPage() {
                             {/* Lista asignados del día */}
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                                        <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                        <button
+                                            className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
+                                            onClick={removeAllAssignments}
+                                        >
+                                            🗑️ Quitar todos
+                                        </button>
+                                    </div>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-96 overflow-auto">
                                             <table className="w-full text-sm">
@@ -2891,7 +3014,7 @@ export default function DashboardPage() {
                                         <div className="text-3xl font-bold text-green-700">
                                             {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
                                         </div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : "Cumplimiento día"}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
                                         <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
@@ -2900,7 +3023,7 @@ export default function DashboardPage() {
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : dashPeriod === "rango" ? "Duración promedio" : "Duración"}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
@@ -2929,11 +3052,11 @@ export default function DashboardPage() {
                                                         <th className="p-2 border text-red-700">Dif. Val.</th>
                                                         <th className="p-2 border">ERI %</th>
                                                         <th className="p-2 border">Cumplimiento</th>
-                                                        {dashPeriod === "dia" && <>
+                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <>
                                                             <th className="p-2 border">Hora inicio</th>
                                                             <th className="p-2 border">Hora fin</th>
                                                         </>}
-                                                        <th className="p-2 border">Duración</th>
+                                                        <th className="p-2 border">{dashPeriod === "dia" ? "Duración" : "Duración prom."}</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
@@ -2959,7 +3082,7 @@ export default function DashboardPage() {
                                                                     <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
                                                                 )}
                                                             </td>
-                                                            {dashPeriod === "dia" && <>
+                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
                                                             </>}
