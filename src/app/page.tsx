@@ -13,7 +13,8 @@ export default function LoginPage() {
     setLoading(true); setError("");
     const { data, error } = await supabase
       .from("cyclic_users").select("*")
-      .eq("username", username.trim()).eq("password", password)
+      .eq("username", username.trim().toLowerCase())
+      .eq("password", password)
       .eq("is_active", true).maybeSingle();
     if (error || !data) {
       setError("Usuario o contraseña incorrectos.");

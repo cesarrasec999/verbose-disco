@@ -20,6 +20,7 @@ type CyclicUser = {
     store_id: string | null;
     can_access_all_stores: boolean;
     is_active: boolean;
+    whatsapp?: string | null;
 };
 
 type Store = {
@@ -311,8 +312,10 @@ export default function DashboardPage() {
     const [newRole, setNewRole]               = useState<Role>("Operario");
     const [newUserStoreId, setNewUserStoreId] = useState("");
     const [newUserAllStores, setNewUserAllStores] = useState(false);
+    const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
+    const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
 
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
@@ -1082,6 +1085,25 @@ export default function DashboardPage() {
     }
 
     // ════════════════════════════════════════════════════════
+    //  WHATSAPP — ALERTA AL OPERARIO
+    // ════════════════════════════════════════════════════════
+    async function sendWhatsappAlert(storeId: string, date: string, codigosCount: number) {
+        // Buscar el operario activo asignado a esa tienda
+        const { data: operario } = await supabase
+            .from("cyclic_users")
+            .select("full_name, whatsapp")
+            .eq("store_id", storeId)
+            .eq("role", "Operario")
+            .eq("is_active", true)
+            .maybeSingle();
+        if (!operario || !operario.whatsapp) return; // sin número, no hacer nada
+        const storeName = allStores.find(s => s.id === storeId)?.name || "tu tienda";
+        const mensaje = `Hola ${operario.full_name} 👋, se te han asignado *${codigosCount} código${codigosCount !== 1 ? "s" : ""}* para contar en *${storeName}* el día *${date}*. Por favor ingresa a la app para realizar el conteo cíclico. ¡Gracias!`;
+        const url = `https://wa.me/${operario.whatsapp}?text=${encodeURIComponent(mensaje)}`;
+        window.open(url, "_blank");
+    }
+
+    // ════════════════════════════════════════════════════════
     //  VALIDADOR — ASIGNAR PRODUCTOS
     // ════════════════════════════════════════════════════════
     async function searchProductsForAssign(text: string) {
@@ -1234,6 +1256,24 @@ export default function DashboardPage() {
             showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, ok > 0 || updated > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId) loadValidadorData(valStoreId, valDate);
+            // Preguntar si enviar alertas WhatsApp
+            if ((ok > 0 || updated > 0) && confirm("¿Deseas enviar alertas de WhatsApp a los operarios de las tiendas asignadas?")) {
+                // Obtener tiendas únicas asignadas en esta carga
+                const storeIdsAsignados = isMultiStore
+                    ? [...new Set(dataRows.map((row: any) => {
+                        const rawN = String(row[colTienda] || "").trim();
+                        return storeNameMap.get(rawN.toLowerCase()) || "";
+                    }).filter(Boolean))]
+                    : (valStoreId ? [valStoreId] : []);
+                for (const sid of storeIdsAsignados) {
+                    // Contar cuántos se asignaron a esa tienda en esta carga
+                    const { count: cnt } = await supabase.from("cyclic_assignments")
+                        .select("id", { count: "exact", head: true })
+                        .eq("store_id", sid)
+                        .eq("assigned_date", valDate);
+                    await sendWhatsappAlert(sid, valDate, cnt || 0);
+                }
+            }
         } catch (e: any) {
             setBulkAssignProgress(null);
             showMessage("Error leyendo el archivo: " + e.message, "error");
@@ -1409,16 +1449,18 @@ export default function DashboardPage() {
         if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
         if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
+        const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
         const { error } = await supabase.from("cyclic_users").insert({
             username: newUsername.trim().toLowerCase(), password: newPassword.trim(),
             full_name: newFullName.trim(), role: newRole,
             store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
             can_access_all_stores: newRole !== "Operario",
             is_active: true,
+            whatsapp: wsp || null,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId("");
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp("");
         loadAllUsers();
     }
 
@@ -1429,15 +1471,18 @@ export default function DashboardPage() {
         setEditUserAllStores(u.can_access_all_stores);
         setEditUserActive(u.is_active);
         setEditUserPassword("");
+        setEditUserWhatsapp(u.whatsapp || "");
     }
 
     async function saveEditUser() {
         if (!editingUser) return;
+        const wsp = editUserWhatsapp.trim().replace(/\D/g, "");
         const updates: any = {
             role: editUserRole,
             store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
             can_access_all_stores: editUserRole !== "Operario",
             is_active: editUserActive,
+            whatsapp: wsp || null,
             updated_at: new Date().toISOString(),
         };
         if (editUserPassword.trim()) updates.password = editUserPassword.trim();
@@ -2505,12 +2550,21 @@ export default function DashboardPage() {
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
-                                        <button
-                                            className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
-                                            onClick={removeAllAssignments}
-                                        >
-                                            🗑️ Quitar todos
-                                        </button>
+                                        <div className="flex gap-2 flex-wrap">
+                                            <button
+                                                className="px-4 py-2 rounded-2xl bg-green-500 text-white font-semibold text-xs hover:bg-green-600 transition"
+                                                onClick={() => sendWhatsappAlert(valStoreId, valDate, assignments.length)}
+                                                title="Enviar alerta WhatsApp al operario de esta tienda"
+                                            >
+                                                📲 Avisar por WhatsApp
+                                            </button>
+                                            <button
+                                                className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
+                                                onClick={removeAllAssignments}
+                                            >
+                                                🗑️ Quitar todos
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-96 overflow-auto">
@@ -2904,6 +2958,7 @@ export default function DashboardPage() {
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 — con código de país)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
                                     <div>
                                         <label className="text-xs text-slate-500 block mb-1">Rol</label>
                                         <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
@@ -2934,6 +2989,7 @@ export default function DashboardPage() {
                                                 <th className="p-2 border text-left">Nombre</th>
                                                 <th className="p-2 border">Rol</th>
                                                 <th className="p-2 border">Tienda</th>
+                                                <th className="p-2 border">WhatsApp</th>
                                                 <th className="p-2 border">Estado</th>
                                                 <th className="p-2 border">Acción</th>
                                             </tr>
@@ -2949,6 +3005,11 @@ export default function DashboardPage() {
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
                                                         </td>
                                                         <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "—")}</td>
+                                                        <td className="p-2 border text-center text-xs">
+                                                            {u.whatsapp
+                                                                ? <a href={`https://wa.me/${u.whatsapp}`} target="_blank" rel="noreferrer" className="text-green-600 font-semibold hover:underline">📲 {u.whatsapp}</a>
+                                                                : <span className="text-slate-400">—</span>}
+                                                        </td>
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
                                                         </td>
@@ -3339,6 +3400,10 @@ export default function DashboardPage() {
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
