@@ -764,20 +764,24 @@ export default function DashboardPage() {
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
 
-            // ── Paso 3: traer counts paginando (evitar límite 1000 de Supabase) ──
+            // ── Paso 3: traer counts por store_id + rango de fechas ─────────
+            // Usamos store_id y rango de assigned_date para evitar el límite de Supabase con .in() de miles de IDs
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSet = new Set<string>(asgnIds);
+            const cntStoreIds = uniqueStoreIds; // ya calculado arriba
             let cntAll: CountRecord[] = [];
-            const CHUNK_CNT = 500;
+            const CNT_STORE_CHUNK = 50;
             const CNT_PAGE_SIZE = 1000;
-            for (let i = 0; i < asgnIds.length; i += CHUNK_CNT) {
-                const chunk = asgnIds.slice(i, i + CHUNK_CNT);
+            for (let i = 0; i < cntStoreIds.length; i += CNT_STORE_CHUNK) {
+                const storeChunk = cntStoreIds.slice(i, i + CNT_STORE_CHUNK);
                 let cntPage = 0;
                 while (true) {
                     const { data: cChunk } = await supabase
                         .from("cyclic_counts")
                         .select("*")
-                        .in("assignment_id", chunk)
+                        .in("store_id", storeChunk)
+                        .gte("counted_at", dateFilter.from + "T00:00:00.000Z")
+                        .lte("counted_at", (() => { const d = new Date(dateFilter.to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
                         .range(cntPage * CNT_PAGE_SIZE, (cntPage + 1) * CNT_PAGE_SIZE - 1);
                     if (!cChunk || cChunk.length === 0) break;
                     cntAll = cntAll.concat(cChunk as CountRecord[]);
@@ -785,7 +789,7 @@ export default function DashboardPage() {
                     cntPage++;
                 }
             }
-
+            // Filtrar flags de sesión y solo los que pertenecen a assignments del período
             const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
@@ -1720,18 +1724,22 @@ export default function DashboardPage() {
                 };
             });
 
+            // Traer counts por store_id + rango de fechas (evita límite de .in() con miles de IDs)
             const asgnIds = asgnData.map((a: any) => a.id);
-            const EXP_CNT_CHUNK = 500;
+            const asgnIdSetExp = new Set<string>(asgnIds);
+            const EXP_CNT_STORE_CHUNK = 50;
             const EXP_CNT_PAGE = 1000;
             let allCounts: CountRecord[] = [];
-            for (let i = 0; i < asgnIds.length; i += EXP_CNT_CHUNK) {
-                const chunk = asgnIds.slice(i, i + EXP_CNT_CHUNK);
+            for (let i = 0; i < expStoreIds.length; i += EXP_CNT_STORE_CHUNK) {
+                const storeChunk = expStoreIds.slice(i, i + EXP_CNT_STORE_CHUNK);
                 let cntPage = 0;
                 while (true) {
                     const { data: cData } = await supabase
                         .from("cyclic_counts")
                         .select("*")
-                        .in("assignment_id", chunk)
+                        .in("store_id", storeChunk)
+                        .gte("counted_at", from + "T00:00:00.000Z")
+                        .lte("counted_at", (() => { const d = new Date(to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
                         .range(cntPage * EXP_CNT_PAGE, (cntPage + 1) * EXP_CNT_PAGE - 1);
                     if (!cData || cData.length === 0) break;
                     allCounts = allCounts.concat(cData as CountRecord[]);
@@ -1741,7 +1749,7 @@ export default function DashboardPage() {
             }
 
             const countMap = new Map<string, CountRecord[]>();
-            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_"))) {
+            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSetExp.has(c.assignment_id))) {
                 if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
                 countMap.get(c.assignment_id)!.push(c);
             }
