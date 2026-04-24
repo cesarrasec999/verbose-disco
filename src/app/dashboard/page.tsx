@@ -726,6 +726,8 @@ export default function DashboardPage() {
                     .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
+                    .order("assigned_date")
+                    .order("id")
                     .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
                 if (eA) { console.error("loadDashboard asgn error", eA); showMessage("Error BD assignments: " + JSON.stringify(eA), "error"); break; }
                 if (!chunk || chunk.length === 0) break;
@@ -1483,7 +1485,6 @@ export default function DashboardPage() {
             can_access_all_stores: editUserRole !== "Operario",
             is_active: editUserActive,
             whatsapp: wsp || null,
-            updated_at: new Date().toISOString(),
         };
         if (editUserPassword.trim()) updates.password = editUserPassword.trim();
         const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
@@ -1662,6 +1663,7 @@ export default function DashboardPage() {
                     .gte("assigned_date", from)
                     .lte("assigned_date", to)
                     .order("assigned_date")
+                    .order("id")
                     .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
                 if (eExp) { console.error("exportGlobal asgn error", eExp); showMessage("Error BD export: " + JSON.stringify(eExp), "error"); break; }
                 if (!expChunk || expChunk.length === 0) break;
