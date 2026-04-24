@@ -835,7 +835,7 @@ export default function DashboardPage() {
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
                     if (countedPids.has(pid)) {
-                        const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
+                        const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id && a.assigned_date === g.date);
                         const costo = parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = entry.total_counted - entry.system_stock;
                         difValDay += diff * costo;
@@ -1738,38 +1738,72 @@ export default function DashboardPage() {
             exportRows.sort((a, b) => (a.TIENDA + a.FECHA_ASIGNACION + a.SKU).localeCompare(b.TIENDA + b.FECHA_ASIGNACION + b.SKU));
 
             // Hoja 2: Resumen por tienda+día (igual que el dashboard)
+            // Primero agrupar por tienda+día+producto para sumar todas las ubicaciones antes de comparar con stock
             type DaySum = { tienda: string; fecha: string; asignados: number; ok: number; sobrantes: number; faltantes: number; difVal: number; cumplio: boolean; duracion: number | null; horaInicio: string | null; horaFin: string | null; };
             const daySumMap = new Map<string, DaySum>();
 
+            // Agrupar assignments por tienda+día+producto
+            type DayProdEntry = { stock: number; costo: number; totalContado: number; tienConteo: boolean; };
+            const dayProdMap = new Map<string, DayProdEntry>();
+
             for (const asg of asgnData as any[]) {
-                const k = `${asg.store_id}__${asg.assigned_date}`;
+                const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+                const prodKey = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
                 const tienda = asg.stores?.name || asg.store_id;
-                if (!daySumMap.has(k)) {
-                    daySumMap.set(k, { tienda, fecha: asg.assigned_date, asignados: 0, ok: 0, sobrantes: 0, faltantes: 0, difVal: 0, cumplio: false, duracion: null, horaInicio: null, horaFin: null });
+
+                if (!daySumMap.has(dayKey)) {
+                    daySumMap.set(dayKey, { tienda, fecha: asg.assigned_date, asignados: 0, ok: 0, sobrantes: 0, faltantes: 0, difVal: 0, cumplio: false, duracion: null, horaInicio: null, horaFin: null });
                 }
-                const ds = daySumMap.get(k)!;
+
                 const prod = asg.cyclic_products || {};
                 const costo = parseCost(prod.cost);
                 const stock = Number(asg.system_stock || 0);
                 const cnts = (countMap.get(asg.id) || []);
                 const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
                 const tienConteo = cnts.length > 0;
-                const diff = tienConteo ? totalContado - stock : -stock;
 
-                ds.asignados++;
-                if (!tienConteo) { ds.faltantes++; }
-                else if (diff === 0) { ds.ok++; }
-                else if (diff > 0) { ds.sobrantes++; }
-                else { ds.faltantes++; }
-                if (tienConteo) { ds.difVal += diff * costo; }
+                if (!dayProdMap.has(prodKey)) {
+                    dayProdMap.set(prodKey, { stock, costo: costo > 0 ? costo : 0, totalContado: 0, tienConteo: false });
+                }
+                const dp = dayProdMap.get(prodKey)!;
+                dp.totalContado += totalContado;
+                if (tienConteo) dp.tienConteo = true;
+                if (costo > 0 && dp.costo === 0) dp.costo = costo;
 
-                // Horas
+                // Horas: recopilar sobre el daySumMap
+                const ds = daySumMap.get(dayKey)!;
                 for (const c of cnts) {
                     const t = new Date(c.counted_at).getTime();
                     if (!isNaN(t)) {
                         if (ds.horaInicio === null || t < new Date(ds.horaInicio).getTime()) ds.horaInicio = c.counted_at;
                         if (ds.horaFin === null || t > new Date(ds.horaFin).getTime()) ds.horaFin = c.counted_at;
                     }
+                }
+            }
+
+            // Ahora calcular métricas por día usando los totales agrupados por producto
+            // Primero identificar qué productos pertenecen a cada día
+            const dayKeySet = new Map<string, Set<string>>(); // dayKey → set of prodKeys
+            for (const prodKey of dayProdMap.keys()) {
+                // prodKey = "storeId__date__productId"
+                const parts = prodKey.split("__");
+                const dayKey = `${parts[0]}__${parts[1]}`;
+                if (!dayKeySet.has(dayKey)) dayKeySet.set(dayKey, new Set());
+                dayKeySet.get(dayKey)!.add(prodKey);
+            }
+
+            for (const [dayKey, prodKeys] of dayKeySet) {
+                const ds = daySumMap.get(dayKey);
+                if (!ds) continue;
+                for (const prodKey of prodKeys) {
+                    const dp = dayProdMap.get(prodKey)!;
+                    const diff = dp.tienConteo ? dp.totalContado - dp.stock : -dp.stock;
+                    ds.asignados++;
+                    if (!dp.tienConteo) { ds.faltantes++; }
+                    else if (diff === 0) { ds.ok++; }
+                    else if (diff > 0) { ds.sobrantes++; }
+                    else { ds.faltantes++; }
+                    if (dp.tienConteo) { ds.difVal += diff * dp.costo; }
                 }
             }
 
