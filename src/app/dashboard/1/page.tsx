@@ -631,10 +631,10 @@ export default function DashboardPage() {
                 dateFilter = { from, to };
             }
 
-            // Traer asignaciones del período
+            // Traer asignaciones del período con costo
             const { data: asgnData } = await supabase
                 .from("cyclic_assignments")
-                .select("id, store_id, product_id, system_stock, assigned_date, stores(name)")
+                .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(cost)")
                 .gte("assigned_date", dateFilter.from)
                 .lte("assigned_date", dateFilter.to);
 
@@ -698,7 +698,7 @@ export default function DashboardPage() {
                 }));
                 let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
                 for (const [pid, entry] of prodMap) {
-                    if (!countedPids.has(pid)) { noContados++; continue; }
+                    if (!countedPids.has(pid)) { noContados++; faltantes++; continue; }
                     const diff = entry.total_counted - entry.system_stock;
                     if (diff === 0) ok++;
                     else if (diff > 0) sobrantes++;
@@ -706,15 +706,14 @@ export default function DashboardPage() {
                 }
                 const total = prodMap.size;
                 const eri = total > 0 ? Math.round((ok / total) * 100) : 0;
-                // Dif. valorizada: obtener costo de cada producto desde assignments
+                // Dif. valorizada: usar costo del assignment o del producto maestro
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
-                    const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
-                    const cost = 0; // cost comes from cyclic_products, not directly here — calculated in export
-                    void cost; void asgForPid;
                     if (countedPids.has(pid)) {
+                        const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
+                        const costo = parseCost(asgForPid?.cost) > 0 ? parseCost(asgForPid?.cost) : parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = entry.total_counted - entry.system_stock;
-                        difValDay += diff * 0; // placeholder; real cost fetched in exportGlobal
+                        difValDay += diff * costo;
                     }
                 }
 
@@ -725,13 +724,13 @@ export default function DashboardPage() {
                 const horaFin = allTs.length > 0 ? new Date(Math.max(...allTs)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
                 const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
-                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: 0 });
+                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
             const rows: DashboardRow[] = [];
 
-            if (dashPeriod === "dia") {
-                // Vista día: una fila por tienda+día
+            if (dashPeriod === "dia" || dashPeriod === "rango") {
+                // Vista día/rango: una fila por tienda+día
                 for (const d of dayMetrics) {
                     rows.push({
                         store_id: d.store_id,
@@ -771,7 +770,7 @@ export default function DashboardPage() {
                     const totalSobrantes = days.reduce((s, d) => s + d.sobrantes, 0);
                     const totalFaltantes = days.reduce((s, d) => s + d.faltantes, 0);
                     const totalNoContados = days.reduce((s, d) => s + d.noContados, 0);
-                    const avgEri = days.length > 0 ? Math.round(days.reduce((s, d) => s + d.eri, 0) / days.length) : 0;
+                    const eriMes = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
                     const avgDur = days.filter(d => d.duracion !== null).length > 0
                         ? Math.round(days.filter(d => d.duracion !== null).reduce((s, d) => s + (d.duracion || 0), 0) / days.filter(d => d.duracion !== null).length)
                         : null;
@@ -785,7 +784,7 @@ export default function DashboardPage() {
                         total_faltantes: totalFaltantes,
                         total_no_contados: totalNoContados,
                         dif_valorizada: days.reduce((s, d) => s + d.difVal, 0),
-                        eri: avgEri,
+                        eri: eriMes,
                         cumplio: diasCumplidos === diasTotales,
                         cumplimiento_pct: cumplimientoPct,
                         dias_cumplidos: diasCumplidos,
@@ -1391,25 +1390,21 @@ export default function DashboardPage() {
     function exportDashboard() {
         const rows = filteredDashData.map(r => ({
             TIENDA: r.store_name,
-            FECHA: r.date,
             ASIGNADOS: r.total_asignados,
             OK: r.total_ok,
             SOBRANTES: r.total_sobrantes,
             FALTANTES: r.total_faltantes,
-            NO_CONTADOS: r.total_no_contados,
             DIF_VALORIZADA: r.dif_valorizada || 0,
             ERI_PCT: r.eri,
             CUMPLIMIENTO_PCT: r.cumplimiento_pct,
             DIAS_CUMPLIDOS: r.dias_cumplidos,
             DIAS_TOTALES: r.dias_totales,
-            HORA_INICIO: r.hora_inicio ? formatDateTime(r.hora_inicio) : "—",
-            HORA_FIN: r.hora_fin ? formatDateTime(r.hora_fin) : "—",
-            DURACION_MIN: r.duracion_min ?? "—",
+            DURACION: r.duracion_min !== null ? formatDuration(r.duracion_min) : "—",
         }));
         const ws = XLSX.utils.json_to_sheet(rows);
         const wbk = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wbk, ws, "Dashboard");
-        XLSX.writeFile(wbk, `dashboard_ciclicos_${dashPeriod === "dia" ? dashDate : dashMonth}.xlsx`);
+        XLSX.writeFile(wbk, `dashboard_ciclicos_${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom}_${dashRangeTo}`}.xlsx`);
     }
 
     // ════════════════════════════════════════════════════════
@@ -1650,10 +1645,11 @@ export default function DashboardPage() {
         return dashData.filter(r => r.store_id === dashStoreFilter);
     }, [dashData, dashStoreFilter]);
 
-    // Métricas promedio para vista mes
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        const avgEri = Math.round(filteredDashData.reduce((s, r) => s + r.eri, 0) / filteredDashData.length);
+        const totalOk = filteredDashData.reduce((s, r) => s + r.total_ok, 0);
+        const totalCodes = filteredDashData.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = totalCodes > 0 ? Math.round((totalOk / totalCodes) * 100) : 0;
         const cumplidos = filteredDashData.filter(r => r.cumplio).length;
         const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
             ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
@@ -2691,33 +2687,30 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        <th className="p-2 border">{dashPeriod === "mes" ? "Día" : "Fecha"}</th>
+                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <th className="p-2 border">Fecha</th>}
                                                         <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
                                                         <th className="p-2 border text-red-600">Faltantes</th>
-                                                        <th className="p-2 border text-amber-600">No contados</th>
                                                         <th className="p-2 border text-red-700">Dif. Val.</th>
                                                         <th className="p-2 border">ERI %</th>
-                                                        <th className="p-2 border">{dashPeriod === "mes" ? "Cumplimiento mes" : "Cumplimiento día"}</th>
+                                                        <th className="p-2 border">Cumplimiento</th>
                                                         {dashPeriod === "dia" && <>
                                                             <th className="p-2 border">Hora inicio</th>
                                                             <th className="p-2 border">Hora fin</th>
-                                                            <th className="p-2 border">Duración</th>
                                                         </>}
-                                                        {dashPeriod === "mes" && <th className="p-2 border">Duración</th>}
+                                                        <th className="p-2 border">Duración</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            <td className="p-2 border text-center text-xs">{r.date}</td>
+                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <td className="p-2 border text-center text-xs">{r.date}</td>}
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
                                                             <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
-                                                            <td className="p-2 border text-center text-amber-600 font-semibold">{r.total_no_contados}</td>
                                                             <td className="p-2 border text-center text-xs font-semibold">
                                                                 <span className={(r.dif_valorizada || 0) < 0 ? "text-red-600" : (r.dif_valorizada || 0) > 0 ? "text-blue-700" : "text-green-700"}>{formatMoney(r.dif_valorizada || 0)}</span>
                                                             </td>
@@ -2735,9 +2728,8 @@ export default function DashboardPage() {
                                                             {dashPeriod === "dia" && <>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                             </>}
-                                                            {dashPeriod === "mes" && <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>}
+                                                            <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                         </tr>
                                                     ))}
                                                 </tbody>

@@ -631,22 +631,38 @@ export default function DashboardPage() {
                 dateFilter = { from, to };
             }
 
-            // Traer asignaciones del período con costo
-            const { data: asgnData } = await supabase
-                .from("cyclic_assignments")
-                .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(cost)")
-                .gte("assigned_date", dateFilter.from)
-                .lte("assigned_date", dateFilter.to);
+            // Traer asignaciones del período con costo (paginado)
+            const PAGE_SIZE = 1000;
+            let asgnAll: any[] = [];
+            let asgnPage = 0;
+            while (true) {
+                const { data: chunk } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(cost)")
+                    .gte("assigned_date", dateFilter.from)
+                    .lte("assigned_date", dateFilter.to)
+                    .range(asgnPage * PAGE_SIZE, (asgnPage + 1) * PAGE_SIZE - 1);
+                if (!chunk || chunk.length === 0) break;
+                asgnAll = asgnAll.concat(chunk);
+                if (chunk.length < PAGE_SIZE) break;
+                asgnPage++;
+            }
+            const asgnData = asgnAll;
 
             if (!asgnData || asgnData.length === 0) { setDashData([]); setDashLoading(false); return; }
 
             const asgnIds = asgnData.map((a: any) => a.id);
-            const { data: cntData } = await supabase
-                .from("cyclic_counts")
-                .select("*")
-                .in("assignment_id", asgnIds);
+            let cntAll: CountRecord[] = [];
+            const CHUNK_CNT = 900;
+            for (let i = 0; i < asgnIds.length; i += CHUNK_CNT) {
+                const { data: cChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", asgnIds.slice(i, i + CHUNK_CNT));
+                cntAll = cntAll.concat((cChunk || []) as CountRecord[]);
+            }
 
-            const counts = (cntData || []) as CountRecord[];
+            const counts = cntAll;
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -1423,13 +1439,24 @@ export default function DashboardPage() {
                 from = dashRangeFrom; to = dashRangeTo;
             }
 
-            // Traer assignments del período con join a productos y tiendas
-            const { data: asgnData } = await supabase
-                .from("cyclic_assignments")
-                .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(sku, description, unit, cost, barcode)")
-                .gte("assigned_date", from)
-                .lte("assigned_date", to)
-                .order("assigned_date");
+            // Traer assignments del período con join a productos y tiendas (paginado)
+            const EXP_PAGE = 1000;
+            let asgnAll2: any[] = [];
+            let expPage = 0;
+            while (true) {
+                const { data: expChunk } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(sku, description, unit, cost, barcode)")
+                    .gte("assigned_date", from)
+                    .lte("assigned_date", to)
+                    .order("assigned_date")
+                    .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
+                if (!expChunk || expChunk.length === 0) break;
+                asgnAll2 = asgnAll2.concat(expChunk);
+                if (expChunk.length < EXP_PAGE) break;
+                expPage++;
+            }
+            const asgnData = asgnAll2;
 
             if (!asgnData || asgnData.length === 0) {
                 showMessage("No hay asignaciones en ese período.", "error");
@@ -1456,7 +1483,7 @@ export default function DashboardPage() {
                 tienda: string; fecha: string; sku: string; descripcion: string; unidad: string;
                 costo: number; stock_sistema: number; total_contado: number;
                 diferencia: number; dif_valorizada: number; estado: string;
-                ubicaciones: string; usuarios: string; hora_ultimo: string;
+                cumplio: string; fecha_asignacion: string;
             }>();
 
             for (const asg of asgnData as any[]) {
@@ -1467,6 +1494,9 @@ export default function DashboardPage() {
                 const stock = Number(asg.system_stock || 0);
                 const cnts = countMap.get(asg.id) || [];
                 const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
+                // Determinar si cumplió: tiene al menos un conteo guardado (counted_at presente)
+                const tienConteo = cnts.length > 0;
+                const cumplioStr = tienConteo ? "SI" : "NO";
 
                 if (!resMap.has(key)) {
                     resMap.set(key, {
@@ -1476,18 +1506,15 @@ export default function DashboardPage() {
                         unidad: prod.unit || "",
                         costo, stock_sistema: stock,
                         total_contado: 0, diferencia: 0, dif_valorizada: 0,
-                        estado: "", ubicaciones: "", usuarios: "", hora_ultimo: "",
+                        estado: "", cumplio: cumplioStr,
+                        fecha_asignacion: asg.assigned_date,
                     });
                 }
                 const row = resMap.get(key)!;
                 row.total_contado += totalContado;
                 if (costo > 0 && row.costo === 0) row.costo = costo;
-                const ubics = cnts.map((c: any) => c.location).filter(Boolean);
-                const usrs = cnts.map((c: any) => c.user_name).filter(Boolean);
-                const ts = cnts.map((c: any) => c.counted_at).filter(Boolean).sort();
-                if (ubics.length) row.ubicaciones = [...new Set([...row.ubicaciones.split(",").filter(Boolean), ...ubics])].join(", ");
-                if (usrs.length) row.usuarios = [...new Set([...row.usuarios.split(",").filter(Boolean), ...usrs])].join(", ");
-                if (ts.length) row.hora_ultimo = ts[ts.length - 1];
+                // Si en cualquier assignment de ese producto hay conteo, marcarlo como cumplió
+                if (tienConteo) row.cumplio = "SI";
             }
 
             // Calcular diferencias finales
@@ -1495,23 +1522,20 @@ export default function DashboardPage() {
             for (const r of resMap.values()) {
                 r.diferencia = r.total_contado - r.stock_sistema;
                 r.dif_valorizada = r.diferencia * r.costo;
-                const contado = r.total_contado > 0 || r.hora_ultimo;
-                r.estado = !contado ? "NO CONTADO" : r.diferencia === 0 ? "OK" : r.diferencia > 0 ? "SOBRANTE" : "FALTANTE";
+                r.estado = r.cumplio === "NO" ? "NO CONTADO" : r.diferencia === 0 ? "OK" : r.diferencia > 0 ? "SOBRANTE" : "FALTANTE";
                 exportRows.push({
                     TIENDA: r.tienda,
-                    FECHA: r.fecha,
+                    FECHA_ASIGNACION: r.fecha_asignacion,
                     SKU: r.sku,
                     DESCRIPCION: r.descripcion,
                     UNIDAD: r.unidad,
                     COSTO: r.costo,
-                    STOCK_SISTEMA: r.stock_sistema,
-                    TOTAL_CONTADO: r.total_contado,
+                    STOCK: r.stock_sistema,
+                    CONTEO: r.total_contado,
                     DIFERENCIA: r.diferencia,
-                    DIF_VALORIZADA: r.dif_valorizada,
                     ESTADO: r.estado,
-                    UBICACIONES: r.ubicaciones,
-                    USUARIOS: r.usuarios,
-                    HORA_ULTIMO: r.hora_ultimo ? formatDateTime(r.hora_ultimo) : "",
+                    DIF_VALORIZADA: r.dif_valorizada,
+                    CUMPLIO: r.cumplio,
                 });
             }
 
