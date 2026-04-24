@@ -550,7 +550,7 @@ export default function DashboardPage() {
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             // Prioridad: cost del assignment > cost del producto maestro
-            cost: (a.cost != null && Number(a.cost) > 0) ? Number(a.cost) : (Number(a.cyclic_products?.cost) || 0),
+            cost: Number(a.cyclic_products?.cost) || 0,
         }));
         setAssignments(rows);
 
@@ -595,7 +595,7 @@ export default function DashboardPage() {
             sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             // Prioridad: cost del assignment > cost del producto maestro
-            cost: (a.cost != null && Number(a.cost) > 0) ? Number(a.cost) : (Number(a.cyclic_products?.cost) || 0),
+            cost: Number(a.cyclic_products?.cost) || 0,
             store_name: a.stores?.name,
         }));
         setAssignments(rows);
@@ -638,19 +638,17 @@ export default function DashboardPage() {
             while (true) {
                 const { data: chunk, error: eA } = await supabase
                     .from("cyclic_assignments")
-                    .select("id, store_id, product_id, system_stock, assigned_date, cost")
+                    .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
                     .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
                 if (eA) { console.error("loadDashboard asgn error", eA); showMessage("Error BD assignments: " + JSON.stringify(eA), "error"); break; }
-                console.log(`[DASH] página ${dashP}: ${chunk?.length ?? 0} assignments`);
                 if (!chunk || chunk.length === 0) break;
                 asgnRaw = asgnRaw.concat(chunk);
                 if (chunk.length < DASH_PAGE) break;
                 dashP++;
             }
 
-            console.log(`[DASH] Total assignments: ${asgnRaw.length}, período: ${dateFilter.from} → ${dateFilter.to}`);
             if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
 
             // ── Paso 2: traer stores y products por IDs únicos ────────
@@ -671,9 +669,10 @@ export default function DashboardPage() {
             }
             const prodCostMap = new Map(prodsList.map((p: any) => [p.id, parseCost(p.cost)]));
 
-            // Enriquecer assignments
+            // Enriquecer assignments (costo viene solo de cyclic_products)
             const asgnData = asgnRaw.map((a: any) => ({
                 ...a,
+                cost: 0, // columna no existe en cyclic_assignments, usar cyclic_products
                 stores: { name: storeMap.get(a.store_id) || a.store_id },
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
@@ -755,7 +754,7 @@ export default function DashboardPage() {
                 for (const [pid, entry] of prodMap) {
                     if (countedPids.has(pid)) {
                         const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
-                        const costo = parseCost(asgForPid?.cost) > 0 ? parseCost(asgForPid?.cost) : parseCost(asgForPid?.cyclic_products?.cost);
+                        const costo = parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = entry.total_counted - entry.system_stock;
                         difValDay += diff * costo;
                     }
@@ -1086,7 +1085,6 @@ export default function DashboardPage() {
                     // Actualizar stock y costo aunque ya exista el assignment
                     await supabase.from("cyclic_assignments").update({
                         system_stock: stock,
-                        cost: cost > 0 ? cost : undefined,
                     }).eq("id", existing.id);
                     updated++;
                     continue;
@@ -1094,7 +1092,6 @@ export default function DashboardPage() {
 
                 await supabase.from("cyclic_assignments").insert({
                     store_id: valStoreId, product_id: prod.id, system_stock: stock,
-                    cost: cost > 0 ? cost : null,
                     assigned_date: valDate, assigned_by: user?.id,
                 });
                 ok++;
@@ -1474,20 +1471,18 @@ export default function DashboardPage() {
             while (true) {
                 const { data: expChunk, error: eExp } = await supabase
                     .from("cyclic_assignments")
-                    .select("id, store_id, product_id, system_stock, assigned_date, cost")
+                    .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", from)
                     .lte("assigned_date", to)
                     .order("assigned_date")
                     .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
                 if (eExp) { console.error("exportGlobal asgn error", eExp); showMessage("Error BD export: " + JSON.stringify(eExp), "error"); break; }
-                console.log(`[EXPORT] página ${expPage}: ${expChunk?.length ?? 0} assignments`);
                 if (!expChunk || expChunk.length === 0) break;
                 asgnRaw2 = asgnRaw2.concat(expChunk);
                 if (expChunk.length < EXP_PAGE) break;
                 expPage++;
             }
 
-            console.log(`[EXPORT] Total assignments: ${asgnRaw2.length}, desde: ${from} hasta: ${to}`);
             if (asgnRaw2.length === 0) {
                 showMessage(`No hay asignaciones: ${from} → ${to}. Ver consola F12.`, "error");
                 setGlobalExportLoading(false); return;
@@ -1511,11 +1506,12 @@ export default function DashboardPage() {
             }
             const expProdMap = new Map(expProds.map((p: any) => [p.id, p]));
 
-            // Enriquecer assignments
+            // Enriquecer assignments (costo viene solo de cyclic_products)
             const asgnData = asgnRaw2.map((a: any) => {
                 const prod = expProdMap.get(a.product_id) || {};
                 return {
                     ...a,
+                    cost: 0, // columna no existe en cyclic_assignments, usar cyclic_products
                     stores: { name: expStoreMap.get(a.store_id) || a.store_id },
                     cyclic_products: prod,
                 };
@@ -1548,7 +1544,7 @@ export default function DashboardPage() {
                 const key = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
                 const prod = asg.cyclic_products || {};
                 const tienda = asg.stores?.name || asg.store_id;
-                const costo = parseCost(asg.cost) > 0 ? parseCost(asg.cost) : parseCost(prod.cost);
+                const costo = parseCost(prod.cost);
                 const stock = Number(asg.system_stock || 0);
                 const cnts = countMap.get(asg.id) || [];
                 const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);

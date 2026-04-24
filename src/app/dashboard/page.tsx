@@ -1036,6 +1036,22 @@ export default function DashboardPage() {
         loadValidadorData(valStoreId, valDate);
     }
 
+    async function removeAllAssignments() {
+        if (!valStoreId || !valDate) return;
+        if (!confirm(`¿Eliminar TODAS las asignaciones de esta tienda para ${valDate}? Esta acción también eliminará los conteos asociados y no se puede deshacer.`)) return;
+        const ids = assignments.map(a => a.id);
+        if (ids.length === 0) return;
+        const CHUNK = 900;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            await supabase.from("cyclic_counts").delete().in("assignment_id", ids.slice(i, i + CHUNK));
+        }
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            await supabase.from("cyclic_assignments").delete().in("id", ids.slice(i, i + CHUNK));
+        }
+        showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
+        loadValidadorData(valStoreId, valDate);
+    }
+
     async function uploadBulkAssign() {
         if (!bulkAssignFile) { showMessage("Selecciona un archivo Excel.", "error"); return; }
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha antes.", "error"); return; }
@@ -1725,14 +1741,19 @@ export default function DashboardPage() {
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        const totalOk = filteredDashData.reduce((s, r) => s + r.total_ok, 0);
-        const totalCodes = filteredDashData.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = totalCodes > 0 ? Math.round((totalOk / totalCodes) * 100) : 0;
+        // ERI: solo tiendas que cumplieron
+        const cumplieronRows = filteredDashData.filter(r => r.cumplio);
+        const totalOkCumplio = cumplieronRows.reduce((s, r) => s + r.total_ok, 0);
+        const totalCodesCumplio = cumplieronRows.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = totalCodesCumplio > 0 ? Math.round((totalOkCumplio / totalCodesCumplio) * 100) : 0;
         const cumplidos = filteredDashData.filter(r => r.cumplio).length;
-        const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
-            ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
+        // Duración: siempre promedio de las que tienen datos
+        const rowsConDur = filteredDashData.filter(r => r.duracion_min !== null);
+        const avgDurMin = rowsConDur.length > 0
+            ? Math.round(rowsConDur.reduce((s, r) => s + (r.duracion_min || 0), 0) / rowsConDur.length)
             : null;
-        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        // Dif. valorizada: solo tiendas que cumplieron
+        const totalDifVal = cumplieronRows.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
         return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
     }, [filteredDashData]);
 
@@ -2203,7 +2224,15 @@ export default function DashboardPage() {
                             {/* Lista asignados del día */}
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                                        <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                        <button
+                                            className="px-4 py-2 rounded-2xl bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition"
+                                            onClick={removeAllAssignments}
+                                        >
+                                            🗑 Quitar todos
+                                        </button>
+                                    </div>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-96 overflow-auto">
                                             <table className="w-full text-sm">
@@ -2729,7 +2758,7 @@ export default function DashboardPage() {
                                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
-                                        <div className="text-xs text-slate-500 mt-1">ERI promedio</div>
+                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-green-700">
@@ -2744,7 +2773,7 @@ export default function DashboardPage() {
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
+                                        <div className="text-xs text-slate-500 mt-1">Duración promedio</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
@@ -2765,7 +2794,7 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <th className="p-2 border">Fecha</th>}
+                                                        {dashPeriod === "rango" && <th className="p-2 border">Fecha</th>}
                                                         <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
@@ -2784,7 +2813,7 @@ export default function DashboardPage() {
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <td className="p-2 border text-center text-xs">{r.date}</td>}
+                                                            {dashPeriod === "rango" && <td className="p-2 border text-center text-xs">{r.date}</td>}
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
