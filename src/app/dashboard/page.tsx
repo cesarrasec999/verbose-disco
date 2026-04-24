@@ -373,6 +373,12 @@ export default function DashboardPage() {
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
                 if (savedValTab) setValTab(savedValTab);
 
+                // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
+                const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
+                const savedDate    = sessionStorage.getItem("cyclic_selected_date");
+                if (savedStoreId) setSelectedStoreId(savedStoreId);
+                if (savedDate)    setSelectedDate(savedDate);
+
             } catch {
                 setUser(parsed);
                 if (parsed.role === "Administrador") setActiveTab("admin");
@@ -392,12 +398,28 @@ export default function DashboardPage() {
             const sid = user.store_id || "";
             setSelectedStoreId(sid);
             if (sid) loadOperarioData(sid, selectedDate);
+        } else if (user.role === "Administrador") {
+            // Restaurar estado del operario para el admin si hay tienda guardada
+            const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
+            const savedDate    = sessionStorage.getItem("cyclic_selected_date");
+            if (savedStoreId) {
+                setSelectedStoreId(savedStoreId);
+                loadOperarioData(savedStoreId, savedDate || selectedDate);
+            }
         }
     }, [user]);
 
     useEffect(() => {
         if (activeTab) sessionStorage.setItem("cyclic_active_tab", activeTab);
     }, [activeTab]);
+
+    useEffect(() => {
+        if (selectedStoreId) sessionStorage.setItem("cyclic_selected_store", selectedStoreId);
+    }, [selectedStoreId]);
+
+    useEffect(() => {
+        if (selectedDate) sessionStorage.setItem("cyclic_selected_date", selectedDate);
+    }, [selectedDate]);
 
     useEffect(() => {
         if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
@@ -820,11 +842,10 @@ export default function DashboardPage() {
                     }
                 }
 
+                // Duración: desde el primer hasta el último código registrado (solo counted_at)
                 const timestamps = g.cnts.map(c => new Date(c.counted_at).getTime()).filter(t => !isNaN(t));
-                const updatedAt = g.cnts.map(c => new Date(c.updated_at).getTime()).filter(t => !isNaN(t));
-                const allTs = [...timestamps, ...updatedAt];
-                const horaInicio = allTs.length > 0 ? new Date(Math.min(...allTs)).toISOString() : null;
-                const horaFin = allTs.length > 0 ? new Date(Math.max(...allTs)).toISOString() : null;
+                const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
+                const horaFin = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
                 const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
@@ -1804,7 +1825,7 @@ export default function DashboardPage() {
         const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
             ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
             : null;
-        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalDifVal = filasQueCumplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
         return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
     }, [filteredDashData]);
 
@@ -1940,12 +1961,27 @@ export default function DashboardPage() {
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
                                     </div>
-                                    {difAssignments.length > 0 && (
+                                    {difAssignments.length > 0 ? (
                                         <button
                                             onClick={() => setShowRecountConfirmModal(true)}
                                             className="w-full py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
                                         >
                                             <span>🔄</span> Iniciar reconteo ({difAssignments.length} con diferencia)
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={async () => {
+                                                if (confirm("¿Estás seguro de que deseas modificar el conteo finalizado?")) {
+                                                    await clearSessionFlags(selectedStoreId, selectedDate);
+                                                    setSessionFinished(false);
+                                                    setRecountFinished(false);
+                                                    showMessage("Conteo reabierto para modificación.", "info");
+                                                    loadOperarioData(selectedStoreId, selectedDate);
+                                                }
+                                            }}
+                                            className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            ✏️ ¿Deseas modificar algo?
                                         </button>
                                     )}
                                 </div>
@@ -2859,8 +2895,8 @@ export default function DashboardPage() {
                                         <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.total}</div>
-                                        <div className="text-xs text-slate-500 mt-1">Registros en período</div>
+                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.cumplidos} <span className="text-slate-400 text-xl">/ {dashSummary.total}</span></div>
+                                        <div className="text-xs text-slate-500 mt-1">Cumplieron</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
