@@ -104,6 +104,7 @@ type DashboardRow = {
     total_sobrantes: number;
     total_faltantes: number;
     total_no_contados: number;
+    dif_valorizada: number;
     eri: number;
     cumplio: boolean;
     cumplimiento_pct: number; // % días cumplidos sobre total días con asignación (para vista mes)
@@ -142,6 +143,31 @@ function cleanCode(value: string | null | undefined): string {
 
 function normalizeText(v: string | null | undefined) {
     return String(v || "").trim().toLowerCase();
+}
+
+/** Parsea costos con miles: "1,140.95" → 1140.95; "1140.95" → 1140.95 */
+function parseCost(raw: any): number {
+    if (raw === null || raw === undefined || raw === "") return 0;
+    if (typeof raw === "number") return isNaN(raw) ? 0 : raw;
+    // Convertir a string y quitar separador de miles (coma o punto según locale)
+    let s = String(raw).trim().replace(/\s/g, "");
+    // Si tiene tanto coma como punto, la coma es separador de miles
+    if (s.includes(",") && s.includes(".")) {
+        // e.g. "1,140.95" → "1140.95"
+        s = s.replace(/,/g, "");
+    } else if (s.includes(",")) {
+        // Podría ser separador decimal (europeo) o de miles
+        const parts = s.split(",");
+        if (parts.length === 2 && parts[1].length <= 2) {
+            // "1140,95" → decimal europeo → "1140.95"
+            s = s.replace(",", ".");
+        } else {
+            // "1,140" → miles → "1140"
+            s = s.replace(/,/g, "");
+        }
+    }
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
 }
 
 function formatMoney(v: number) {
@@ -298,12 +324,15 @@ export default function DashboardPage() {
     const [editUserPassword, setEditUserPassword] = useState("");
 
     // ─── Dashboard ───────────────────────────────────────────
-    const [dashPeriod, setDashPeriod] = useState<"dia"|"mes">("dia");
+    const [dashPeriod, setDashPeriod] = useState<"dia"|"mes"|"rango">("dia");
     const [dashDate, setDashDate]     = useState(todayISO());
     const [dashMonth, setDashMonth]   = useState(todayISO().slice(0, 7));
+    const [dashRangeFrom, setDashRangeFrom] = useState(todayISO().slice(0,7) + "-01");
+    const [dashRangeTo, setDashRangeTo]     = useState(todayISO());
     const [dashData, setDashData]     = useState<DashboardRow[]>([]);
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
+    const [globalExportLoading, setGlobalExportLoading] = useState(false);
 
     // ════════════════════════════════════════════════════════
     //  INIT
@@ -592,6 +621,8 @@ export default function DashboardPage() {
             let dateFilter: { from: string; to: string };
             if (dashPeriod === "dia") {
                 dateFilter = { from: dashDate, to: dashDate };
+            } else if (dashPeriod === "rango") {
+                dateFilter = { from: dashRangeFrom, to: dashRangeTo };
             } else {
                 const [yr, mo] = dashMonth.split("-").map(Number);
                 const from = `${dashMonth}-01`;
@@ -647,7 +678,7 @@ export default function DashboardPage() {
             }
 
             // Calcular métricas por día
-            type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; };
+            type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; difVal: number; };
             const dayMetrics: DayMetrics[] = [];
 
             for (const [, g] of dayGroups) {
@@ -675,6 +706,18 @@ export default function DashboardPage() {
                 }
                 const total = prodMap.size;
                 const eri = total > 0 ? Math.round((ok / total) * 100) : 0;
+                // Dif. valorizada: obtener costo de cada producto desde assignments
+                let difValDay = 0;
+                for (const [pid, entry] of prodMap) {
+                    const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
+                    const cost = 0; // cost comes from cyclic_products, not directly here — calculated in export
+                    void cost; void asgForPid;
+                    if (countedPids.has(pid)) {
+                        const diff = entry.total_counted - entry.system_stock;
+                        difValDay += diff * 0; // placeholder; real cost fetched in exportGlobal
+                    }
+                }
+
                 const timestamps = g.cnts.map(c => new Date(c.counted_at).getTime()).filter(t => !isNaN(t));
                 const updatedAt = g.cnts.map(c => new Date(c.updated_at).getTime()).filter(t => !isNaN(t));
                 const allTs = [...timestamps, ...updatedAt];
@@ -682,7 +725,7 @@ export default function DashboardPage() {
                 const horaFin = allTs.length > 0 ? new Date(Math.max(...allTs)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
                 const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
-                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion });
+                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: 0 });
             }
 
             const rows: DashboardRow[] = [];
@@ -699,6 +742,7 @@ export default function DashboardPage() {
                         total_sobrantes: d.sobrantes,
                         total_faltantes: d.faltantes,
                         total_no_contados: d.noContados,
+                        dif_valorizada: d.difVal,
                         eri: d.eri,
                         cumplio: d.cumplio,
                         cumplimiento_pct: d.cumplio ? 100 : 0,
@@ -740,6 +784,7 @@ export default function DashboardPage() {
                         total_sobrantes: totalSobrantes,
                         total_faltantes: totalFaltantes,
                         total_no_contados: totalNoContados,
+                        dif_valorizada: days.reduce((s, d) => s + d.difVal, 0),
                         eri: avgEri,
                         cumplio: diasCumplidos === diasTotales,
                         cumplimiento_pct: cumplimientoPct,
@@ -976,7 +1021,7 @@ export default function DashboardPage() {
                 setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
                 const rawSku = cleanCode(String(row[colCodigo] || ""));
                 const stock = Number(row[colStock] || 0);
-                const cost = Number(row[colCosto] || 0);
+                const cost = parseCost(row[colCosto]);
                 if (!rawSku) { skip++; continue; }
                 let prod: Product | null = null;
                 const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
@@ -1080,7 +1125,7 @@ export default function DashboardPage() {
                 const desc = String(row[1] || "").trim();
                 if (!desc) continue;
                 const unit = String(row[2] || "NIU").trim() || "NIU";
-                const cost = Number(row[3]) || 0;
+                const cost = parseCost(row[3]);
                 // Col E (índice 4) es stock - lo guardamos en system_stock si existe, pero en maestro no se usa stock
                 const barcode: string | null = null; // barcode viene del archivo separado
                 map.set(normalizeText(rawSku), {
@@ -1352,6 +1397,7 @@ export default function DashboardPage() {
             SOBRANTES: r.total_sobrantes,
             FALTANTES: r.total_faltantes,
             NO_CONTADOS: r.total_no_contados,
+            DIF_VALORIZADA: r.dif_valorizada || 0,
             ERI_PCT: r.eri,
             CUMPLIMIENTO_PCT: r.cumplimiento_pct,
             DIAS_CUMPLIDOS: r.dias_cumplidos,
@@ -1364,6 +1410,129 @@ export default function DashboardPage() {
         const wbk = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wbk, ws, "Dashboard");
         XLSX.writeFile(wbk, `dashboard_ciclicos_${dashPeriod === "dia" ? dashDate : dashMonth}.xlsx`);
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  EXPORT GLOBAL — todas las tiendas con rango
+    // ════════════════════════════════════════════════════════
+    async function exportGlobal() {
+        setGlobalExportLoading(true);
+        try {
+            let from = dashDate, to = dashDate;
+            if (dashPeriod === "mes") {
+                const [yr, mo] = dashMonth.split("-").map(Number);
+                from = `${dashMonth}-01`;
+                const lastDay = new Date(yr, mo, 0).getDate();
+                to = `${dashMonth}-${String(lastDay).padStart(2, "0")}`;
+            } else if (dashPeriod === "rango") {
+                from = dashRangeFrom; to = dashRangeTo;
+            }
+
+            // Traer assignments del período con join a productos y tiendas
+            const { data: asgnData } = await supabase
+                .from("cyclic_assignments")
+                .select("id, store_id, product_id, system_stock, assigned_date, cost, stores(name), cyclic_products(sku, description, unit, cost, barcode)")
+                .gte("assigned_date", from)
+                .lte("assigned_date", to)
+                .order("assigned_date");
+
+            if (!asgnData || asgnData.length === 0) {
+                showMessage("No hay asignaciones en ese período.", "error");
+                setGlobalExportLoading(false); return;
+            }
+
+            const asgnIds = asgnData.map((a: any) => a.id);
+            const CHUNK = 900;
+            let allCounts: CountRecord[] = [];
+            for (let i = 0; i < asgnIds.length; i += CHUNK) {
+                const { data: cData } = await supabase.from("cyclic_counts").select("*").in("assignment_id", asgnIds.slice(i, i + CHUNK));
+                allCounts = allCounts.concat((cData || []) as CountRecord[]);
+            }
+
+            const countMap = new Map<string, CountRecord[]>();
+            for (const c of allCounts) {
+                if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
+                countMap.get(c.assignment_id)!.push(c);
+            }
+
+            // Agrupar por tienda + fecha + producto (suma múltiples ubicaciones)
+            type ExportKey = string;
+            const resMap = new Map<ExportKey, {
+                tienda: string; fecha: string; sku: string; descripcion: string; unidad: string;
+                costo: number; stock_sistema: number; total_contado: number;
+                diferencia: number; dif_valorizada: number; estado: string;
+                ubicaciones: string; usuarios: string; hora_ultimo: string;
+            }>();
+
+            for (const asg of asgnData as any[]) {
+                const key = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
+                const prod = asg.cyclic_products || {};
+                const tienda = asg.stores?.name || asg.store_id;
+                const costo = parseCost(asg.cost) > 0 ? parseCost(asg.cost) : parseCost(prod.cost);
+                const stock = Number(asg.system_stock || 0);
+                const cnts = countMap.get(asg.id) || [];
+                const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
+
+                if (!resMap.has(key)) {
+                    resMap.set(key, {
+                        tienda, fecha: asg.assigned_date,
+                        sku: prod.sku || asg.product_id,
+                        descripcion: prod.description || "",
+                        unidad: prod.unit || "",
+                        costo, stock_sistema: stock,
+                        total_contado: 0, diferencia: 0, dif_valorizada: 0,
+                        estado: "", ubicaciones: "", usuarios: "", hora_ultimo: "",
+                    });
+                }
+                const row = resMap.get(key)!;
+                row.total_contado += totalContado;
+                if (costo > 0 && row.costo === 0) row.costo = costo;
+                const ubics = cnts.map((c: any) => c.location).filter(Boolean);
+                const usrs = cnts.map((c: any) => c.user_name).filter(Boolean);
+                const ts = cnts.map((c: any) => c.counted_at).filter(Boolean).sort();
+                if (ubics.length) row.ubicaciones = [...new Set([...row.ubicaciones.split(",").filter(Boolean), ...ubics])].join(", ");
+                if (usrs.length) row.usuarios = [...new Set([...row.usuarios.split(",").filter(Boolean), ...usrs])].join(", ");
+                if (ts.length) row.hora_ultimo = ts[ts.length - 1];
+            }
+
+            // Calcular diferencias finales
+            const exportRows: any[] = [];
+            for (const r of resMap.values()) {
+                r.diferencia = r.total_contado - r.stock_sistema;
+                r.dif_valorizada = r.diferencia * r.costo;
+                const contado = r.total_contado > 0 || r.hora_ultimo;
+                r.estado = !contado ? "NO CONTADO" : r.diferencia === 0 ? "OK" : r.diferencia > 0 ? "SOBRANTE" : "FALTANTE";
+                exportRows.push({
+                    TIENDA: r.tienda,
+                    FECHA: r.fecha,
+                    SKU: r.sku,
+                    DESCRIPCION: r.descripcion,
+                    UNIDAD: r.unidad,
+                    COSTO: r.costo,
+                    STOCK_SISTEMA: r.stock_sistema,
+                    TOTAL_CONTADO: r.total_contado,
+                    DIFERENCIA: r.diferencia,
+                    DIF_VALORIZADA: r.dif_valorizada,
+                    ESTADO: r.estado,
+                    UBICACIONES: r.ubicaciones,
+                    USUARIOS: r.usuarios,
+                    HORA_ULTIMO: r.hora_ultimo ? formatDateTime(r.hora_ultimo) : "",
+                });
+            }
+
+            exportRows.sort((a, b) => (a.TIENDA + a.FECHA + a.SKU).localeCompare(b.TIENDA + b.FECHA + b.SKU));
+
+            const ws = XLSX.utils.json_to_sheet(exportRows);
+            const wbk = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wbk, ws, "Global");
+            const fname = `ciclicos_global_${from}_${to}.xlsx`;
+            XLSX.writeFile(wbk, fname);
+            showMessage(`✅ Excel global descargado: ${exportRows.length} filas.`, "success");
+        } catch (e: any) {
+            showMessage("Error exportando: " + e.message, "error");
+        } finally {
+            setGlobalExportLoading(false);
+        }
     }
 
     // ════════════════════════════════════════════════════════
@@ -1489,7 +1658,8 @@ export default function DashboardPage() {
         const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
             ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
             : null;
-        return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin };
+        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
     }, [filteredDashData]);
 
     // ════════════════════════════════════════════════════════
@@ -2428,9 +2598,10 @@ export default function DashboardPage() {
                                 <div className="flex gap-3 flex-wrap items-end">
                                     <div>
                                         <label className="block text-xs font-semibold text-slate-600 mb-1">Período</label>
-                                        <div className="flex gap-1">
+                                        <div className="flex gap-1 flex-wrap">
                                             <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por día</button>
                                             <button onClick={() => setDashPeriod("mes")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "mes" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por mes</button>
+                                            <button onClick={() => setDashPeriod("rango")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "rango" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Rango</button>
                                         </div>
                                     </div>
                                     {dashPeriod === "dia" ? (
@@ -2438,6 +2609,17 @@ export default function DashboardPage() {
                                             <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
                                             <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
                                         </div>
+                                    ) : dashPeriod === "rango" ? (
+                                        <>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Desde</label>
+                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeFrom} onChange={e => setDashRangeFrom(e.target.value)} />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Hasta</label>
+                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeTo} onChange={e => setDashRangeTo(e.target.value)} />
+                                            </div>
+                                        </>
                                     ) : (
                                         <div>
                                             <label className="block text-xs font-semibold text-slate-600 mb-1">Mes</label>
@@ -2455,14 +2637,22 @@ export default function DashboardPage() {
                                         {dashLoading ? "Cargando..." : "🔍 Consultar"}
                                     </button>
                                     {dashData.length > 0 && (
-                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel</button>
+                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
                                     )}
+                                    <button
+                                        onClick={exportGlobal}
+                                        disabled={globalExportLoading}
+                                        className="px-4 py-3 rounded-2xl bg-green-700 text-white text-sm font-semibold disabled:opacity-50"
+                                        title="Descarga todos los códigos asignados con su estado, de todas las tiendas, en el período seleccionado"
+                                    >
+                                        {globalExportLoading ? "Generando..." : "↓ Excel global (todos los códigos)"}
+                                    </button>
                                 </div>
                             </section>
 
                             {/* Tarjetas resumen */}
                             {dashSummary && (
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
                                         <div className="text-xs text-slate-500 mt-1">ERI promedio</div>
@@ -2481,6 +2671,12 @@ export default function DashboardPage() {
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
                                         <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
+                                            {formatMoney(dashSummary.totalDifVal || 0)}
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
                                     </div>
                                 </div>
                             )}
@@ -2501,6 +2697,7 @@ export default function DashboardPage() {
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
                                                         <th className="p-2 border text-red-600">Faltantes</th>
                                                         <th className="p-2 border text-amber-600">No contados</th>
+                                                        <th className="p-2 border text-red-700">Dif. Val.</th>
                                                         <th className="p-2 border">ERI %</th>
                                                         <th className="p-2 border">{dashPeriod === "mes" ? "Cumplimiento mes" : "Cumplimiento día"}</th>
                                                         {dashPeriod === "dia" && <>
@@ -2521,6 +2718,9 @@ export default function DashboardPage() {
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
                                                             <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
                                                             <td className="p-2 border text-center text-amber-600 font-semibold">{r.total_no_contados}</td>
+                                                            <td className="p-2 border text-center text-xs font-semibold">
+                                                                <span className={(r.dif_valorizada || 0) < 0 ? "text-red-600" : (r.dif_valorizada || 0) > 0 ? "text-blue-700" : "text-green-700"}>{formatMoney(r.dif_valorizada || 0)}</span>
+                                                            </td>
                                                             <td className="p-2 border text-center">
                                                                 <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
                                                             </td>
