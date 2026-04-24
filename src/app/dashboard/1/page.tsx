@@ -642,14 +642,16 @@ export default function DashboardPage() {
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
                     .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
-                if (eA) { console.error("loadDashboard asgn error", eA); break; }
+                if (eA) { console.error("loadDashboard asgn error", eA); showMessage("Error BD assignments: " + JSON.stringify(eA), "error"); break; }
+                console.log(`[DASH] página ${dashP}: ${chunk?.length ?? 0} assignments`);
                 if (!chunk || chunk.length === 0) break;
                 asgnRaw = asgnRaw.concat(chunk);
                 if (chunk.length < DASH_PAGE) break;
                 dashP++;
             }
 
-            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); return; }
+            console.log(`[DASH] Total assignments: ${asgnRaw.length}, período: ${dateFilter.from} → ${dateFilter.to}`);
+            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
 
             // ── Paso 2: traer stores y products por IDs únicos ────────
             const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
@@ -1477,15 +1479,17 @@ export default function DashboardPage() {
                     .lte("assigned_date", to)
                     .order("assigned_date")
                     .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
-                if (eExp) { console.error("exportGlobal asgn error", eExp); break; }
+                if (eExp) { console.error("exportGlobal asgn error", eExp); showMessage("Error BD export: " + JSON.stringify(eExp), "error"); break; }
+                console.log(`[EXPORT] página ${expPage}: ${expChunk?.length ?? 0} assignments`);
                 if (!expChunk || expChunk.length === 0) break;
                 asgnRaw2 = asgnRaw2.concat(expChunk);
                 if (expChunk.length < EXP_PAGE) break;
                 expPage++;
             }
 
+            console.log(`[EXPORT] Total assignments: ${asgnRaw2.length}, desde: ${from} hasta: ${to}`);
             if (asgnRaw2.length === 0) {
-                showMessage("No hay asignaciones en ese período.", "error");
+                showMessage(`No hay asignaciones: ${from} → ${to}. Ver consola F12.`, "error");
                 setGlobalExportLoading(false); return;
             }
 
