@@ -353,6 +353,7 @@ export default function DashboardPage() {
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
 
     // ─── Dashboard en validador: progreso por tienda ─────────
     const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
@@ -2481,7 +2482,17 @@ export default function DashboardPage() {
             {/* ══════════════════════════════════════════════════════
                 SIDEBAR — NAVEGACIÓN PRINCIPAL (tipo WMS)
             ══════════════════════════════════════════════════════ */}
-            <aside className="fixed top-0 left-0 h-screen w-56 bg-slate-900 text-white flex flex-col z-40 shadow-2xl"
+            {/* Overlay oscuro en mobile cuando sidebar abierto */}
+            {sidebarOpen && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-30 md:hidden"
+                    onClick={() => setSidebarOpen(false)}
+                />
+            )}
+
+            <aside
+                className={`fixed top-0 left-0 h-screen w-56 bg-slate-900 text-white flex flex-col z-40 shadow-2xl transition-transform duration-300
+                    md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`}
                 style={{ minWidth: "14rem" }}>
 
                 {/* Logo / Brand */}
@@ -2525,6 +2536,7 @@ export default function DashboardPage() {
                             <button
                                 onClick={() => {
                                     setActiveTab("operario");
+                                    setSidebarOpen(false);
                                     if (isAdmin && !selectedStoreId && allStores.filter(s=>s.is_active).length > 0) {
                                         const first = allStores.filter(s => s.is_active)[0];
                                         setSelectedStoreId(first.id);
@@ -2563,6 +2575,7 @@ export default function DashboardPage() {
                                         onClick={() => {
                                             setActiveTab("validador");
                                             setValTab(item.key);
+                                            setSidebarOpen(false);
                                             if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "resumen"   && valStoreId) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "progreso")  loadStoreProgress(dashDate);
@@ -2595,7 +2608,7 @@ export default function DashboardPage() {
                                 ] as const).map(item => (
                                     <button
                                         key={item.key}
-                                        onClick={() => { setActiveTab("admin"); setAdminTab(item.key); }}
+                                        onClick={() => { setActiveTab("admin"); setAdminTab(item.key); setSidebarOpen(false); }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                             activeTab === "admin" && adminTab === item.key
                                                 ? "bg-purple-600 text-white shadow-lg"
@@ -2614,7 +2627,7 @@ export default function DashboardPage() {
                 {/* Logout */}
                 <div className="px-3 py-4 border-t border-slate-700/60">
                     <button
-                        onClick={handleLogout}
+                        onClick={() => { handleLogout(); setSidebarOpen(false); }}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-red-600/20 hover:text-red-300 transition-all"
                     >
                         <span className="text-base">🚪</span>
@@ -2626,11 +2639,23 @@ export default function DashboardPage() {
             {/* ══════════════════════════════════════════════════════
                 CONTENIDO PRINCIPAL (desplazado por sidebar)
             ══════════════════════════════════════════════════════ */}
-            <div className="flex-1 flex flex-col min-h-screen" style={{ marginLeft: "14rem" }}>
+            <div className="flex-1 flex flex-col min-h-screen md:ml-56">
 
                 {/* ── HEADER DE CONTEXTO ──────────────────────────── */}
-                <header className="bg-white border-b sticky top-0 z-30 px-6 py-3 flex items-center justify-between gap-4">
-                    <div>
+                <header className="bg-white border-b sticky top-0 z-30 px-3 md:px-6 py-3 flex items-center justify-between gap-3">
+                    {/* Botón hamburguesa — solo mobile */}
+                    <button
+                        className="md:hidden flex-shrink-0 p-2 rounded-xl text-slate-600 hover:bg-slate-100 transition"
+                        onClick={() => setSidebarOpen(prev => !prev)}
+                        aria-label="Abrir menú"
+                    >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                            <line x1="3" y1="6" x2="21" y2="6"/>
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                            <line x1="3" y1="18" x2="21" y2="18"/>
+                        </svg>
+                    </button>
+                    <div className="flex-1 min-w-0">
                         <h1 className="font-bold text-slate-900 text-base leading-tight">
                             {activeTab === "operario"  ? "📋 Conteos del día" :
                              activeTab === "validador" && valTab === "asignar"   ? "📦 Asignar productos" :
