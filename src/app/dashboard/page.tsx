@@ -793,7 +793,7 @@ export default function DashboardPage() {
     async function loadStoreProgress(date: string) {
         setStoreProgressLoading(true);
         try {
-            // 1. Obtener todas las tiendas activas
+            // 1. Obtener todas las tiendas activas (allStores incluye todas, sin filtro de usuario)
             const activeStoresList = allStores.filter(s => s.is_active);
             if (activeStoresList.length === 0) { setStoreProgressData([]); return; }
 
@@ -2837,7 +2837,8 @@ export default function DashboardPage() {
             ════════════════════════════════════════════════════════ */}
             {activeTab === "validador" && isValOrAdm && (
                 <>
-                    {/* Selector tienda/fecha */}
+                    {/* Selector tienda/fecha — oculto en sub-tab Dashboard */}
+                    {valTab !== "dashboard" && (
                     <section className="bg-white rounded-3xl p-5 shadow">
                         <div className="flex flex-wrap gap-3 items-end">
                             <div className="flex-1 min-w-[160px]">
@@ -2911,6 +2912,7 @@ export default function DashboardPage() {
                             )}
                         </div>
                     </section>
+                    )}{/* fin valTab !== dashboard */}
 
                     {/* Sub-tabs validador: Asignar | Registros | Resumen | Dashboard */}
                     <div className="flex gap-2 flex-wrap">
