@@ -1366,40 +1366,44 @@ export default function DashboardPage() {
 
             // ── PASO 9: Modal WhatsApp masivo ─────────────────────────────
             if (insertOk > 0 || toUpdate.length > 0) {
-                // Contar asignaciones por tienda para el modal
-                const countByStore = new Map<string, number>();
-                for (const ins of toInsert) {
-                    countByStore.set(ins.store_id, (countByStore.get(ins.store_id) || 0) + 1);
-                }
-                for (const upd of existingAsgns) {
-                    // Solo agregar las tiendas que tienen asignaciones totales (no solo updates)
-                }
-                // Traer conteo total de asignaciones por tienda para la fecha
+                // Traer TODOS los operarios con WhatsApp de las tiendas del archivo de una sola vez
                 const wspStoreIds = [...storeIdsDelArchivo];
-                const wspStoresData: typeof bulkWspStores = [];
-                for (const sid of wspStoreIds) {
-                    const { count: cnt } = await supabase.from("cyclic_assignments")
-                        .select("id", { count: "exact", head: true })
-                        .eq("store_id", sid)
-                        .eq("assigned_date", valDate);
-                    const { data: op } = await supabase.from("cyclic_users")
-                        .select("full_name, whatsapp")
-                        .eq("store_id", sid).eq("role", "Operario").eq("is_active", true).maybeSingle();
-                    const storeName = allStores.find(s => s.id === sid)?.name || sid;
-                    wspStoresData.push({
-                        id: sid,
-                        name: storeName,
-                        count: cnt || 0,
-                        operario: op ? { full_name: op.full_name, whatsapp: op.whatsapp || "" } : null,
-                    });
+                const allOps: any[] = [];
+                for (let i = 0; i < wspStoreIds.length; i += 200) {
+                    const chunk = wspStoreIds.slice(i, i + 200);
+                    const { data: ops } = await supabase.from("cyclic_users")
+                        .select("full_name, whatsapp, store_id")
+                        .in("store_id", chunk)
+                        .eq("role", "Operario")
+                        .eq("is_active", true)
+                        .not("whatsapp", "is", null);
+                    allOps.push(...(ops || []));
                 }
+                const operarioByStore = new Map<string, { full_name: string; whatsapp: string }>();
+                for (const op of allOps) {
+                    const wsp = String(op.whatsapp || "").trim();
+                    if (!wsp) continue;
+                    if (!operarioByStore.has(op.store_id)) {
+                        operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp });
+                    }
+                }
+                // Contar asignaciones totales por tienda usando los datos ya en memoria
+                const cntByStore = new Map<string, number>();
+                for (const ins of toInsert) cntByStore.set(ins.store_id, (cntByStore.get(ins.store_id) || 0) + 1);
+                for (const ea of existingAsgns) cntByStore.set(ea.store_id, (cntByStore.get(ea.store_id) || 0) + 1);
+
+                const wspStoresData: typeof bulkWspStores = wspStoreIds.map(sid => ({
+                    id: sid,
+                    name: allStores.find(s => s.id === sid)?.name || sid,
+                    count: cntByStore.get(sid) || 0,
+                    operario: operarioByStore.get(sid) || null,
+                }));
+                wspStoresData.sort((a, b) => a.name.localeCompare(b.name));
                 const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
-                if (withOperario.length > 0) {
-                    setBulkWspStores(wspStoresData);
-                    setBulkWspSelected(new Set(withOperario.map(s => s.id)));
-                    setBulkWspDate(valDate);
-                    setShowBulkWspModal(true);
-                }
+                setBulkWspStores(wspStoresData);
+                setBulkWspSelected(new Set(withOperario.map(s => s.id)));
+                setBulkWspDate(valDate);
+                setShowBulkWspModal(true);
             }
         } catch (e: any) {
             setBulkAssignProgress(null);
@@ -1419,31 +1423,65 @@ export default function DashboardPage() {
     }
 
     async function openBulkWspModal(date: string) {
-        // Obtener todas las tiendas con asignaciones en esa fecha
-        const { data: asgns } = await supabase
-            .from("cyclic_assignments")
-            .select("store_id")
-            .eq("assigned_date", date);
-        const storeIds = [...new Set((asgns || []).map((a: any) => a.store_id as string))];
-        if (storeIds.length === 0) { showMessage("No hay tiendas con asignaciones en esta fecha.", "error"); return; }
-
-        const wspStoresData: typeof bulkWspStores = [];
-        for (const sid of storeIds) {
-            const { count: cnt } = await supabase.from("cyclic_assignments")
-                .select("id", { count: "exact", head: true })
-                .eq("store_id", sid).eq("assigned_date", date);
-            const { data: op } = await supabase.from("cyclic_users")
-                .select("full_name, whatsapp")
-                .eq("store_id", sid).eq("role", "Operario").eq("is_active", true).maybeSingle();
-            const storeName = allStores.find(s => s.id === sid)?.name || sid;
-            wspStoresData.push({
-                id: sid,
-                name: storeName,
-                count: cnt || 0,
-                operario: op ? { full_name: op.full_name, whatsapp: op.whatsapp || "" } : null,
-            });
+        showMessage("Cargando tiendas...", "info");
+        // Traer todas las asignaciones de la fecha paginando
+        const PAGE = 1000;
+        let allAsgns: any[] = [];
+        let page = 0;
+        while (true) {
+            const { data: chunk } = await supabase
+                .from("cyclic_assignments")
+                .select("store_id, id")
+                .eq("assigned_date", date)
+                .range(page * PAGE, (page + 1) * PAGE - 1);
+            if (!chunk || chunk.length === 0) break;
+            allAsgns = allAsgns.concat(chunk);
+            if (chunk.length < PAGE) break;
+            page++;
         }
+
+        if (allAsgns.length === 0) { showMessage("No hay tiendas con asignaciones en esta fecha.", "error"); return; }
+
+        // Contar por tienda en memoria
+        const countByStore = new Map<string, number>();
+        for (const a of allAsgns) {
+            countByStore.set(a.store_id, (countByStore.get(a.store_id) || 0) + 1);
+        }
+        const storeIds = [...countByStore.keys()];
+
+        // Traer TODOS los operarios activos de esas tiendas de una sola vez
+        const allOperarios: any[] = [];
+        for (let i = 0; i < storeIds.length; i += 200) {
+            const chunk = storeIds.slice(i, i + 200);
+            const { data: ops } = await supabase.from("cyclic_users")
+                .select("full_name, whatsapp, store_id")
+                .in("store_id", chunk)
+                .eq("role", "Operario")
+                .eq("is_active", true)
+                .not("whatsapp", "is", null);
+            allOperarios.push(...(ops || []));
+        }
+
+        // Agrupar operarios por store_id — preferir el que tiene WhatsApp
+        const operarioByStore = new Map<string, { full_name: string; whatsapp: string }>();
+        for (const op of allOperarios) {
+            const wsp = String(op.whatsapp || "").trim();
+            if (!wsp) continue;
+            // Si ya hay uno para esta tienda, quedarse con el primero que tenga número (lider*)
+            if (!operarioByStore.has(op.store_id)) {
+                operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp });
+            }
+        }
+
+        const wspStoresData: typeof bulkWspStores = storeIds.map(sid => ({
+            id: sid,
+            name: allStores.find(s => s.id === sid)?.name || sid,
+            count: countByStore.get(sid) || 0,
+            operario: operarioByStore.get(sid) || null,
+        }));
         wspStoresData.sort((a, b) => a.name.localeCompare(b.name));
+
+        clearMessage();
         const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
         setBulkWspStores(wspStoresData);
         setBulkWspSelected(new Set(withOperario.map(s => s.id)));
