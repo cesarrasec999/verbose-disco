@@ -319,9 +319,10 @@ export default function DashboardPage() {
 
     // ─── WhatsApp masivo post-carga ──────────────────────────
     const [showBulkWspModal, setShowBulkWspModal] = useState(false);
-    const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string } | null }[]>([]);
+    const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string; username: string; password: string } | null }[]>([]);
     const [bulkWspSelected, setBulkWspSelected] = useState<Set<string>>(new Set());
     const [bulkWspDate, setBulkWspDate] = useState("");
+    const [bulkWspSendingIdx, setBulkWspSendingIdx] = useState(-1); // -1 = no enviando, 0+ = índice actual
 
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
@@ -1372,19 +1373,19 @@ export default function DashboardPage() {
                 for (let i = 0; i < wspStoreIds.length; i += 200) {
                     const chunk = wspStoreIds.slice(i, i + 200);
                     const { data: ops } = await supabase.from("cyclic_users")
-                        .select("full_name, whatsapp, store_id")
+                        .select("full_name, whatsapp, store_id, username, password")
                         .in("store_id", chunk)
                         .eq("role", "Operario")
                         .eq("is_active", true)
                         .not("whatsapp", "is", null);
                     allOps.push(...(ops || []));
                 }
-                const operarioByStore = new Map<string, { full_name: string; whatsapp: string }>();
+                const operarioByStore = new Map<string, { full_name: string; whatsapp: string; username: string; password: string }>();
                 for (const op of allOps) {
                     const wsp = String(op.whatsapp || "").trim();
                     if (!wsp) continue;
                     if (!operarioByStore.has(op.store_id)) {
-                        operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp });
+                        operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
                     }
                 }
                 // Contar asignaciones totales por tienda usando los datos ya en memoria
@@ -1411,16 +1412,38 @@ export default function DashboardPage() {
         }
     }
 
-    function sendBulkWhatsapp() {
-        for (const store of bulkWspStores) {
-            if (!bulkWspSelected.has(store.id)) continue;
-            if (!store.operario?.whatsapp) continue;
-            const mensaje = `Hola ${store.operario.full_name} 👋, se te han asignado *${store.count} código${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el día *${bulkWspDate}*. Por favor ingresa a la app para realizar el conteo cíclico. ¡Gracias!`;
-            const url = `https://wa.me/${store.operario.whatsapp}?text=${encodeURIComponent(mensaje)}`;
-            window.open(url, "_blank");
-        }
-        setShowBulkWspModal(false);
+    // Construye la lista ordenada de tiendas seleccionadas para el envío
+    const bulkWspQueue = bulkWspStores.filter(s => bulkWspSelected.has(s.id) && s.operario?.whatsapp);
+
+    function buildWspMessage(store: typeof bulkWspStores[0]) {
+        const op = store.operario!;
+        const appUrl = typeof window !== "undefined" ? window.location.origin : "";
+        return `Hola ${op.full_name} 👋\n\nSe te han asignado *${store.count} código${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el día *${bulkWspDate}*.\n\nPor favor ingresa a la app para realizar el conteo cíclico:\n🔗 ${appUrl}\n👤 Usuario: *${op.username}*\n🔑 Contraseña: *${op.password}*\n\n¡Gracias!`;
     }
+
+    function startBulkSend() {
+        if (bulkWspQueue.length === 0) return;
+        setBulkWspSendingIdx(0);
+        const store = bulkWspQueue[0];
+        const url = `https://wa.me/${store.operario!.whatsapp}?text=${encodeURIComponent(buildWspMessage(store))}`;
+        window.open(url, "_blank");
+    }
+
+    function nextBulkSend() {
+        const next = bulkWspSendingIdx + 1;
+        if (next >= bulkWspQueue.length) {
+            setBulkWspSendingIdx(-1);
+            setShowBulkWspModal(false);
+            showMessage(`✅ WhatsApp enviado a ${bulkWspQueue.length} tienda${bulkWspQueue.length !== 1 ? "s" : ""}.`, "success");
+            return;
+        }
+        setBulkWspSendingIdx(next);
+        const store = bulkWspQueue[next];
+        const url = `https://wa.me/${store.operario!.whatsapp}?text=${encodeURIComponent(buildWspMessage(store))}`;
+        window.open(url, "_blank");
+    }
+
+    function sendBulkWhatsapp() { startBulkSend(); }
 
     async function openBulkWspModal(date: string) {
         showMessage("Cargando tiendas...", "info");
@@ -1454,7 +1477,7 @@ export default function DashboardPage() {
         for (let i = 0; i < storeIds.length; i += 200) {
             const chunk = storeIds.slice(i, i + 200);
             const { data: ops } = await supabase.from("cyclic_users")
-                .select("full_name, whatsapp, store_id")
+                .select("full_name, whatsapp, store_id, username, password")
                 .in("store_id", chunk)
                 .eq("role", "Operario")
                 .eq("is_active", true)
@@ -1463,13 +1486,13 @@ export default function DashboardPage() {
         }
 
         // Agrupar operarios por store_id — preferir el que tiene WhatsApp
-        const operarioByStore = new Map<string, { full_name: string; whatsapp: string }>();
+        const operarioByStore = new Map<string, { full_name: string; whatsapp: string; username: string; password: string }>();
         for (const op of allOperarios) {
             const wsp = String(op.whatsapp || "").trim();
             if (!wsp) continue;
             // Si ya hay uno para esta tienda, quedarse con el primero que tenga número (lider*)
             if (!operarioByStore.has(op.store_id)) {
-                operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp });
+                operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
             }
         }
 
@@ -3739,77 +3762,139 @@ export default function DashboardPage() {
             {showBulkWspModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
                     <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4">
-                        <div className="flex items-start justify-between gap-3">
-                            <div>
-                                <h3 className="text-xl font-bold text-slate-900">📲 Enviar avisos por WhatsApp</h3>
-                                <p className="text-slate-500 text-sm mt-1">Carga completada para <b>{bulkWspDate}</b>. Selecciona las tiendas a las que quieres notificar.</p>
+
+                        {/* ── FASE 1: Selección ── */}
+                        {bulkWspSendingIdx < 0 ? (<>
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <h3 className="text-xl font-bold text-slate-900">📲 WhatsApp masivo</h3>
+                                    <p className="text-slate-500 text-sm mt-1">Fecha: <b>{bulkWspDate}</b> · Selecciona las tiendas a notificar.</p>
+                                </div>
+                                <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>×</button>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setShowBulkWspModal(false)}>×</button>
-                        </div>
 
-                        <div className="flex gap-2">
-                            <button
-                                className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
-                                onClick={() => setBulkWspSelected(new Set(bulkWspStores.filter(s => s.operario?.whatsapp).map(s => s.id)))}
-                            >
-                                Seleccionar todas
-                            </button>
-                            <button
-                                className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
-                                onClick={() => setBulkWspSelected(new Set())}
-                            >
-                                Quitar todas
-                            </button>
-                        </div>
+                            <div className="flex gap-2">
+                                <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                    onClick={() => setBulkWspSelected(new Set(bulkWspStores.filter(s => s.operario?.whatsapp).map(s => s.id)))}>
+                                    Seleccionar todas
+                                </button>
+                                <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                    onClick={() => setBulkWspSelected(new Set())}>
+                                    Quitar todas
+                                </button>
+                                <span className="ml-auto text-xs text-slate-400 self-center">{bulkWspSelected.size} seleccionadas</span>
+                            </div>
 
-                        <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                            {bulkWspStores.map(store => {
-                                const hasOp = !!store.operario?.whatsapp;
-                                const selected = bulkWspSelected.has(store.id);
-                                return (
-                                    <div
-                                        key={store.id}
-                                        className={`flex items-center gap-3 rounded-2xl border p-3 transition ${!hasOp ? "opacity-40 cursor-not-allowed bg-slate-50" : selected ? "bg-green-50 border-green-300 cursor-pointer" : "bg-white border-slate-200 cursor-pointer hover:bg-slate-50"}`}
-                                        onClick={() => {
-                                            if (!hasOp) return;
-                                            setBulkWspSelected(prev => {
-                                                const next = new Set(prev);
-                                                if (next.has(store.id)) next.delete(store.id);
-                                                else next.add(store.id);
-                                                return next;
-                                            });
-                                        }}
-                                    >
-                                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selected && hasOp ? "bg-green-600 border-green-600" : "border-slate-300"}`}>
-                                            {selected && hasOp && <span className="text-white text-xs font-bold">✓</span>}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="font-semibold text-sm text-slate-900 truncate">{store.name}</div>
-                                            <div className="text-xs text-slate-500">
-                                                {store.count} código{store.count !== 1 ? "s" : ""} asignados
-                                                {store.operario
-                                                    ? <> · <span className="text-green-700">📲 {store.operario.full_name} ({store.operario.whatsapp})</span></>
-                                                    : <span className="text-red-500"> · Sin operario con WhatsApp</span>
-                                                }
+                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                                {bulkWspStores.map(store => {
+                                    const hasOp = !!store.operario?.whatsapp;
+                                    const selected = bulkWspSelected.has(store.id);
+                                    return (
+                                        <div key={store.id}
+                                            className={`flex items-center gap-3 rounded-2xl border p-3 transition ${!hasOp ? "opacity-35 cursor-not-allowed bg-slate-50" : selected ? "bg-green-50 border-green-300 cursor-pointer" : "bg-white border-slate-200 cursor-pointer hover:bg-slate-50"}`}
+                                            onClick={() => {
+                                                if (!hasOp) return;
+                                                setBulkWspSelected(prev => { const n = new Set(prev); n.has(store.id) ? n.delete(store.id) : n.add(store.id); return n; });
+                                            }}
+                                        >
+                                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selected && hasOp ? "bg-green-600 border-green-600" : "border-slate-300"}`}>
+                                                {selected && hasOp && <span className="text-white text-xs font-bold">✓</span>}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="font-semibold text-sm text-slate-900 truncate">{store.name}</div>
+                                                <div className="text-xs text-slate-500">
+                                                    {store.count} código{store.count !== 1 ? "s" : ""}
+                                                    {store.operario
+                                                        ? <> · <span className="text-green-700">{store.operario.full_name} · {store.operario.whatsapp}</span></>
+                                                        : <span className="text-red-400"> · Sin WhatsApp registrado</span>
+                                                    }
+                                                </div>
                                             </div>
                                         </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Preview del mensaje */}
+                            {bulkWspQueue.length > 0 && (
+                                <div className="rounded-2xl bg-slate-50 border p-3 space-y-1">
+                                    <p className="text-xs font-semibold text-slate-600">Vista previa del mensaje:</p>
+                                    <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{buildWspMessage(bulkWspQueue[0])}</pre>
+                                </div>
+                            )}
+
+                            <div className="flex gap-3 pt-1">
+                                <button
+                                    className="flex-1 py-3 rounded-2xl bg-green-600 text-white font-bold text-sm disabled:opacity-40"
+                                    disabled={bulkWspQueue.length === 0}
+                                    onClick={startBulkSend}
+                                >
+                                    📲 Iniciar envío a {bulkWspQueue.length} tienda{bulkWspQueue.length !== 1 ? "s" : ""}
+                                </button>
+                                <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700 text-sm" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
+                                    Omitir
+                                </button>
+                            </div>
+                        </>) : (
+                        /* ── FASE 2: Envío paso a paso ── */
+                        <>
+                            <div className="text-center space-y-1">
+                                <div className="text-4xl">📲</div>
+                                <h3 className="text-xl font-bold text-slate-900">Enviando mensajes</h3>
+                                <p className="text-slate-500 text-sm">{bulkWspSendingIdx + 1} de {bulkWspQueue.length} tiendas</p>
+                            </div>
+
+                            {/* Barra de progreso */}
+                            <div className="space-y-1">
+                                <div className="h-3 bg-slate-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${((bulkWspSendingIdx + 1) / bulkWspQueue.length) * 100}%` }} />
+                                </div>
+                                <div className="flex justify-between text-xs text-slate-400">
+                                    <span>{bulkWspSendingIdx + 1} enviados</span>
+                                    <span>{bulkWspQueue.length - bulkWspSendingIdx - 1} restantes</span>
+                                </div>
+                            </div>
+
+                            {/* Tienda actual */}
+                            {(() => {
+                                const cur = bulkWspQueue[bulkWspSendingIdx];
+                                return (
+                                    <div className="rounded-2xl bg-green-50 border border-green-200 p-4 space-y-2">
+                                        <div className="font-bold text-slate-900 text-base">{cur.name}</div>
+                                        <div className="text-xs text-slate-500">{cur.operario?.full_name} · {cur.operario?.whatsapp}</div>
+                                        <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-white rounded-xl p-3 border">{buildWspMessage(cur)}</pre>
+                                        <p className="text-xs text-amber-700 font-semibold">⬆️ Se abrió WhatsApp con este mensaje. Presiona <b>Siguiente</b> cuando lo hayas enviado.</p>
                                     </div>
                                 );
-                            })}
-                        </div>
+                            })()}
 
-                        <div className="flex gap-3 pt-1">
-                            <button
-                                className="flex-1 py-3 rounded-2xl bg-green-600 text-white font-bold text-sm disabled:opacity-40"
-                                disabled={bulkWspSelected.size === 0}
-                                onClick={sendBulkWhatsapp}
-                            >
-                                📲 Enviar a {bulkWspSelected.size} tienda{bulkWspSelected.size !== 1 ? "s" : ""}
+                            {/* Lista de pendientes */}
+                            {bulkWspQueue.length > bulkWspSendingIdx + 1 && (
+                                <div className="text-xs text-slate-500 space-y-1">
+                                    <p className="font-semibold text-slate-600">Siguiente en la cola:</p>
+                                    {bulkWspQueue.slice(bulkWspSendingIdx + 1, bulkWspSendingIdx + 4).map((s, i) => (
+                                        <div key={s.id} className="flex items-center gap-2">
+                                            <span className="text-slate-300">#{bulkWspSendingIdx + 2 + i}</span>
+                                            <span>{s.name}</span>
+                                            <span className="text-slate-400">· {s.operario?.whatsapp}</span>
+                                        </div>
+                                    ))}
+                                    {bulkWspQueue.length > bulkWspSendingIdx + 4 && <p className="text-slate-400">... y {bulkWspQueue.length - bulkWspSendingIdx - 4} más</p>}
+                                </div>
+                            )}
+
+                            <div className="flex gap-3 pt-1">
+                                <button
+                                    className="flex-1 py-4 rounded-2xl bg-green-600 text-white font-bold text-base"
+                                    onClick={nextBulkSend}
+                                >
+                                    {bulkWspSendingIdx + 1 >= bulkWspQueue.length ? "✅ Finalizar" : `Siguiente → ${bulkWspQueue[bulkWspSendingIdx + 1]?.name}`}
+                                </button>
+                            </div>
+                            <button className="w-full text-xs text-slate-400 underline" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
+                                Cancelar envío
                             </button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700 text-sm" onClick={() => setShowBulkWspModal(false)}>
-                                Omitir
-                            </button>
-                        </div>
+                        </>)}
                     </div>
                 </div>
             )}
