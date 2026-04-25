@@ -2446,7 +2446,7 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     if (loading) {
         return (
-            <main className="min-h-screen bg-slate-50 flex items-center justify-center">
+            <main className="min-h-screen bg-slate-100 flex items-center justify-center">
                 <div className="text-slate-500 text-lg">Cargando...</div>
             </main>
         );
@@ -2456,41 +2456,249 @@ export default function DashboardPage() {
     const isValOrAdm = user?.role === "Validador" || isAdmin;
 
     return (
-        <main className="min-h-screen bg-slate-50 text-slate-900">
-            {/* ── TOPBAR ──────────────────────────────────────────────── */}
-            <div className="bg-white border-b sticky top-0 z-30 px-4 py-3 flex items-center justify-between gap-3">
-                <div>
-                    <h1 className="font-bold text-slate-900 text-base leading-tight">Cíclicos</h1>
-                    <p className="text-xs text-slate-500">{user?.full_name} · {user?.role}</p>
+        <main className="min-h-screen bg-slate-100 text-slate-900 flex">
+
+            {/* ══════════════════════════════════════════════════════
+                SIDEBAR — NAVEGACIÓN PRINCIPAL (tipo WMS)
+            ══════════════════════════════════════════════════════ */}
+            <aside className="fixed top-0 left-0 h-screen w-56 bg-slate-900 text-white flex flex-col z-40 shadow-2xl"
+                style={{ minWidth: "14rem" }}>
+
+                {/* Logo / Brand */}
+                <div className="px-5 py-5 border-b border-slate-700/60">
+                    <div className="flex items-center gap-2.5">
+                        <div style={{
+                            background: "linear-gradient(135deg, #f97316 0%, #c2410c 100%)",
+                            borderRadius: "10px", padding: "6px 8px",
+                        }}>
+                            <svg viewBox="0 0 60 60" width="24" height="24">
+                                <polygon points="30,3 54,17 54,43 30,57 6,43 6,17" fill="rgba(255,255,255,0.15)" />
+                                <text x="30" y="42" textAnchor="middle" fill="white"
+                                    fontSize="32" fontWeight="900" fontFamily="Arial Black, sans-serif">R</text>
+                            </svg>
+                        </div>
+                        <div>
+                            <p className="font-black text-sm leading-none tracking-wider">
+                                RASE<span style={{ color: "#f97316" }}>CORP</span>
+                            </p>
+                            <p className="text-slate-400 text-[10px] leading-none mt-1 tracking-widest">CÍCLICOS</p>
+                        </div>
+                    </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    {user?.role === "Operario" && (
-                        <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-3 py-1.5 rounded-xl">{user.role}</span>
-                    )}
-                    {isValOrAdm && (
-                        <div className="flex gap-1 flex-wrap">
-                            {isAdmin && (
-                                <button onClick={() => { setActiveTab("operario"); if (!selectedStoreId && allStores.filter(s=>s.is_active).length > 0) { const first = allStores.filter(s => s.is_active)[0]; setSelectedStoreId(first.id); loadOperarioData(first.id, selectedDate); } }} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "operario" ? "bg-amber-600 text-white border-amber-600" : "bg-white text-slate-700 border-slate-300"}`}>Operario</button>
-                            )}
-                            <button onClick={() => setActiveTab("validador")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "validador" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-700 border-slate-300"}`}>Validador</button>
-                            {isAdmin && (
-                                <button onClick={() => setActiveTab("admin")} className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${activeTab === "admin" ? "bg-purple-600 text-white border-purple-600" : "bg-white text-slate-700 border-slate-300"}`}>Admin</button>
-                            )}
+
+                {/* Usuario */}
+                <div className="px-5 py-3 border-b border-slate-700/60">
+                    <p className="text-xs font-semibold text-white truncate">{user?.full_name}</p>
+                    <span className={`inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        user?.role === "Administrador" ? "bg-purple-500/20 text-purple-300" :
+                        user?.role === "Validador"     ? "bg-blue-500/20 text-blue-300" :
+                                                         "bg-amber-500/20 text-amber-300"
+                    }`}>{user?.role}</span>
+                </div>
+
+                {/* Menú de navegación */}
+                <nav className="flex-1 py-3 overflow-y-auto">
+
+                    {/* MÓDULO OPERARIO */}
+                    {(user?.role === "Operario" || isAdmin) && (
+                        <div className="px-3 mb-1">
+                            <button
+                                onClick={() => {
+                                    setActiveTab("operario");
+                                    if (isAdmin && !selectedStoreId && allStores.filter(s=>s.is_active).length > 0) {
+                                        const first = allStores.filter(s => s.is_active)[0];
+                                        setSelectedStoreId(first.id);
+                                        loadOperarioData(first.id, selectedDate);
+                                    }
+                                }}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                    activeTab === "operario"
+                                        ? "bg-amber-500 text-white shadow-lg"
+                                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                }`}
+                            >
+                                <span className="text-base">📋</span>
+                                <span>Operario</span>
+                            </button>
                         </div>
                     )}
-                    <button onClick={handleLogout} className="text-xs px-3 py-1.5 rounded-xl border text-slate-600 font-semibold">Salir</button>
-                </div>
-            </div>
 
-            {/* ── MENSAJE GLOBAL ──────────────────────────────────────── */}
-            {message && (
-                <div className={`mx-4 mt-3 rounded-2xl px-4 py-3 text-sm font-medium flex items-center justify-between gap-3 ${messageType === "success" ? "bg-green-50 text-green-800 border border-green-200" : messageType === "error" ? "bg-red-50 text-red-800 border border-red-200" : "bg-blue-50 text-blue-800 border border-blue-200"}`}>
-                    <span>{message}</span>
-                    <button className="text-lg leading-none opacity-60 hover:opacity-100" onClick={clearMessage}>×</button>
-                </div>
-            )}
+                    {/* MÓDULO VALIDADOR */}
+                    {isValOrAdm && (
+                        <>
+                            {/* Header de sección */}
+                            <div className="px-5 pt-3 pb-1">
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Validador</p>
+                            </div>
+                            <div className="px-3 space-y-0.5">
+                                {([
+                                    { key: "asignar",   icon: "📦", label: "Asignar productos", tab: "validador" },
+                                    { key: "registros", icon: "📋", label: "Registros",          tab: "validador" },
+                                    { key: "resumen",   icon: "📊", label: "Resumen por código", tab: "validador" },
+                                    { key: "dashboard", icon: "📈", label: "Dashboard",           tab: "validador" },
+                                ] as const).map(item => (
+                                    <button
+                                        key={item.key}
+                                        onClick={() => {
+                                            setActiveTab("validador");
+                                            setValTab(item.key);
+                                            if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
+                                            if (item.key === "resumen"   && valStoreId) loadValidadorData(valStoreId, valDate);
+                                            if (item.key === "dashboard") loadStoreProgress(dashDate);
+                                        }}
+                                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                            activeTab === "validador" && valTab === item.key
+                                                ? "bg-blue-600 text-white shadow-lg"
+                                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                        }`}
+                                    >
+                                        <span className="text-base">{item.icon}</span>
+                                        <span className="truncate">{item.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
 
-            <div className="max-w-5xl mx-auto p-4 space-y-4">
+                    {/* MÓDULO ADMIN */}
+                    {isAdmin && (
+                        <>
+                            <div className="px-5 pt-4 pb-1">
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</p>
+                            </div>
+                            <div className="px-3 space-y-0.5">
+                                {([
+                                    { key: "productos", icon: "🗃", label: "Maestro productos" },
+                                    { key: "tiendas",   icon: "🏪", label: "Tiendas"           },
+                                    { key: "usuarios",  icon: "👤", label: "Usuarios"           },
+                                ] as const).map(item => (
+                                    <button
+                                        key={item.key}
+                                        onClick={() => { setActiveTab("admin"); setAdminTab(item.key); }}
+                                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                            activeTab === "admin" && adminTab === item.key
+                                                ? "bg-purple-600 text-white shadow-lg"
+                                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                        }`}
+                                    >
+                                        <span className="text-base">{item.icon}</span>
+                                        <span className="truncate">{item.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
+                </nav>
+
+                {/* Logout */}
+                <div className="px-3 py-4 border-t border-slate-700/60">
+                    <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-red-600/20 hover:text-red-300 transition-all"
+                    >
+                        <span className="text-base">🚪</span>
+                        <span>Cerrar sesión</span>
+                    </button>
+                </div>
+            </aside>
+
+            {/* ══════════════════════════════════════════════════════
+                CONTENIDO PRINCIPAL (desplazado por sidebar)
+            ══════════════════════════════════════════════════════ */}
+            <div className="flex-1 flex flex-col min-h-screen" style={{ marginLeft: "14rem" }}>
+
+                {/* ── HEADER DE CONTEXTO ──────────────────────────── */}
+                <header className="bg-white border-b sticky top-0 z-30 px-6 py-3 flex items-center justify-between gap-4">
+                    <div>
+                        <h1 className="font-bold text-slate-900 text-base leading-tight">
+                            {activeTab === "operario"  ? "📋 Conteos del día" :
+                             activeTab === "validador" && valTab === "asignar"   ? "📦 Asignar productos" :
+                             activeTab === "validador" && valTab === "registros" ? "📋 Registros de conteo" :
+                             activeTab === "validador" && valTab === "resumen"   ? "📊 Resumen por código" :
+                             activeTab === "validador" && valTab === "dashboard" ? "📈 Dashboard" :
+                             activeTab === "admin"     && adminTab === "productos" ? "🗃 Maestro de productos" :
+                             activeTab === "admin"     && adminTab === "tiendas"   ? "🏪 Tiendas" :
+                             activeTab === "admin"     && adminTab === "usuarios"  ? "👤 Usuarios" : "Cíclicos"}
+                        </h1>
+                        <p className="text-xs text-slate-400 leading-none mt-0.5">
+                            {activeTab === "validador" && valTab !== "dashboard" && valStoreId
+                                ? `${stores.find(s => s.id === valStoreId)?.name || ""} · ${valDate}`
+                                : activeTab === "operario"
+                                ? `${allStores.find(s => s.id === selectedStoreId)?.name || "—"} · ${selectedDate}`
+                                : ""}
+                        </p>
+                    </div>
+
+                    {/* Controles contextuales de tienda/fecha para Validador (excepto Dashboard) */}
+                    {activeTab === "validador" && valTab !== "dashboard" && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <select
+                                className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                value={valStoreId}
+                                onChange={e => { setValStoreId(e.target.value); loadValidadorData(e.target.value, valDate); }}
+                            >
+                                <option value="">— Tienda —</option>
+                                {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                            </select>
+                            <input
+                                type="date"
+                                className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                value={valDate}
+                                onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }}
+                            />
+                            {valStoreId && (
+                                <button
+                                    className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition"
+                                    onClick={() => loadValidadorData(valStoreId, valDate)}
+                                >🔄</button>
+                            )}
+                            <button
+                                className="px-3 py-2 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition"
+                                onClick={() => openBulkWspModal(valDate)}
+                                title="WhatsApp masivo"
+                            >📲</button>
+                        </div>
+                    )}
+
+                    {/* Stats de tienda seleccionada en validador */}
+                    {activeTab === "validador" && valTab !== "dashboard" && valStoreId && resumenStats.total > 0 && (
+                        <div className="hidden md:flex items-center gap-3">
+                            <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-xl px-3 py-2">
+                                <span className="text-slate-500">Asig: <b className="text-slate-800">{resumenStats.total}</b></span>
+                                <span className="text-slate-300">|</span>
+                                <span className="text-green-700">OK: <b>{resumenStats.contados}</b></span>
+                                <span className="text-slate-300">|</span>
+                                <span className="text-amber-600">Pend: <b>{resumenStats.pendientes}</b></span>
+                                <span className="text-slate-300">|</span>
+                                <span className="text-red-600">Dif: <b>{resumenStats.conDif}</b></span>
+                            </div>
+                            <div className="w-24 space-y-0.5">
+                                <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                    <div className="h-full rounded-full transition-all"
+                                        style={{
+                                            width: `${(resumenStats.contados / resumenStats.total) * 100}%`,
+                                            background: resumenStats.contados === resumenStats.total ? "#16a34a" : "#f59e0b"
+                                        }}
+                                    />
+                                </div>
+                                <p className="text-[10px] text-slate-400 text-right">
+                                    {Math.round((resumenStats.contados / resumenStats.total) * 100)}%
+                                </p>
+                            </div>
+                        </div>
+                    )}
+                </header>
+
+                {/* ── MENSAJE GLOBAL ────────────────────────────────── */}
+                {message && (
+                    <div className={`mx-6 mt-4 rounded-2xl px-4 py-3 text-sm font-medium flex items-center justify-between gap-3 ${messageType === "success" ? "bg-green-50 text-green-800 border border-green-200" : messageType === "error" ? "bg-red-50 text-red-800 border border-red-200" : "bg-blue-50 text-blue-800 border border-blue-200"}`}>
+                        <span>{message}</span>
+                        <button className="text-lg leading-none opacity-60 hover:opacity-100" onClick={clearMessage}>×</button>
+                    </div>
+                )}
+
+                {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
+                <div className="flex-1 p-6 space-y-4 max-w-5xl w-full mx-auto">
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -2837,90 +3045,6 @@ export default function DashboardPage() {
             ════════════════════════════════════════════════════════ */}
             {activeTab === "validador" && isValOrAdm && (
                 <>
-                    {/* Selector tienda/fecha — oculto en sub-tab Dashboard */}
-                    {valTab !== "dashboard" && (
-                    <section className="bg-white rounded-3xl p-5 shadow">
-                        <div className="flex flex-wrap gap-3 items-end">
-                            <div className="flex-1 min-w-[160px]">
-                                <label className="block text-xs font-semibold text-slate-600 mb-1">Tienda</label>
-                                <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valStoreId} onChange={e => { setValStoreId(e.target.value); loadValidadorData(e.target.value, valDate); }}>
-                                    <option value="">— Selecciona tienda —</option>
-                                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
-                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valDate} onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }} />
-                            </div>
-                            {valStoreId && (
-                                <button
-                                    className="px-4 py-3 rounded-2xl border font-semibold text-sm text-slate-700 bg-white hover:bg-slate-50 transition flex items-center gap-2"
-                                    onClick={() => loadValidadorData(valStoreId, valDate)}
-                                >
-                                    🔄 Actualizar
-                                </button>
-                            )}
-                            <button
-                                className="px-4 py-3 rounded-2xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition flex items-center gap-2"
-                                onClick={() => openBulkWspModal(valDate)}
-                                title="Enviar WhatsApp a todos los operarios con asignaciones en la fecha seleccionada"
-                            >
-                                📲 WhatsApp masivo
-                            </button>
-                            {valStoreId && (
-                                <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
-                                    <span>Asignados: <b>{resumenStats.total}</b></span>
-                                    <span>·</span>
-                                    <span className="text-green-700">Contados: <b>{resumenStats.contados}</b></span>
-                                    <span>·</span>
-                                    <span className="text-amber-600">Pend: <b>{resumenStats.pendientes}</b></span>
-                                    <span>·</span>
-                                    <span className="text-red-600">Con dif: <b>{resumenStats.conDif}</b></span>
-                                    {countingStatus !== "idle" && (
-                                        <>
-                                            <span>·</span>
-                                            <span className={
-                                                countingStatus === "recount_done" ? "text-green-700" :
-                                                countingStatus === "recounting"   ? "text-orange-600" :
-                                                countingStatus === "finished"     ? "text-blue-700" :
-                                                "text-indigo-600"
-                                            }>
-                                                {countingStatus === "recount_done" ? "✅ Reconteo completado" :
-                                                 countingStatus === "recounting"   ? "🔄 En reconteo" :
-                                                 countingStatus === "finished"     ? "🏁 Conteo finalizado" :
-                                                 "📝 Contando..."}
-                                            </span>
-                                        </>
-                                    )}
-                                </div>
-                            )}
-                            {valStoreId && resumenStats.total > 0 && (
-                                <div className="w-full space-y-1 pt-1">
-                                    <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full rounded-full transition-all"
-                                            style={{
-                                                width: `${(resumenStats.contados / resumenStats.total) * 100}%`,
-                                                background: resumenStats.contados === resumenStats.total ? "#16a34a" : "#f59e0b"
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="text-xs text-slate-500 text-right">
-                                        {Math.round((resumenStats.contados / resumenStats.total) * 100)}% completado
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    </section>
-                    )}{/* fin valTab !== dashboard */}
-
-                    {/* Sub-tabs validador: Asignar | Registros | Resumen | Dashboard */}
-                    <div className="flex gap-2 flex-wrap">
-                        <button onClick={() => setValTab("asignar")} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "asignar" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Asignar productos</button>
-                        <button onClick={() => { setValTab("registros"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "registros" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Registros</button>
-                        <button onClick={() => { setValTab("resumen"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "resumen" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Resumen por código</button>
-                        <button onClick={() => { setValTab("dashboard"); loadStoreProgress(dashDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "dashboard" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>📊 Dashboard</button>
-                    </div>
 
                     {/* ── SUB-TAB: DASHBOARD (movido desde Admin) ──────── */}
                     {valTab === "dashboard" && (
@@ -3515,14 +3639,6 @@ export default function DashboardPage() {
             ════════════════════════════════════════════════════════ */}
             {activeTab === "admin" && isAdmin && (
                 <>
-                    {/* Sub-tabs admin */}
-                    <div className="flex gap-2 flex-wrap">
-                        {(["productos","tiendas","usuarios"] as const).map(t => (
-                            <button key={t} onClick={() => setAdminTab(t)} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border capitalize transition ${adminTab === t ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>
-                                {t === "productos" ? "🗃 Maestro" : t === "tiendas" ? "🏪 Tiendas" : "👤 Usuarios"}
-                            </button>
-                        ))}
-                    </div>
 
                     {/* ── ADMIN: MAESTRO PRODUCTOS ──────────────────────── */}
                     {adminTab === "productos" && (
@@ -3752,7 +3868,7 @@ export default function DashboardPage() {
                 </>
             )}
 
-            </div>{/* end max-w-5xl */}
+            </div>{/* end content space-y-4 */}
 
             {/* ════════════════════════════════════════════════════════
                 MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
@@ -4216,6 +4332,8 @@ export default function DashboardPage() {
                     </div>
                 </div>
             )}
+
+            </div>{/* end main flex column */}
         </main>
     );
 }
