@@ -264,7 +264,7 @@ export default function DashboardPage() {
     const scannerContainerId = "cyclic-scanner";
 
     // ─── Validador: filtros ──────────────────────────────────
-    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen"|"dashboard">("asignar");
+    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen"|"progreso"|"dashboard">("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
     const [valSearchText, setValSearchText] = useState("");
@@ -393,7 +393,7 @@ export default function DashboardPage() {
                     else setActiveTab("operario");
                 }
 
-                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"dashboard" | null;
+                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"progreso"|"dashboard" | null;
                 if (savedValTab) setValTab(savedValTab);
 
                 const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
@@ -793,11 +793,7 @@ export default function DashboardPage() {
     async function loadStoreProgress(date: string) {
         setStoreProgressLoading(true);
         try {
-            // 1. Obtener todas las tiendas activas (allStores incluye todas, sin filtro de usuario)
-            const activeStoresList = allStores.filter(s => s.is_active);
-            if (activeStoresList.length === 0) { setStoreProgressData([]); return; }
-
-            // 2. Traer asignaciones del día para todas las tiendas
+            // 1. Traer asignaciones del día para todas las tiendas (sin filtrar por allStores)
             const { data: asgnData } = await supabase
                 .from("cyclic_assignments")
                 .select("id, store_id")
@@ -805,14 +801,29 @@ export default function DashboardPage() {
 
             if (!asgnData || asgnData.length === 0) { setStoreProgressData([]); return; }
 
-            // 3. Agrupar asignaciones por tienda
+            // 2. Obtener IDs únicos de tiendas que tienen asignación ese día
+            const storeIdsWithAsgn: string[] = Array.from(new Set<string>(asgnData.map((a: any) => a.store_id as string)));
+
+            // 3. Traer nombres de esas tiendas directamente desde BD
+            let storesWithNames: any[] = [];
+            const STORE_CHUNK = 200;
+            for (let i = 0; i < storeIdsWithAsgn.length; i += STORE_CHUNK) {
+                const { data: sd } = await supabase
+                    .from("stores")
+                    .select("id, name")
+                    .in("id", storeIdsWithAsgn.slice(i, i + STORE_CHUNK));
+                if (sd) storesWithNames = storesWithNames.concat(sd);
+            }
+            const storeNameMap = new Map(storesWithNames.map((s: any) => [s.id, s.name]));
+
+            // 4. Agrupar asignaciones por tienda
             const asgnByStore = new Map<string, string[]>();
             for (const a of asgnData) {
                 if (!asgnByStore.has(a.store_id)) asgnByStore.set(a.store_id, []);
                 asgnByStore.get(a.store_id)!.push(a.id);
             }
 
-            // 4. Traer conteos del día (filtrando flags de sesión)
+            // 5. Traer conteos del día (filtrando flags de sesión)
             const asgnIds = asgnData.map((a: any) => a.id);
             const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
             let allCountsRaw: any[] = [];
@@ -828,20 +839,19 @@ export default function DashboardPage() {
             // Filtrar flags internos
             const realCounts = allCountsRaw.filter((c: any) => !FLAGS.includes(c.location));
 
-            // 5. Conteos reales por assignment_id
+            // 6. Conteos reales por assignment_id
             const countedAsgns = new Set(realCounts.map((c: any) => c.assignment_id));
 
-            // 6. Construir progreso por tienda
+            // 7. Construir progreso para TODAS las tiendas con asignación ese día
             const result: StoreProgress[] = [];
-            for (const store of activeStoresList) {
-                const storeAsgns = asgnByStore.get(store.id) || [];
-                if (storeAsgns.length === 0) continue;
+            for (const storeId of storeIdsWithAsgn) {
+                const storeAsgns = asgnByStore.get(storeId) || [];
                 const totalAsignados = storeAsgns.length;
                 const totalContados = storeAsgns.filter(id => countedAsgns.has(id)).length;
                 const pct = totalAsignados > 0 ? Math.round((totalContados / totalAsignados) * 100) : 0;
                 result.push({
-                    store_id: store.id,
-                    store_name: store.name,
+                    store_id: storeId,
+                    store_name: storeNameMap.get(storeId) || storeId,
                     total_asignados: totalAsignados,
                     total_contados: totalContados,
                     pct,
@@ -2532,10 +2542,11 @@ export default function DashboardPage() {
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
-                                    { key: "asignar",   icon: "📦", label: "Asignar productos", tab: "validador" },
-                                    { key: "registros", icon: "📋", label: "Registros",          tab: "validador" },
-                                    { key: "resumen",   icon: "📊", label: "Resumen por código", tab: "validador" },
-                                    { key: "dashboard", icon: "📈", label: "Dashboard",           tab: "validador" },
+                                    { key: "asignar",   icon: "📦", label: "Asignar productos" },
+                                    { key: "registros", icon: "📋", label: "Registros"          },
+                                    { key: "resumen",   icon: "📊", label: "Resumen por código" },
+                                    { key: "progreso",  icon: "🏪", label: "Progreso tiendas"   },
+                                    { key: "dashboard", icon: "📈", label: "Dashboard"           },
                                 ] as const).map(item => (
                                     <button
                                         key={item.key}
@@ -2544,7 +2555,7 @@ export default function DashboardPage() {
                                             setValTab(item.key);
                                             if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "resumen"   && valStoreId) loadValidadorData(valStoreId, valDate);
-                                            if (item.key === "dashboard") loadStoreProgress(dashDate);
+                                            if (item.key === "progreso")  loadStoreProgress(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                             activeTab === "validador" && valTab === item.key
@@ -2615,6 +2626,7 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "asignar"   ? "📦 Asignar productos" :
                              activeTab === "validador" && valTab === "registros" ? "📋 Registros de conteo" :
                              activeTab === "validador" && valTab === "resumen"   ? "📊 Resumen por código" :
+                             activeTab === "validador" && valTab === "progreso"  ? "🏪 Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "📈 Dashboard" :
                              activeTab === "admin"     && adminTab === "productos" ? "🗃 Maestro de productos" :
                              activeTab === "admin"     && adminTab === "tiendas"   ? "🏪 Tiendas" :
@@ -2630,7 +2642,7 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Controles contextuales de tienda/fecha para Validador (excepto Dashboard) */}
-                    {activeTab === "validador" && valTab !== "dashboard" && (
+                    {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && (
                         <div className="flex items-center gap-2 flex-wrap">
                             <select
                                 className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
@@ -2661,7 +2673,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* Stats de tienda seleccionada en validador */}
-                    {activeTab === "validador" && valTab !== "dashboard" && valStoreId && resumenStats.total > 0 && (
+                    {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && valStoreId && resumenStats.total > 0 && (
                         <div className="hidden md:flex items-center gap-3">
                             <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-xl px-3 py-2">
                                 <span className="text-slate-500">Asig: <b className="text-slate-800">{resumenStats.total}</b></span>
@@ -3046,14 +3058,14 @@ export default function DashboardPage() {
             {activeTab === "validador" && isValOrAdm && (
                 <>
 
-                    {/* ── SUB-TAB: DASHBOARD (movido desde Admin) ──────── */}
-                    {valTab === "dashboard" && (
+                    {/* ── SUB-TAB: PROGRESO POR TIENDA ─────────────────── */}
+                    {valTab === "progreso" && (
                         <>
                             {/* ── Progreso por tienda hoy ───────────────────── */}
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div className="flex items-center justify-between flex-wrap gap-3">
                                     <div>
-                                        <h2 className="text-xl font-bold text-slate-900">📈 Progreso de conteo por tienda</h2>
+                                        <h2 className="text-xl font-bold text-slate-900">🏪 Progreso de conteo por tienda</h2>
                                         <p className="text-slate-500 text-sm mt-0.5">Avance en tiempo real de cada tienda para la fecha seleccionada.</p>
                                     </div>
                                     <div className="flex items-center gap-3 flex-wrap">
@@ -3135,8 +3147,12 @@ export default function DashboardPage() {
                                     </>
                                 )}
                             </section>
+                        </>
+                    )}
 
-                            {/* ── Dashboard histórico por período ───────────── */}
+                    {/* ── SUB-TAB: DASHBOARD ───────────────────────────── */}
+                    {valTab === "dashboard" && (
+                        <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
                                     <h2 className="text-xl font-bold text-slate-900">📊 Dashboard histórico por tienda</h2>
