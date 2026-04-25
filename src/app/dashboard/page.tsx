@@ -793,13 +793,23 @@ export default function DashboardPage() {
     async function loadStoreProgress(date: string) {
         setStoreProgressLoading(true);
         try {
-            // 1. Traer asignaciones del día para todas las tiendas (sin filtrar por allStores)
-            const { data: asgnData } = await supabase
-                .from("cyclic_assignments")
-                .select("id, store_id")
-                .eq("assigned_date", date);
+            // 1. Traer TODAS las asignaciones del día paginado (Supabase limita 1000 por request)
+            const PAGE = 1000;
+            let asgnData: any[] = [];
+            let page = 0;
+            while (true) {
+                const { data: chunk, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id")
+                    .eq("assigned_date", date)
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) break;
+                if (chunk && chunk.length > 0) asgnData = asgnData.concat(chunk);
+                if (!chunk || chunk.length < PAGE) break;
+                page++;
+            }
 
-            if (!asgnData || asgnData.length === 0) { setStoreProgressData([]); return; }
+            if (asgnData.length === 0) { setStoreProgressData([]); return; }
 
             // 2. Obtener IDs únicos de tiendas que tienen asignación ese día
             const storeIdsWithAsgn: string[] = Array.from(new Set<string>(asgnData.map((a: any) => a.store_id as string)));
