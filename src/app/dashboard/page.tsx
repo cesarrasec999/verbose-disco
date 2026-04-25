@@ -955,9 +955,8 @@ export default function DashboardPage() {
             const rows: DashboardRow[] = [];
 
             if (dashPeriod === "dia") {
-                // Vista día: una fila por tienda con hora inicio/fin/duración
+                // Vista día: una fila por tienda, con hora inicio/fin/duración
                 for (const d of dayMetrics) {
-                    // ERI solo aplica si cumplió; si no cumplió eri = 0
                     const eriExacto = d.cumplio && d.total > 0 ? Math.round((d.ok / d.total) * 100) : 0;
                     rows.push({
                         store_id: d.store_id,
@@ -980,8 +979,9 @@ export default function DashboardPage() {
                     });
                 }
             } else {
-                // Vista mes o rango: agrupar TODOS los días por tienda (una sola fila por tienda)
-                // Totales, ERI y dif. valorizada aplican SOLO a los días que cumplieron
+                // Vista mes o rango: UNA SOLA FILA por tienda, sin fecha
+                // Totales, ERI y dif. valorizada → SOLO de días que cumplieron
+                // Cumplimiento % → diasCumplidos / diasTotales (todos los días del período)
                 const storeGroups = new Map<string, DayMetrics[]>();
                 for (const d of dayMetrics) {
                     if (!storeGroups.has(d.store_id)) storeGroups.set(d.store_id, []);
@@ -990,22 +990,22 @@ export default function DashboardPage() {
                 for (const [, days] of storeGroups) {
                     const first = days[0];
                     const diasTotales = days.length;
-                    const diasCumplidos = days.filter(d => d.cumplio).length;
-                    const cumplimientoPct = diasTotales > 0 ? Math.round((diasCumplidos / diasTotales) * 100) : 0;
-                    // Solo días que cumplieron para todos los cálculos
                     const daysCumplieron = days.filter(d => d.cumplio);
-                    const totalAsignados = daysCumplieron.reduce((s, d) => s + d.total, 0);
-                    const totalOk        = daysCumplieron.reduce((s, d) => s + d.ok, 0);
-                    const totalSobrantes = daysCumplieron.reduce((s, d) => s + d.sobrantes, 0);
-                    const totalFaltantes = daysCumplieron.reduce((s, d) => s + d.faltantes, 0);
+                    const diasCumplidos = daysCumplieron.length;
+                    const cumplimientoPct = diasTotales > 0 ? Math.round((diasCumplidos / diasTotales) * 100) : 0;
+                    // Todos los cálculos solo sobre días que cumplieron
+                    const totalAsignados  = daysCumplieron.reduce((s, d) => s + d.total, 0);
+                    const totalOk         = daysCumplieron.reduce((s, d) => s + d.ok, 0);
+                    const totalSobrantes  = daysCumplieron.reduce((s, d) => s + d.sobrantes, 0);
+                    const totalFaltantes  = daysCumplieron.reduce((s, d) => s + d.faltantes, 0);
                     const totalNoContados = daysCumplieron.reduce((s, d) => s + d.noContados, 0);
-                    const difVal         = daysCumplieron.reduce((s, d) => s + d.difVal, 0);
-                    // ERI: OK / asignados de los días que cumplieron
+                    const difVal          = daysCumplieron.reduce((s, d) => s + d.difVal, 0);
+                    // ERI = OK / asignados de los días que cumplieron
                     const eriAgrupado = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
                     rows.push({
                         store_id: first.store_id,
                         store_name: first.store_name,
-                        date: dashPeriod === "mes" ? first.date.slice(0, 7) : `${dateFilter.from} → ${dateFilter.to}`,
+                        date: "",
                         total_asignados: totalAsignados,
                         total_ok: totalOk,
                         total_sobrantes: totalSobrantes,
@@ -1910,22 +1910,30 @@ export default function DashboardPage() {
 
     function exportDashboard() {
         const rows = filteredDashData.map(r => {
-            const base: any = {
-                TIENDA: r.store_name,
-                ASIGNADOS: r.total_asignados,
-                OK: r.total_ok,
-                SOBRANTES: r.total_sobrantes,
-                FALTANTES: r.total_faltantes,
-                DIF_VALORIZADA: r.dif_valorizada || 0,
-                ERI_PCT: r.eri,
-                CUMPLIMIENTO_PCT: r.cumplimiento_pct,
-                DIAS_CUMPLIDOS: r.dias_cumplidos,
-                DIAS_TOTALES: r.dias_totales,
-            };
+            const base: any = { TIENDA: r.store_name };
             if (dashPeriod === "dia") {
-                base.HORA_INICIO = r.hora_inicio ? formatDateTime(r.hora_inicio) : "—";
-                base.HORA_FIN = r.hora_fin ? formatDateTime(r.hora_fin) : "—";
-                base.DURACION = r.duracion_min !== null ? formatDuration(r.duracion_min) : "—";
+                // Vista día: incluye hora inicio/fin/duración, sin días_cumplidos
+                base.ASIGNADOS      = r.total_asignados;
+                base.OK             = r.total_ok;
+                base.SOBRANTES      = r.total_sobrantes;
+                base.FALTANTES      = r.total_faltantes;
+                base.DIF_VALORIZADA = r.dif_valorizada || 0;
+                base.ERI_PCT        = r.eri;
+                base.CUMPLIMIENTO   = r.cumplio ? "Sí" : "No";
+                base.HORA_INICIO    = r.hora_inicio ? formatDateTime(r.hora_inicio) : "—";
+                base.HORA_FIN       = r.hora_fin ? formatDateTime(r.hora_fin) : "—";
+                base.DURACION       = r.duracion_min !== null ? formatDuration(r.duracion_min) : "—";
+            } else {
+                // Vista mes/rango: solo días que cumplieron — sin hora/duración
+                base.ASIGNADOS         = r.total_asignados;
+                base.OK                = r.total_ok;
+                base.SOBRANTES         = r.total_sobrantes;
+                base.FALTANTES         = r.total_faltantes;
+                base.DIF_VALORIZADA    = r.dif_valorizada || 0;
+                base.ERI_PCT           = r.eri;
+                base.CUMPLIMIENTO_PCT  = r.cumplimiento_pct;
+                base.DIAS_CUMPLIDOS    = r.dias_cumplidos;
+                base.DIAS_TOTALES      = r.dias_totales;
             }
             return base;
         });
@@ -2327,19 +2335,24 @@ export default function DashboardPage() {
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        // ERI exacto: suma OKs de filas que cumplieron / suma asignados de filas que cumplieron
-        // Se excluyen tiendas/días que no cumplieron (no contaron todos sus códigos)
-        const filasQueCumplieron = filteredDashData.filter(r => r.cumplio);
-        const okCumplieron = filasQueCumplieron.reduce((s, r) => s + r.total_ok, 0);
-        const totalCumplieron = filasQueCumplieron.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = totalCumplieron > 0 ? Math.round((okCumplieron / totalCumplieron) * 100) : 0;
-        const cumplidos = filteredDashData.filter(r => r.cumplio).length;
-        const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
+        // ERI: suma OKs / suma asignados — en mes/rango los rows ya solo incluyen días que cumplieron
+        const filasConDatos = filteredDashData.filter(r => r.total_asignados > 0);
+        const okTotal = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
+        const asignadosTotal = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
+        // Cumplidos: en día = filas con cumplio true; en mes/rango = tiendas con al menos 1 día cumplido
+        const cumplidos = dashPeriod === "dia"
+            ? filteredDashData.filter(r => r.cumplio).length
+            : filteredDashData.filter(r => r.dias_cumplidos > 0).length;
+        const total = filteredDashData.length;
+        // Duración promedio: solo aplica en vista día
+        const avgDurMin = dashPeriod === "dia" && filteredDashData.filter(r => r.duracion_min !== null).length > 0
             ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
             : null;
-        const totalDifVal = filasQueCumplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
-        return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
-    }, [filteredDashData]);
+        // Dif. valorizada: en mes/rango los rows ya solo suman días que cumplieron
+        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        return { avgEri, cumplidos, total, avgDurMin, totalDifVal };
+    }, [filteredDashData, dashPeriod]);
 
     // ════════════════════════════════════════════════════════
     //  RENDER
@@ -3458,7 +3471,7 @@ export default function DashboardPage() {
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
                                         <div className="text-xs text-slate-500 mt-1">ERI</div>
-                                        {(dashPeriod === "mes" || dashPeriod === "rango") && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-green-700">
@@ -3482,7 +3495,7 @@ export default function DashboardPage() {
                                             {formatMoney(dashSummary.totalDifVal || 0)}
                                         </div>
                                         <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
-                                        {(dashPeriod === "mes" || dashPeriod === "rango") && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
                                     </div>
                                 </div>
                             )}
@@ -3492,15 +3505,13 @@ export default function DashboardPage() {
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <h3 className="font-bold text-slate-900">
                                         Detalle por tienda
-                                        {(dashPeriod === "mes" || dashPeriod === "rango") && (
-                                            <span className="ml-2 text-xs font-normal text-slate-400">
-                                                (solo días que cumplieron)
-                                            </span>
+                                        {dashPeriod !== "dia" && (
+                                            <span className="ml-2 text-xs font-normal text-slate-400">(solo días que cumplieron)</span>
                                         )}
                                     </h3>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="overflow-auto">
-                                            <table className="w-full text-sm min-w-[700px]">
+                                            <table className={`w-full text-sm ${dashPeriod === "dia" ? "min-w-[900px]" : "min-w-[640px]"}`}>
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
@@ -3536,7 +3547,7 @@ export default function DashboardPage() {
                                                                 <span className={`font-bold text-sm ${r.cumplimiento_pct >= 100 ? "text-green-700" : r.cumplimiento_pct >= 50 ? "text-amber-600" : "text-red-600"}`}>
                                                                     {r.cumplimiento_pct}%
                                                                 </span>
-                                                                {(dashPeriod === "mes" || dashPeriod === "rango") && (
+                                                                {dashPeriod !== "dia" && (
                                                                     <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
                                                                 )}
                                                             </td>
