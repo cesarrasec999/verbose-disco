@@ -3498,7 +3498,7 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <th className="p-2 border">Fecha</th>}
+                                                        {dashPeriod === "rango" && <th className="p-2 border">Fecha</th>}
                                                         <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
@@ -3517,7 +3517,7 @@ export default function DashboardPage() {
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <td className="p-2 border text-center text-xs">{r.date}</td>}
+                                                            {dashPeriod === "rango" && <td className="p-2 border text-center text-xs">{r.date}</td>}
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
