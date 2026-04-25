@@ -417,13 +417,22 @@ export default function DashboardPage() {
             const sid = user.store_id || "";
             setSelectedStoreId(sid);
             if (sid) loadOperarioData(sid, selectedDate);
-        } else if (user.role === "Administrador") {
-            // Restaurar estado del operario para el admin si hay tienda guardada
-            const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
-            const savedDate    = sessionStorage.getItem("cyclic_selected_date");
-            if (savedStoreId) {
-                setSelectedStoreId(savedStoreId);
-                loadOperarioData(savedStoreId, savedDate || selectedDate);
+        } else if (user.role === "Administrador" || user.role === "Validador") {
+            // Restaurar datos del validador si estaba en ese tab
+            const savedTab      = sessionStorage.getItem("cyclic_active_tab");
+            const savedValStore = sessionStorage.getItem("cyclic_val_store");
+            const savedValDate  = sessionStorage.getItem("cyclic_val_date");
+            if ((savedTab === "validador") && savedValStore && savedValDate) {
+                loadValidadorData(savedValStore, savedValDate);
+            }
+            // Restaurar vista operario para admin
+            if (user.role === "Administrador") {
+                const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
+                const savedDate    = sessionStorage.getItem("cyclic_selected_date");
+                if (savedStoreId) {
+                    setSelectedStoreId(savedStoreId);
+                    loadOperarioData(savedStoreId, savedDate || selectedDate);
+                }
             }
         }
     }, [user]);
@@ -570,36 +579,48 @@ export default function DashboardPage() {
     }
 
     // ── Helper: escribir/borrar flags de sesión en BD ────────
+    // Siempre usamos el assignment con ID mínimo (orden estable) como anchor.
+    async function getSessionAnchor(storeId: string, date: string): Promise<string | null> {
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments").select("id")
+            .eq("store_id", storeId).eq("assigned_date", date)
+            .order("id").limit(1);
+        return asgns && asgns.length > 0 ? asgns[0].id : null;
+    }
+
     async function setSessionFlag(storeId: string, date: string, flag: "__session_counting__" | "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
-        // Usamos el primer assignment de la tienda+fecha como anchor del flag
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
-        if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
+        const anchorId = await getSessionAnchor(storeId, date);
+        if (!anchorId) return;
         if (active) {
-            // Upsert: insertar solo si no existe ya
-            const { data: existing } = await supabase.from("cyclic_counts").select("id").eq("assignment_id", anchorId).eq("location", flag).maybeSingle();
-            if (!existing) {
-                await supabase.from("cyclic_counts").insert({
-                    assignment_id: anchorId,
-                    store_id: storeId,
-                    product_id: asgns[0].id, // dummy, no importa
-                    counted_quantity: 0,
-                    location: flag,
-                    status: "Pendiente",
-                    counted_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                });
-            }
+            // Upsert seguro: borrar primero y reinsertar para evitar duplicados
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
+            await supabase.from("cyclic_counts").insert({
+                assignment_id: anchorId,
+                store_id: storeId,
+                product_id: anchorId, // dummy
+                counted_quantity: 0,
+                location: flag,
+                status: "Pendiente",
+                counted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
         } else {
             await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
         }
     }
 
     async function clearSessionFlags(storeId: string, date: string) {
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
+        // Limpia flags de TODOS los assignments de la tienda+fecha (no solo el anchor)
+        // para asegurarse que no queden huérfanos de sesiones previas
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments").select("id")
+            .eq("store_id", storeId).eq("assigned_date", date);
         if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
-        await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).like("location", "__session_%");
+        const ids = asgns.map((a: any) => a.id);
+        await supabase.from("cyclic_counts")
+            .delete()
+            .in("assignment_id", ids)
+            .like("location", "__session_%");
     }
 
     async function confirmFinishSession() {
@@ -2896,13 +2917,6 @@ export default function DashboardPage() {
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
                                         <div className="flex gap-2 flex-wrap">
-                                            <button
-                                                className="px-4 py-2 rounded-2xl bg-green-600 text-white font-semibold text-xs hover:bg-green-700 transition"
-                                                onClick={() => openBulkWspModal(valDate)}
-                                                title="Enviar WhatsApp a todos los operarios con asignaciones en esta fecha"
-                                            >
-                                                📲 WhatsApp masivo
-                                            </button>
                                             <button
                                                 className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
                                                 onClick={removeAllAssignments}
