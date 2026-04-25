@@ -1418,6 +1418,39 @@ export default function DashboardPage() {
         setShowBulkWspModal(false);
     }
 
+    async function openBulkWspModal(date: string) {
+        // Obtener todas las tiendas con asignaciones en esa fecha
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments")
+            .select("store_id")
+            .eq("assigned_date", date);
+        const storeIds = [...new Set((asgns || []).map((a: any) => a.store_id as string))];
+        if (storeIds.length === 0) { showMessage("No hay tiendas con asignaciones en esta fecha.", "error"); return; }
+
+        const wspStoresData: typeof bulkWspStores = [];
+        for (const sid of storeIds) {
+            const { count: cnt } = await supabase.from("cyclic_assignments")
+                .select("id", { count: "exact", head: true })
+                .eq("store_id", sid).eq("assigned_date", date);
+            const { data: op } = await supabase.from("cyclic_users")
+                .select("full_name, whatsapp")
+                .eq("store_id", sid).eq("role", "Operario").eq("is_active", true).maybeSingle();
+            const storeName = allStores.find(s => s.id === sid)?.name || sid;
+            wspStoresData.push({
+                id: sid,
+                name: storeName,
+                count: cnt || 0,
+                operario: op ? { full_name: op.full_name, whatsapp: op.whatsapp || "" } : null,
+            });
+        }
+        wspStoresData.sort((a, b) => a.name.localeCompare(b.name));
+        const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
+        setBulkWspStores(wspStoresData);
+        setBulkWspSelected(new Set(withOperario.map(s => s.id)));
+        setBulkWspDate(date);
+        setShowBulkWspModal(true);
+    }
+
     // ════════════════════════════════════════════════════════
     //  VALIDADOR — EDITAR CONTEO
     // ════════════════════════════════════════════════════════
@@ -2583,6 +2616,13 @@ export default function DashboardPage() {
                                     🔄 Actualizar
                                 </button>
                             )}
+                            <button
+                                className="px-4 py-3 rounded-2xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition flex items-center gap-2"
+                                onClick={() => openBulkWspModal(valDate)}
+                                title="Enviar WhatsApp a todos los operarios con asignaciones en la fecha seleccionada"
+                            >
+                                📲 WhatsApp masivo
+                            </button>
                             {valStoreId && (
                                 <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
                                     <span>Asignados: <b>{resumenStats.total}</b></span>
@@ -2714,11 +2754,11 @@ export default function DashboardPage() {
                                         <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
                                         <div className="flex gap-2 flex-wrap">
                                             <button
-                                                className="px-4 py-2 rounded-2xl bg-green-500 text-white font-semibold text-xs hover:bg-green-600 transition"
-                                                onClick={() => sendWhatsappAlert(valStoreId, valDate, assignments.length)}
-                                                title="Enviar alerta WhatsApp al operario de esta tienda"
+                                                className="px-4 py-2 rounded-2xl bg-green-600 text-white font-semibold text-xs hover:bg-green-700 transition"
+                                                onClick={() => openBulkWspModal(valDate)}
+                                                title="Enviar WhatsApp a todos los operarios con asignaciones en esta fecha"
                                             >
-                                                📲 Avisar por WhatsApp
+                                                📲 WhatsApp masivo
                                             </button>
                                             <button
                                                 className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
