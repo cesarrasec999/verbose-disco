@@ -116,6 +116,14 @@ type DashboardRow = {
     duracion_min: number | null;
 };
 
+type StoreProgress = {
+    store_id: string;
+    store_name: string;
+    total_asignados: number;
+    total_contados: number;
+    pct: number;
+};
+
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
@@ -256,7 +264,7 @@ export default function DashboardPage() {
     const scannerContainerId = "cyclic-scanner";
 
     // ─── Validador: filtros ──────────────────────────────────
-    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen">("asignar");
+    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen"|"dashboard">("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
     const [valSearchText, setValSearchText] = useState("");
@@ -280,7 +288,7 @@ export default function DashboardPage() {
     const [editNote, setEditNote]           = useState("");
 
     // ─── Admin: maestro productos ────────────────────────────
-    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios"|"dashboard">("productos");
+    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
     const [masterFileName, setMasterFileName] = useState("");
@@ -346,6 +354,10 @@ export default function DashboardPage() {
     const [dashStoreFilter, setDashStoreFilter] = useState("");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
 
+    // ─── Dashboard en validador: progreso por tienda ─────────
+    const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
+    const [storeProgressLoading, setStoreProgressLoading] = useState(false);
+
     // ════════════════════════════════════════════════════════
     //  INIT
     // ════════════════════════════════════════════════════════
@@ -381,10 +393,10 @@ export default function DashboardPage() {
                     else setActiveTab("operario");
                 }
 
-                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
+                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"dashboard" | null;
                 if (savedValTab) setValTab(savedValTab);
 
-                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios"|"dashboard" | null;
+                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
                 if (savedAdminTab) setAdminTab(savedAdminTab);
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
@@ -773,6 +785,81 @@ export default function DashboardPage() {
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
         });
         setCounts(enriched);
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  VALIDADOR — PROGRESO POR TIENDA
+    // ════════════════════════════════════════════════════════
+    async function loadStoreProgress(date: string) {
+        setStoreProgressLoading(true);
+        try {
+            // 1. Obtener todas las tiendas activas
+            const activeStoresList = allStores.filter(s => s.is_active);
+            if (activeStoresList.length === 0) { setStoreProgressData([]); return; }
+
+            // 2. Traer asignaciones del día para todas las tiendas
+            const { data: asgnData } = await supabase
+                .from("cyclic_assignments")
+                .select("id, store_id")
+                .eq("assigned_date", date);
+
+            if (!asgnData || asgnData.length === 0) { setStoreProgressData([]); return; }
+
+            // 3. Agrupar asignaciones por tienda
+            const asgnByStore = new Map<string, string[]>();
+            for (const a of asgnData) {
+                if (!asgnByStore.has(a.store_id)) asgnByStore.set(a.store_id, []);
+                asgnByStore.get(a.store_id)!.push(a.id);
+            }
+
+            // 4. Traer conteos del día (filtrando flags de sesión)
+            const asgnIds = asgnData.map((a: any) => a.id);
+            const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
+            let allCountsRaw: any[] = [];
+            const CHUNK = 500;
+            for (let i = 0; i < asgnIds.length; i += CHUNK) {
+                const { data: cd } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, store_id, location")
+                    .in("assignment_id", asgnIds.slice(i, i + CHUNK));
+                if (cd) allCountsRaw = allCountsRaw.concat(cd);
+            }
+
+            // Filtrar flags internos
+            const realCounts = allCountsRaw.filter((c: any) => !FLAGS.includes(c.location));
+
+            // 5. Conteos reales por assignment_id
+            const countedAsgns = new Set(realCounts.map((c: any) => c.assignment_id));
+
+            // 6. Construir progreso por tienda
+            const result: StoreProgress[] = [];
+            for (const store of activeStoresList) {
+                const storeAsgns = asgnByStore.get(store.id) || [];
+                if (storeAsgns.length === 0) continue;
+                const totalAsignados = storeAsgns.length;
+                const totalContados = storeAsgns.filter(id => countedAsgns.has(id)).length;
+                const pct = totalAsignados > 0 ? Math.round((totalContados / totalAsignados) * 100) : 0;
+                result.push({
+                    store_id: store.id,
+                    store_name: store.name,
+                    total_asignados: totalAsignados,
+                    total_contados: totalContados,
+                    pct,
+                });
+            }
+
+            // Ordenar: primero los incompletos, luego por nombre
+            result.sort((a, b) => {
+                if (a.pct === 100 && b.pct < 100) return 1;
+                if (b.pct === 100 && a.pct < 100) return -1;
+                return a.store_name.localeCompare(b.store_name);
+            });
+            setStoreProgressData(result);
+        } catch (e: any) {
+            showMessage("Error cargando progreso: " + e.message, "error");
+        } finally {
+            setStoreProgressLoading(false);
+        }
     }
 
     // ════════════════════════════════════════════════════════
@@ -2825,12 +2912,277 @@ export default function DashboardPage() {
                         </div>
                     </section>
 
-                    {/* Sub-tabs validador: Asignar | Registros | Resumen */}
+                    {/* Sub-tabs validador: Asignar | Registros | Resumen | Dashboard */}
                     <div className="flex gap-2 flex-wrap">
                         <button onClick={() => setValTab("asignar")} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "asignar" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Asignar productos</button>
                         <button onClick={() => { setValTab("registros"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "registros" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Registros</button>
                         <button onClick={() => { setValTab("resumen"); if (valStoreId) loadValidadorData(valStoreId, valDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "resumen" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Resumen por código</button>
+                        <button onClick={() => { setValTab("dashboard"); loadStoreProgress(dashDate); }} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border transition ${valTab === "dashboard" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>📊 Dashboard</button>
                     </div>
+
+                    {/* ── SUB-TAB: DASHBOARD (movido desde Admin) ──────── */}
+                    {valTab === "dashboard" && (
+                        <>
+                            {/* ── Progreso por tienda hoy ───────────────────── */}
+                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                                <div className="flex items-center justify-between flex-wrap gap-3">
+                                    <div>
+                                        <h2 className="text-xl font-bold text-slate-900">📈 Progreso de conteo por tienda</h2>
+                                        <p className="text-slate-500 text-sm mt-0.5">Avance en tiempo real de cada tienda para la fecha seleccionada.</p>
+                                    </div>
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
+                                            <input type="date" className="border rounded-2xl p-2.5 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
+                                        </div>
+                                        <button
+                                            onClick={() => loadStoreProgress(dashDate)}
+                                            disabled={storeProgressLoading}
+                                            className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-50"
+                                        >
+                                            {storeProgressLoading ? "Cargando..." : "🔄 Actualizar"}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {storeProgressLoading ? (
+                                    <div className="text-center text-slate-400 py-8">Cargando progreso...</div>
+                                ) : storeProgressData.length === 0 ? (
+                                    <div className="text-center text-slate-400 py-8">
+                                        No hay asignaciones para esta fecha. Presiona <b>Actualizar</b> para consultar.
+                                    </div>
+                                ) : (
+                                    <>
+                                        {/* Resumen global rápido */}
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                            <div className="rounded-2xl bg-slate-50 border p-4 text-center">
+                                                <div className="text-2xl font-bold text-slate-900">{storeProgressData.length}</div>
+                                                <div className="text-xs text-slate-500 mt-1">Tiendas con asignación</div>
+                                            </div>
+                                            <div className="rounded-2xl bg-green-50 border border-green-200 p-4 text-center">
+                                                <div className="text-2xl font-bold text-green-700">{storeProgressData.filter(s => s.pct === 100).length}</div>
+                                                <div className="text-xs text-slate-500 mt-1">Completadas (100%)</div>
+                                            </div>
+                                            <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 text-center">
+                                                <div className="text-2xl font-bold text-amber-600">{storeProgressData.filter(s => s.pct > 0 && s.pct < 100).length}</div>
+                                                <div className="text-xs text-slate-500 mt-1">En progreso</div>
+                                            </div>
+                                            <div className="rounded-2xl bg-red-50 border border-red-200 p-4 text-center">
+                                                <div className="text-2xl font-bold text-red-600">{storeProgressData.filter(s => s.pct === 0).length}</div>
+                                                <div className="text-xs text-slate-500 mt-1">Sin iniciar</div>
+                                            </div>
+                                        </div>
+
+                                        {/* Lista de tiendas con barra de progreso */}
+                                        <div className="space-y-3">
+                                            {storeProgressData.map(sp => {
+                                                const isComplete = sp.pct === 100;
+                                                const isStarted  = sp.pct > 0 && sp.pct < 100;
+                                                const barColor   = isComplete ? "#16a34a" : isStarted ? "#f59e0b" : "#e2e8f0";
+                                                const borderCls  = isComplete ? "border-green-200 bg-green-50" : isStarted ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white";
+                                                return (
+                                                    <div key={sp.store_id} className={`rounded-2xl border p-4 space-y-2 ${borderCls}`}>
+                                                        <div className="flex items-center justify-between gap-3">
+                                                            <div className="flex-1 min-w-0">
+                                                                <span className="font-semibold text-slate-900 text-sm">{sp.store_name}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-3 flex-shrink-0">
+                                                                <span className="text-xs text-slate-500">{sp.total_contados} / {sp.total_asignados} códigos</span>
+                                                                <span className={`text-sm font-bold w-12 text-right ${isComplete ? "text-green-700" : isStarted ? "text-amber-600" : "text-slate-400"}`}>
+                                                                    {sp.pct}%
+                                                                </span>
+                                                                {isComplete && <span className="text-green-600 text-base">✅</span>}
+                                                                {!isComplete && sp.pct === 0 && <span className="text-slate-300 text-base">⏳</span>}
+                                                                {isStarted && <span className="text-amber-500 text-base">🔄</span>}
+                                                            </div>
+                                                        </div>
+                                                        <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                                                            <div
+                                                                className="h-full rounded-full transition-all duration-500"
+                                                                style={{ width: `${sp.pct}%`, background: barColor }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </>
+                                )}
+                            </section>
+
+                            {/* ── Dashboard histórico por período ───────────── */}
+                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-900">📊 Dashboard histórico por tienda</h2>
+                                    <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cíclico por período.</p>
+                                </div>
+
+                                {/* Controles */}
+                                <div className="flex gap-3 flex-wrap items-end">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Período</label>
+                                        <div className="flex gap-1 flex-wrap">
+                                            <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por día</button>
+                                            <button onClick={() => setDashPeriod("mes")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "mes" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por mes</button>
+                                            <button onClick={() => setDashPeriod("rango")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "rango" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Rango</button>
+                                        </div>
+                                    </div>
+                                    {dashPeriod === "dia" ? (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
+                                            <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
+                                        </div>
+                                    ) : dashPeriod === "rango" ? (
+                                        <>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Desde</label>
+                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeFrom} onChange={e => setDashRangeFrom(e.target.value)} />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Hasta</label>
+                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeTo} onChange={e => setDashRangeTo(e.target.value)} />
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Mes</label>
+                                            <input type="month" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashMonth} onChange={e => setDashMonth(e.target.value)} />
+                                        </div>
+                                    )}
+                                    <div className="flex-1 min-w-[160px]">
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Filtrar tienda</label>
+                                        <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashStoreFilter} onChange={e => setDashStoreFilter(e.target.value)}>
+                                            <option value="">Todas las tiendas</option>
+                                            {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
+                                        {dashLoading ? "Cargando..." : "🔍 Consultar"}
+                                    </button>
+                                    {dashData.length > 0 && (
+                                        <button onClick={loadDashboard} disabled={dashLoading} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700 flex items-center gap-2 disabled:opacity-50">
+                                            🔄 Actualizar
+                                        </button>
+                                    )}
+                                    {dashData.length > 0 && (
+                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
+                                    )}
+                                    <button
+                                        onClick={exportGlobal}
+                                        disabled={globalExportLoading}
+                                        className="px-4 py-3 rounded-2xl bg-green-700 text-white text-sm font-semibold disabled:opacity-50"
+                                        title="Descarga todos los códigos asignados con su estado, de todas las tiendas, en el período seleccionado"
+                                    >
+                                        {globalExportLoading ? "Generando..." : "↓ Excel global (todos los códigos)"}
+                                    </button>
+                                </div>
+                            </section>
+
+                            {/* Tarjetas resumen */}
+                            {dashSummary && (
+                                <div className={`grid gap-3 ${dashPeriod === "dia" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
+                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-green-700">
+                                            {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
+                                        <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
+                                    </div>
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.cumplidos} <span className="text-slate-400 text-xl">/ {dashSummary.total}</span></div>
+                                        <div className="text-xs text-slate-500 mt-1">Cumplieron</div>
+                                    </div>
+                                    {dashPeriod === "dia" && (
+                                        <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                            <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
+                                            <div className="text-xs text-slate-500 mt-1">Duración</div>
+                                        </div>
+                                    )}
+                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
+                                            {formatMoney(dashSummary.totalDifVal || 0)}
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Tabla dashboard */}
+                            {filteredDashData.length > 0 ? (
+                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                    <h3 className="font-bold text-slate-900">
+                                        Detalle por tienda
+                                        {dashPeriod !== "dia" && (
+                                            <span className="ml-2 text-xs font-normal text-slate-400">(solo días que cumplieron)</span>
+                                        )}
+                                    </h3>
+                                    <div className="border rounded-2xl overflow-hidden">
+                                        <div className="overflow-auto">
+                                            <table className={`w-full text-sm ${dashPeriod === "dia" ? "min-w-[900px]" : "min-w-[640px]"}`}>
+                                                <thead className="bg-slate-100 sticky top-0">
+                                                    <tr>
+                                                        <th className="p-2 border text-left">Tienda</th>
+                                                        <th className="p-2 border">Asignados</th>
+                                                        <th className="p-2 border text-green-700">OK</th>
+                                                        <th className="p-2 border text-blue-700">Sobrantes</th>
+                                                        <th className="p-2 border text-red-600">Faltantes</th>
+                                                        <th className="p-2 border text-red-700">Dif. Val.</th>
+                                                        <th className="p-2 border">ERI %</th>
+                                                        <th className="p-2 border">Cumplimiento</th>
+                                                        {dashPeriod === "dia" && <>
+                                                            <th className="p-2 border">Hora inicio</th>
+                                                            <th className="p-2 border">Hora fin</th>
+                                                            <th className="p-2 border">Duración</th>
+                                                        </>}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {filteredDashData.map((r, i) => (
+                                                        <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
+                                                            <td className="p-2 border font-medium">{r.store_name}</td>
+                                                            <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
+                                                            <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
+                                                            <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
+                                                            <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
+                                                            <td className="p-2 border text-center text-xs font-semibold">
+                                                                <span className={(r.dif_valorizada || 0) < 0 ? "text-red-600" : (r.dif_valorizada || 0) > 0 ? "text-blue-700" : "text-green-700"}>{formatMoney(r.dif_valorizada || 0)}</span>
+                                                            </td>
+                                                            <td className="p-2 border text-center">
+                                                                <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
+                                                            </td>
+                                                            <td className="p-2 border text-center">
+                                                                <span className={`font-bold text-sm ${r.cumplimiento_pct >= 100 ? "text-green-700" : r.cumplimiento_pct >= 50 ? "text-amber-600" : "text-red-600"}`}>
+                                                                    {r.cumplimiento_pct}%
+                                                                </span>
+                                                                {dashPeriod !== "dia" && (
+                                                                    <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
+                                                                )}
+                                                            </td>
+                                                            {dashPeriod === "dia" && <>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
+                                                            </>}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </section>
+                            ) : dashData.length === 0 && !dashLoading ? (
+                                <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
+                                    Presiona <b>Consultar</b> para cargar los datos del período seleccionado.
+                                </div>
+                            ) : null}
+                        </>
+                    )}
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
                     {valTab === "asignar" && (
@@ -3163,9 +3515,9 @@ export default function DashboardPage() {
                 <>
                     {/* Sub-tabs admin */}
                     <div className="flex gap-2 flex-wrap">
-                        {(["productos","tiendas","usuarios","dashboard"] as const).map(t => (
+                        {(["productos","tiendas","usuarios"] as const).map(t => (
                             <button key={t} onClick={() => setAdminTab(t)} className={`px-5 py-2.5 rounded-2xl font-semibold text-sm border capitalize transition ${adminTab === t ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>
-                                {t === "productos" ? "🗃 Maestro" : t === "tiendas" ? "🏪 Tiendas" : t === "usuarios" ? "👤 Usuarios" : "📊 Dashboard"}
+                                {t === "productos" ? "🗃 Maestro" : t === "tiendas" ? "🏪 Tiendas" : "👤 Usuarios"}
                             </button>
                         ))}
                     </div>
@@ -3395,181 +3747,6 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {/* ── ADMIN: DASHBOARD ──────────────────────────────── */}
-                    {adminTab === "dashboard" && (
-                        <>
-                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
-                                <div>
-                                    <h2 className="text-xl font-bold text-slate-900">📊 Dashboard por tienda</h2>
-                                    <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cíclico por período.</p>
-                                </div>
-
-                                {/* Controles */}
-                                <div className="flex gap-3 flex-wrap items-end">
-                                    <div>
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Período</label>
-                                        <div className="flex gap-1 flex-wrap">
-                                            <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por día</button>
-                                            <button onClick={() => setDashPeriod("mes")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "mes" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por mes</button>
-                                            <button onClick={() => setDashPeriod("rango")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "rango" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Rango</button>
-                                        </div>
-                                    </div>
-                                    {dashPeriod === "dia" ? (
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha</label>
-                                            <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
-                                        </div>
-                                    ) : dashPeriod === "rango" ? (
-                                        <>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Desde</label>
-                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeFrom} onChange={e => setDashRangeFrom(e.target.value)} />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-semibold text-slate-600 mb-1">Hasta</label>
-                                                <input type="date" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashRangeTo} onChange={e => setDashRangeTo(e.target.value)} />
-                                            </div>
-                                        </>
-                                    ) : (
-                                        <div>
-                                            <label className="block text-xs font-semibold text-slate-600 mb-1">Mes</label>
-                                            <input type="month" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashMonth} onChange={e => setDashMonth(e.target.value)} />
-                                        </div>
-                                    )}
-                                    <div className="flex-1 min-w-[160px]">
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Filtrar tienda</label>
-                                        <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashStoreFilter} onChange={e => setDashStoreFilter(e.target.value)}>
-                                            <option value="">Todas las tiendas</option>
-                                            {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                        </select>
-                                    </div>
-                                    <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
-                                        {dashLoading ? "Cargando..." : "🔍 Consultar"}
-                                    </button>
-                                    {dashData.length > 0 && (
-                                        <button onClick={loadDashboard} disabled={dashLoading} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700 flex items-center gap-2 disabled:opacity-50">
-                                            🔄 Actualizar
-                                        </button>
-                                    )}
-                                    {dashData.length > 0 && (
-                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
-                                    )}
-                                    <button
-                                        onClick={exportGlobal}
-                                        disabled={globalExportLoading}
-                                        className="px-4 py-3 rounded-2xl bg-green-700 text-white text-sm font-semibold disabled:opacity-50"
-                                        title="Descarga todos los códigos asignados con su estado, de todas las tiendas, en el período seleccionado"
-                                    >
-                                        {globalExportLoading ? "Generando..." : "↓ Excel global (todos los códigos)"}
-                                    </button>
-                                </div>
-                            </section>
-
-                            {/* Tarjetas resumen */}
-                            {dashSummary && (
-                                <div className={`grid gap-3 ${dashPeriod === "dia" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
-                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
-                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
-                                    </div>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-3xl font-bold text-green-700">
-                                            {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
-                                        </div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
-                                        <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
-                                    </div>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.cumplidos} <span className="text-slate-400 text-xl">/ {dashSummary.total}</span></div>
-                                        <div className="text-xs text-slate-500 mt-1">Cumplieron</div>
-                                    </div>
-                                    {dashPeriod === "dia" && (
-                                        <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                            <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                            <div className="text-xs text-slate-500 mt-1">Duración</div>
-                                        </div>
-                                    )}
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
-                                            {formatMoney(dashSummary.totalDifVal || 0)}
-                                        </div>
-                                        <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
-                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Tabla dashboard */}
-                            {filteredDashData.length > 0 ? (
-                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <h3 className="font-bold text-slate-900">
-                                        Detalle por tienda
-                                        {dashPeriod !== "dia" && (
-                                            <span className="ml-2 text-xs font-normal text-slate-400">(solo días que cumplieron)</span>
-                                        )}
-                                    </h3>
-                                    <div className="border rounded-2xl overflow-hidden">
-                                        <div className="overflow-auto">
-                                            <table className={`w-full text-sm ${dashPeriod === "dia" ? "min-w-[900px]" : "min-w-[640px]"}`}>
-                                                <thead className="bg-slate-100 sticky top-0">
-                                                    <tr>
-                                                        <th className="p-2 border text-left">Tienda</th>
-                                                        <th className="p-2 border">Asignados</th>
-                                                        <th className="p-2 border text-green-700">OK</th>
-                                                        <th className="p-2 border text-blue-700">Sobrantes</th>
-                                                        <th className="p-2 border text-red-600">Faltantes</th>
-                                                        <th className="p-2 border text-red-700">Dif. Val.</th>
-                                                        <th className="p-2 border">ERI %</th>
-                                                        <th className="p-2 border">Cumplimiento</th>
-                                                        {dashPeriod === "dia" && <>
-                                                            <th className="p-2 border">Hora inicio</th>
-                                                            <th className="p-2 border">Hora fin</th>
-                                                            <th className="p-2 border">Duración</th>
-                                                        </>}
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {filteredDashData.map((r, i) => (
-                                                        <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
-                                                            <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
-                                                            <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
-                                                            <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
-                                                            <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
-                                                            <td className="p-2 border text-center text-xs font-semibold">
-                                                                <span className={(r.dif_valorizada || 0) < 0 ? "text-red-600" : (r.dif_valorizada || 0) > 0 ? "text-blue-700" : "text-green-700"}>{formatMoney(r.dif_valorizada || 0)}</span>
-                                                            </td>
-                                                            <td className="p-2 border text-center">
-                                                                <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
-                                                            </td>
-                                                            <td className="p-2 border text-center">
-                                                                <span className={`font-bold text-sm ${r.cumplimiento_pct >= 100 ? "text-green-700" : r.cumplimiento_pct >= 50 ? "text-amber-600" : "text-red-600"}`}>
-                                                                    {r.cumplimiento_pct}%
-                                                                </span>
-                                                                {dashPeriod !== "dia" && (
-                                                                    <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
-                                                                )}
-                                                            </td>
-                                                            {dashPeriod === "dia" && <>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
-                                                            </>}
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                </section>
-                            ) : dashData.length === 0 && !dashLoading ? (
-                                <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
-                                    Presiona <b>Consultar</b> para cargar los datos del período seleccionado.
-                                </div>
-                            ) : null}
-                        </>
-                    )}
                 </>
             )}
 

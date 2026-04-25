@@ -20,6 +20,7 @@ type CyclicUser = {
     store_id: string | null;
     can_access_all_stores: boolean;
     is_active: boolean;
+    whatsapp?: string | null;
 };
 
 type Store = {
@@ -311,14 +312,24 @@ export default function DashboardPage() {
     const [newRole, setNewRole]               = useState<Role>("Operario");
     const [newUserStoreId, setNewUserStoreId] = useState("");
     const [newUserAllStores, setNewUserAllStores] = useState(false);
+    const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
+    const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
+
+    // ─── WhatsApp masivo post-carga ──────────────────────────
+    const [showBulkWspModal, setShowBulkWspModal] = useState(false);
+    const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string; username: string; password: string } | null }[]>([]);
+    const [bulkWspSelected, setBulkWspSelected] = useState<Set<string>>(new Set());
+    const [bulkWspDate, setBulkWspDate] = useState("");
+    const [bulkWspSendingIdx, setBulkWspSendingIdx] = useState(-1); // -1 = no enviando, 0+ = índice actual
 
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
     const [recountFinished, setRecountFinished] = useState(false);
+    const [countingStatus, setCountingStatus] = useState<"idle"|"counting"|"finished"|"recounting"|"recount_done">("idle");
     const [editUserStoreId, setEditUserStoreId] = useState("");
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
@@ -373,6 +384,20 @@ export default function DashboardPage() {
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
                 if (savedValTab) setValTab(savedValTab);
 
+                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios"|"dashboard" | null;
+                if (savedAdminTab) setAdminTab(savedAdminTab);
+
+                const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
+                const savedValDate    = sessionStorage.getItem("cyclic_val_date");
+                if (savedValStoreId) setValStoreId(savedValStoreId);
+                if (savedValDate)    setValDate(savedValDate);
+
+                // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
+                const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
+                const savedDate    = sessionStorage.getItem("cyclic_selected_date");
+                if (savedStoreId) setSelectedStoreId(savedStoreId);
+                if (savedDate)    setSelectedDate(savedDate);
+
             } catch {
                 setUser(parsed);
                 if (parsed.role === "Administrador") setActiveTab("admin");
@@ -392,6 +417,23 @@ export default function DashboardPage() {
             const sid = user.store_id || "";
             setSelectedStoreId(sid);
             if (sid) loadOperarioData(sid, selectedDate);
+        } else if (user.role === "Administrador" || user.role === "Validador") {
+            // Restaurar datos del validador si estaba en ese tab
+            const savedTab      = sessionStorage.getItem("cyclic_active_tab");
+            const savedValStore = sessionStorage.getItem("cyclic_val_store");
+            const savedValDate  = sessionStorage.getItem("cyclic_val_date");
+            if ((savedTab === "validador") && savedValStore && savedValDate) {
+                loadValidadorData(savedValStore, savedValDate);
+            }
+            // Restaurar vista operario para admin
+            if (user.role === "Administrador") {
+                const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
+                const savedDate    = sessionStorage.getItem("cyclic_selected_date");
+                if (savedStoreId) {
+                    setSelectedStoreId(savedStoreId);
+                    loadOperarioData(savedStoreId, savedDate || selectedDate);
+                }
+            }
         }
     }, [user]);
 
@@ -400,8 +442,28 @@ export default function DashboardPage() {
     }, [activeTab]);
 
     useEffect(() => {
+        if (selectedStoreId) sessionStorage.setItem("cyclic_selected_store", selectedStoreId);
+    }, [selectedStoreId]);
+
+    useEffect(() => {
+        if (selectedDate) sessionStorage.setItem("cyclic_selected_date", selectedDate);
+    }, [selectedDate]);
+
+    useEffect(() => {
         if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
     }, [valTab]);
+
+    useEffect(() => {
+        if (adminTab) sessionStorage.setItem("cyclic_admin_tab", adminTab);
+    }, [adminTab]);
+
+    useEffect(() => {
+        if (valStoreId) sessionStorage.setItem("cyclic_val_store", valStoreId);
+    }, [valStoreId]);
+
+    useEffect(() => {
+        if (valDate) sessionStorage.setItem("cyclic_val_date", valDate);
+    }, [valDate]);
 
     // realtime para operario
     useEffect(() => {
@@ -412,6 +474,25 @@ export default function DashboardPage() {
             .subscribe();
         return () => { supabase.removeChannel(ch); };
     }, [selectedStoreId, selectedDate, user]);
+
+    // realtime para admin viendo tab operario
+    useEffect(() => {
+        if (!selectedStoreId || user?.role !== "Administrador" || activeTab !== "operario") return;
+        const ch = supabase.channel(`cyclic-admin-operario-${selectedStoreId}`)
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${selectedStoreId}` }, () => loadOperarioData(selectedStoreId, selectedDate))
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [selectedStoreId, selectedDate, user, activeTab]);
+
+    // realtime para validador: recarga cuando operario registra conteos
+    useEffect(() => {
+        if (!valStoreId || activeTab !== "validador") return;
+        const ch = supabase.channel(`cyclic-validador-${valStoreId}-${valDate}`)
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [valStoreId, valDate, activeTab]);
 
     // scanner overlay
     useEffect(() => {
@@ -481,6 +562,11 @@ export default function DashboardPage() {
         localStorage.removeItem("cyclic_user");
         sessionStorage.removeItem("cyclic_active_tab");
         sessionStorage.removeItem("cyclic_val_tab");
+        sessionStorage.removeItem("cyclic_admin_tab");
+        sessionStorage.removeItem("cyclic_val_store");
+        sessionStorage.removeItem("cyclic_val_date");
+        sessionStorage.removeItem("cyclic_selected_store");
+        sessionStorage.removeItem("cyclic_selected_date");
         window.location.replace("/");
     }
 
@@ -493,36 +579,48 @@ export default function DashboardPage() {
     }
 
     // ── Helper: escribir/borrar flags de sesión en BD ────────
-    async function setSessionFlag(storeId: string, date: string, flag: "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
-        // Usamos el primer assignment de la tienda+fecha como anchor del flag
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
-        if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
+    // Siempre usamos el assignment con ID mínimo (orden estable) como anchor.
+    async function getSessionAnchor(storeId: string, date: string): Promise<string | null> {
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments").select("id")
+            .eq("store_id", storeId).eq("assigned_date", date)
+            .order("id").limit(1);
+        return asgns && asgns.length > 0 ? asgns[0].id : null;
+    }
+
+    async function setSessionFlag(storeId: string, date: string, flag: "__session_counting__" | "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
+        const anchorId = await getSessionAnchor(storeId, date);
+        if (!anchorId) return;
         if (active) {
-            // Upsert: insertar solo si no existe ya
-            const { data: existing } = await supabase.from("cyclic_counts").select("id").eq("assignment_id", anchorId).eq("location", flag).maybeSingle();
-            if (!existing) {
-                await supabase.from("cyclic_counts").insert({
-                    assignment_id: anchorId,
-                    store_id: storeId,
-                    product_id: asgns[0].id, // dummy, no importa
-                    counted_quantity: 0,
-                    location: flag,
-                    status: "Pendiente",
-                    counted_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                });
-            }
+            // Upsert seguro: borrar primero y reinsertar para evitar duplicados
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
+            await supabase.from("cyclic_counts").insert({
+                assignment_id: anchorId,
+                store_id: storeId,
+                product_id: anchorId, // dummy
+                counted_quantity: 0,
+                location: flag,
+                status: "Pendiente",
+                counted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
         } else {
             await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
         }
     }
 
     async function clearSessionFlags(storeId: string, date: string) {
-        const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
+        // Limpia flags de TODOS los assignments de la tienda+fecha (no solo el anchor)
+        // para asegurarse que no queden huérfanos de sesiones previas
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments").select("id")
+            .eq("store_id", storeId).eq("assigned_date", date);
         if (!asgns || asgns.length === 0) return;
-        const anchorId = asgns[0].id;
-        await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).like("location", "__session_%");
+        const ids = asgns.map((a: any) => a.id);
+        await supabase.from("cyclic_counts")
+            .delete()
+            .in("assignment_id", ids)
+            .like("location", "__session_%");
     }
 
     async function confirmFinishSession() {
@@ -545,7 +643,12 @@ export default function DashboardPage() {
         const active = (all || []).filter((s: any) => s.is_active) as Store[];
         if (user.role === "Administrador" || user.can_access_all_stores) {
             setStores(active);
-            if (active.length > 0) setValStoreId(active[0].id);
+            const savedValStore = sessionStorage.getItem("cyclic_val_store");
+            if (savedValStore && active.some(s => s.id === savedValStore)) {
+                setValStoreId(savedValStore);
+            } else if (active.length > 0) {
+                setValStoreId(active[0].id);
+            }
         } else {
             const mine = user.store_id ? active.filter(s => s.id === user.store_id) : [];
             setStores(mine);
@@ -598,6 +701,7 @@ export default function DashboardPage() {
         // location = '__recount_started__'   → reconteo iniciado
         // location = '__recount_done__'      → reconteo finalizado
         const sessionFlags = cRows.filter(c => c.location?.startsWith("__session_"));
+        const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
         const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
         const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
         const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
@@ -612,6 +716,14 @@ export default function DashboardPage() {
         setCounts(enriched);
 
         // Restaurar estado UI desde flags de BD
+        // countingStatus: "idle" | "counting" | "finished" | "recounting" | "recount_done"
+        const countingStatusVal = isRecountDone ? "recount_done"
+            : isRecounting ? "recounting"
+            : isFinished ? "finished"
+            : isCounting ? "counting"
+            : "idle";
+        setCountingStatus(countingStatusVal);
+
         if (isFinished) {
             setSessionFinished(true);
             if (isRecountDone) {
@@ -692,6 +804,8 @@ export default function DashboardPage() {
                     .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
+                    .order("assigned_date")
+                    .order("id")
                     .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
                 if (eA) { console.error("loadDashboard asgn error", eA); showMessage("Error BD assignments: " + JSON.stringify(eA), "error"); break; }
                 if (!chunk || chunk.length === 0) break;
@@ -728,19 +842,33 @@ export default function DashboardPage() {
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
 
-            // ── Paso 3: traer counts en chunks ────────────────────────
+            // ── Paso 3: traer counts por store_id + rango de fechas ─────────
+            // Usamos store_id y rango de assigned_date para evitar el límite de Supabase con .in() de miles de IDs
             const asgnIds = asgnData.map((a: any) => a.id);
+            const asgnIdSet = new Set<string>(asgnIds);
+            const cntStoreIds = uniqueStoreIds; // ya calculado arriba
             let cntAll: CountRecord[] = [];
-            const CHUNK_CNT = 900;
-            for (let i = 0; i < asgnIds.length; i += CHUNK_CNT) {
-                const { data: cChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", asgnIds.slice(i, i + CHUNK_CNT));
-                cntAll = cntAll.concat((cChunk || []) as CountRecord[]);
+            const CNT_STORE_CHUNK = 50;
+            const CNT_PAGE_SIZE = 1000;
+            for (let i = 0; i < cntStoreIds.length; i += CNT_STORE_CHUNK) {
+                const storeChunk = cntStoreIds.slice(i, i + CNT_STORE_CHUNK);
+                let cntPage = 0;
+                while (true) {
+                    const { data: cChunk } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("store_id", storeChunk)
+                        .gte("counted_at", dateFilter.from + "T00:00:00.000Z")
+                        .lte("counted_at", (() => { const d = new Date(dateFilter.to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
+                        .range(cntPage * CNT_PAGE_SIZE, (cntPage + 1) * CNT_PAGE_SIZE - 1);
+                    if (!cChunk || cChunk.length === 0) break;
+                    cntAll = cntAll.concat(cChunk as CountRecord[]);
+                    if (cChunk.length < CNT_PAGE_SIZE) break;
+                    cntPage++;
+                }
             }
-
-            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_"));
+            // Filtrar flags de sesión y solo los que pertenecen a assignments del período
+            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -763,9 +891,13 @@ export default function DashboardPage() {
                 dayGroups.get(k)!.asgns.push(a);
             }
 
+            // Construir mapa de assignment_id → asignación para lookups O(1)
+            const asgnById = new Map<string, any>();
+            for (const a of asgnData as any[]) asgnById.set(a.id, a);
+
             // Asignar conteos a sus grupos por día
             for (const c of counts) {
-                const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                const asgn = asgnById.get(c.assignment_id);
                 if (!asgn) continue;
                 const k = dayKeyFn(asgn);
                 dayGroups.get(k)?.cnts.push(c);
@@ -781,13 +913,13 @@ export default function DashboardPage() {
                     if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
                 }
                 for (const c of g.cnts) {
-                    const asgn = (asgnData as any[]).find((a: any) => a.id === c.assignment_id);
+                    const asgn = asgnById.get(c.assignment_id);
                     if (!asgn) continue;
                     const entry = prodMap.get(asgn.product_id);
                     if (entry) entry.total_counted += Number(c.counted_quantity);
                 }
                 const countedPids = new Set(g.cnts.map(c => {
-                    const a = (asgnData as any[]).find((x: any) => x.id === c.assignment_id);
+                    const a = asgnById.get(c.assignment_id);
                     return a?.product_id;
                 }));
                 let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
@@ -804,18 +936,17 @@ export default function DashboardPage() {
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
                     if (countedPids.has(pid)) {
-                        const asgForPid = (asgnData as any[]).find((a: any) => a.product_id === pid && a.store_id === g.store_id);
+                        const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
                         const costo = parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = entry.total_counted - entry.system_stock;
                         difValDay += diff * costo;
                     }
                 }
 
+                // Duración: desde el primer hasta el último código registrado (solo counted_at)
                 const timestamps = g.cnts.map(c => new Date(c.counted_at).getTime()).filter(t => !isNaN(t));
-                const updatedAt = g.cnts.map(c => new Date(c.updated_at).getTime()).filter(t => !isNaN(t));
-                const allTs = [...timestamps, ...updatedAt];
-                const horaInicio = allTs.length > 0 ? new Date(Math.min(...allTs)).toISOString() : null;
-                const horaFin = allTs.length > 0 ? new Date(Math.max(...allTs)).toISOString() : null;
+                const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
+                const horaFin = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
                 const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
@@ -823,9 +954,10 @@ export default function DashboardPage() {
 
             const rows: DashboardRow[] = [];
 
-            if (dashPeriod === "dia" || dashPeriod === "rango") {
-                // Vista día/rango: una fila por tienda+día
+            if (dashPeriod === "dia") {
+                // Vista día: una fila por tienda, con hora inicio/fin/duración
                 for (const d of dayMetrics) {
+                    const eriExacto = d.cumplio && d.total > 0 ? Math.round((d.ok / d.total) * 100) : 0;
                     rows.push({
                         store_id: d.store_id,
                         store_name: d.store_name,
@@ -836,7 +968,7 @@ export default function DashboardPage() {
                         total_faltantes: d.faltantes,
                         total_no_contados: d.noContados,
                         dif_valorizada: d.difVal,
-                        eri: d.eri,
+                        eri: eriExacto,
                         cumplio: d.cumplio,
                         cumplimiento_pct: d.cumplio ? 100 : 0,
                         dias_cumplidos: d.cumplio ? 1 : 0,
@@ -847,45 +979,47 @@ export default function DashboardPage() {
                     });
                 }
             } else {
-                // Vista mes: agrupar días por tienda+mes
-                const mesGroups = new Map<string, DayMetrics[]>();
+                // Vista mes o rango: UNA SOLA FILA por tienda, sin fecha
+                // Totales, ERI y dif. valorizada → SOLO de días que cumplieron
+                // Cumplimiento % → diasCumplidos / diasTotales (todos los días del período)
+                const storeGroups = new Map<string, DayMetrics[]>();
                 for (const d of dayMetrics) {
-                    const k = `${d.store_id}__${d.date.slice(0,7)}`;
-                    if (!mesGroups.has(k)) mesGroups.set(k, []);
-                    mesGroups.get(k)!.push(d);
+                    if (!storeGroups.has(d.store_id)) storeGroups.set(d.store_id, []);
+                    storeGroups.get(d.store_id)!.push(d);
                 }
-                for (const [, days] of mesGroups) {
+                for (const [, days] of storeGroups) {
                     const first = days[0];
                     const diasTotales = days.length;
-                    const diasCumplidos = days.filter(d => d.cumplio).length;
+                    const daysCumplieron = days.filter(d => d.cumplio);
+                    const diasCumplidos = daysCumplieron.length;
                     const cumplimientoPct = diasTotales > 0 ? Math.round((diasCumplidos / diasTotales) * 100) : 0;
-                    const totalAsignados = days.reduce((s, d) => s + d.total, 0);
-                    const totalOk = days.reduce((s, d) => s + d.ok, 0);
-                    const totalSobrantes = days.reduce((s, d) => s + d.sobrantes, 0);
-                    const totalFaltantes = days.reduce((s, d) => s + d.faltantes, 0);
-                    const totalNoContados = days.reduce((s, d) => s + d.noContados, 0);
-                    const eriMes = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
-                    const avgDur = days.filter(d => d.duracion !== null).length > 0
-                        ? Math.round(days.filter(d => d.duracion !== null).reduce((s, d) => s + (d.duracion || 0), 0) / days.filter(d => d.duracion !== null).length)
-                        : null;
+                    // Todos los cálculos solo sobre días que cumplieron
+                    const totalAsignados  = daysCumplieron.reduce((s, d) => s + d.total, 0);
+                    const totalOk         = daysCumplieron.reduce((s, d) => s + d.ok, 0);
+                    const totalSobrantes  = daysCumplieron.reduce((s, d) => s + d.sobrantes, 0);
+                    const totalFaltantes  = daysCumplieron.reduce((s, d) => s + d.faltantes, 0);
+                    const totalNoContados = daysCumplieron.reduce((s, d) => s + d.noContados, 0);
+                    const difVal          = daysCumplieron.reduce((s, d) => s + d.difVal, 0);
+                    // ERI = OK / asignados de los días que cumplieron
+                    const eriAgrupado = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
                     rows.push({
                         store_id: first.store_id,
                         store_name: first.store_name,
-                        date: first.date.slice(0, 7),
+                        date: "",
                         total_asignados: totalAsignados,
                         total_ok: totalOk,
                         total_sobrantes: totalSobrantes,
                         total_faltantes: totalFaltantes,
                         total_no_contados: totalNoContados,
-                        dif_valorizada: days.reduce((s, d) => s + d.difVal, 0),
-                        eri: eriMes,
+                        dif_valorizada: difVal,
+                        eri: eriAgrupado,
                         cumplio: diasCumplidos === diasTotales,
                         cumplimiento_pct: cumplimientoPct,
                         dias_cumplidos: diasCumplidos,
                         dias_totales: diasTotales,
                         hora_inicio: null,
                         hora_fin: null,
-                        duracion_min: avgDur,
+                        duracion_min: null,
                     });
                 }
             }
@@ -953,6 +1087,9 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); return; }
         }
+
+        // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
+        await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
 
         showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
         setActiveAssignment(null);
@@ -1045,6 +1182,25 @@ export default function DashboardPage() {
     }
 
     // ════════════════════════════════════════════════════════
+    //  WHATSAPP — ALERTA AL OPERARIO
+    // ════════════════════════════════════════════════════════
+    async function sendWhatsappAlert(storeId: string, date: string, codigosCount: number) {
+        // Buscar el operario activo asignado a esa tienda
+        const { data: operario } = await supabase
+            .from("cyclic_users")
+            .select("full_name, whatsapp")
+            .eq("store_id", storeId)
+            .eq("role", "Operario")
+            .eq("is_active", true)
+            .maybeSingle();
+        if (!operario || !operario.whatsapp) return; // sin número, no hacer nada
+        const storeName = allStores.find(s => s.id === storeId)?.name || "tu tienda";
+        const mensaje = `Hola ${operario.full_name} 👋, se te han asignado *${codigosCount} código${codigosCount !== 1 ? "s" : ""}* para contar en *${storeName}* el día *${date}*. Por favor ingresa a la app para realizar el conteo cíclico. ¡Gracias!`;
+        const url = `https://wa.me/${operario.whatsapp}?text=${encodeURIComponent(mensaje)}`;
+        window.open(url, "_blank");
+    }
+
+    // ════════════════════════════════════════════════════════
     //  VALIDADOR — ASIGNAR PRODUCTOS
     // ════════════════════════════════════════════════════════
     async function searchProductsForAssign(text: string) {
@@ -1089,74 +1245,341 @@ export default function DashboardPage() {
         loadValidadorData(valStoreId, valDate);
     }
 
+    async function removeAllAssignments() {
+        if (assignments.length === 0) return;
+        if (!confirm(`¿Eliminar TODAS las ${assignments.length} asignaciones de este día? También se eliminarán todos los conteos asociados.`)) return;
+        const ids = assignments.map(a => a.id);
+        const CHUNK = 400;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            await supabase.from("cyclic_counts").delete().in("assignment_id", ids.slice(i, i + CHUNK));
+            await supabase.from("cyclic_assignments").delete().in("id", ids.slice(i, i + CHUNK));
+        }
+        showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
+        loadValidadorData(valStoreId, valDate);
+    }
+
     async function uploadBulkAssign() {
         if (!bulkAssignFile) { showMessage("Selecciona un archivo Excel.", "error"); return; }
-        if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha antes.", "error"); return; }
+        if (!valDate) { showMessage("Selecciona una fecha antes.", "error"); return; }
         try {
             const data = await bulkAssignFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            // Leer como array de arrays para acceso por posición (A=0, B=1, C=2, D=3, E=4)
             const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, header: 1 });
-            // La fila 1 es el encabezado — detectar posiciones reales por nombre de columna
             const headerRow = allRows[0] || [];
-            // Buscar columnas por nombre (flexible) o usar posición por defecto
+
             const findCol = (names: string[]): number => {
                 const idx = headerRow.findIndex((h: any) => names.some(n => String(h || "").toLowerCase().includes(n.toLowerCase())));
                 return idx >= 0 ? idx : -1;
             };
-            const colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
-            const colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
-            const colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
 
-            const dataRows = allRows.slice(1);
-            let ok = 0, updated = 0, skip = 0, notFound = 0;
-            for (let i = 0; i < dataRows.length; i++) {
-                const row = dataRows[i];
-                setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
+            // Detectar si hay columna de tienda (col A con "tda", "tienda", etc.)
+            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "local", "tda"].some(n => String(h || "").toLowerCase().includes(n)));
+            let colTienda = -1;
+            let colCodigo: number, colCosto: number, colStock: number;
+
+            if (hasStoreCol) {
+                colTienda = findCol(["tienda", "store", "almacen", "local", "tda"]);
+                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : (colTienda >= 0 ? colTienda + 1 : 1);
+                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : (colTienda >= 0 ? colTienda + 4 : 4);
+                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : (colTienda >= 0 ? colTienda + 5 : 5);
+            } else {
+                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
+                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
+                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
+            }
+
+            const dataRows = allRows.slice(1).filter(r => r.some((v: any) => String(v || "").trim()));
+
+            // ── PASO 1: Construir mapa de tiendas ────────────────────────
+            const storeNameMap = new Map<string, string>(); // nombre normalizado → id
+            for (const s of allStores) storeNameMap.set(s.name.trim().toLowerCase(), s.id);
+
+            // ── PASO 2: Extraer SKUs únicos del archivo ───────────────────
+            setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
+            const skusEnArchivo = new Set<string>();
+            for (const row of dataRows) {
                 const rawSku = cleanCode(String(row[colCodigo] || ""));
-                const stock = Number(row[colStock] || 0);
-                const cost = parseCost(row[colCosto]);
-                if (!rawSku) { skip++; continue; }
-                let prod: Product | null = null;
-                const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
-                if (byS) prod = byS as Product;
-                if (!prod) {
-                    const { data: byB } = await supabase.from("cyclic_products").select("*").ilike("barcode", rawSku).maybeSingle();
-                    if (byB) prod = byB as Product;
+                if (rawSku) skusEnArchivo.add(rawSku);
+            }
+
+            // ── PASO 3: Traer todos los productos relevantes de una vez ───
+            setBulkAssignProgress({ step: "Cargando productos del maestro...", pct: 15 });
+            const skuArr = [...skusEnArchivo];
+            const prodBySkuMap = new Map<string, Product>(); // sku → product
+            const prodByBarcodeMap = new Map<string, Product>(); // barcode → product
+            const CHUNK = 500;
+            for (let i = 0; i < skuArr.length; i += CHUNK) {
+                const chunk = skuArr.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk);
+                for (const p of prods || []) {
+                    prodBySkuMap.set(p.sku, p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
                 }
+            }
+            // Buscar también por barcode los que no se encontraron por SKU
+            const notFoundBySku = skuArr.filter(s => !prodBySkuMap.has(s));
+            for (let i = 0; i < notFoundBySku.length; i += CHUNK) {
+                const chunk = notFoundBySku.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("barcode", chunk);
+                for (const p of prods || []) {
+                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
+                }
+            }
+
+            // ── PASO 4: Traer asignaciones existentes para la fecha ───────
+            setBulkAssignProgress({ step: "Revisando asignaciones existentes...", pct: 30 });
+            // Tiendas únicas del archivo
+            const storeIdsDelArchivo = new Set<string>();
+            if (hasStoreCol && colTienda >= 0) {
+                for (const row of dataRows) {
+                    const rawN = String(row[colTienda] || "").trim();
+                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    if (sid) storeIdsDelArchivo.add(sid);
+                }
+            } else if (valStoreId) {
+                storeIdsDelArchivo.add(valStoreId);
+            }
+
+            // Traer asignaciones existentes para esas tiendas en la fecha
+            type ExistingAssignment = { id: string; store_id: string; product_id: string; system_stock: number };
+            let existingAsgns: ExistingAssignment[] = [];
+            const storeIdsArr = [...storeIdsDelArchivo];
+            for (let i = 0; i < storeIdsArr.length; i += 100) {
+                const chunk = storeIdsArr.slice(i, i + 100);
+                const { data: ea } = await supabase.from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock")
+                    .in("store_id", chunk)
+                    .eq("assigned_date", valDate);
+                existingAsgns = existingAsgns.concat((ea || []) as ExistingAssignment[]);
+            }
+            // key: storeId__productId → assignment
+            const existingMap = new Map<string, ExistingAssignment>();
+            for (const ea of existingAsgns) existingMap.set(`${ea.store_id}__${ea.product_id}`, ea);
+
+            // ── PASO 5: Procesar filas y construir lotes ─────────────────
+            setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 50 });
+            let skip = 0, notFound = 0, storeNotFound = 0;
+            const toInsert: any[] = [];
+            const toUpdate: { id: string; system_stock: number; cost?: number }[] = [];
+            const costUpdates: { id: string; cost: number }[] = [];
+
+            for (const row of dataRows) {
+                const rawSku = cleanCode(String(row[colCodigo] || ""));
+                if (!rawSku) { skip++; continue; }
+
+                let targetStoreId = valStoreId || "";
+                if (hasStoreCol && colTienda >= 0) {
+                    const rawN = String(row[colTienda] || "").trim();
+                    if (!rawN) { skip++; continue; }
+                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    if (!sid) { storeNotFound++; continue; }
+                    targetStoreId = sid;
+                }
+                if (!targetStoreId) { skip++; continue; }
+
+                const prod = prodBySkuMap.get(rawSku) || prodByBarcodeMap.get(rawSku) || null;
                 if (!prod) { notFound++; continue; }
 
-                // Siempre actualizar el costo en el maestro si viene en el Excel
-                if (cost > 0) {
-                    await supabase.from("cyclic_products").update({ cost, updated_at: new Date().toISOString() }).eq("id", prod.id);
+                const stock = Number(row[colStock] || 0);
+                const cost = parseCost(row[colCosto]);
+                if (cost > 0 && cost !== prod.cost) {
+                    costUpdates.push({ id: prod.id, cost });
                 }
 
-                const { data: existing } = await supabase.from("cyclic_assignments")
-                    .select("id").eq("store_id", valStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
+                const key = `${targetStoreId}__${prod.id}`;
+                const existing = existingMap.get(key);
                 if (existing) {
-                    // Actualizar stock y costo aunque ya exista el assignment
-                    await supabase.from("cyclic_assignments").update({
-                        system_stock: stock,
-                    }).eq("id", existing.id);
-                    updated++;
-                    continue;
+                    if (existing.system_stock !== stock) toUpdate.push({ id: existing.id, system_stock: stock });
+                } else {
+                    toInsert.push({
+                        store_id: targetStoreId, product_id: prod.id, system_stock: stock,
+                        assigned_date: valDate, assigned_by: user?.id,
+                    });
                 }
-
-                await supabase.from("cyclic_assignments").insert({
-                    store_id: valStoreId, product_id: prod.id, system_stock: stock,
-                    assigned_date: valDate, assigned_by: user?.id,
-                });
-                ok++;
             }
+
+            // ── PASO 6: Ejecutar actualizaciones de costo en lote ────────
+            setBulkAssignProgress({ step: "Actualizando costos...", pct: 60 });
+            const now = new Date().toISOString();
+            for (let i = 0; i < costUpdates.length; i += 200) {
+                const chunk = costUpdates.slice(i, i + 200);
+                await Promise.all(chunk.map(c =>
+                    supabase.from("cyclic_products").update({ cost: c.cost, updated_at: now }).eq("id", c.id)
+                ));
+            }
+
+            // ── PASO 7: Actualizaciones de stock en lote ─────────────────
+            setBulkAssignProgress({ step: `Actualizando ${toUpdate.length} asignaciones...`, pct: 70 });
+            for (let i = 0; i < toUpdate.length; i += 200) {
+                const chunk = toUpdate.slice(i, i + 200);
+                await Promise.all(chunk.map(u =>
+                    supabase.from("cyclic_assignments").update({ system_stock: u.system_stock }).eq("id", u.id)
+                ));
+            }
+
+            // ── PASO 8: Insertar nuevas asignaciones en lote ─────────────
+            setBulkAssignProgress({ step: `Insertando ${toInsert.length} nuevas asignaciones...`, pct: 85 });
+            const INSERT_BATCH = 200;
+            let insertOk = 0;
+            for (let i = 0; i < toInsert.length; i += INSERT_BATCH) {
+                const batch = toInsert.slice(i, i + INSERT_BATCH);
+                const { error } = await supabase.from("cyclic_assignments").insert(batch);
+                if (!error) insertOk += batch.length;
+                setBulkAssignProgress({ step: `Insertando... ${Math.min(i + INSERT_BATCH, toInsert.length)} / ${toInsert.length}`, pct: 85 + Math.round((i / toInsert.length) * 10) });
+            }
+
             setBulkAssignProgress(null);
-            showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.`, ok > 0 || updated > 0 ? "success" : "error");
+            const storeMsg = storeNotFound > 0 ? ` ${storeNotFound} tiendas no encontradas.` : "";
+            showMessage(`✅ ${insertOk} nuevos asignados, ${toUpdate.length} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
-            loadValidadorData(valStoreId, valDate);
+            if (valStoreId) loadValidadorData(valStoreId, valDate);
+
+            // ── PASO 9: Modal WhatsApp masivo ─────────────────────────────
+            if (insertOk > 0 || toUpdate.length > 0) {
+                // Traer TODOS los operarios con WhatsApp de las tiendas del archivo de una sola vez
+                const wspStoreIds = [...storeIdsDelArchivo];
+                const allOps: any[] = [];
+                for (let i = 0; i < wspStoreIds.length; i += 200) {
+                    const chunk = wspStoreIds.slice(i, i + 200);
+                    const { data: ops } = await supabase.from("cyclic_users")
+                        .select("full_name, whatsapp, store_id, username, password")
+                        .in("store_id", chunk)
+                        .eq("role", "Operario")
+                        .eq("is_active", true)
+                        .not("whatsapp", "is", null);
+                    allOps.push(...(ops || []));
+                }
+                const operarioByStore = new Map<string, { full_name: string; whatsapp: string; username: string; password: string }>();
+                for (const op of allOps) {
+                    const wsp = String(op.whatsapp || "").trim();
+                    if (!wsp) continue;
+                    if (!operarioByStore.has(op.store_id)) {
+                        operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
+                    }
+                }
+                // Contar asignaciones totales por tienda usando los datos ya en memoria
+                const cntByStore = new Map<string, number>();
+                for (const ins of toInsert) cntByStore.set(ins.store_id, (cntByStore.get(ins.store_id) || 0) + 1);
+                for (const ea of existingAsgns) cntByStore.set(ea.store_id, (cntByStore.get(ea.store_id) || 0) + 1);
+
+                const wspStoresData: typeof bulkWspStores = wspStoreIds.map(sid => ({
+                    id: sid,
+                    name: allStores.find(s => s.id === sid)?.name || sid,
+                    count: cntByStore.get(sid) || 0,
+                    operario: operarioByStore.get(sid) || null,
+                }));
+                wspStoresData.sort((a, b) => a.name.localeCompare(b.name));
+                const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
+                setBulkWspStores(wspStoresData);
+                setBulkWspSelected(new Set(withOperario.map(s => s.id)));
+                setBulkWspDate(valDate);
+                setShowBulkWspModal(true);
+            }
         } catch (e: any) {
             setBulkAssignProgress(null);
             showMessage("Error leyendo el archivo: " + e.message, "error");
         }
+    }
+
+    // Construye la lista ordenada de tiendas seleccionadas para el envío
+    const bulkWspQueue = bulkWspStores.filter(s => bulkWspSelected.has(s.id) && s.operario?.whatsapp);
+
+    function buildWspMessage(store: typeof bulkWspStores[0]) {
+        const op = store.operario!;
+        const appUrl = typeof window !== "undefined" ? window.location.origin : "";
+        return `Hola ${op.full_name} 👋\n\nSe te han asignado *${store.count} código${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el día *${bulkWspDate}*.\n\nPor favor ingresa a la app para realizar el conteo cíclico:\n🔗 ${appUrl}\n👤 Usuario: *${op.username}*\n🔑 Contraseña: *${op.password}*\n\n¡Gracias!`;
+    }
+
+    function startBulkSend() {
+        if (bulkWspQueue.length === 0) return;
+        setBulkWspSendingIdx(0);
+        const store = bulkWspQueue[0];
+        const url = `https://wa.me/${store.operario!.whatsapp}?text=${encodeURIComponent(buildWspMessage(store))}`;
+        window.open(url, "_blank");
+    }
+
+    function nextBulkSend() {
+        const next = bulkWspSendingIdx + 1;
+        if (next >= bulkWspQueue.length) {
+            setBulkWspSendingIdx(-1);
+            setShowBulkWspModal(false);
+            showMessage(`✅ WhatsApp enviado a ${bulkWspQueue.length} tienda${bulkWspQueue.length !== 1 ? "s" : ""}.`, "success");
+            return;
+        }
+        setBulkWspSendingIdx(next);
+        const store = bulkWspQueue[next];
+        const url = `https://wa.me/${store.operario!.whatsapp}?text=${encodeURIComponent(buildWspMessage(store))}`;
+        window.open(url, "_blank");
+    }
+
+    function sendBulkWhatsapp() { startBulkSend(); }
+
+    async function openBulkWspModal(date: string) {
+        showMessage("Cargando tiendas...", "info");
+        // Traer todas las asignaciones de la fecha paginando
+        const PAGE = 1000;
+        let allAsgns: any[] = [];
+        let page = 0;
+        while (true) {
+            const { data: chunk } = await supabase
+                .from("cyclic_assignments")
+                .select("store_id, id")
+                .eq("assigned_date", date)
+                .range(page * PAGE, (page + 1) * PAGE - 1);
+            if (!chunk || chunk.length === 0) break;
+            allAsgns = allAsgns.concat(chunk);
+            if (chunk.length < PAGE) break;
+            page++;
+        }
+
+        if (allAsgns.length === 0) { showMessage("No hay tiendas con asignaciones en esta fecha.", "error"); return; }
+
+        // Contar por tienda en memoria
+        const countByStore = new Map<string, number>();
+        for (const a of allAsgns) {
+            countByStore.set(a.store_id, (countByStore.get(a.store_id) || 0) + 1);
+        }
+        const storeIds = [...countByStore.keys()];
+
+        // Traer TODOS los operarios activos de esas tiendas de una sola vez
+        const allOperarios: any[] = [];
+        for (let i = 0; i < storeIds.length; i += 200) {
+            const chunk = storeIds.slice(i, i + 200);
+            const { data: ops } = await supabase.from("cyclic_users")
+                .select("full_name, whatsapp, store_id, username, password")
+                .in("store_id", chunk)
+                .eq("role", "Operario")
+                .eq("is_active", true)
+                .not("whatsapp", "is", null);
+            allOperarios.push(...(ops || []));
+        }
+
+        // Agrupar operarios por store_id — preferir el que tiene WhatsApp
+        const operarioByStore = new Map<string, { full_name: string; whatsapp: string; username: string; password: string }>();
+        for (const op of allOperarios) {
+            const wsp = String(op.whatsapp || "").trim();
+            if (!wsp) continue;
+            // Si ya hay uno para esta tienda, quedarse con el primero que tenga número (lider*)
+            if (!operarioByStore.has(op.store_id)) {
+                operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
+            }
+        }
+
+        const wspStoresData: typeof bulkWspStores = storeIds.map(sid => ({
+            id: sid,
+            name: allStores.find(s => s.id === sid)?.name || sid,
+            count: countByStore.get(sid) || 0,
+            operario: operarioByStore.get(sid) || null,
+        }));
+        wspStoresData.sort((a, b) => a.name.localeCompare(b.name));
+
+        clearMessage();
+        const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
+        setBulkWspStores(wspStoresData);
+        setBulkWspSelected(new Set(withOperario.map(s => s.id)));
+        setBulkWspDate(date);
+        setShowBulkWspModal(true);
     }
 
     // ════════════════════════════════════════════════════════
@@ -1328,16 +1751,18 @@ export default function DashboardPage() {
         if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
         if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
+        const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
         const { error } = await supabase.from("cyclic_users").insert({
             username: newUsername.trim().toLowerCase(), password: newPassword.trim(),
             full_name: newFullName.trim(), role: newRole,
             store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
             can_access_all_stores: newRole !== "Operario",
             is_active: true,
+            whatsapp: wsp || null,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId("");
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp("");
         loadAllUsers();
     }
 
@@ -1348,16 +1773,18 @@ export default function DashboardPage() {
         setEditUserAllStores(u.can_access_all_stores);
         setEditUserActive(u.is_active);
         setEditUserPassword("");
+        setEditUserWhatsapp(u.whatsapp || "");
     }
 
     async function saveEditUser() {
         if (!editingUser) return;
+        const wsp = editUserWhatsapp.trim().replace(/\D/g, "");
         const updates: any = {
             role: editUserRole,
             store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
             can_access_all_stores: editUserRole !== "Operario",
             is_active: editUserActive,
-            updated_at: new Date().toISOString(),
+            whatsapp: wsp || null,
         };
         if (editUserPassword.trim()) updates.password = editUserPassword.trim();
         const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
@@ -1482,19 +1909,34 @@ export default function DashboardPage() {
     }
 
     function exportDashboard() {
-        const rows = filteredDashData.map(r => ({
-            TIENDA: r.store_name,
-            ASIGNADOS: r.total_asignados,
-            OK: r.total_ok,
-            SOBRANTES: r.total_sobrantes,
-            FALTANTES: r.total_faltantes,
-            DIF_VALORIZADA: r.dif_valorizada || 0,
-            ERI_PCT: r.eri,
-            CUMPLIMIENTO_PCT: r.cumplimiento_pct,
-            DIAS_CUMPLIDOS: r.dias_cumplidos,
-            DIAS_TOTALES: r.dias_totales,
-            DURACION: r.duracion_min !== null ? formatDuration(r.duracion_min) : "—",
-        }));
+        const rows = filteredDashData.map(r => {
+            const base: any = { TIENDA: r.store_name };
+            if (dashPeriod === "dia") {
+                // Vista día: incluye hora inicio/fin/duración, sin días_cumplidos
+                base.ASIGNADOS      = r.total_asignados;
+                base.OK             = r.total_ok;
+                base.SOBRANTES      = r.total_sobrantes;
+                base.FALTANTES      = r.total_faltantes;
+                base.DIF_VALORIZADA = r.dif_valorizada || 0;
+                base.ERI_PCT        = r.eri;
+                base.CUMPLIMIENTO   = r.cumplio ? "Sí" : "No";
+                base.HORA_INICIO    = r.hora_inicio ? formatDateTime(r.hora_inicio) : "—";
+                base.HORA_FIN       = r.hora_fin ? formatDateTime(r.hora_fin) : "—";
+                base.DURACION       = r.duracion_min !== null ? formatDuration(r.duracion_min) : "—";
+            } else {
+                // Vista mes/rango: solo días que cumplieron — sin hora/duración
+                base.ASIGNADOS         = r.total_asignados;
+                base.OK                = r.total_ok;
+                base.SOBRANTES         = r.total_sobrantes;
+                base.FALTANTES         = r.total_faltantes;
+                base.DIF_VALORIZADA    = r.dif_valorizada || 0;
+                base.ERI_PCT           = r.eri;
+                base.CUMPLIMIENTO_PCT  = r.cumplimiento_pct;
+                base.DIAS_CUMPLIDOS    = r.dias_cumplidos;
+                base.DIAS_TOTALES      = r.dias_totales;
+            }
+            return base;
+        });
         const ws = XLSX.utils.json_to_sheet(rows);
         const wbk = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wbk, ws, "Dashboard");
@@ -1528,6 +1970,7 @@ export default function DashboardPage() {
                     .gte("assigned_date", from)
                     .lte("assigned_date", to)
                     .order("assigned_date")
+                    .order("id")
                     .range(expPage * EXP_PAGE, (expPage + 1) * EXP_PAGE - 1);
                 if (eExp) { console.error("exportGlobal asgn error", eExp); showMessage("Error BD export: " + JSON.stringify(eExp), "error"); break; }
                 if (!expChunk || expChunk.length === 0) break;
@@ -1570,16 +2013,32 @@ export default function DashboardPage() {
                 };
             });
 
+            // Traer counts por store_id + rango de fechas (evita límite de .in() con miles de IDs)
             const asgnIds = asgnData.map((a: any) => a.id);
-            const CHUNK = 900;
+            const asgnIdSetExp = new Set<string>(asgnIds);
+            const EXP_CNT_STORE_CHUNK = 50;
+            const EXP_CNT_PAGE = 1000;
             let allCounts: CountRecord[] = [];
-            for (let i = 0; i < asgnIds.length; i += CHUNK) {
-                const { data: cData } = await supabase.from("cyclic_counts").select("*").in("assignment_id", asgnIds.slice(i, i + CHUNK));
-                allCounts = allCounts.concat((cData || []) as CountRecord[]);
+            for (let i = 0; i < expStoreIds.length; i += EXP_CNT_STORE_CHUNK) {
+                const storeChunk = expStoreIds.slice(i, i + EXP_CNT_STORE_CHUNK);
+                let cntPage = 0;
+                while (true) {
+                    const { data: cData } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("store_id", storeChunk)
+                        .gte("counted_at", from + "T00:00:00.000Z")
+                        .lte("counted_at", (() => { const d = new Date(to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
+                        .range(cntPage * EXP_CNT_PAGE, (cntPage + 1) * EXP_CNT_PAGE - 1);
+                    if (!cData || cData.length === 0) break;
+                    allCounts = allCounts.concat(cData as CountRecord[]);
+                    if (cData.length < EXP_CNT_PAGE) break;
+                    cntPage++;
+                }
             }
 
             const countMap = new Map<string, CountRecord[]>();
-            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_"))) {
+            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSetExp.has(c.assignment_id))) {
                 if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
                 countMap.get(c.assignment_id)!.push(c);
             }
@@ -1646,11 +2105,109 @@ export default function DashboardPage() {
                 });
             }
 
-            exportRows.sort((a, b) => (a.TIENDA + a.FECHA + a.SKU).localeCompare(b.TIENDA + b.FECHA + b.SKU));
+            exportRows.sort((a, b) => (a.TIENDA + a.FECHA_ASIGNACION + a.SKU).localeCompare(b.TIENDA + b.FECHA_ASIGNACION + b.SKU));
+
+            // Hoja 2: Resumen por tienda+día (igual que el dashboard)
+            // Primero agrupar por tienda+día+producto para sumar todas las ubicaciones antes de comparar con stock
+            type DaySum = { tienda: string; fecha: string; asignados: number; ok: number; sobrantes: number; faltantes: number; difVal: number; cumplio: boolean; duracion: number | null; horaInicio: string | null; horaFin: string | null; };
+            const daySumMap = new Map<string, DaySum>();
+
+            // Agrupar assignments por tienda+día+producto
+            type DayProdEntry = { stock: number; costo: number; totalContado: number; tienConteo: boolean; };
+            const dayProdMap = new Map<string, DayProdEntry>();
+
+            // Construir mapa de assignment_id → asignación para exportGlobal
+            const expAsgnById = new Map<string, any>();
+            for (const a of asgnData as any[]) expAsgnById.set(a.id, a);
+
+            for (const asg of asgnData as any[]) {
+                const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+                const prodKey = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
+                const tienda = asg.stores?.name || asg.store_id;
+
+                if (!daySumMap.has(dayKey)) {
+                    daySumMap.set(dayKey, { tienda, fecha: asg.assigned_date, asignados: 0, ok: 0, sobrantes: 0, faltantes: 0, difVal: 0, cumplio: false, duracion: null, horaInicio: null, horaFin: null });
+                }
+
+                const prod = asg.cyclic_products || {};
+                const costo = parseCost(prod.cost);
+                const stock = Number(asg.system_stock || 0);
+                const cnts = (countMap.get(asg.id) || []);
+                const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
+                const tienConteo = cnts.length > 0;
+
+                if (!dayProdMap.has(prodKey)) {
+                    dayProdMap.set(prodKey, { stock, costo: costo > 0 ? costo : 0, totalContado: 0, tienConteo: false });
+                }
+                const dp = dayProdMap.get(prodKey)!;
+                dp.totalContado += totalContado;
+                if (tienConteo) dp.tienConteo = true;
+                if (costo > 0 && dp.costo === 0) dp.costo = costo;
+
+                // Horas: recopilar sobre el daySumMap
+                const ds = daySumMap.get(dayKey)!;
+                for (const c of cnts) {
+                    const t = new Date(c.counted_at).getTime();
+                    if (!isNaN(t)) {
+                        if (ds.horaInicio === null || t < new Date(ds.horaInicio).getTime()) ds.horaInicio = c.counted_at;
+                        if (ds.horaFin === null || t > new Date(ds.horaFin).getTime()) ds.horaFin = c.counted_at;
+                    }
+                }
+            }
+
+            // Ahora calcular métricas por día usando los totales agrupados por producto
+            // Primero identificar qué productos pertenecen a cada día
+            const dayKeySet = new Map<string, Set<string>>(); // dayKey → set of prodKeys
+            for (const prodKey of dayProdMap.keys()) {
+                // prodKey = "storeId__date__productId"
+                const parts = prodKey.split("__");
+                const dayKey = `${parts[0]}__${parts[1]}`;
+                if (!dayKeySet.has(dayKey)) dayKeySet.set(dayKey, new Set());
+                dayKeySet.get(dayKey)!.add(prodKey);
+            }
+
+            for (const [dayKey, prodKeys] of dayKeySet) {
+                const ds = daySumMap.get(dayKey);
+                if (!ds) continue;
+                for (const prodKey of prodKeys) {
+                    const dp = dayProdMap.get(prodKey)!;
+                    const diff = dp.tienConteo ? dp.totalContado - dp.stock : -dp.stock;
+                    ds.asignados++;
+                    if (!dp.tienConteo) { ds.faltantes++; }
+                    else if (diff === 0) { ds.ok++; }
+                    else if (diff > 0) { ds.sobrantes++; }
+                    else { ds.faltantes++; }
+                    if (dp.tienConteo) { ds.difVal += diff * dp.costo; }
+                }
+            }
+
+            for (const ds of daySumMap.values()) {
+                ds.cumplio = ds.faltantes === 0;
+                if (ds.horaInicio && ds.horaFin) {
+                    ds.duracion = Math.round((new Date(ds.horaFin).getTime() - new Date(ds.horaInicio).getTime()) / 60000);
+                }
+            }
+
+            const summaryRows = Array.from(daySumMap.values()).sort((a, b) => (a.tienda + a.fecha).localeCompare(b.tienda + b.fecha)).map(ds => ({
+                TIENDA: ds.tienda,
+                FECHA: ds.fecha,
+                ASIGNADOS: ds.asignados,
+                OK: ds.ok,
+                SOBRANTES: ds.sobrantes,
+                FALTANTES: ds.faltantes,
+                DIF_VALORIZADA: ds.difVal,
+                ERI_PCT: ds.asignados > 0 && ds.cumplio ? Math.round((ds.ok / ds.asignados) * 100) : 0,
+                CUMPLIMIENTO: ds.cumplio ? "SI" : "NO",
+                HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "—",
+                HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "—",
+                DURACION: ds.duracion !== null ? formatDuration(ds.duracion) : "—",
+            }));
 
             const ws = XLSX.utils.json_to_sheet(exportRows);
+            const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
             const wbk = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wbk, ws, "Global");
+            XLSX.utils.book_append_sheet(wbk, wsSummary, "Resumen Dashboard");
+            XLSX.utils.book_append_sheet(wbk, ws, "Detalle Códigos");
             const fname = `ciclicos_global_${from}_${to}.xlsx`;
             XLSX.writeFile(wbk, fname);
             showMessage(`✅ Excel global descargado: ${exportRows.length} filas.`, "success");
@@ -1778,16 +2335,24 @@ export default function DashboardPage() {
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        const totalOk = filteredDashData.reduce((s, r) => s + r.total_ok, 0);
-        const totalCodes = filteredDashData.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = totalCodes > 0 ? Math.round((totalOk / totalCodes) * 100) : 0;
-        const cumplidos = filteredDashData.filter(r => r.cumplio).length;
-        const avgDurMin = filteredDashData.filter(r => r.duracion_min !== null).length > 0
+        // ERI: suma OKs / suma asignados — en mes/rango los rows ya solo incluyen días que cumplieron
+        const filasConDatos = filteredDashData.filter(r => r.total_asignados > 0);
+        const okTotal = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
+        const asignadosTotal = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
+        // Cumplidos: en día = filas con cumplio true; en mes/rango = tiendas con al menos 1 día cumplido
+        const cumplidos = dashPeriod === "dia"
+            ? filteredDashData.filter(r => r.cumplio).length
+            : filteredDashData.filter(r => r.dias_cumplidos > 0).length;
+        const total = filteredDashData.length;
+        // Duración promedio: solo aplica en vista día
+        const avgDurMin = dashPeriod === "dia" && filteredDashData.filter(r => r.duracion_min !== null).length > 0
             ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
             : null;
+        // Dif. valorizada: en mes/rango los rows ya solo suman días que cumplieron
         const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
-        return { avgEri, cumplidos, total: filteredDashData.length, avgDurMin, totalDifVal };
-    }, [filteredDashData]);
+        return { avgEri, cumplidos, total, avgDurMin, totalDifVal };
+    }, [filteredDashData, dashPeriod]);
 
     // ════════════════════════════════════════════════════════
     //  RENDER
@@ -1850,6 +2415,19 @@ export default function DashboardPage() {
                             <div>
                                 <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
+                                {countingStatus !== "idle" && isAdmin && (
+                                    <span className={`inline-block mt-1 text-xs font-bold px-2 py-0.5 rounded-full ${
+                                        countingStatus === "recount_done" ? "bg-green-100 text-green-700" :
+                                        countingStatus === "recounting"   ? "bg-orange-100 text-orange-700" :
+                                        countingStatus === "finished"     ? "bg-blue-100 text-blue-700" :
+                                        "bg-indigo-100 text-indigo-700"
+                                    }`}>
+                                        {countingStatus === "recount_done" ? "✅ Reconteo completado" :
+                                         countingStatus === "recounting"   ? "🔄 En reconteo" :
+                                         countingStatus === "finished"     ? "🏁 Conteo finalizado" :
+                                         "📝 Contando..."}
+                                    </span>
+                                )}
                             </div>
                             <div className="flex gap-3 items-center flex-wrap">
                                 {isAdmin && (
@@ -1921,12 +2499,27 @@ export default function DashboardPage() {
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
                                     </div>
-                                    {difAssignments.length > 0 && (
+                                    {difAssignments.length > 0 ? (
                                         <button
                                             onClick={() => setShowRecountConfirmModal(true)}
                                             className="w-full py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
                                         >
                                             <span>🔄</span> Iniciar reconteo ({difAssignments.length} con diferencia)
+                                        </button>
+                                    ) : (
+                                        <button
+                                            onClick={async () => {
+                                                if (confirm("¿Estás seguro de que deseas modificar el conteo finalizado?")) {
+                                                    await clearSessionFlags(selectedStoreId, selectedDate);
+                                                    setSessionFinished(false);
+                                                    setRecountFinished(false);
+                                                    showMessage("Conteo reabierto para modificación.", "info");
+                                                    loadOperarioData(selectedStoreId, selectedDate);
+                                                }
+                                            }}
+                                            className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            ✏️ ¿Deseas modificar algo?
                                         </button>
                                     )}
                                 </div>
@@ -2179,6 +2772,13 @@ export default function DashboardPage() {
                                     🔄 Actualizar
                                 </button>
                             )}
+                            <button
+                                className="px-4 py-3 rounded-2xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition flex items-center gap-2"
+                                onClick={() => openBulkWspModal(valDate)}
+                                title="Enviar WhatsApp a todos los operarios con asignaciones en la fecha seleccionada"
+                            >
+                                📲 WhatsApp masivo
+                            </button>
                             {valStoreId && (
                                 <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-2xl px-4 py-3 flex-wrap">
                                     <span>Asignados: <b>{resumenStats.total}</b></span>
@@ -2188,6 +2788,22 @@ export default function DashboardPage() {
                                     <span className="text-amber-600">Pend: <b>{resumenStats.pendientes}</b></span>
                                     <span>·</span>
                                     <span className="text-red-600">Con dif: <b>{resumenStats.conDif}</b></span>
+                                    {countingStatus !== "idle" && (
+                                        <>
+                                            <span>·</span>
+                                            <span className={
+                                                countingStatus === "recount_done" ? "text-green-700" :
+                                                countingStatus === "recounting"   ? "text-orange-600" :
+                                                countingStatus === "finished"     ? "text-blue-700" :
+                                                "text-indigo-600"
+                                            }>
+                                                {countingStatus === "recount_done" ? "✅ Reconteo completado" :
+                                                 countingStatus === "recounting"   ? "🔄 En reconteo" :
+                                                 countingStatus === "finished"     ? "🏁 Conteo finalizado" :
+                                                 "📝 Contando..."}
+                                            </span>
+                                        </>
+                                    )}
                                 </div>
                             )}
                             {valStoreId && resumenStats.total > 0 && (
@@ -2272,8 +2888,13 @@ export default function DashboardPage() {
                                 {/* Carga masiva */}
                                 <div className="border-t pt-4 space-y-3">
                                     <div>
-                                        <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                        <p className="text-xs text-slate-400 mt-0.5">Columnas por posición: <b>A: Código</b>, <b>B: Descripción</b>, <b>C: Unidad</b>, <b>D: Costo</b>, <b>E: Stock</b>. La fila 1 (encabezado) se ignora automáticamente.</p>
+                                        <p className="text-sm font-semibold text-slate-700">📦 Carga masiva por Excel — <span className="text-blue-700">Todas las tiendas</span></p>
+                                        <div className="mt-1.5 rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1 text-xs text-slate-600">
+                                            <p>✅ <b>Formato multi-tienda (recomendado):</b> <b>A: Tienda</b> · <b>B: Código</b> · <b>C: Descripción</b> · <b>D: Unidad</b> · <b>E: Costo</b> · <b>F: Stock</b>.<br/>
+                                            El nombre de tienda en col A debe coincidir exactamente con el sistema. No necesitas seleccionar tienda arriba.</p>
+                                            <p className="text-slate-400">Formato simple (sin col tienda): <b>A: Código</b> · <b>B: Desc</b> · <b>C: Unidad</b> · <b>D: Costo</b> · <b>E: Stock</b>. Requiere tienda seleccionada arriba.</p>
+                                            <p className="text-blue-700 font-semibold">⚡ Carga optimizada: todos los productos se procesan en lote, sin esperar fila por fila.</p>
+                                        </div>
                                     </div>
                                     {bulkAssignProgress && (
                                         <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1">
@@ -2285,12 +2906,14 @@ export default function DashboardPage() {
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
                                         <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => bulkAssignRef.current?.click()}>
-                                            {bulkAssignFileName || "Seleccionar Excel"}
+                                            {bulkAssignFileName || "📂 Seleccionar Excel"}
                                         </button>
                                         <input ref={bulkAssignRef} type="file" accept=".xlsx,.xls" className="hidden"
                                             onChange={e => { const f = e.target.files?.[0] || null; setBulkAssignFile(f); setBulkAssignFileName(f?.name || ""); e.target.value = ""; }} />
                                         {bulkAssignFile && (
-                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBulkAssign}>Cargar</button>
+                                            <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm" onClick={uploadBulkAssign}>
+                                                🚀 Cargar todas las tiendas
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -2299,7 +2922,17 @@ export default function DashboardPage() {
                             {/* Lista asignados del día */}
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                                        <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                        <div className="flex gap-2 flex-wrap">
+                                            <button
+                                                className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
+                                                onClick={removeAllAssignments}
+                                            >
+                                                🗑️ Quitar todos
+                                            </button>
+                                        </div>
+                                    </div>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-96 overflow-auto">
                                             <table className="w-full text-sm">
@@ -2692,6 +3325,7 @@ export default function DashboardPage() {
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 — con código de país)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
                                     <div>
                                         <label className="text-xs text-slate-500 block mb-1">Rol</label>
                                         <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
@@ -2722,6 +3356,7 @@ export default function DashboardPage() {
                                                 <th className="p-2 border text-left">Nombre</th>
                                                 <th className="p-2 border">Rol</th>
                                                 <th className="p-2 border">Tienda</th>
+                                                <th className="p-2 border">WhatsApp</th>
                                                 <th className="p-2 border">Estado</th>
                                                 <th className="p-2 border">Acción</th>
                                             </tr>
@@ -2737,6 +3372,11 @@ export default function DashboardPage() {
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
                                                         </td>
                                                         <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "—")}</td>
+                                                        <td className="p-2 border text-center text-xs">
+                                                            {u.whatsapp
+                                                                ? <a href={`https://wa.me/${u.whatsapp}`} target="_blank" rel="noreferrer" className="text-green-600 font-semibold hover:underline">📲 {u.whatsapp}</a>
+                                                                : <span className="text-slate-400">—</span>}
+                                                        </td>
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
                                                         </td>
@@ -2827,31 +3467,35 @@ export default function DashboardPage() {
 
                             {/* Tarjetas resumen */}
                             {dashSummary && (
-                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                <div className={`grid gap-3 ${dashPeriod === "dia" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
-                                        <div className="text-xs text-slate-500 mt-1">ERI promedio</div>
+                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className="text-3xl font-bold text-green-700">
                                             {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
                                         </div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : "Cumplimiento día"}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
                                         <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.total}</div>
-                                        <div className="text-xs text-slate-500 mt-1">Registros en período</div>
+                                        <div className="text-3xl font-bold text-blue-700">{dashSummary.cumplidos} <span className="text-slate-400 text-xl">/ {dashSummary.total}</span></div>
+                                        <div className="text-xs text-slate-500 mt-1">Cumplieron</div>
                                     </div>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
-                                        <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Duración promedio" : "Duración"}</div>
-                                    </div>
+                                    {dashPeriod === "dia" && (
+                                        <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                            <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
+                                            <div className="text-xs text-slate-500 mt-1">Duración</div>
+                                        </div>
+                                    )}
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
                                         <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
                                             {formatMoney(dashSummary.totalDifVal || 0)}
                                         </div>
                                         <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
+                                        {dashPeriod !== "dia" && <div className="text-xs text-slate-400 mt-0.5">días que cumplieron</div>}
                                     </div>
                                 </div>
                             )}
@@ -2859,14 +3503,18 @@ export default function DashboardPage() {
                             {/* Tabla dashboard */}
                             {filteredDashData.length > 0 ? (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                                    <h3 className="font-bold text-slate-900">Detalle por tienda{dashPeriod === "mes" ? " y día" : ""}</h3>
+                                    <h3 className="font-bold text-slate-900">
+                                        Detalle por tienda
+                                        {dashPeriod !== "dia" && (
+                                            <span className="ml-2 text-xs font-normal text-slate-400">(solo días que cumplieron)</span>
+                                        )}
+                                    </h3>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="overflow-auto">
-                                            <table className="w-full text-sm min-w-[900px]">
+                                            <table className={`w-full text-sm ${dashPeriod === "dia" ? "min-w-[900px]" : "min-w-[640px]"}`}>
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        {(dashPeriod === "dia" || dashPeriod === "rango") && <th className="p-2 border">Fecha</th>}
                                                         <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
@@ -2877,15 +3525,14 @@ export default function DashboardPage() {
                                                         {dashPeriod === "dia" && <>
                                                             <th className="p-2 border">Hora inicio</th>
                                                             <th className="p-2 border">Hora fin</th>
+                                                            <th className="p-2 border">Duración</th>
                                                         </>}
-                                                        <th className="p-2 border">Duración</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.store_name}</td>
-                                                            {(dashPeriod === "dia" || dashPeriod === "rango") && <td className="p-2 border text-center text-xs">{r.date}</td>}
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
@@ -2900,15 +3547,15 @@ export default function DashboardPage() {
                                                                 <span className={`font-bold text-sm ${r.cumplimiento_pct >= 100 ? "text-green-700" : r.cumplimiento_pct >= 50 ? "text-amber-600" : "text-red-600"}`}>
                                                                     {r.cumplimiento_pct}%
                                                                 </span>
-                                                                {dashPeriod === "mes" && (
+                                                                {dashPeriod !== "dia" && (
                                                                     <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
                                                                 )}
                                                             </td>
                                                             {dashPeriod === "dia" && <>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
                                                                 <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                             </>}
-                                                            <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                         </tr>
                                                     ))}
                                                 </tbody>
@@ -3129,6 +3776,10 @@ export default function DashboardPage() {
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
                             </div>
                             <div>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
+                            </div>
+                            <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
                                 <div className="flex gap-3">
                                     <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${editUserActive ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(true)}>✓ Activo</button>
@@ -3212,6 +3863,149 @@ export default function DashboardPage() {
                                 Sí, terminar
                             </button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ════════════════════════════════════════════════════════
+                MODAL — WHATSAPP MASIVO POST-CARGA
+            ════════════════════════════════════════════════════════ */}
+            {showBulkWspModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4">
+
+                        {/* ── FASE 1: Selección ── */}
+                        {bulkWspSendingIdx < 0 ? (<>
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <h3 className="text-xl font-bold text-slate-900">📲 WhatsApp masivo</h3>
+                                    <p className="text-slate-500 text-sm mt-1">Fecha: <b>{bulkWspDate}</b> · Selecciona las tiendas a notificar.</p>
+                                </div>
+                                <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>×</button>
+                            </div>
+
+                            <div className="flex gap-2">
+                                <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                    onClick={() => setBulkWspSelected(new Set(bulkWspStores.filter(s => s.operario?.whatsapp).map(s => s.id)))}>
+                                    Seleccionar todas
+                                </button>
+                                <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                    onClick={() => setBulkWspSelected(new Set())}>
+                                    Quitar todas
+                                </button>
+                                <span className="ml-auto text-xs text-slate-400 self-center">{bulkWspSelected.size} seleccionadas</span>
+                            </div>
+
+                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                                {bulkWspStores.map(store => {
+                                    const hasOp = !!store.operario?.whatsapp;
+                                    const selected = bulkWspSelected.has(store.id);
+                                    return (
+                                        <div key={store.id}
+                                            className={`flex items-center gap-3 rounded-2xl border p-3 transition ${!hasOp ? "opacity-35 cursor-not-allowed bg-slate-50" : selected ? "bg-green-50 border-green-300 cursor-pointer" : "bg-white border-slate-200 cursor-pointer hover:bg-slate-50"}`}
+                                            onClick={() => {
+                                                if (!hasOp) return;
+                                                setBulkWspSelected(prev => { const n = new Set(prev); n.has(store.id) ? n.delete(store.id) : n.add(store.id); return n; });
+                                            }}
+                                        >
+                                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selected && hasOp ? "bg-green-600 border-green-600" : "border-slate-300"}`}>
+                                                {selected && hasOp && <span className="text-white text-xs font-bold">✓</span>}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="font-semibold text-sm text-slate-900 truncate">{store.name}</div>
+                                                <div className="text-xs text-slate-500">
+                                                    {store.count} código{store.count !== 1 ? "s" : ""}
+                                                    {store.operario
+                                                        ? <> · <span className="text-green-700">{store.operario.full_name} · {store.operario.whatsapp}</span></>
+                                                        : <span className="text-red-400"> · Sin WhatsApp registrado</span>
+                                                    }
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Preview del mensaje */}
+                            {bulkWspQueue.length > 0 && (
+                                <div className="rounded-2xl bg-slate-50 border p-3 space-y-1">
+                                    <p className="text-xs font-semibold text-slate-600">Vista previa del mensaje:</p>
+                                    <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{buildWspMessage(bulkWspQueue[0])}</pre>
+                                </div>
+                            )}
+
+                            <div className="flex gap-3 pt-1">
+                                <button
+                                    className="flex-1 py-3 rounded-2xl bg-green-600 text-white font-bold text-sm disabled:opacity-40"
+                                    disabled={bulkWspQueue.length === 0}
+                                    onClick={startBulkSend}
+                                >
+                                    📲 Iniciar envío a {bulkWspQueue.length} tienda{bulkWspQueue.length !== 1 ? "s" : ""}
+                                </button>
+                                <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700 text-sm" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
+                                    Omitir
+                                </button>
+                            </div>
+                        </>) : (
+                        /* ── FASE 2: Envío paso a paso ── */
+                        <>
+                            <div className="text-center space-y-1">
+                                <div className="text-4xl">📲</div>
+                                <h3 className="text-xl font-bold text-slate-900">Enviando mensajes</h3>
+                                <p className="text-slate-500 text-sm">{bulkWspSendingIdx + 1} de {bulkWspQueue.length} tiendas</p>
+                            </div>
+
+                            {/* Barra de progreso */}
+                            <div className="space-y-1">
+                                <div className="h-3 bg-slate-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${((bulkWspSendingIdx + 1) / bulkWspQueue.length) * 100}%` }} />
+                                </div>
+                                <div className="flex justify-between text-xs text-slate-400">
+                                    <span>{bulkWspSendingIdx + 1} enviados</span>
+                                    <span>{bulkWspQueue.length - bulkWspSendingIdx - 1} restantes</span>
+                                </div>
+                            </div>
+
+                            {/* Tienda actual */}
+                            {(() => {
+                                const cur = bulkWspQueue[bulkWspSendingIdx];
+                                return (
+                                    <div className="rounded-2xl bg-green-50 border border-green-200 p-4 space-y-2">
+                                        <div className="font-bold text-slate-900 text-base">{cur.name}</div>
+                                        <div className="text-xs text-slate-500">{cur.operario?.full_name} · {cur.operario?.whatsapp}</div>
+                                        <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-white rounded-xl p-3 border">{buildWspMessage(cur)}</pre>
+                                        <p className="text-xs text-amber-700 font-semibold">⬆️ Se abrió WhatsApp con este mensaje. Presiona <b>Siguiente</b> cuando lo hayas enviado.</p>
+                                    </div>
+                                );
+                            })()}
+
+                            {/* Lista de pendientes */}
+                            {bulkWspQueue.length > bulkWspSendingIdx + 1 && (
+                                <div className="text-xs text-slate-500 space-y-1">
+                                    <p className="font-semibold text-slate-600">Siguiente en la cola:</p>
+                                    {bulkWspQueue.slice(bulkWspSendingIdx + 1, bulkWspSendingIdx + 4).map((s, i) => (
+                                        <div key={s.id} className="flex items-center gap-2">
+                                            <span className="text-slate-300">#{bulkWspSendingIdx + 2 + i}</span>
+                                            <span>{s.name}</span>
+                                            <span className="text-slate-400">· {s.operario?.whatsapp}</span>
+                                        </div>
+                                    ))}
+                                    {bulkWspQueue.length > bulkWspSendingIdx + 4 && <p className="text-slate-400">... y {bulkWspQueue.length - bulkWspSendingIdx - 4} más</p>}
+                                </div>
+                            )}
+
+                            <div className="flex gap-3 pt-1">
+                                <button
+                                    className="flex-1 py-4 rounded-2xl bg-green-600 text-white font-bold text-base"
+                                    onClick={nextBulkSend}
+                                >
+                                    {bulkWspSendingIdx + 1 >= bulkWspQueue.length ? "✅ Finalizar" : `Siguiente → ${bulkWspQueue[bulkWspSendingIdx + 1]?.name}`}
+                                </button>
+                            </div>
+                            <button className="w-full text-xs text-slate-400 underline" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
+                                Cancelar envío
+                            </button>
+                        </>)}
                     </div>
                 </div>
             )}
