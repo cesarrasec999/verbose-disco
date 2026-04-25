@@ -329,6 +329,7 @@ export default function DashboardPage() {
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
     const [recountFinished, setRecountFinished] = useState(false);
+    const [countingStatus, setCountingStatus] = useState<"idle"|"counting"|"finished"|"recounting"|"recount_done">("idle");
     const [editUserStoreId, setEditUserStoreId] = useState("");
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
@@ -383,6 +384,14 @@ export default function DashboardPage() {
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen" | null;
                 if (savedValTab) setValTab(savedValTab);
 
+                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios"|"dashboard" | null;
+                if (savedAdminTab) setAdminTab(savedAdminTab);
+
+                const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
+                const savedValDate    = sessionStorage.getItem("cyclic_val_date");
+                if (savedValStoreId) setValStoreId(savedValStoreId);
+                if (savedValDate)    setValDate(savedValDate);
+
                 // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
                 const savedStoreId = sessionStorage.getItem("cyclic_selected_store");
                 const savedDate    = sessionStorage.getItem("cyclic_selected_date");
@@ -435,6 +444,18 @@ export default function DashboardPage() {
         if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
     }, [valTab]);
 
+    useEffect(() => {
+        if (adminTab) sessionStorage.setItem("cyclic_admin_tab", adminTab);
+    }, [adminTab]);
+
+    useEffect(() => {
+        if (valStoreId) sessionStorage.setItem("cyclic_val_store", valStoreId);
+    }, [valStoreId]);
+
+    useEffect(() => {
+        if (valDate) sessionStorage.setItem("cyclic_val_date", valDate);
+    }, [valDate]);
+
     // realtime para operario
     useEffect(() => {
         if (!selectedStoreId || user?.role !== "Operario") return;
@@ -453,6 +474,16 @@ export default function DashboardPage() {
             .subscribe();
         return () => { supabase.removeChannel(ch); };
     }, [selectedStoreId, selectedDate, user, activeTab]);
+
+    // realtime para validador: recarga cuando operario registra conteos
+    useEffect(() => {
+        if (!valStoreId || activeTab !== "validador") return;
+        const ch = supabase.channel(`cyclic-validador-${valStoreId}-${valDate}`)
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [valStoreId, valDate, activeTab]);
 
     // scanner overlay
     useEffect(() => {
@@ -522,6 +553,11 @@ export default function DashboardPage() {
         localStorage.removeItem("cyclic_user");
         sessionStorage.removeItem("cyclic_active_tab");
         sessionStorage.removeItem("cyclic_val_tab");
+        sessionStorage.removeItem("cyclic_admin_tab");
+        sessionStorage.removeItem("cyclic_val_store");
+        sessionStorage.removeItem("cyclic_val_date");
+        sessionStorage.removeItem("cyclic_selected_store");
+        sessionStorage.removeItem("cyclic_selected_date");
         window.location.replace("/");
     }
 
@@ -534,7 +570,7 @@ export default function DashboardPage() {
     }
 
     // ── Helper: escribir/borrar flags de sesión en BD ────────
-    async function setSessionFlag(storeId: string, date: string, flag: "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
+    async function setSessionFlag(storeId: string, date: string, flag: "__session_counting__" | "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
         // Usamos el primer assignment de la tienda+fecha como anchor del flag
         const { data: asgns } = await supabase.from("cyclic_assignments").select("id").eq("store_id", storeId).eq("assigned_date", date).limit(1);
         if (!asgns || asgns.length === 0) return;
@@ -586,7 +622,12 @@ export default function DashboardPage() {
         const active = (all || []).filter((s: any) => s.is_active) as Store[];
         if (user.role === "Administrador" || user.can_access_all_stores) {
             setStores(active);
-            if (active.length > 0) setValStoreId(active[0].id);
+            const savedValStore = sessionStorage.getItem("cyclic_val_store");
+            if (savedValStore && active.some(s => s.id === savedValStore)) {
+                setValStoreId(savedValStore);
+            } else if (active.length > 0) {
+                setValStoreId(active[0].id);
+            }
         } else {
             const mine = user.store_id ? active.filter(s => s.id === user.store_id) : [];
             setStores(mine);
@@ -639,6 +680,7 @@ export default function DashboardPage() {
         // location = '__recount_started__'   → reconteo iniciado
         // location = '__recount_done__'      → reconteo finalizado
         const sessionFlags = cRows.filter(c => c.location?.startsWith("__session_"));
+        const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
         const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
         const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
         const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
@@ -653,6 +695,14 @@ export default function DashboardPage() {
         setCounts(enriched);
 
         // Restaurar estado UI desde flags de BD
+        // countingStatus: "idle" | "counting" | "finished" | "recounting" | "recount_done"
+        const countingStatusVal = isRecountDone ? "recount_done"
+            : isRecounting ? "recounting"
+            : isFinished ? "finished"
+            : isCounting ? "counting"
+            : "idle";
+        setCountingStatus(countingStatusVal);
+
         if (isFinished) {
             setSessionFinished(true);
             if (isRecountDone) {
@@ -1020,6 +1070,9 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); return; }
         }
+
+        // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
+        await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
 
         showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
         setActiveAssignment(null);
@@ -2333,6 +2386,19 @@ export default function DashboardPage() {
                             <div>
                                 <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
+                                {countingStatus !== "idle" && isAdmin && (
+                                    <span className={`inline-block mt-1 text-xs font-bold px-2 py-0.5 rounded-full ${
+                                        countingStatus === "recount_done" ? "bg-green-100 text-green-700" :
+                                        countingStatus === "recounting"   ? "bg-orange-100 text-orange-700" :
+                                        countingStatus === "finished"     ? "bg-blue-100 text-blue-700" :
+                                        "bg-indigo-100 text-indigo-700"
+                                    }`}>
+                                        {countingStatus === "recount_done" ? "✅ Reconteo completado" :
+                                         countingStatus === "recounting"   ? "🔄 En reconteo" :
+                                         countingStatus === "finished"     ? "🏁 Conteo finalizado" :
+                                         "📝 Contando..."}
+                                    </span>
+                                )}
                             </div>
                             <div className="flex gap-3 items-center flex-wrap">
                                 {isAdmin && (
@@ -2693,6 +2759,22 @@ export default function DashboardPage() {
                                     <span className="text-amber-600">Pend: <b>{resumenStats.pendientes}</b></span>
                                     <span>·</span>
                                     <span className="text-red-600">Con dif: <b>{resumenStats.conDif}</b></span>
+                                    {countingStatus !== "idle" && (
+                                        <>
+                                            <span>·</span>
+                                            <span className={
+                                                countingStatus === "recount_done" ? "text-green-700" :
+                                                countingStatus === "recounting"   ? "text-orange-600" :
+                                                countingStatus === "finished"     ? "text-blue-700" :
+                                                "text-indigo-600"
+                                            }>
+                                                {countingStatus === "recount_done" ? "✅ Reconteo completado" :
+                                                 countingStatus === "recounting"   ? "🔄 En reconteo" :
+                                                 countingStatus === "finished"     ? "🏁 Conteo finalizado" :
+                                                 "📝 Contando..."}
+                                            </span>
+                                        </>
+                                    )}
                                 </div>
                             )}
                             {valStoreId && resumenStats.total > 0 && (
