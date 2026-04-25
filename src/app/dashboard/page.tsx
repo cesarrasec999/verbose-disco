@@ -332,6 +332,10 @@ export default function DashboardPage() {
     const [bulkWspDate, setBulkWspDate] = useState("");
     const [bulkWspSendingIdx, setBulkWspSendingIdx] = useState(-1); // -1 = no enviando, 0+ = índice actual
 
+    // ─── Protección anti-doble clic en guardados ─────────────
+    const [savingCount, setSavingCount]         = useState(false);
+    const [savingRecount, setSavingRecount]     = useState(false);
+
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
@@ -1166,13 +1170,14 @@ export default function DashboardPage() {
     }
 
     async function saveCount() {
-        if (!activeAssignment || !user) return;
+        if (!activeAssignment || !user || savingCount) return;
+        setSavingCount(true);
         for (let i = 0; i < locationRows.length; i++) {
             const row = locationRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); return; }
-            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingCount(false); return; }
+            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingCount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); return; }
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingCount(false); return; }
         }
 
         await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
@@ -1193,7 +1198,7 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar: " + error.message, "error"); return; }
+            if (error) { showMessage("Error al guardar: " + error.message, "error"); setSavingCount(false); return; }
         }
 
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
@@ -1202,6 +1207,7 @@ export default function DashboardPage() {
         showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
         setActiveAssignment(null);
         loadOperarioData(selectedStoreId, selectedDate);
+        setSavingCount(false);
     }
 
     // ════════════════════════════════════════════════════════
@@ -1235,13 +1241,14 @@ export default function DashboardPage() {
     }
 
     async function saveRecount() {
-        if (!recountAssignment || !user) return;
+        if (!recountAssignment || !user || savingRecount) return;
+        setSavingRecount(true);
         for (let i = 0; i < recountRows.length; i++) {
             const row = recountRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); return; }
-            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingRecount(false); return; }
+            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingRecount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); return; }
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingRecount(false); return; }
         }
 
         await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
@@ -1262,12 +1269,13 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); return; }
+            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); setSavingRecount(false); return; }
         }
 
         showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
+        setSavingRecount(false);
         loadOperarioData(selectedStoreId, selectedDate);
     }
 
@@ -2872,17 +2880,23 @@ export default function DashboardPage() {
                     {/* Lista pendientes */}
                     {pendingAssignments.length > 0 && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                            <h3 className="font-bold text-slate-900">Pendientes ({pendingAssignments.length})</h3>
+                            <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-bold">{pendingAssignments.length}</span>
+                                Pendientes por contar
+                            </h3>
                             <div className="space-y-2">
                                 {pendingAssignments.map(a => (
-                                    <div key={a.id} className="flex items-center justify-between gap-3 border rounded-2xl p-3 bg-amber-50 border-amber-200">
+                                    <div key={a.id} className="flex items-center justify-between gap-3 border-2 border-amber-300 rounded-2xl p-4 bg-amber-50 active:scale-[0.98] transition-transform">
                                         <div className="flex-1 min-w-0">
-                                            <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
-                                            <div className="text-xs text-slate-600 truncate">{a.description}</div>
-                                            <div className="text-xs text-slate-400">UM: {a.unit}</div>
+                                            <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
+                                            <div className="text-sm text-slate-600 truncate">{a.description}</div>
+                                            <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} · Stock: <b>{a.system_stock}</b></div>
                                         </div>
-                                        <button className="px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold whitespace-nowrap" onClick={() => openCount(a)}>
-                                            Contar
+                                        <button
+                                            className="px-5 py-3 rounded-2xl bg-amber-500 text-white text-sm font-bold whitespace-nowrap shadow active:bg-amber-600 active:scale-95 transition-all"
+                                            onClick={() => openCount(a)}
+                                        >
+                                            ➕ Contar
                                         </button>
                                     </div>
                                 ))}
@@ -2893,38 +2907,49 @@ export default function DashboardPage() {
                     {/* Lista contados */}
                     {doneAssignments.length > 0 && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                            <h3 className="font-bold text-slate-900">Ya contados ({doneAssignments.length})</h3>
+                            <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold">{doneAssignments.length}</span>
+                                Ya contados
+                            </h3>
                             <div className="space-y-2">
                                 {doneAssignments.map(a => {
                                     const asgCounts = counts.filter(c => c.assignment_id === a.id);
                                     const totalContado = asgCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
                                     const hasDiff = totalContado !== Number(a.system_stock);
                                     return (
-                                        <div key={a.id} className={`border rounded-2xl p-3 ${hasDiff ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}>
+                                        <div key={a.id} className={`border-2 rounded-2xl p-4 active:scale-[0.98] transition-transform ${hasDiff ? "bg-red-50 border-red-300" : "bg-green-50 border-green-300"}`}>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="flex-1 min-w-0">
-                                                    <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
-                                                    <div className="text-xs text-slate-600 truncate">{a.description}</div>
-                                                    <div className="text-xs text-slate-500 mt-0.5">
-                                                        Stock: <b>{a.system_stock}</b> · Total contado: <b>{totalContado}</b>
+                                                    <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
+                                                    <div className="text-sm text-slate-600 truncate">{a.description}</div>
+                                                    <div className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                                                        <span>Stock: <b>{a.system_stock}</b></span>
+                                                        <span>·</span>
+                                                        <span>Contado: <b>{totalContado}</b></span>
                                                         {hasDiff
-                                                            ? <span className="text-red-600 font-semibold"> · Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{totalContado - Number(a.system_stock)} ⚠️</span>
-                                                            : <span className="text-green-600 font-semibold"> · ✓ OK</span>
+                                                            ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">
+                                                                ⚠️ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{totalContado - Number(a.system_stock)}
+                                                              </span>
+                                                            : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-bold text-xs border border-green-200">
+                                                                ✓ OK
+                                                              </span>
                                                         }
                                                     </div>
                                                 </div>
-                                                <button className="px-3 py-2 rounded-xl border text-xs font-semibold" onClick={() => openCount(a)}>Editar</button>
+                                                <button
+                                                    className="px-4 py-2.5 rounded-2xl border-2 border-slate-300 text-sm font-semibold bg-white active:bg-slate-100 active:scale-95 transition-all"
+                                                    onClick={() => openCount(a)}
+                                                >
+                                                    ✏️ Editar
+                                                </button>
                                             </div>
                                             {asgCounts.length > 0 && (
-                                                <div className="mt-2 space-y-1">
+                                                <div className="mt-3 space-y-1.5">
                                                     {asgCounts.map((c, i) => (
-                                                        <div key={c.id} className="text-xs text-slate-500 flex gap-2 bg-white rounded-xl px-2 py-1 border border-green-100">
-                                                            <span className="font-semibold text-slate-700">Ubic {i + 1}:</span>
-                                                            <span>{c.location}</span>
-                                                            <span>·</span>
-                                                            <span>Cant: <b>{c.counted_quantity}</b></span>
-                                                            <span>·</span>
-                                                            <span className={statusBadge(c.status)}>{c.status}</span>
+                                                        <div key={c.id} className="text-xs text-slate-600 flex gap-2 items-center bg-white rounded-xl px-3 py-2 border border-slate-200">
+                                                            <span className="font-bold text-slate-400 w-14 flex-shrink-0">Ubic {i + 1}</span>
+                                                            <span className="font-mono text-slate-700 truncate flex-1">{c.location || <em className="text-slate-400">—</em>}</span>
+                                                            <span className="font-bold text-slate-800 flex-shrink-0">{c.counted_quantity} {a.unit}</span>
                                                         </div>
                                                     ))}
                                                 </div>
@@ -3021,10 +3046,18 @@ export default function DashboardPage() {
                                 </div>
 
                                 <div className="flex gap-3">
-                                    <button className="flex-1 py-3 rounded-2xl bg-orange-600 text-white font-bold text-sm" onClick={saveRecount}>
-                                        Guardar reconteo
+                                    <button
+                                        className={`flex-1 py-4 rounded-2xl font-bold text-base transition-all active:scale-95 ${savingRecount ? "bg-orange-300 text-white cursor-not-allowed" : "bg-orange-600 text-white active:bg-orange-700"}`}
+                                        onClick={saveRecount}
+                                        disabled={savingRecount}
+                                    >
+                                        {savingRecount ? "Guardando..." : "💾 Guardar reconteo"}
                                     </button>
-                                    <button className="px-5 py-3 rounded-2xl border font-semibold text-sm" onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }}>
+                                    <button
+                                        className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm active:bg-slate-100 active:scale-95 transition-all"
+                                        onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }}
+                                        disabled={savingRecount}
+                                    >
                                         Cancelar
                                     </button>
                                 </div>
@@ -3930,52 +3963,57 @@ export default function DashboardPage() {
                         <div className="flex items-start justify-between gap-3 mb-4">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Registrar conteo</h3>
-                                <p className="text-slate-600 text-sm mt-0.5">{activeAssignment.sku} — {activeAssignment.description}</p>
-                                <p className="text-xs text-slate-400 mt-0.5">UM: {activeAssignment.unit}</p>
+                                <p className="text-slate-700 font-semibold mt-0.5">{activeAssignment.sku}</p>
+                                <p className="text-sm text-slate-500">{activeAssignment.description}</p>
+                                <div className="flex items-center gap-2 mt-1.5">
+                                    <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
+                                    <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {activeAssignment.system_stock}</span>
+                                </div>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
                         </div>
 
                         <div className="space-y-3 mb-4">
                             <div className="flex items-center justify-between">
-                                <label className="block font-semibold text-sm text-slate-700">Ubicaciones y cantidades</label>
+                                <label className="block font-bold text-sm text-slate-800">Ubicaciones y cantidades</label>
                                 <button
-                                    className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border"
+                                    className="text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold border active:bg-slate-200 active:scale-95 transition-all"
                                     onClick={addLocationRow}
                                 >
                                     + Agregar ubicación
                                 </button>
                             </div>
                             {locationRows.map((row, i) => (
-                                <div key={i} className="rounded-2xl border bg-slate-50 p-3 space-y-2">
+                                <div key={i} className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-4 space-y-3">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-xs font-semibold text-slate-500">Ubicación {locationRows.length > 1 ? i + 1 : ""}</span>
+                                        <span className="text-sm font-bold text-slate-600">
+                                            {locationRows.length > 1 ? `📍 Ubicación ${i + 1}` : "📍 Ubicación"}
+                                        </span>
                                         {locationRows.length > 1 && (
-                                            <button className="text-xs text-red-500 hover:text-red-700 font-semibold" onClick={() => removeLocationRow(i)}>Quitar</button>
+                                            <button className="text-xs text-red-500 hover:text-red-700 font-semibold active:scale-95 transition-all" onClick={() => removeLocationRow(i)}>✕ Quitar</button>
                                         )}
                                     </div>
                                     <div>
-                                        <label className="text-xs text-slate-500 block mb-1">Ubicación</label>
-                                        <div className="flex gap-1">
+                                        <div className="flex gap-2">
                                             <input
-                                                className="flex-1 border rounded-xl p-2.5 text-sm text-slate-900 bg-white"
+                                                className="flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white focus:border-slate-400 focus:outline-none"
                                                 placeholder="Ej: A-01-03"
                                                 value={row.location}
                                                 onChange={e => updateLocationRow(i, "location", e.target.value)}
                                             />
                                             <button
-                                                className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs"
+                                                className="px-3 py-2 rounded-xl bg-slate-800 text-white text-xs active:bg-slate-600 active:scale-95 transition-all"
                                                 onClick={() => openScanner("location", i)}
                                                 title="Escanear ubicación"
                                             >
-                                                <QrCode size={14} />
+                                                <QrCode size={16} />
                                             </button>
                                         </div>
                                     </div>
                                     <div>
-                                        <label className="text-xs text-slate-500 block mb-1">Cantidad</label>
+                                        <label className="text-xs text-slate-500 block mb-1 font-semibold">CANTIDAD</label>
                                         <input
-                                            className="w-full border rounded-xl p-3 text-lg text-center font-bold text-slate-900 bg-white"
+                                            className="w-full border-2 border-slate-300 rounded-xl p-4 text-2xl text-center font-bold text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
                                             type="number"
                                             min="0"
                                             placeholder="0"
@@ -3988,10 +4026,18 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="flex gap-3">
-                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-bold text-sm" onClick={saveCount}>
-                                Guardar conteo
+                            <button
+                                className={`flex-1 py-4 rounded-2xl font-bold text-base transition-all active:scale-95 ${savingCount ? "bg-slate-400 text-white cursor-not-allowed" : "bg-slate-900 text-white active:bg-slate-700"}`}
+                                onClick={saveCount}
+                                disabled={savingCount}
+                            >
+                                {savingCount ? "Guardando..." : "💾 Guardar conteo"}
                             </button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => setActiveAssignment(null)}>
+                            <button
+                                className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm text-slate-700 active:bg-slate-100 active:scale-95 transition-all"
+                                onClick={() => setActiveAssignment(null)}
+                                disabled={savingCount}
+                            >
                                 Cancelar
                             </button>
                         </div>
