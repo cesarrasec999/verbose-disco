@@ -317,6 +317,12 @@ export default function DashboardPage() {
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
     const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
 
+    // ─── WhatsApp masivo post-carga ──────────────────────────
+    const [showBulkWspModal, setShowBulkWspModal] = useState(false);
+    const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string } | null }[]>([]);
+    const [bulkWspSelected, setBulkWspSelected] = useState<Set<string>>(new Set());
+    const [bulkWspDate, setBulkWspDate] = useState("");
+
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
@@ -1183,7 +1189,6 @@ export default function DashboardPage() {
 
     async function uploadBulkAssign() {
         if (!bulkAssignFile) { showMessage("Selecciona un archivo Excel.", "error"); return; }
-        const isMultiStore = !valStoreId; // Si no hay tienda seleccionada, asumimos multi-tienda
         if (!valDate) { showMessage("Selecciona una fecha antes.", "error"); return; }
         try {
             const data = await bulkAssignFile.arrayBuffer();
@@ -1192,112 +1197,225 @@ export default function DashboardPage() {
             const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, header: 1 });
             const headerRow = allRows[0] || [];
 
-            // Detectar si hay columna de tienda en la posición A
-            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "local"].some(n => String(h || "").toLowerCase().includes(n)));
-
             const findCol = (names: string[]): number => {
                 const idx = headerRow.findIndex((h: any) => names.some(n => String(h || "").toLowerCase().includes(n.toLowerCase())));
                 return idx >= 0 ? idx : -1;
             };
 
+            // Detectar si hay columna de tienda (col A con "tda", "tienda", etc.)
+            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "local", "tda"].some(n => String(h || "").toLowerCase().includes(n)));
             let colTienda = -1;
             let colCodigo: number, colCosto: number, colStock: number;
 
             if (hasStoreCol) {
-                colTienda = findCol(["tienda", "store", "almacen", "local"]);
-                const offset = colTienda >= 0 ? 1 : 0;
-                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : offset;
-                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : offset + 3;
-                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : offset + 4;
+                colTienda = findCol(["tienda", "store", "almacen", "local", "tda"]);
+                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : (colTienda >= 0 ? colTienda + 1 : 1);
+                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : (colTienda >= 0 ? colTienda + 4 : 4);
+                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : (colTienda >= 0 ? colTienda + 5 : 5);
             } else {
                 colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
                 colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
                 colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
             }
 
-            // Precargar mapa de tiendas por nombre
+            const dataRows = allRows.slice(1).filter(r => r.some((v: any) => String(v || "").trim()));
+
+            // ── PASO 1: Construir mapa de tiendas ────────────────────────
             const storeNameMap = new Map<string, string>(); // nombre normalizado → id
-            for (const s of allStores) {
-                storeNameMap.set(s.name.trim().toLowerCase(), s.id);
+            for (const s of allStores) storeNameMap.set(s.name.trim().toLowerCase(), s.id);
+
+            // ── PASO 2: Extraer SKUs únicos del archivo ───────────────────
+            setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
+            const skusEnArchivo = new Set<string>();
+            for (const row of dataRows) {
+                const rawSku = cleanCode(String(row[colCodigo] || ""));
+                if (rawSku) skusEnArchivo.add(rawSku);
             }
 
-            const dataRows = allRows.slice(1);
-            let ok = 0, updated = 0, skip = 0, notFound = 0, storeNotFound = 0;
+            // ── PASO 3: Traer todos los productos relevantes de una vez ───
+            setBulkAssignProgress({ step: "Cargando productos del maestro...", pct: 15 });
+            const skuArr = [...skusEnArchivo];
+            const prodBySkuMap = new Map<string, Product>(); // sku → product
+            const prodByBarcodeMap = new Map<string, Product>(); // barcode → product
+            const CHUNK = 500;
+            for (let i = 0; i < skuArr.length; i += CHUNK) {
+                const chunk = skuArr.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk);
+                for (const p of prods || []) {
+                    prodBySkuMap.set(p.sku, p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
+                }
+            }
+            // Buscar también por barcode los que no se encontraron por SKU
+            const notFoundBySku = skuArr.filter(s => !prodBySkuMap.has(s));
+            for (let i = 0; i < notFoundBySku.length; i += CHUNK) {
+                const chunk = notFoundBySku.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("barcode", chunk);
+                for (const p of prods || []) {
+                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
+                }
+            }
 
-            for (let i = 0; i < dataRows.length; i++) {
-                const row = dataRows[i];
-                setBulkAssignProgress({ step: `Procesando ${i + 1} / ${dataRows.length}...`, pct: Math.round(((i + 1) / dataRows.length) * 100) });
+            // ── PASO 4: Traer asignaciones existentes para la fecha ───────
+            setBulkAssignProgress({ step: "Revisando asignaciones existentes...", pct: 30 });
+            // Tiendas únicas del archivo
+            const storeIdsDelArchivo = new Set<string>();
+            if (hasStoreCol && colTienda >= 0) {
+                for (const row of dataRows) {
+                    const rawN = String(row[colTienda] || "").trim();
+                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    if (sid) storeIdsDelArchivo.add(sid);
+                }
+            } else if (valStoreId) {
+                storeIdsDelArchivo.add(valStoreId);
+            }
 
-                // Determinar tienda objetivo
-                let targetStoreId = valStoreId;
+            // Traer asignaciones existentes para esas tiendas en la fecha
+            type ExistingAssignment = { id: string; store_id: string; product_id: string; system_stock: number };
+            let existingAsgns: ExistingAssignment[] = [];
+            const storeIdsArr = [...storeIdsDelArchivo];
+            for (let i = 0; i < storeIdsArr.length; i += 100) {
+                const chunk = storeIdsArr.slice(i, i + 100);
+                const { data: ea } = await supabase.from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock")
+                    .in("store_id", chunk)
+                    .eq("assigned_date", valDate);
+                existingAsgns = existingAsgns.concat((ea || []) as ExistingAssignment[]);
+            }
+            // key: storeId__productId → assignment
+            const existingMap = new Map<string, ExistingAssignment>();
+            for (const ea of existingAsgns) existingMap.set(`${ea.store_id}__${ea.product_id}`, ea);
+
+            // ── PASO 5: Procesar filas y construir lotes ─────────────────
+            setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 50 });
+            let skip = 0, notFound = 0, storeNotFound = 0;
+            const toInsert: any[] = [];
+            const toUpdate: { id: string; system_stock: number; cost?: number }[] = [];
+            const costUpdates: { id: string; cost: number }[] = [];
+
+            for (const row of dataRows) {
+                const rawSku = cleanCode(String(row[colCodigo] || ""));
+                if (!rawSku) { skip++; continue; }
+
+                let targetStoreId = valStoreId || "";
                 if (hasStoreCol && colTienda >= 0) {
-                    const rawStoreName = String(row[colTienda] || "").trim();
-                    if (!rawStoreName) { skip++; continue; }
-                    const foundStoreId = storeNameMap.get(rawStoreName.toLowerCase());
-                    if (!foundStoreId) { storeNotFound++; continue; }
-                    targetStoreId = foundStoreId;
+                    const rawN = String(row[colTienda] || "").trim();
+                    if (!rawN) { skip++; continue; }
+                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    if (!sid) { storeNotFound++; continue; }
+                    targetStoreId = sid;
                 }
                 if (!targetStoreId) { skip++; continue; }
 
-                const rawSku = cleanCode(String(row[colCodigo] || ""));
-                const stock = Number(row[colStock] || 0);
-                const cost = parseCost(row[colCosto]);
-                if (!rawSku) { skip++; continue; }
-
-                let prod: Product | null = null;
-                const { data: byS } = await supabase.from("cyclic_products").select("*").eq("sku", rawSku).maybeSingle();
-                if (byS) prod = byS as Product;
-                if (!prod) {
-                    const { data: byB } = await supabase.from("cyclic_products").select("*").ilike("barcode", rawSku).maybeSingle();
-                    if (byB) prod = byB as Product;
-                }
+                const prod = prodBySkuMap.get(rawSku) || prodByBarcodeMap.get(rawSku) || null;
                 if (!prod) { notFound++; continue; }
 
-                if (cost > 0) {
-                    await supabase.from("cyclic_products").update({ cost, updated_at: new Date().toISOString() }).eq("id", prod.id);
+                const stock = Number(row[colStock] || 0);
+                const cost = parseCost(row[colCosto]);
+                if (cost > 0 && cost !== prod.cost) {
+                    costUpdates.push({ id: prod.id, cost });
                 }
 
-                const { data: existing } = await supabase.from("cyclic_assignments")
-                    .select("id").eq("store_id", targetStoreId).eq("product_id", prod.id).eq("assigned_date", valDate).maybeSingle();
+                const key = `${targetStoreId}__${prod.id}`;
+                const existing = existingMap.get(key);
                 if (existing) {
-                    await supabase.from("cyclic_assignments").update({ system_stock: stock }).eq("id", existing.id);
-                    updated++;
-                    continue;
+                    if (existing.system_stock !== stock) toUpdate.push({ id: existing.id, system_stock: stock });
+                } else {
+                    toInsert.push({
+                        store_id: targetStoreId, product_id: prod.id, system_stock: stock,
+                        assigned_date: valDate, assigned_by: user?.id,
+                    });
                 }
-
-                await supabase.from("cyclic_assignments").insert({
-                    store_id: targetStoreId, product_id: prod.id, system_stock: stock,
-                    assigned_date: valDate, assigned_by: user?.id,
-                });
-                ok++;
             }
+
+            // ── PASO 6: Ejecutar actualizaciones de costo en lote ────────
+            setBulkAssignProgress({ step: "Actualizando costos...", pct: 60 });
+            const now = new Date().toISOString();
+            for (let i = 0; i < costUpdates.length; i += 200) {
+                const chunk = costUpdates.slice(i, i + 200);
+                await Promise.all(chunk.map(c =>
+                    supabase.from("cyclic_products").update({ cost: c.cost, updated_at: now }).eq("id", c.id)
+                ));
+            }
+
+            // ── PASO 7: Actualizaciones de stock en lote ─────────────────
+            setBulkAssignProgress({ step: `Actualizando ${toUpdate.length} asignaciones...`, pct: 70 });
+            for (let i = 0; i < toUpdate.length; i += 200) {
+                const chunk = toUpdate.slice(i, i + 200);
+                await Promise.all(chunk.map(u =>
+                    supabase.from("cyclic_assignments").update({ system_stock: u.system_stock }).eq("id", u.id)
+                ));
+            }
+
+            // ── PASO 8: Insertar nuevas asignaciones en lote ─────────────
+            setBulkAssignProgress({ step: `Insertando ${toInsert.length} nuevas asignaciones...`, pct: 85 });
+            const INSERT_BATCH = 200;
+            let insertOk = 0;
+            for (let i = 0; i < toInsert.length; i += INSERT_BATCH) {
+                const batch = toInsert.slice(i, i + INSERT_BATCH);
+                const { error } = await supabase.from("cyclic_assignments").insert(batch);
+                if (!error) insertOk += batch.length;
+                setBulkAssignProgress({ step: `Insertando... ${Math.min(i + INSERT_BATCH, toInsert.length)} / ${toInsert.length}`, pct: 85 + Math.round((i / toInsert.length) * 10) });
+            }
+
             setBulkAssignProgress(null);
             const storeMsg = storeNotFound > 0 ? ` ${storeNotFound} tiendas no encontradas.` : "";
-            showMessage(`✅ ${ok} nuevos asignados, ${updated} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, ok > 0 || updated > 0 ? "success" : "error");
+            showMessage(`✅ ${insertOk} nuevos asignados, ${toUpdate.length} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId) loadValidadorData(valStoreId, valDate);
-            // Preguntar si enviar alertas WhatsApp
-            if ((ok > 0 || updated > 0) && confirm("¿Deseas enviar alertas de WhatsApp a los operarios de las tiendas asignadas?")) {
-                // Obtener tiendas únicas asignadas en esta carga
-                const storeIdsAsignados = isMultiStore
-                    ? [...new Set(dataRows.map((row: any) => {
-                        const rawN = String(row[colTienda] || "").trim();
-                        return storeNameMap.get(rawN.toLowerCase()) || "";
-                    }).filter(Boolean))]
-                    : (valStoreId ? [valStoreId] : []);
-                for (const sid of storeIdsAsignados) {
-                    // Contar cuántos se asignaron a esa tienda en esta carga
+
+            // ── PASO 9: Modal WhatsApp masivo ─────────────────────────────
+            if (insertOk > 0 || toUpdate.length > 0) {
+                // Contar asignaciones por tienda para el modal
+                const countByStore = new Map<string, number>();
+                for (const ins of toInsert) {
+                    countByStore.set(ins.store_id, (countByStore.get(ins.store_id) || 0) + 1);
+                }
+                for (const upd of existingAsgns) {
+                    // Solo agregar las tiendas que tienen asignaciones totales (no solo updates)
+                }
+                // Traer conteo total de asignaciones por tienda para la fecha
+                const wspStoreIds = [...storeIdsDelArchivo];
+                const wspStoresData: typeof bulkWspStores = [];
+                for (const sid of wspStoreIds) {
                     const { count: cnt } = await supabase.from("cyclic_assignments")
                         .select("id", { count: "exact", head: true })
                         .eq("store_id", sid)
                         .eq("assigned_date", valDate);
-                    await sendWhatsappAlert(sid, valDate, cnt || 0);
+                    const { data: op } = await supabase.from("cyclic_users")
+                        .select("full_name, whatsapp")
+                        .eq("store_id", sid).eq("role", "Operario").eq("is_active", true).maybeSingle();
+                    const storeName = allStores.find(s => s.id === sid)?.name || sid;
+                    wspStoresData.push({
+                        id: sid,
+                        name: storeName,
+                        count: cnt || 0,
+                        operario: op ? { full_name: op.full_name, whatsapp: op.whatsapp || "" } : null,
+                    });
+                }
+                const withOperario = wspStoresData.filter(s => s.operario?.whatsapp);
+                if (withOperario.length > 0) {
+                    setBulkWspStores(wspStoresData);
+                    setBulkWspSelected(new Set(withOperario.map(s => s.id)));
+                    setBulkWspDate(valDate);
+                    setShowBulkWspModal(true);
                 }
             }
         } catch (e: any) {
             setBulkAssignProgress(null);
             showMessage("Error leyendo el archivo: " + e.message, "error");
         }
+    }
+
+    function sendBulkWhatsapp() {
+        for (const store of bulkWspStores) {
+            if (!bulkWspSelected.has(store.id)) continue;
+            if (!store.operario?.whatsapp) continue;
+            const mensaje = `Hola ${store.operario.full_name} 👋, se te han asignado *${store.count} código${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el día *${bulkWspDate}*. Por favor ingresa a la app para realizar el conteo cíclico. ¡Gracias!`;
+            const url = `https://wa.me/${store.operario.whatsapp}?text=${encodeURIComponent(mensaje)}`;
+            window.open(url, "_blank");
+        }
+        setShowBulkWspModal(false);
     }
 
     // ════════════════════════════════════════════════════════
@@ -2558,11 +2676,13 @@ export default function DashboardPage() {
                                 {/* Carga masiva */}
                                 <div className="border-t pt-4 space-y-3">
                                     <div>
-                                        <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                        <p className="text-xs text-slate-400 mt-0.5">
-                                            <b>Formato estándar:</b> <b>A: Código</b>, <b>B: Descripción</b>, <b>C: Unidad</b>, <b>D: Costo</b>, <b>E: Stock</b>. La fila 1 (encabezado) se ignora.<br/>
-                                            <b>Formato multi-tienda:</b> <b>A: Tienda</b>, <b>B: Código</b>, <b>C: Descripción</b>, <b>D: Unidad</b>, <b>E: Costo</b>, <b>F: Stock</b>. Asigna a varias tiendas en un solo archivo (el nombre de tienda debe coincidir exactamente).
-                                        </p>
+                                        <p className="text-sm font-semibold text-slate-700">📦 Carga masiva por Excel — <span className="text-blue-700">Todas las tiendas</span></p>
+                                        <div className="mt-1.5 rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1 text-xs text-slate-600">
+                                            <p>✅ <b>Formato multi-tienda (recomendado):</b> <b>A: Tienda</b> · <b>B: Código</b> · <b>C: Descripción</b> · <b>D: Unidad</b> · <b>E: Costo</b> · <b>F: Stock</b>.<br/>
+                                            El nombre de tienda en col A debe coincidir exactamente con el sistema. No necesitas seleccionar tienda arriba.</p>
+                                            <p className="text-slate-400">Formato simple (sin col tienda): <b>A: Código</b> · <b>B: Desc</b> · <b>C: Unidad</b> · <b>D: Costo</b> · <b>E: Stock</b>. Requiere tienda seleccionada arriba.</p>
+                                            <p className="text-blue-700 font-semibold">⚡ Carga optimizada: todos los productos se procesan en lote, sin esperar fila por fila.</p>
+                                        </div>
                                     </div>
                                     {bulkAssignProgress && (
                                         <div className="rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1">
@@ -2574,12 +2694,14 @@ export default function DashboardPage() {
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
                                         <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => bulkAssignRef.current?.click()}>
-                                            {bulkAssignFileName || "Seleccionar Excel"}
+                                            {bulkAssignFileName || "📂 Seleccionar Excel"}
                                         </button>
                                         <input ref={bulkAssignRef} type="file" accept=".xlsx,.xls" className="hidden"
                                             onChange={e => { const f = e.target.files?.[0] || null; setBulkAssignFile(f); setBulkAssignFileName(f?.name || ""); e.target.value = ""; }} />
                                         {bulkAssignFile && (
-                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBulkAssign}>Cargar</button>
+                                            <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm" onClick={uploadBulkAssign}>
+                                                🚀 Cargar todas las tiendas
+                                            </button>
                                         )}
                                     </div>
                                 </div>
@@ -3527,6 +3649,87 @@ export default function DashboardPage() {
                             </button>
                             <button className="flex-1 py-3 rounded-2xl bg-red-500 text-white font-bold text-sm" onClick={confirmFinishSession}>
                                 Sí, terminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ════════════════════════════════════════════════════════
+                MODAL — WHATSAPP MASIVO POST-CARGA
+            ════════════════════════════════════════════════════════ */}
+            {showBulkWspModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-xl font-bold text-slate-900">📲 Enviar avisos por WhatsApp</h3>
+                                <p className="text-slate-500 text-sm mt-1">Carga completada para <b>{bulkWspDate}</b>. Selecciona las tiendas a las que quieres notificar.</p>
+                            </div>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setShowBulkWspModal(false)}>×</button>
+                        </div>
+
+                        <div className="flex gap-2">
+                            <button
+                                className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                onClick={() => setBulkWspSelected(new Set(bulkWspStores.filter(s => s.operario?.whatsapp).map(s => s.id)))}
+                            >
+                                Seleccionar todas
+                            </button>
+                            <button
+                                className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 font-semibold text-slate-700 border"
+                                onClick={() => setBulkWspSelected(new Set())}
+                            >
+                                Quitar todas
+                            </button>
+                        </div>
+
+                        <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                            {bulkWspStores.map(store => {
+                                const hasOp = !!store.operario?.whatsapp;
+                                const selected = bulkWspSelected.has(store.id);
+                                return (
+                                    <div
+                                        key={store.id}
+                                        className={`flex items-center gap-3 rounded-2xl border p-3 transition ${!hasOp ? "opacity-40 cursor-not-allowed bg-slate-50" : selected ? "bg-green-50 border-green-300 cursor-pointer" : "bg-white border-slate-200 cursor-pointer hover:bg-slate-50"}`}
+                                        onClick={() => {
+                                            if (!hasOp) return;
+                                            setBulkWspSelected(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(store.id)) next.delete(store.id);
+                                                else next.add(store.id);
+                                                return next;
+                                            });
+                                        }}
+                                    >
+                                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selected && hasOp ? "bg-green-600 border-green-600" : "border-slate-300"}`}>
+                                            {selected && hasOp && <span className="text-white text-xs font-bold">✓</span>}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="font-semibold text-sm text-slate-900 truncate">{store.name}</div>
+                                            <div className="text-xs text-slate-500">
+                                                {store.count} código{store.count !== 1 ? "s" : ""} asignados
+                                                {store.operario
+                                                    ? <> · <span className="text-green-700">📲 {store.operario.full_name} ({store.operario.whatsapp})</span></>
+                                                    : <span className="text-red-500"> · Sin operario con WhatsApp</span>
+                                                }
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="flex gap-3 pt-1">
+                            <button
+                                className="flex-1 py-3 rounded-2xl bg-green-600 text-white font-bold text-sm disabled:opacity-40"
+                                disabled={bulkWspSelected.size === 0}
+                                onClick={sendBulkWhatsapp}
+                            >
+                                📲 Enviar a {bulkWspSelected.size} tienda{bulkWspSelected.size !== 1 ? "s" : ""}
+                            </button>
+                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700 text-sm" onClick={() => setShowBulkWspModal(false)}>
+                                Omitir
                             </button>
                         </div>
                     </div>
