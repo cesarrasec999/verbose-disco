@@ -371,6 +371,7 @@ export default function DashboardPage() {
     // key = product_id, value = { system_stock?: number, total_counted?: number }
     const [resumenOverrides, setResumenOverrides] = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
     const [resumenEditMode, setResumenEditMode] = useState(false);
+    const [resumenSort, setResumenSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
 
     // ════════════════════════════════════════════════════════
     //  INIT
@@ -2509,12 +2510,30 @@ export default function DashboardPage() {
 
     const filteredResumen = useMemo(() => {
         const base = resumenEditMode ? resumenConOverrides : resumenPorCodigo;
-        if (!resumenSearch.trim()) return base;
-        const q = resumenSearch.trim().toLowerCase();
-        return base.filter(r =>
-            r.sku.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)
-        );
-    }, [resumenPorCodigo, resumenConOverrides, resumenEditMode, resumenSearch]);
+        let rows = !resumenSearch.trim() ? base : base.filter(r => {
+            const q = resumenSearch.trim().toLowerCase();
+            return r.sku.toLowerCase().includes(q) || r.description.toLowerCase().includes(q);
+        });
+        if (resumenSort) {
+            const { col, dir } = resumenSort;
+            const mul = dir === "asc" ? 1 : -1;
+            rows = [...rows].sort((a, b) => {
+                let va: string | number, vb: string | number;
+                if (col === "sku")           { va = a.sku;            vb = b.sku; }
+                else if (col === "desc")     { va = a.description;    vb = b.description; }
+                else if (col === "um")       { va = a.unit;           vb = b.unit; }
+                else if (col === "stock")    { va = a.system_stock;   vb = b.system_stock; }
+                else if (col === "contado")  { va = a.total_counted;  vb = b.total_counted; }
+                else if (col === "dif")      { va = a.difference;     vb = b.difference; }
+                else if (col === "costo")    { va = a.cost;           vb = b.cost; }
+                else if (col === "val")      { va = a.dif_valorizada; vb = b.dif_valorizada; }
+                else                         { va = 0;                vb = 0; }
+                if (typeof va === "string") return mul * va.localeCompare(vb as string);
+                return mul * ((va as number) - (vb as number));
+            });
+        }
+        return rows;
+    }, [resumenPorCodigo, resumenConOverrides, resumenEditMode, resumenSearch, resumenSort]);
 
     const notCountedAssignments = useMemo(() => {
         const countedPids = new Set<string>();
@@ -3753,7 +3772,7 @@ export default function DashboardPage() {
                                     {dashDrillSource && (
                                         <button
                                             className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition-all ${resumenEditMode ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-400 hover:bg-amber-50"}`}
-                                            onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) setResumenOverrides({}); }}
+                                            onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) { setResumenOverrides({}); setResumenSort(null); } }}
                                         >
                                             {resumenEditMode ? "✏️ Editando — Click para salir" : "✏️ Modo análisis"}
                                         </button>
@@ -3799,14 +3818,41 @@ export default function DashboardPage() {
                                             <table className="w-full text-sm">
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
-                                                        <th className="p-2 border text-left">SKU</th>
-                                                        <th className="p-2 border text-left">Descripción</th>
-                                                        <th className="p-2 border">UM</th>
-                                                        <th className={`p-2 border ${resumenEditMode ? "bg-amber-50 text-amber-800" : ""}`}>Stock Sis.</th>
-                                                        <th className={`p-2 border ${resumenEditMode ? "bg-amber-50 text-amber-800" : ""}`}>Total Contado</th>
-                                                        <th className="p-2 border">Diferencia</th>
-                                                        <th className="p-2 border">Costo</th>
-                                                        <th className="p-2 border">Dif. Valorizada</th>
+                                                        {([
+                                                            { col: "sku",     label: "SKU",             align: "left"   as const, amber: false },
+                                                            { col: "desc",    label: "Descripción",     align: "left"   as const, amber: false },
+                                                            { col: "um",      label: "UM",              align: "center" as const, amber: false },
+                                                            { col: "stock",   label: "Stock Sis.",      align: "center" as const, amber: true  },
+                                                            { col: "contado", label: "Total Contado",   align: "center" as const, amber: true  },
+                                                            { col: "dif",     label: "Diferencia",      align: "center" as const, amber: false },
+                                                            { col: "costo",   label: "Costo",           align: "center" as const, amber: false },
+                                                            { col: "val",     label: "Dif. Valorizada", align: "center" as const, amber: false },
+                                                        ]).map(({ col, label, align, amber }) => {
+                                                            const isActive = resumenSort?.col === col;
+                                                            const isAsc    = isActive && resumenSort?.dir === "asc";
+                                                            return (
+                                                                <th
+                                                                    key={col}
+                                                                    onClick={() => setResumenSort(prev =>
+                                                                        prev?.col === col
+                                                                            ? { col, dir: prev.dir === "asc" ? "desc" : "asc" }
+                                                                            : { col, dir: "asc" }
+                                                                    )}
+                                                                    className={`p-2 border cursor-pointer select-none whitespace-nowrap group transition-colors
+                                                                        text-${align}
+                                                                        ${amber && resumenEditMode ? "bg-amber-50 text-amber-800 hover:bg-amber-100" : "hover:bg-slate-200"}
+                                                                        ${isActive ? "bg-blue-50 text-blue-800" : ""}
+                                                                    `}
+                                                                >
+                                                                    <span className="inline-flex items-center gap-1">
+                                                                        {label}
+                                                                        <span className={`text-xs transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40"}`}>
+                                                                            {isAsc ? "↑" : "↓"}
+                                                                        </span>
+                                                                    </span>
+                                                                </th>
+                                                            );
+                                                        })}
                                                     </tr>
                                                 </thead>
                                                 <tbody>
