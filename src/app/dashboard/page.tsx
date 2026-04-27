@@ -335,6 +335,7 @@ export default function DashboardPage() {
     // ─── Protección anti-doble clic en guardados ─────────────
     const [savingCount, setSavingCount]         = useState(false);
     const [savingRecount, setSavingRecount]     = useState(false);
+    const [savingAnalysis, setSavingAnalysis]   = useState(false);
 
     // ─── Terminar sesión de conteo ───────────────────────────
     const [showFinishModal, setShowFinishModal] = useState(false);
@@ -362,6 +363,14 @@ export default function DashboardPage() {
     // ─── Dashboard en validador: progreso por tienda ─────────
     const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
     const [storeProgressLoading, setStoreProgressLoading] = useState(false);
+
+    // ─── Dashboard drill-down: tienda clickeada en vista día ─
+    const [dashDrillSource, setDashDrillSource] = useState(false); // true = venimos del dashboard
+
+    // ─── Resumen análisis: overrides de stock y cantidad contada
+    // key = product_id, value = { system_stock?: number, total_counted?: number }
+    const [resumenOverrides, setResumenOverrides] = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
+    const [resumenEditMode, setResumenEditMode] = useState(false);
 
     // ════════════════════════════════════════════════════════
     //  INIT
@@ -1726,6 +1735,83 @@ export default function DashboardPage() {
         loadValidadorData(valStoreId, valDate);
     }
 
+    // ════════════════════════════════════════════════════════
+    //  RESUMEN ANÁLISIS — GUARDAR EN BD
+    // ════════════════════════════════════════════════════════
+    async function saveResumenAnalysis() {
+        const entries = Object.entries(resumenOverrides);
+        if (entries.length === 0) { showMessage("No hay cambios para guardar.", "info"); return; }
+        if (!confirm(`¿Guardar ${entries.length} cambio${entries.length !== 1 ? "s" : ""} en la base de datos? Esta acción modifica el stock sistema y/o los conteos reales.`)) return;
+
+        setSavingAnalysis(true);
+        let errores = 0;
+        const now = new Date().toISOString();
+
+        for (const [product_id, ov] of entries) {
+            // ── 1. Actualizar system_stock en todas las asignaciones de este producto/tienda/fecha ──
+            if (ov.system_stock !== undefined) {
+                const asgnsDelProducto = assignments.filter(a => a.product_id === product_id);
+                for (const asg of asgnsDelProducto) {
+                    const { error } = await supabase
+                        .from("cyclic_assignments")
+                        .update({ system_stock: ov.system_stock })
+                        .eq("id", asg.id);
+                    if (error) { errores++; console.error("Error actualizando stock:", error); }
+                }
+            }
+
+            // ── 2. Actualizar counted_quantity en cyclic_counts ──────────────────────────────────
+            // Estrategia: obtener todos los conteos reales del producto, sumar, y distribuir el nuevo total
+            // en el primer conteo (el más reciente). Los demás se ponen en 0 para que la suma sea correcta.
+            if (ov.total_counted !== undefined) {
+                const cntsDeProd = counts.filter(c => c.product_id === product_id);
+                if (cntsDeProd.length === 0) continue;
+
+                // Ordenar por fecha más reciente primero
+                const sorted = [...cntsDeProd].sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime());
+                const nuevoTotal = ov.total_counted;
+
+                // El primer conteo (más reciente) toma el total completo
+                const { error: e1 } = await supabase
+                    .from("cyclic_counts")
+                    .update({
+                        counted_quantity: nuevoTotal,
+                        status: nuevoTotal === (assignments.find(a => a.product_id === product_id)?.system_stock ?? nuevoTotal)
+                            ? "Validado"
+                            : nuevoTotal > (assignments.find(a => a.product_id === product_id)?.system_stock ?? 0)
+                            ? "Corregido"
+                            : "Corregido",
+                        validator_id: user?.id ?? null,
+                        validator_name: user?.full_name ?? null,
+                        updated_at: now,
+                    })
+                    .eq("id", sorted[0].id);
+                if (e1) { errores++; console.error("Error actualizando conteo principal:", e1); }
+
+                // Los demás conteos se ponen en 0 para no duplicar la suma
+                for (let i = 1; i < sorted.length; i++) {
+                    const { error: ei } = await supabase
+                        .from("cyclic_counts")
+                        .update({ counted_quantity: 0, updated_at: now })
+                        .eq("id", sorted[i].id);
+                    if (ei) { errores++; console.error("Error zeroing conteo secundario:", ei); }
+                }
+            }
+        }
+
+        setSavingAnalysis(false);
+
+        if (errores === 0) {
+            showMessage(`✅ ${entries.length} cambio${entries.length !== 1 ? "s" : ""} guardado${entries.length !== 1 ? "s" : ""} correctamente.`, "success");
+            setResumenOverrides({});
+            // Recargar datos para reflejar lo guardado
+            loadValidadorData(valStoreId, valDate);
+        } else {
+            showMessage(`⚠️ Se guardaron con ${errores} error${errores !== 1 ? "es" : ""}. Revisa la consola.`, "error");
+            loadValidadorData(valStoreId, valDate);
+        }
+    }
+
     async function deleteCount(c: CountRecord) {
         if (!confirm(`¿Eliminar conteo de "${c.sku}"?`)) return;
         const { error } = await supabase.from("cyclic_counts").delete().eq("id", c.id);
@@ -2407,13 +2493,28 @@ export default function DashboardPage() {
         return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
     }, [assignments, counts]);
 
+    // Resumen con overrides aplicados para el modo análisis
+    const resumenConOverrides = useMemo((): ResumenRow[] => {
+        if (Object.keys(resumenOverrides).length === 0) return resumenPorCodigo;
+        return resumenPorCodigo.map(r => {
+            const ov = resumenOverrides[r.product_id];
+            if (!ov) return r;
+            const system_stock  = ov.system_stock  !== undefined ? ov.system_stock  : r.system_stock;
+            const total_counted = ov.total_counted !== undefined ? ov.total_counted : r.total_counted;
+            const difference    = total_counted - system_stock;
+            const dif_valorizada = difference * r.cost;
+            return { ...r, system_stock, total_counted, difference, dif_valorizada };
+        });
+    }, [resumenPorCodigo, resumenOverrides]);
+
     const filteredResumen = useMemo(() => {
-        if (!resumenSearch.trim()) return resumenPorCodigo;
+        const base = resumenEditMode ? resumenConOverrides : resumenPorCodigo;
+        if (!resumenSearch.trim()) return base;
         const q = resumenSearch.trim().toLowerCase();
-        return resumenPorCodigo.filter(r =>
+        return base.filter(r =>
             r.sku.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)
         );
-    }, [resumenPorCodigo, resumenSearch]);
+    }, [resumenPorCodigo, resumenConOverrides, resumenEditMode, resumenSearch]);
 
     const notCountedAssignments = useMemo(() => {
         const countedPids = new Set<string>();
@@ -2427,16 +2528,17 @@ export default function DashboardPage() {
     }, [assignments, counts]);
 
     const resumenStats = useMemo(() => {
-        const total = resumenPorCodigo.length;
-        const contados = resumenPorCodigo.filter(r => r.total_counted > 0 || counts.some(c => c.product_id === r.product_id)).length;
+        const base = resumenEditMode ? resumenConOverrides : resumenPorCodigo;
+        const total = base.length;
+        const contados = base.filter(r => r.total_counted > 0 || counts.some(c => c.product_id === r.product_id)).length;
         const pendientes = total - contados;
-        const conDif = resumenPorCodigo.filter(r => {
+        const conDif = base.filter(r => {
             const wasCounted = counts.some(c => c.product_id === r.product_id);
             return wasCounted && r.difference !== 0;
         }).length;
-        const valorizadaDif = resumenPorCodigo.reduce((s, r) => s + r.dif_valorizada, 0);
+        const valorizadaDif = base.reduce((s, r) => s + r.dif_valorizada, 0);
         return { total, contados, pendientes, conDif, valorizadaDif };
-    }, [resumenPorCodigo, counts]);
+    }, [resumenPorCodigo, resumenConOverrides, resumenEditMode, counts]);
 
     const filteredProducts = useMemo(() => {
         const text = prodSearch.trim().toLowerCase();
@@ -2584,8 +2686,10 @@ export default function DashboardPage() {
                                             setActiveTab("validador");
                                             setValTab(item.key);
                                             setSidebarOpen(false);
+                                            // Reset drill-down state when navigating via sidebar
+                                            if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); }
                                             if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
-                                            if (item.key === "resumen"   && valStoreId) loadValidadorData(valStoreId, valDate);
+                                            if (item.key === "resumen"   && valStoreId) { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
                                             if (item.key === "progreso")  loadStoreProgress(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -3355,7 +3459,25 @@ export default function DashboardPage() {
                                                 <tbody>
                                                     {filteredDashData.map((r, i) => (
                                                         <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
-                                                            <td className="p-2 border font-medium">{r.store_name}</td>
+                                                            <td className="p-2 border font-medium">
+                                                                {dashPeriod === "dia" ? (
+                                                                    <button
+                                                                        className="text-left text-blue-700 underline underline-offset-2 hover:text-blue-900 font-semibold transition-colors"
+                                                                        title="Ver resumen por código de esta tienda"
+                                                                        onClick={() => {
+                                                                            setValStoreId(r.store_id);
+                                                                            setValDate(dashDate);
+                                                                            setResumenOverrides({});
+                                                                            setResumenEditMode(false);
+                                                                            setDashDrillSource(true);
+                                                                            setValTab("resumen");
+                                                                            loadValidadorData(r.store_id, dashDate);
+                                                                        }}
+                                                                    >
+                                                                        {r.store_name}
+                                                                    </button>
+                                                                ) : r.store_name}
+                                                            </td>
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
@@ -3601,6 +3723,21 @@ export default function DashboardPage() {
                     {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
                     {valTab === "resumen" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            {/* Breadcrumb desde dashboard */}
+                            {dashDrillSource && (
+                                <div className="flex items-center gap-2 text-sm">
+                                    <button
+                                        className="flex items-center gap-1.5 text-blue-700 hover:text-blue-900 font-semibold transition-colors"
+                                        onClick={() => { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); setValTab("dashboard"); }}
+                                    >
+                                        ← Volver al Dashboard
+                                    </button>
+                                    <span className="text-slate-400">·</span>
+                                    <span className="text-slate-600 font-medium">{allStores.find(s => s.id === valStoreId)?.name}</span>
+                                    <span className="text-slate-400">·</span>
+                                    <span className="text-slate-500">{valDate}</span>
+                                </div>
+                            )}
                             <div className="flex flex-wrap gap-3 items-center justify-between">
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Resumen por código</h3>
@@ -3611,7 +3748,35 @@ export default function DashboardPage() {
                                         </b>
                                     </p>
                                 </div>
-                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>↓ Excel resumen</button>
+                                <div className="flex gap-2 flex-wrap">
+                                    {/* Botón modo edición — solo en drill-down desde dashboard */}
+                                    {dashDrillSource && (
+                                        <button
+                                            className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition-all ${resumenEditMode ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-400 hover:bg-amber-50"}`}
+                                            onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) setResumenOverrides({}); }}
+                                        >
+                                            {resumenEditMode ? "✏️ Editando — Click para salir" : "✏️ Modo análisis"}
+                                        </button>
+                                    )}
+                                    {resumenEditMode && Object.keys(resumenOverrides).length > 0 && (
+                                        <button
+                                            className="px-4 py-2 rounded-2xl text-sm font-semibold border border-slate-300 text-slate-600 hover:bg-slate-50"
+                                            onClick={() => setResumenOverrides({})}
+                                        >
+                                            🔄 Resetear cambios
+                                        </button>
+                                    )}
+                                    {resumenEditMode && Object.keys(resumenOverrides).length > 0 && (
+                                        <button
+                                            className={`px-4 py-2 rounded-2xl text-sm font-semibold transition-all ${savingAnalysis ? "bg-green-300 text-white cursor-not-allowed" : "bg-green-700 text-white hover:bg-green-800"}`}
+                                            onClick={saveResumenAnalysis}
+                                            disabled={savingAnalysis}
+                                        >
+                                            {savingAnalysis ? "Guardando..." : `💾 Guardar ${Object.keys(resumenOverrides).length} cambio${Object.keys(resumenOverrides).length !== 1 ? "s" : ""}`}
+                                        </button>
+                                    )}
+                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>↓ Excel resumen</button>
+                                </div>
                             </div>
 
                             <input
@@ -3624,6 +3789,11 @@ export default function DashboardPage() {
                             {filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length > 0 && (
                                 <>
                                     <p className="text-sm font-semibold text-slate-700">✅ Códigos contados ({filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length})</p>
+                                    {resumenEditMode && (
+                                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                                            ✏️ <b>Modo análisis activo:</b> Edita el <b>Stock sistema</b> o el <b>Total contado</b>. La diferencia y valorización se recalculan en tiempo real. Al presionar <b>💾 Guardar</b> los cambios se escriben en la base de datos: el stock actualiza <code>cyclic_assignments</code> y el conteo ajusta <code>cyclic_counts</code>.
+                                        </p>
+                                    )}
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="max-h-[500px] overflow-auto">
                                             <table className="w-full text-sm">
@@ -3632,8 +3802,8 @@ export default function DashboardPage() {
                                                         <th className="p-2 border text-left">SKU</th>
                                                         <th className="p-2 border text-left">Descripción</th>
                                                         <th className="p-2 border">UM</th>
-                                                        <th className="p-2 border">Stock Sis.</th>
-                                                        <th className="p-2 border">Total Contado</th>
+                                                        <th className={`p-2 border ${resumenEditMode ? "bg-amber-50 text-amber-800" : ""}`}>Stock Sis.</th>
+                                                        <th className={`p-2 border ${resumenEditMode ? "bg-amber-50 text-amber-800" : ""}`}>Total Contado</th>
                                                         <th className="p-2 border">Diferencia</th>
                                                         <th className="p-2 border">Costo</th>
                                                         <th className="p-2 border">Dif. Valorizada</th>
@@ -3642,13 +3812,47 @@ export default function DashboardPage() {
                                                 <tbody>
                                                     {filteredResumen
                                                         .filter(r => counts.some(c => c.product_id === r.product_id))
-                                                        .map(r => (
-                                                        <tr key={r.product_id} className={r.difference !== 0 ? "bg-red-50" : "hover:bg-slate-50"}>
+                                                        .map(r => {
+                                                        const hasOverride = !!resumenOverrides[r.product_id];
+                                                        return (
+                                                        <tr key={r.product_id} className={r.difference !== 0 ? (hasOverride ? "bg-amber-50" : "bg-red-50") : "hover:bg-slate-50"}>
                                                             <td className="p-2 border font-medium">{r.sku}</td>
                                                             <td className="p-2 border text-slate-600 max-w-[180px] truncate">{r.description}</td>
                                                             <td className="p-2 border text-center text-xs">{r.unit}</td>
-                                                            <td className="p-2 border text-center">{r.system_stock}</td>
-                                                            <td className="p-2 border text-center font-semibold">{r.total_counted}</td>
+                                                            <td className="p-2 border text-center">
+                                                                {resumenEditMode ? (
+                                                                    <input
+                                                                        type="number"
+                                                                        min="0"
+                                                                        className="w-20 border border-amber-400 rounded-lg px-2 py-1 text-center text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                                                                        value={resumenOverrides[r.product_id]?.system_stock !== undefined ? resumenOverrides[r.product_id].system_stock : r.system_stock}
+                                                                        onChange={e => {
+                                                                            const val = Number(e.target.value);
+                                                                            setResumenOverrides(prev => ({
+                                                                                ...prev,
+                                                                                [r.product_id]: { ...prev[r.product_id], system_stock: isNaN(val) ? 0 : val }
+                                                                            }));
+                                                                        }}
+                                                                    />
+                                                                ) : r.system_stock}
+                                                            </td>
+                                                            <td className="p-2 border text-center font-semibold">
+                                                                {resumenEditMode ? (
+                                                                    <input
+                                                                        type="number"
+                                                                        min="0"
+                                                                        className="w-20 border border-amber-400 rounded-lg px-2 py-1 text-center text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                                                                        value={resumenOverrides[r.product_id]?.total_counted !== undefined ? resumenOverrides[r.product_id].total_counted : r.total_counted}
+                                                                        onChange={e => {
+                                                                            const val = Number(e.target.value);
+                                                                            setResumenOverrides(prev => ({
+                                                                                ...prev,
+                                                                                [r.product_id]: { ...prev[r.product_id], total_counted: isNaN(val) ? 0 : val }
+                                                                            }));
+                                                                        }}
+                                                                    />
+                                                                ) : r.total_counted}
+                                                            </td>
                                                             <td className="p-2 border text-center">{diffBadge(r.difference)}</td>
                                                             <td className="p-2 border text-center text-xs">{formatMoney(r.cost)}</td>
                                                             <td className="p-2 border text-center text-xs font-semibold">
@@ -3657,7 +3861,8 @@ export default function DashboardPage() {
                                                                 </span>
                                                             </td>
                                                         </tr>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </tbody>
                                             </table>
                                         </div>
