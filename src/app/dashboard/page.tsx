@@ -2318,7 +2318,7 @@ export default function DashboardPage() {
                 // 4. Agrupar contado por assignment
                 const cntByAsgn = new Map<string, number>();
                 for (const c of cntRows) {
-                    cntByAsgn.set(c.assignment_id, (cntByAsgn.get(c.assignment_id) || 0) + Number(c.counted_quantity));
+                    cntByAsgn.set(c.assignment_id, r2((cntByAsgn.get(c.assignment_id) || 0) + Number(c.counted_quantity)));
                 }
 
                 // 5. Agrupar por product_id → diferencia valorizada
@@ -2327,8 +2327,8 @@ export default function DashboardPage() {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
                     const prev = prodAgg.get(asgn.product_id) ?? { sku: prod.sku || "", description: prod.description || "", cost: parseCost(prod.cost), systemStock: 0, counted: 0 };
-                    prev.systemStock += Number(asgn.system_stock || 0);
-                    prev.counted += cntByAsgn.get(asgn.id) || 0;
+                    prev.systemStock = r2(prev.systemStock + Number(asgn.system_stock || 0));
+                    prev.counted = r2(prev.counted + (cntByAsgn.get(asgn.id) || 0));
                     prodAgg.set(asgn.product_id, prev);
                 }
 
