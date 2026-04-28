@@ -2351,58 +2351,108 @@ export default function DashboardPage() {
         const pctColor = (v: number) => v >= 90 ? "#16a34a" : v >= 70 ? "#d97706" : "#dc2626";
         const difColor = (v: number) => v < 0 ? "#dc2626" : v > 0 ? "#2563eb" : "#16a34a";
 
-        // ── SVG gráfico de barras ERI por tienda (horizontal) ──
+        // ── Helper: convierte SVG string a PNG base64 via Canvas ──
+        async function svgToPng(svgStr: string, width: number, height: number): Promise<string> {
+            return new Promise((resolve) => {
+                try {
+                    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+                    const url  = URL.createObjectURL(blob);
+                    const img  = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement("canvas");
+                        canvas.width  = width * 2;   // retina
+                        canvas.height = height * 2;
+                        const ctx = canvas.getContext("2d")!;
+                        ctx.scale(2, 2);
+                        ctx.fillStyle = "#f8fafc";
+                        ctx.fillRect(0, 0, width, height);
+                        ctx.drawImage(img, 0, 0, width, height);
+                        URL.revokeObjectURL(url);
+                        resolve(canvas.toDataURL("image/png"));
+                    };
+                    img.onerror = () => { URL.revokeObjectURL(url); resolve(""); };
+                    img.src = url;
+                } catch { resolve(""); }
+            });
+        }
+
+        // ── Gráfico ERI por tienda ──
         const maxBar = 360;
-        const barH   = 22;
+        const barH   = 24;
         const gap    = 8;
         const stores = [...filteredDashData].sort((a, b) => a.eri - b.eri);
-        const svgH   = stores.length * (barH + gap) + 30;
-        const eriBars = stores.map((r, i) => {
-            const y   = i * (barH + gap) + 20;
+        const svgW   = 560;
+        const svgH   = stores.length * (barH + gap) + 40;
+
+        const eriBarsInner = stores.map((r, i) => {
+            const y   = i * (barH + gap) + 24;
             const w   = Math.max(4, Math.round((r.eri / 100) * maxBar));
             const col = eriColor(r.eri);
-            const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
-            return `
-              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
-              <rect x="130" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
-              <text x="${130 + w + 5}" y="${y + barH / 2 + 4}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${r.eri}%</text>`;
-        }).join("");
+            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
+            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="140" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
+              <text x="${140 + w + 5}" y="${y + barH / 2 + 5}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${r.eri}%</text>`;
+        }).join("\n");
+        const svgERI = `<svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgW}" height="${svgH}" fill="#f8fafc"/>
+          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+          <text x="140" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
+          <text x="320" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
+          <text x="500" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
+          <line x1="320" y1="16" x2="320" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
+          ${eriBarsInner}
+        </svg>`;
 
-        // ── SVG gráfico de barras Cumplimiento por tienda ──
-        const cumplBars = stores.map((r, i) => {
-            const y    = i * (barH + gap) + 20;
-            const pct  = dashPeriod === "dia"
-                ? (r.cumplio ? 100 : 0)
-                : r.cumplimiento_pct;
-            const w    = Math.max(4, Math.round((pct / 100) * maxBar));
-            const col  = pctColor(pct);
-            const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
-            return `
-              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
-              <rect x="130" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
-              <text x="${130 + w + 5}" y="${y + barH / 2 + 4}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${pct}%</text>`;
-        }).join("");
+        const cumplBarsInner = stores.map((r, i) => {
+            const y   = i * (barH + gap) + 24;
+            const pct = dashPeriod === "dia" ? (r.cumplio ? 100 : 0) : r.cumplimiento_pct;
+            const w   = Math.max(4, Math.round((pct / 100) * maxBar));
+            const col = pctColor(pct);
+            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
+            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="140" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
+              <text x="${140 + w + 5}" y="${y + barH / 2 + 5}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${pct}%</text>`;
+        }).join("\n");
+        const svgCumpl = `<svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgW}" height="${svgH}" fill="#f8fafc"/>
+          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+          <text x="140" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
+          <text x="320" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
+          <text x="500" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
+          <line x1="320" y1="16" x2="320" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
+          ${cumplBarsInner}
+        </svg>`;
 
-        // ── SVG gráfico de barras Dif. Valorizada ──
         const maxAbsDif = Math.max(...filteredDashData.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const difBars = [...filteredDashData]
-            .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0))
-            .map((r, i) => {
-                const y    = i * (barH + gap) + 20;
-                const val  = r.dif_valorizada || 0;
-                const w    = Math.max(4, Math.round((Math.abs(val) / maxAbsDif) * (maxBar / 2)));
-                const col  = difColor(val);
-                const cx   = 130 + maxBar / 2; // centro
-                const x    = val < 0 ? cx - w : cx;
-                const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
-                const label = `S/ ${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-                return `
-              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+        const storesDif = [...filteredDashData].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
+        const svgDifH   = storesDif.length * (barH + gap) + 40;
+        const difBarsInner = storesDif.map((r, i) => {
+            const y    = i * (barH + gap) + 24;
+            const val  = r.dif_valorizada || 0;
+            const w    = Math.max(4, Math.round((Math.abs(val) / maxAbsDif) * (maxBar / 2)));
+            const col  = difColor(val);
+            const cx   = 140 + maxBar / 2;
+            const x    = val < 0 ? cx - w : cx;
+            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
+            const label = `S/${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
               <rect x="${cx}" y="${y}" width="1" height="${barH}" fill="#cbd5e1"/>
               <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.80"/>
-              <text x="${val < 0 ? cx - w - 4 : cx + w + 4}" y="${y + barH / 2 + 4}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
-            }).join("");
-        const svgDifH = filteredDashData.length * (barH + gap) + 30;
+              <text x="${val < 0 ? cx - w - 4 : cx + w + 4}" y="${y + barH / 2 + 5}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
+        }).join("\n");
+        const svgDif = `<svg width="${svgW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgW}" height="${svgDifH}" fill="#f8fafc"/>
+          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+          <text x="300" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">← Faltante · Sobrante →</text>
+          ${difBarsInner}
+        </svg>`;
+
+        // Convertir los 3 SVGs a PNG base64
+        const [pngERI, pngCumpl, pngDif] = await Promise.all([
+            svgToPng(svgERI,   svgW, svgH),
+            svgToPng(svgCumpl, svgW, svgH),
+            svgToPng(svgDif,   svgW, svgDifH),
+        ]);
 
         // ── Tabla detalle por tienda ──
         const storeRows = [...filteredDashData]
@@ -2512,38 +2562,20 @@ export default function DashboardPage() {
 
     <!-- Gráfico ERI por tienda -->
     <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #16a34a;padding-left:12px;">ERI por Tienda (%)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
-      <svg width="530" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-        <text x="130" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
-        <text x="310" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
-        <text x="490" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
-        <line x1="310" y1="14" x2="310" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
-        ${eriBars}
-      </svg>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
+      ${pngERI ? `<img src="${pngERI}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico ERI"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
     </div>
 
     <!-- Gráfico Cumplimiento por tienda -->
     <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #7c3aed;padding-left:12px;">Cumplimiento por Tienda (%)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
-      <svg width="530" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-        <text x="130" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
-        <text x="310" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
-        <text x="490" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
-        <line x1="310" y1="14" x2="310" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
-        ${cumplBars}
-      </svg>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
+      ${pngCumpl ? `<img src="${pngCumpl}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
     </div>
 
     <!-- Gráfico Dif Valorizada -->
     <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #dc2626;padding-left:12px;">Diferencia Valorizada por Tienda (S/)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
-      <svg width="530" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
-        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-        <text x="305" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">← Faltante · Sobrante →</text>
-        ${difBars}
-      </svg>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
+      ${pngDif ? `<img src="${pngDif}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Diferencia Valorizada"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
     </div>
 
     <!-- Tabla resumen por tienda -->
