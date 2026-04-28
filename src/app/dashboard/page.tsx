@@ -372,6 +372,7 @@ export default function DashboardPage() {
     // ─── Resumen análisis: overrides de stock y cantidad contada
     // key = product_id, value = { system_stock?: number, total_counted?: number }
     const [resumenOverrides, setResumenOverrides] = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
+    const [resumenDraft,     setResumenDraft]     = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
     const [resumenEditMode, setResumenEditMode] = useState(false);
     const [resumenSort, setResumenSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
 
@@ -1811,8 +1812,9 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  RESUMEN ANÁLISIS — GUARDAR EN BD
     // ════════════════════════════════════════════════════════
-    async function saveResumenAnalysis() {
-        const entries = Object.entries(resumenOverrides);
+    async function saveResumenAnalysis(overridesToSave?: Record<string, { system_stock?: number; total_counted?: number }>) {
+        const effectiveOverrides = overridesToSave ?? resumenOverrides;
+        const entries = Object.entries(effectiveOverrides);
         if (entries.length === 0) { showMessage("No hay cambios para guardar.", "info"); return; }
         if (!confirm(`¿Guardar ${entries.length} cambio${entries.length !== 1 ? "s" : ""} en la base de datos? Esta acción modifica el stock sistema y/o los conteos reales.`)) return;
 
@@ -1876,7 +1878,8 @@ export default function DashboardPage() {
 
         if (errores === 0) {
             showMessage(`✅ ${entries.length} cambio${entries.length !== 1 ? "s" : ""} guardado${entries.length !== 1 ? "s" : ""} correctamente.`, "success");
-            setResumenOverrides({});
+            setResumenOverrides({}); setResumenDraft({});
+            setResumenDraft({});
             // Recargar datos para reflejar lo guardado
             loadValidadorData(valStoreId, valDate);
         } else {
@@ -2623,18 +2626,15 @@ export default function DashboardPage() {
             const { col, dir } = resumenSort;
             const mul = dir === "asc" ? 1 : -1;
             rows = [...rows].sort((a, b) => {
-                let va: string | number, vb: string | number;
-                if (col === "sku")           { va = a.sku;            vb = b.sku; }
-                else if (col === "desc")     { va = a.description;    vb = b.description; }
-                else if (col === "um")       { va = a.unit;           vb = b.unit; }
-                else if (col === "stock")    { va = a.system_stock;   vb = b.system_stock; }
-                else if (col === "contado")  { va = a.total_counted;  vb = b.total_counted; }
-                else if (col === "dif")      { va = a.difference;     vb = b.difference; }
-                else if (col === "costo")    { va = a.cost;           vb = b.cost; }
-                else if (col === "val")      { va = a.dif_valorizada; vb = b.dif_valorizada; }
-                else                         { va = 0;                vb = 0; }
-                if (typeof va === "string") return mul * va.localeCompare(vb as string);
-                return mul * ((va as number) - (vb as number));
+                if (col === "sku")      return mul * a.sku.localeCompare(b.sku);
+                if (col === "desc")     return mul * a.description.localeCompare(b.description);
+                if (col === "um")       return mul * a.unit.localeCompare(b.unit);
+                if (col === "stock")    return mul * (a.system_stock   - b.system_stock);
+                if (col === "contado")  return mul * (a.total_counted  - b.total_counted);
+                if (col === "dif")      return mul * (a.difference     - b.difference);
+                if (col === "costo")    return mul * (a.cost           - b.cost);
+                if (col === "val")      return mul * (a.dif_valorizada - b.dif_valorizada);
+                return 0;
             });
         }
         return rows;
@@ -2811,9 +2811,9 @@ export default function DashboardPage() {
                                             setValTab(item.key);
                                             setSidebarOpen(false);
                                             // Reset drill-down state when navigating via sidebar
-                                            if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); }
+                                            if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); }
                                             if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
-                                            if (item.key === "resumen"   && valStoreId) { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
+                                            if (item.key === "resumen"   && valStoreId) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
                                             if (item.key === "progreso")  loadStoreProgress(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -3605,7 +3605,7 @@ export default function DashboardPage() {
                                                                         onClick={() => {
                                                                             setValStoreId(r.store_id);
                                                                             setValDate(dashDate);
-                                                                            setResumenOverrides({});
+                                                                            setResumenOverrides({}); setResumenDraft({});
                                                                             setResumenEditMode(false);
                                                                             setDashDrillSource(true);
                                                                             setValTab("resumen");
@@ -3892,7 +3892,7 @@ export default function DashboardPage() {
                                 <div className="flex items-center gap-2 text-sm">
                                     <button
                                         className="flex items-center gap-1.5 text-blue-700 hover:text-blue-900 font-semibold transition-colors"
-                                        onClick={() => { setDashDrillSource(false); setResumenOverrides({}); setResumenEditMode(false); setValTab("dashboard"); }}
+                                        onClick={() => { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); setValTab("dashboard"); }}
                                     >
                                         ← Volver al Dashboard
                                     </button>
@@ -3917,26 +3917,33 @@ export default function DashboardPage() {
                                     {dashDrillSource && (
                                         <button
                                             className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition-all ${resumenEditMode ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-400 hover:bg-amber-50"}`}
-                                            onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) { setResumenOverrides({}); setResumenSort(null); } }}
+                                            onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) { setResumenOverrides({}); setResumenDraft({}); setResumenSort(null); } }}
                                         >
                                             {resumenEditMode ? "✏️ Editando — Click para salir" : "✏️ Modo análisis"}
                                         </button>
                                     )}
-                                    {resumenEditMode && Object.keys(resumenOverrides).length > 0 && (
+                                    {resumenEditMode && (Object.keys(resumenDraft).length > 0 || Object.keys(resumenOverrides).length > 0) && (
                                         <button
                                             className="px-4 py-2 rounded-2xl text-sm font-semibold border border-slate-300 text-slate-600 hover:bg-slate-50"
-                                            onClick={() => setResumenOverrides({})}
+                                            onClick={() => { setResumenOverrides({}); setResumenDraft({}); }}
                                         >
                                             🔄 Resetear cambios
                                         </button>
                                     )}
-                                    {resumenEditMode && Object.keys(resumenOverrides).length > 0 && (
+                                    {resumenEditMode && Object.keys(resumenDraft).length > 0 && (
                                         <button
                                             className={`px-4 py-2 rounded-2xl text-sm font-semibold transition-all ${savingAnalysis ? "bg-green-300 text-white cursor-not-allowed" : "bg-green-700 text-white hover:bg-green-800"}`}
-                                            onClick={saveResumenAnalysis}
+                                            onClick={() => {
+                                                // Merge draft into overrides FIRST (this triggers recalc), then save to BD
+                                                const merged = { ...resumenOverrides, ...resumenDraft };
+                                                setResumenOverrides(merged);
+                                                setResumenDraft({});
+                                                // saveResumenAnalysis uses resumenOverrides — give React one tick then call
+                                                setTimeout(() => saveResumenAnalysis(merged), 0);
+                                            }}
                                             disabled={savingAnalysis}
                                         >
-                                            {savingAnalysis ? "Guardando..." : `💾 Guardar ${Object.keys(resumenOverrides).length} cambio${Object.keys(resumenOverrides).length !== 1 ? "s" : ""}`}
+                                            {savingAnalysis ? "Guardando..." : `💾 Guardar ${Object.keys(resumenDraft).length} cambio${Object.keys(resumenDraft).length !== 1 ? "s" : ""}`}
                                         </button>
                                     )}
                                     <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>↓ Excel resumen</button>
@@ -4005,8 +4012,13 @@ export default function DashboardPage() {
                                                         .filter(r => counts.some(c => c.product_id === r.product_id))
                                                         .map(r => {
                                                         const hasOverride = !!resumenOverrides[r.product_id];
+                                                        const hasDraft    = !!resumenDraft[r.product_id];
                                                         return (
-                                                        <tr key={r.product_id} className={r.difference !== 0 ? (hasOverride ? "bg-amber-50" : "bg-red-50") : "hover:bg-slate-50"}>
+                                                        <tr key={r.product_id} className={
+                                                            hasDraft    ? "bg-amber-50 ring-1 ring-amber-300" :
+                                                            hasOverride ? "bg-amber-50" :
+                                                            r.difference !== 0 ? "bg-red-50" : "hover:bg-slate-50"
+                                                        }>
                                                             <td className="p-2 border font-medium">{r.sku}</td>
                                                             <td className="p-2 border text-slate-600 max-w-[180px] truncate">{r.description}</td>
                                                             <td className="p-2 border text-center text-xs">{r.unit}</td>
@@ -4016,10 +4028,10 @@ export default function DashboardPage() {
                                                                         type="number"
                                                                         min="0"
                                                                         className="w-20 border border-amber-400 rounded-lg px-2 py-1 text-center text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-                                                                        value={resumenOverrides[r.product_id]?.system_stock !== undefined ? resumenOverrides[r.product_id].system_stock : r.system_stock}
+                                                                        value={resumenDraft[r.product_id]?.system_stock !== undefined ? resumenDraft[r.product_id].system_stock : resumenOverrides[r.product_id]?.system_stock !== undefined ? resumenOverrides[r.product_id].system_stock : r.system_stock}
                                                                         onChange={e => {
                                                                             const val = Number(e.target.value);
-                                                                            setResumenOverrides(prev => ({
+                                                                            setResumenDraft(prev => ({
                                                                                 ...prev,
                                                                                 [r.product_id]: { ...prev[r.product_id], system_stock: isNaN(val) ? 0 : val }
                                                                             }));
@@ -4033,10 +4045,10 @@ export default function DashboardPage() {
                                                                         type="number"
                                                                         min="0"
                                                                         className="w-20 border border-amber-400 rounded-lg px-2 py-1 text-center text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-                                                                        value={resumenOverrides[r.product_id]?.total_counted !== undefined ? resumenOverrides[r.product_id].total_counted : r.total_counted}
+                                                                        value={resumenDraft[r.product_id]?.total_counted !== undefined ? resumenDraft[r.product_id].total_counted : resumenOverrides[r.product_id]?.total_counted !== undefined ? resumenOverrides[r.product_id].total_counted : r.total_counted}
                                                                         onChange={e => {
                                                                             const val = Number(e.target.value);
-                                                                            setResumenOverrides(prev => ({
+                                                                            setResumenDraft(prev => ({
                                                                                 ...prev,
                                                                                 [r.product_id]: { ...prev[r.product_id], total_counted: isNaN(val) ? 0 : val }
                                                                             }));
