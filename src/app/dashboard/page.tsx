@@ -2226,7 +2226,7 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  GENERAR CORREO HTML — INFORME GERENCIAL CONTEO CÍCLICO
     // ════════════════════════════════════════════════════════
-    function generateEmailHTML() {
+    async function generateEmailHTML() {
         if (filteredDashData.length === 0) { showMessage("Primero consulta el dashboard.", "error"); return; }
 
         const periodoLabel = dashPeriod === "dia"
@@ -2248,30 +2248,101 @@ export default function DashboardPage() {
         const totalFaltantes = filteredDashData.reduce((s, r) => s + r.total_faltantes, 0);
         const totalSobrantes = filteredDashData.reduce((s, r) => s + r.total_sobrantes, 0);
 
-        // ── Top 10 códigos con mayor faltante (diferencia negativa) ──
-        // Agrupamos por SKU sobre todos los resúmenes del período
-        type SkuAgg = { sku: string; description: string; totalDif: number; totalDifVal: number; count: number };
+        // ── Top 10 por código: consultar BD con el rango del período ──
+        showMessage("⏳ Calculando top por código...", "info");
+        let dateFrom = dashDate, dateTo = dashDate;
+        if (dashPeriod === "mes") {
+            const [yr, mo] = dashMonth.split("-").map(Number);
+            dateFrom = `${dashMonth}-01`;
+            const lastDay = new Date(yr, mo, 0).getDate();
+            dateTo = `${dashMonth}-${String(lastDay).padStart(2, "0")}`;
+        } else if (dashPeriod === "rango") {
+            dateFrom = dashRangeFrom; dateTo = dashRangeTo;
+        }
+
+        type SkuAgg = { sku: string; description: string; totalDif: number; totalDifVal: number };
         const skuFaltMap = new Map<string, SkuAgg>();
         const skuSobMap  = new Map<string, SkuAgg>();
-        // Necesitamos los resúmenes por código del período actual; los construimos desde dashData global
-        // Para el top por código usamos los datos de resumen disponibles en resumenPorCodigo (si aplica)
-        // Como generateEmailHTML opera sobre filteredDashData (nivel tienda), aproximamos con la info
-        // disponible: iteramos sobre counts enriquecidos si hay, o usamos dashData.
-        // Mejor: re-derivar desde assignments + counts disponibles en memoria (validador/admin context).
-        // Si no hay counts cargados, el top queda vacío — es correcto.
-        for (const c of counts) {
-            if (!c.sku) continue;
-            const diff = (c.difference ?? 0);
-            const difVal = diff * (c.cost ?? 0);
-            const key = c.sku;
-            if (diff < 0) {
-                const prev = skuFaltMap.get(key) ?? { sku: c.sku, description: c.description || "", totalDif: 0, totalDifVal: 0, count: 0 };
-                skuFaltMap.set(key, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal, count: prev.count + 1 });
-            } else if (diff > 0) {
-                const prev = skuSobMap.get(key) ?? { sku: c.sku, description: c.description || "", totalDif: 0, totalDifVal: 0, count: 0 };
-                skuSobMap.set(key, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal, count: prev.count + 1 });
+
+        try {
+            // 1. Traer assignments del período
+            const PAGE = 1000;
+            let asgnRows: any[] = [];
+            let pg = 0;
+            while (true) {
+                const { data: chunk } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, product_id, system_stock")
+                    .gte("assigned_date", dateFrom)
+                    .lte("assigned_date", dateTo)
+                    .range(pg * PAGE, (pg + 1) * PAGE - 1);
+                if (!chunk || chunk.length === 0) break;
+                asgnRows = asgnRows.concat(chunk);
+                if (chunk.length < PAGE) break;
+                pg++;
             }
+
+            if (asgnRows.length > 0) {
+                // 2. Traer products para obtener sku, description, cost
+                const prodIds = [...new Set(asgnRows.map((a: any) => a.product_id))];
+                let prodRows: any[] = [];
+                for (let i = 0; i < prodIds.length; i += 500) {
+                    const { data: pc } = await supabase
+                        .from("cyclic_products")
+                        .select("id, sku, description, cost")
+                        .in("id", prodIds.slice(i, i + 500));
+                    if (pc) prodRows = prodRows.concat(pc);
+                }
+                const prodMap = new Map(prodRows.map((p: any) => [p.id, p]));
+                const asgnById = new Map(asgnRows.map((a: any) => [a.id, a]));
+
+                // 3. Traer counts del período
+                const asgnIds = asgnRows.map((a: any) => a.id);
+                let cntRows: any[] = [];
+                const CHUNK = 500;
+                for (let i = 0; i < asgnIds.length; i += CHUNK) {
+                    const { data: cc } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, counted_quantity, location")
+                        .in("assignment_id", asgnIds.slice(i, i + CHUNK));
+                    if (cc) cntRows = cntRows.concat(cc);
+                }
+                // Filtrar flags internos
+                cntRows = cntRows.filter((c: any) => !c.location?.startsWith("__session_"));
+
+                // 4. Agrupar contado por assignment
+                const cntByAsgn = new Map<string, number>();
+                for (const c of cntRows) {
+                    cntByAsgn.set(c.assignment_id, (cntByAsgn.get(c.assignment_id) || 0) + Number(c.counted_quantity));
+                }
+
+                // 5. Agrupar por product_id → diferencia valorizada
+                const prodAgg = new Map<string, { sku: string; description: string; cost: number; systemStock: number; counted: number }>();
+                for (const asgn of asgnRows) {
+                    const prod = prodMap.get(asgn.product_id);
+                    if (!prod) continue;
+                    const prev = prodAgg.get(asgn.product_id) ?? { sku: prod.sku || "", description: prod.description || "", cost: parseCost(prod.cost), systemStock: 0, counted: 0 };
+                    prev.systemStock += Number(asgn.system_stock || 0);
+                    prev.counted += cntByAsgn.get(asgn.id) || 0;
+                    prodAgg.set(asgn.product_id, prev);
+                }
+
+                for (const [, entry] of prodAgg) {
+                    const diff = entry.counted - entry.systemStock;
+                    const difVal = diff * entry.cost;
+                    if (diff < 0) {
+                        const prev = skuFaltMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
+                        skuFaltMap.set(entry.sku, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal });
+                    } else if (diff > 0) {
+                        const prev = skuSobMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
+                        skuSobMap.set(entry.sku, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal });
+                    }
+                }
+            }
+        } catch (e: any) {
+            console.error("Error calculando top por código:", e);
         }
+
         const topFaltantes = [...skuFaltMap.values()].sort((a, b) => a.totalDifVal - b.totalDifVal).slice(0, 10);
         const topSobrantes = [...skuSobMap.values()].sort((a, b) => b.totalDifVal - a.totalDifVal).slice(0, 10);
 
@@ -2565,6 +2636,7 @@ export default function DashboardPage() {
 
         setEmailHTML(html);
         setShowEmailModal(true);
+        showMessage("", "info");
     }
 
     function exportDashboard() {
@@ -5242,18 +5314,25 @@ export default function DashboardPage() {
                                     onChange={e => setEmailRecipients(e.target.value)}
                                 />
                             </div>
-                            <div className="flex gap-3 flex-wrap">
+                            <div className="flex gap-3 flex-wrap items-center">
                                 <button
                                     className="px-5 py-2.5 rounded-2xl bg-red-600 text-white font-semibold text-sm hover:bg-red-700 transition-colors"
                                     onClick={() => {
+                                        // 1. Abrir el informe HTML en ventana nueva (para copiar contenido)
+                                        const reportWin = window.open("", "_blank");
+                                        if (reportWin) {
+                                            reportWin.document.write(emailHTML);
+                                            reportWin.document.close();
+                                        }
+                                        // 2. Abrir Gmail con asunto y destinatarios listos
                                         const to = emailRecipients.trim();
                                         const subject = encodeURIComponent(`Informe Conteo Cíclico — ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
-                                        const body = encodeURIComponent("Estimado equipo,\n\nAdjunto el informe de conteo cíclico del período indicado en el asunto.\n\nAtentamente,\nAnalista de Inventarios\nÁrea de Auditoría y Control de Inventarios");
-                                        const gmail = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${subject}&body=${body}`;
-                                        window.open(gmail, "_blank");
+                                        const gmail = `https://mail.google.com/mail/?view=cm&fs=1${to ? `&to=${encodeURIComponent(to)}` : ""}&su=${subject}`;
+                                        setTimeout(() => window.open(gmail, "_blank"), 400);
+                                        showMessage("📋 Se abrieron 2 pestañas: el informe y Gmail. Selecciona todo el informe (Ctrl+A), cópialo (Ctrl+C) y pégalo en el cuerpo del correo (Ctrl+V).", "info");
                                     }}
                                 >
-                                    📧 Abrir en Gmail
+                                    📧 Enviar por Gmail
                                 </button>
                                 <button
                                     className="px-5 py-2.5 rounded-2xl bg-indigo-700 text-white font-semibold text-sm hover:bg-indigo-800 transition-colors"
