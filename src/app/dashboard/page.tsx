@@ -350,6 +350,9 @@ export default function DashboardPage() {
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
 
+    const [showEmailModal, setShowEmailModal] = useState(false);
+    const [emailHTML, setEmailHTML]           = useState("");
+
     // ─── Dashboard ───────────────────────────────────────────
     const [dashPeriod, setDashPeriod] = useState<"dia"|"mes"|"rango">("dia");
     const [dashDate, setDashDate]     = useState(todayISO());
@@ -2219,6 +2222,330 @@ export default function DashboardPage() {
         XLSX.writeFile(wbk, `resumen_ciclico_${storeName}_${valDate}.xlsx`);
     }
 
+    // ════════════════════════════════════════════════════════
+    //  GENERAR CORREO HTML — INFORME GERENCIAL CONTEO CÍCLICO
+    // ════════════════════════════════════════════════════════
+    function generateEmailHTML() {
+        if (filteredDashData.length === 0) { showMessage("Primero consulta el dashboard.", "error"); return; }
+
+        const periodoLabel = dashPeriod === "dia"
+            ? dashDate
+            : dashPeriod === "mes"
+            ? dashMonth
+            : `${dashRangeFrom} al ${dashRangeTo}`;
+
+        // ── Métricas globales ──────────────────────────────
+        const filasConDatos = filteredDashData.filter(r => r.total_asignados > 0);
+        const okTotal       = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
+        const asigTotal     = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
+        const eriGlobal     = asigTotal > 0 ? Math.round((okTotal / asigTotal) * 100) : 0;
+        const totalDifVal   = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const cumplidos     = dashPeriod === "dia"
+            ? filteredDashData.filter(r => r.cumplio).length
+            : filteredDashData.filter(r => r.dias_cumplidos > 0).length;
+        const pctCumplimiento = filteredDashData.length > 0 ? Math.round((cumplidos / filteredDashData.length) * 100) : 0;
+        const totalFaltantes = filteredDashData.reduce((s, r) => s + r.total_faltantes, 0);
+        const totalSobrantes = filteredDashData.reduce((s, r) => s + r.total_sobrantes, 0);
+
+        // ── Top 5 tiendas con mayor diferencia valorizada (negativa) ──
+        const topFaltantes = [...filteredDashData]
+            .filter(r => r.dif_valorizada < 0)
+            .sort((a, b) => a.dif_valorizada - b.dif_valorizada)
+            .slice(0, 5);
+
+        // ── Top 5 sobrantes ──
+        const topSobrantes = [...filteredDashData]
+            .filter(r => r.dif_valorizada > 0)
+            .sort((a, b) => b.dif_valorizada - a.dif_valorizada)
+            .slice(0, 5);
+
+        // ── Colores helper ──
+        const eriColor = (v: number) => v >= 90 ? "#16a34a" : v >= 70 ? "#d97706" : "#dc2626";
+        const pctColor = (v: number) => v >= 90 ? "#16a34a" : v >= 70 ? "#d97706" : "#dc2626";
+        const difColor = (v: number) => v < 0 ? "#dc2626" : v > 0 ? "#2563eb" : "#16a34a";
+
+        // ── SVG gráfico de barras ERI por tienda (horizontal) ──
+        const maxBar = 360;
+        const barH   = 22;
+        const gap    = 8;
+        const stores = [...filteredDashData].sort((a, b) => a.eri - b.eri);
+        const svgH   = stores.length * (barH + gap) + 30;
+        const eriBars = stores.map((r, i) => {
+            const y   = i * (barH + gap) + 20;
+            const w   = Math.max(4, Math.round((r.eri / 100) * maxBar));
+            const col = eriColor(r.eri);
+            const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
+            return `
+              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="130" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
+              <text x="${130 + w + 5}" y="${y + barH / 2 + 4}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${r.eri}%</text>`;
+        }).join("");
+
+        // ── SVG gráfico de barras Cumplimiento por tienda ──
+        const cumplBars = stores.map((r, i) => {
+            const y    = i * (barH + gap) + 20;
+            const pct  = dashPeriod === "dia"
+                ? (r.cumplio ? 100 : 0)
+                : r.cumplimiento_pct;
+            const w    = Math.max(4, Math.round((pct / 100) * maxBar));
+            const col  = pctColor(pct);
+            const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
+            return `
+              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="130" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
+              <text x="${130 + w + 5}" y="${y + barH / 2 + 4}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${pct}%</text>`;
+        }).join("");
+
+        // ── SVG gráfico de barras Dif. Valorizada ──
+        const maxAbsDif = Math.max(...filteredDashData.map(r => Math.abs(r.dif_valorizada || 0)), 1);
+        const difBars = [...filteredDashData]
+            .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0))
+            .map((r, i) => {
+                const y    = i * (barH + gap) + 20;
+                const val  = r.dif_valorizada || 0;
+                const w    = Math.max(4, Math.round((Math.abs(val) / maxAbsDif) * (maxBar / 2)));
+                const col  = difColor(val);
+                const cx   = 130 + maxBar / 2; // centro
+                const x    = val < 0 ? cx - w : cx;
+                const name = r.store_name.length > 18 ? r.store_name.slice(0, 16) + "…" : r.store_name;
+                const label = `S/ ${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+                return `
+              <text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="${cx}" y="${y}" width="1" height="${barH}" fill="#cbd5e1"/>
+              <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.80"/>
+              <text x="${val < 0 ? cx - w - 4 : cx + w + 4}" y="${y + barH / 2 + 4}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
+            }).join("");
+        const svgDifH = filteredDashData.length * (barH + gap) + 30;
+
+        // ── Tabla detalle por tienda ──
+        const storeRows = [...filteredDashData]
+            .sort((a, b) => a.eri - b.eri)
+            .map(r => {
+                const cumpl = dashPeriod === "dia"
+                    ? (r.cumplio ? "✓ Sí" : "✗ No")
+                    : `${r.dias_cumplidos}/${r.dias_totales} días`;
+                const cumplColor = r.cumplio || r.dias_cumplidos > 0 ? "#16a34a" : "#dc2626";
+                return `
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                  <td style="padding:8px 12px;font-size:13px;font-weight:600;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#475569;">${r.total_asignados}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#16a34a;font-weight:700;">${r.total_ok}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:600;">${r.total_sobrantes}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:600;">${r.total_faltantes}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:${difColor(r.dif_valorizada)};font-weight:700;">${formatMoney(r.dif_valorizada)}</td>
+                  <td style="padding:8px;text-align:center;"><span style="background:${eriColor(r.eri)}22;color:${eriColor(r.eri)};font-weight:800;font-size:13px;padding:3px 10px;border-radius:20px;">${r.eri}%</span></td>
+                  <td style="padding:8px;text-align:center;font-size:13px;font-weight:700;color:${cumplColor};">${cumpl}</td>
+                </tr>`;
+            }).join("");
+
+        // ── Tabla top faltantes ──
+        const faltantesRows = topFaltantes.length === 0
+            ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el período</td></tr>`
+            : topFaltantes.map(r => `
+                <tr style="border-bottom:1px solid #fef2f2;">
+                  <td style="padding:8px 12px;font-size:13px;font-weight:600;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:700;">${r.total_faltantes}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:800;">${formatMoney(r.dif_valorizada)}</td>
+                </tr>`).join("");
+
+        // ── Tabla top sobrantes ──
+        const sobrantesRows = topSobrantes.length === 0
+            ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el período</td></tr>`
+            : topSobrantes.map(r => `
+                <tr style="border-bottom:1px solid #eff6ff;">
+                  <td style="padding:8px 12px;font-size:13px;font-weight:600;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:700;">${r.total_sobrantes}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:800;">${formatMoney(r.dif_valorizada)}</td>
+                </tr>`).join("");
+
+        const today = new Date().toLocaleDateString("es-PE", { day: "2-digit", month: "long", year: "numeric" });
+
+        const html = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Informe Conteo Cíclico — ${periodoLabel}</title></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
+<div style="max-width:700px;margin:32px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
+
+  <!-- HEADER -->
+  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%);padding:36px 40px 28px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;">
+      <div style="background:linear-gradient(135deg,#f97316,#c2410c);border-radius:12px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;">
+        <span style="color:white;font-size:22px;font-weight:900;line-height:1;">R</span>
+      </div>
+      <div>
+        <p style="margin:0;color:#f97316;font-weight:900;font-size:15px;letter-spacing:2px;">RASECORP · CÍCLICOS</p>
+        <p style="margin:2px 0 0;color:#94a3b8;font-size:11px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
+      </div>
+    </div>
+    <h1 style="margin:0 0 6px;color:#ffffff;font-size:24px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
+    <p style="margin:0;color:#93c5fd;font-size:14px;">Período: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
+    <p style="margin:6px 0 0;color:#64748b;font-size:12px;">Generado el ${today} · Equipo de Operaciones</p>
+  </div>
+
+  <!-- BODY -->
+  <div style="padding:32px 40px;">
+
+    <!-- Saludo -->
+    <p style="margin:0 0 24px;font-size:15px;color:#334155;line-height:1.6;">
+      Estimado equipo de Operaciones,<br><br>
+      A continuación presentamos el <strong>resumen ejecutivo del conteo cíclico</strong> correspondiente al período <strong>${periodoLabel}</strong>.
+      Les pedimos revisar estos resultados con sus equipos de tienda y tomar las acciones correctivas necesarias ante las diferencias identificadas.
+    </p>
+
+    <!-- KPIs globales -->
+    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #1d4ed8;padding-left:12px;">Resumen General de la Compañía</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td style="padding:4px;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:900;color:${eriColor(eriGlobal)};">${eriGlobal}%</div>
+            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">ERI GLOBAL</div>
+            <div style="font-size:10px;color:#94a3b8;">Exactitud registro inventario</div>
+          </div>
+        </td>
+        <td style="padding:4px;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
+            <div style="font-size:28px;font-weight:900;color:${pctColor(pctCumplimiento)};">${pctCumplimiento}%</div>
+            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">CUMPLIMIENTO</div>
+            <div style="font-size:10px;color:#94a3b8;">${cumplidos} de ${filteredDashData.length} tiendas</div>
+          </div>
+        </td>
+        <td style="padding:4px;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
+            <div style="font-size:22px;font-weight:900;color:${difColor(totalDifVal)};">${formatMoney(totalDifVal)}</div>
+            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">DIF. VALORIZADA</div>
+            <div style="font-size:10px;color:#94a3b8;">${totalFaltantes} faltantes · ${totalSobrantes} sobrantes</div>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Gráfico ERI por tienda -->
+    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #16a34a;padding-left:12px;">ERI por Tienda (%)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
+      <svg width="530" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+        <text x="130" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
+        <text x="310" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
+        <text x="490" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
+        <line x1="310" y1="14" x2="310" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
+        ${eriBars}
+      </svg>
+    </div>
+
+    <!-- Gráfico Cumplimiento por tienda -->
+    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #7c3aed;padding-left:12px;">Cumplimiento por Tienda (%)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
+      <svg width="530" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+        <text x="130" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
+        <text x="310" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
+        <text x="490" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
+        <line x1="310" y1="14" x2="310" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
+        ${cumplBars}
+      </svg>
+    </div>
+
+    <!-- Gráfico Dif Valorizada -->
+    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #dc2626;padding-left:12px;">Diferencia Valorizada por Tienda (S/)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;overflow-x:auto;">
+      <svg width="530" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
+        <text x="0" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
+        <text x="305" y="12" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">← Faltante · Sobrante →</text>
+        ${difBars}
+      </svg>
+    </div>
+
+    <!-- Tabla resumen por tienda -->
+    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #0f172a;padding-left:12px;">Detalle por Tienda</h2>
+    <div style="border:1.5px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:28px;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#f1f5f9;">
+            <th style="padding:10px 12px;text-align:left;color:#475569;font-size:11px;font-weight:700;letter-spacing:.5px;">TIENDA</th>
+            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">ASIG.</th>
+            <th style="padding:10px 8px;text-align:center;color:#16a34a;font-size:11px;font-weight:700;">OK</th>
+            <th style="padding:10px 8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">SOB.</th>
+            <th style="padding:10px 8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">FALT.</th>
+            <th style="padding:10px 8px;text-align:center;color:#7c3aed;font-size:11px;font-weight:700;">DIF. VAL.</th>
+            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">ERI%</th>
+            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">CUMPL.</th>
+          </tr>
+        </thead>
+        <tbody>${storeRows}</tbody>
+      </table>
+    </div>
+
+    <!-- Top faltantes y sobrantes -->
+    <table width="100%" cellpadding="0" cellspacing="8" style="margin-bottom:28px;">
+      <tr>
+        <td style="padding-right:8px;vertical-align:top;width:50%;">
+          <h2 style="margin:0 0 10px;font-size:15px;color:#dc2626;font-weight:800;border-left:4px solid #dc2626;padding-left:10px;">🔴 Top Faltantes</h2>
+          <div style="border:1.5px solid #fee2e2;border-radius:12px;overflow:hidden;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+              <thead><tr style="background:#fef2f2;">
+                <th style="padding:8px 12px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">TIENDA</th>
+                <th style="padding:8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">FALT.</th>
+                <th style="padding:8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">S/ DIF.</th>
+              </tr></thead>
+              <tbody>${faltantesRows}</tbody>
+            </table>
+          </div>
+        </td>
+        <td style="padding-left:8px;vertical-align:top;width:50%;">
+          <h2 style="margin:0 0 10px;font-size:15px;color:#2563eb;font-weight:800;border-left:4px solid #2563eb;padding-left:10px;">🔵 Top Sobrantes</h2>
+          <div style="border:1.5px solid #dbeafe;border-radius:12px;overflow:hidden;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+              <thead><tr style="background:#eff6ff;">
+                <th style="padding:8px 12px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">TIENDA</th>
+                <th style="padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">SOB.</th>
+                <th style="padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">S/ DIF.</th>
+              </tr></thead>
+              <tbody>${sobrantesRows}</tbody>
+            </table>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <!-- Mensaje de acción -->
+    <div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:12px;padding:16px 20px;margin-bottom:28px;">
+      <p style="margin:0;font-size:13px;color:#92400e;line-height:1.7;">
+        <strong>📋 Acciones requeridas:</strong><br>
+        • Revisar con los jefes de tienda las diferencias de faltantes más significativas.<br>
+        • Verificar ubicaciones y procesos de conteo en las tiendas con ERI menor al 80%.<br>
+        • Las tiendas que no cumplieron deben reprogramar el conteo a la brevedad.<br>
+        • Para mayor detalle por código, consultar el módulo de <em>Resumen por código</em> en el sistema RASECORP Cíclicos.
+      </p>
+    </div>
+
+    <!-- Firma -->
+    <div style="border-top:1.5px solid #e2e8f0;padding-top:20px;">
+      <p style="margin:0;font-size:13px;color:#475569;line-height:1.8;">
+        Atentamente,<br>
+        <strong style="color:#0f172a;">Equipo de Control de Inventarios</strong><br>
+        <span style="color:#94a3b8;font-size:12px;">RASECORP · Sistema Cíclicos · ${today}</span>
+      </p>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div style="background:#f8fafc;border-top:1.5px solid #e2e8f0;padding:16px 40px;text-align:center;">
+    <p style="margin:0;font-size:11px;color:#94a3b8;">
+      Este correo fue generado automáticamente por el sistema RASECORP Cíclicos.<br>
+      Para consultas o ajustes, comunicarse con el área de Tecnología.
+    </p>
+  </div>
+
+</div>
+</body></html>`;
+
+        setEmailHTML(html);
+        setShowEmailModal(true);
+    }
+
     function exportDashboard() {
         const rows = filteredDashData.map(r => {
             const base: any = { TIENDA: r.store_name };
@@ -3518,6 +3845,15 @@ export default function DashboardPage() {
                                     )}
                                     {dashData.length > 0 && (
                                         <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
+                                    )}
+                                    {dashData.length > 0 && (
+                                        <button
+                                            onClick={generateEmailHTML}
+                                            className="px-4 py-3 rounded-2xl bg-indigo-700 text-white text-sm font-semibold hover:bg-indigo-800 transition-colors flex items-center gap-2"
+                                            title="Genera un correo HTML profesional con gráficos para enviar a gerencia"
+                                        >
+                                            ✉️ Generar correo
+                                        </button>
                                     )}
                                     <button
                                         onClick={exportGlobal}
@@ -4853,6 +5189,73 @@ export default function DashboardPage() {
                             </button>
                         )}
                         <button onClick={closeScanner} className="w-full px-4 py-3 rounded-2xl border font-semibold text-slate-700">Cerrar cámara</button>
+                    </div>
+                </div>
+            )}
+
+            {/* ════════════════════════════════════════════════════════
+                MODAL — CORREO GERENCIAL (Preview + Acciones)
+            ════════════════════════════════════════════════════════ */}
+            {showEmailModal && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+
+                        {/* Header del modal */}
+                        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b bg-white flex-shrink-0">
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">✉️ Correo Gerencial — Conteo Cíclico</h3>
+                                <p className="text-slate-500 text-xs mt-0.5">Vista previa del correo. Cópialo o descárgalo para enviarlo desde tu cliente de correo.</p>
+                            </div>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0" onClick={() => setShowEmailModal(false)}>×</button>
+                        </div>
+
+                        {/* Botones de acción */}
+                        <div className="flex gap-3 flex-wrap px-6 py-3 bg-slate-50 border-b flex-shrink-0">
+                            <button
+                                className="px-5 py-2.5 rounded-2xl bg-indigo-700 text-white font-semibold text-sm hover:bg-indigo-800 transition-colors"
+                                onClick={() => {
+                                    const blob = new Blob([emailHTML], { type: "text/html;charset=utf-8" });
+                                    const url  = URL.createObjectURL(blob);
+                                    const a    = document.createElement("a");
+                                    a.href     = url;
+                                    a.download = `informe_ciclicos_${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom}_${dashRangeTo}`}.html`;
+                                    a.click();
+                                    URL.revokeObjectURL(url);
+                                }}
+                            >
+                                ↓ Descargar HTML
+                            </button>
+                            <button
+                                className="px-5 py-2.5 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-100 transition-colors"
+                                onClick={() => {
+                                    navigator.clipboard.writeText(emailHTML).then(() => showMessage("✅ HTML copiado al portapapeles.", "success"));
+                                }}
+                            >
+                                📋 Copiar HTML
+                            </button>
+                            <button
+                                className="px-5 py-2.5 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-100 transition-colors"
+                                onClick={() => {
+                                    const w = window.open("", "_blank");
+                                    if (w) { w.document.write(emailHTML); w.document.close(); w.print(); }
+                                }}
+                            >
+                                🖨️ Imprimir / PDF
+                            </button>
+                            <p className="self-center text-xs text-slate-400 ml-auto">
+                                Descarga el .html y adjúntalo en Outlook / Gmail como cuerpo del correo, o abre e imprime como PDF.
+                            </p>
+                        </div>
+
+                        {/* Vista previa */}
+                        <div className="flex-1 overflow-auto bg-slate-100 p-4">
+                            <iframe
+                                srcDoc={emailHTML}
+                                className="w-full bg-white rounded-2xl shadow"
+                                style={{ minHeight: "700px", border: "none" }}
+                                title="Vista previa correo"
+                            />
+                        </div>
                     </div>
                 </div>
             )}
