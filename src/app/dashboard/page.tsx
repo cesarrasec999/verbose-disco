@@ -183,6 +183,11 @@ function formatMoney(v: number) {
     return `S/ ${Number(v || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Redondea a 2 decimales eliminando errores de punto flotante */
+function r2(v: number): number {
+    return Math.round((v + Number.EPSILON) * 100) / 100;
+}
+
 function formatDateTime(v: string) {
     if (!v) return "-";
     const d = new Date(v);
@@ -744,7 +749,7 @@ export default function DashboardPage() {
         const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
-            const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
+            const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
         });
         setCounts(enriched);
@@ -803,7 +808,7 @@ export default function DashboardPage() {
         const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
-            const diff = Number(c.counted_quantity) - Number(asg?.system_stock || 0);
+            const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
         });
         setCounts(enriched);
@@ -1067,8 +1072,8 @@ export default function DashboardPage() {
                     if (countedPids.has(pid)) {
                         const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
                         const costo = parseCost(asgForPid?.cyclic_products?.cost);
-                        const diff = entry.total_counted - entry.system_stock;
-                        difValDay += diff * costo;
+                        const diff = r2(entry.total_counted - entry.system_stock);
+                        difValDay = r2(difValDay + r2(diff * costo));
                     }
                 }
 
@@ -2328,14 +2333,14 @@ export default function DashboardPage() {
                 }
 
                 for (const [, entry] of prodAgg) {
-                    const diff = entry.counted - entry.systemStock;
-                    const difVal = diff * entry.cost;
+                    const diff = r2(entry.counted - entry.systemStock);
+                    const difVal = r2(diff * entry.cost);
                     if (diff < 0) {
                         const prev = skuFaltMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
-                        skuFaltMap.set(entry.sku, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal });
+                        skuFaltMap.set(entry.sku, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
                     } else if (diff > 0) {
                         const prev = skuSobMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
-                        skuSobMap.set(entry.sku, { ...prev, totalDif: prev.totalDif + diff, totalDifVal: prev.totalDifVal + difVal });
+                        skuSobMap.set(entry.sku, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
                     }
                 }
             }
@@ -2482,7 +2487,7 @@ export default function DashboardPage() {
                 <tr style="border-bottom:1px solid #fef2f2;">
                   <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
                   <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:700;">${r.totalDif}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:700;">${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
                 </tr>`).join("");
 
@@ -2493,7 +2498,7 @@ export default function DashboardPage() {
                 <tr style="border-bottom:1px solid #eff6ff;">
                   <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
                   <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:700;">+${r.totalDif}</td>
+                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:700;">+${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
                 </tr>`).join("");
 
@@ -2849,8 +2854,8 @@ export default function DashboardPage() {
             // Calcular diferencias finales
             const exportRows: any[] = [];
             for (const r of resMap.values()) {
-                r.diferencia = r.total_contado - r.stock_sistema;
-                r.dif_valorizada = r.diferencia * r.costo;
+                r.diferencia = r2(r.total_contado - r.stock_sistema);
+                r.dif_valorizada = r2(r.diferencia * r.costo);
                 r.estado = r.cumplio === "NO" ? "NO CONTADO" : r.diferencia === 0 ? "OK" : r.diferencia > 0 ? "SOBRANTE" : "FALTANTE";
                 exportRows.push({
                     TIENDA: r.tienda,
@@ -3048,8 +3053,8 @@ export default function DashboardPage() {
             }
         }
         for (const entry of map.values()) {
-            entry.difference = entry.total_counted - entry.system_stock;
-            entry.dif_valorizada = entry.difference * entry.cost;
+            entry.difference = r2(entry.total_counted - entry.system_stock);
+            entry.dif_valorizada = r2(entry.difference * entry.cost);
         }
         return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
     }, [assignments, counts]);
@@ -3062,8 +3067,8 @@ export default function DashboardPage() {
             if (!ov) return r;
             const system_stock  = ov.system_stock  !== undefined ? ov.system_stock  : r.system_stock;
             const total_counted = ov.total_counted !== undefined ? ov.total_counted : r.total_counted;
-            const difference    = total_counted - system_stock;
-            const dif_valorizada = difference * r.cost;
+            const difference    = r2(total_counted - system_stock);
+            const dif_valorizada = r2(difference * r.cost);
             return { ...r, system_stock, total_counted, difference, dif_valorizada };
         });
     }, [resumenPorCodigo, resumenOverrides]);
