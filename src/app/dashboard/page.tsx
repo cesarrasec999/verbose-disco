@@ -246,11 +246,13 @@ export default function DashboardPage() {
     // ─── Operario: conteo activo — múltiples filas ─
     const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
     const [locationRows, setLocationRows]         = useState<LocationRow[]>([{ location: "", qty: "" }]);
+    const [sinStock, setSinStock]                 = useState(false); // marcar "sin stock físico"
 
     // ─── Operario: reconteo ──────────────────────────────────
     const [showRecount, setShowRecount]           = useState(false);
     const [recountAssignment, setRecountAssignment] = useState<Assignment | null>(null);
     const [recountRows, setRecountRows]           = useState<LocationRow[]>([{ location: "", qty: "" }]);
+    const [sinStockRecount, setSinStockRecount]   = useState(false);
 
     // ─── Escáner ─────────────────────────────────────────────
     const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|null>(null);
@@ -1163,6 +1165,7 @@ export default function DashboardPage() {
         } else {
             setLocationRows([{ location: "", qty: "" }]);
         }
+        setSinStock(false);
         setActiveAssignment(asgn);
         clearMessage();
     }
@@ -1182,12 +1185,46 @@ export default function DashboardPage() {
     async function saveCount() {
         if (!activeAssignment || !user || savingCount) return;
         setSavingCount(true);
+
+        // ── Modo "Sin stock físico" ──────────────────────────
+        if (sinStock) {
+            // Registrar un único conteo con qty=0 y ubicación especial "__sin_stock__"
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
+            const { error } = await supabase.from("cyclic_counts").insert({
+                assignment_id: activeAssignment.id,
+                store_id: activeAssignment.store_id,
+                product_id: activeAssignment.product_id,
+                counted_quantity: 0,
+                location: "__sin_stock__",
+                user_id: user.id,
+                user_name: user.full_name,
+                status: "Diferencia" as CountRecord["status"],
+                note: "Sin stock físico en tienda",
+                counted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
+            if (error) { showMessage("Error al guardar: " + error.message, "error"); setSavingCount(false); return; }
+            await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
+            showMessage(`✅ "${activeAssignment.sku}" marcado como sin stock.`, "success");
+            setSinStock(false);
+            setActiveAssignment(null);
+            loadOperarioData(selectedStoreId, selectedDate);
+            setSavingCount(false);
+            return;
+        }
+
+        // ── Validación normal ────────────────────────────────
         for (let i = 0; i < locationRows.length; i++) {
             const row = locationRows[i];
             if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingCount(false); return; }
             if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingCount(false); return; }
             const qty = Number(row.qty);
             if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingCount(false); return; }
+            // ⛔ No se permite cantidad 0 con ubicación — usar "Sin stock" para eso
+            if (qty === 0) {
+                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Si no hay stock físico, usa el botón "Sin stock".`, "error");
+                setSavingCount(false); return;
+            }
         }
 
         await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
@@ -1215,6 +1252,7 @@ export default function DashboardPage() {
         await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
 
         showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
+        setSinStock(false);
         setActiveAssignment(null);
         loadOperarioData(selectedStoreId, selectedDate);
         setSavingCount(false);
@@ -1241,6 +1279,7 @@ export default function DashboardPage() {
         } else {
             setRecountRows([{ location: "", qty: "" }]);
         }
+        setSinStockRecount(false);
         setRecountAssignment(asgn);
     }
 
@@ -1253,12 +1292,44 @@ export default function DashboardPage() {
     async function saveRecount() {
         if (!recountAssignment || !user || savingRecount) return;
         setSavingRecount(true);
+
+        // ── Modo "Sin stock físico" en reconteo ──────────────
+        if (sinStockRecount) {
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
+            const { error } = await supabase.from("cyclic_counts").insert({
+                assignment_id: recountAssignment.id,
+                store_id: recountAssignment.store_id,
+                product_id: recountAssignment.product_id,
+                counted_quantity: 0,
+                location: "__sin_stock__",
+                user_id: user.id,
+                user_name: user.full_name,
+                status: "Diferencia" as CountRecord["status"],
+                note: "Sin stock físico en tienda",
+                counted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
+            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); setSavingRecount(false); return; }
+            showMessage(`✅ "${recountAssignment.sku}" marcado como sin stock.`, "success");
+            setSinStockRecount(false);
+            setRecountAssignment(null);
+            setRecountRows([{ location: "", qty: "" }]);
+            setSavingRecount(false);
+            loadOperarioData(selectedStoreId, selectedDate);
+            return;
+        }
+
+        // ── Validación normal ────────────────────────────────
         for (let i = 0; i < recountRows.length; i++) {
             const row = recountRows[i];
             if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingRecount(false); return; }
             if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingRecount(false); return; }
             const qty = Number(row.qty);
             if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingRecount(false); return; }
+            if (qty === 0) {
+                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Usa el botón "Sin stock" si no hay producto físico.`, "error");
+                setSavingRecount(false); return;
+            }
         }
 
         await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
@@ -1283,6 +1354,7 @@ export default function DashboardPage() {
         }
 
         showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
+        setSinStockRecount(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
         setSavingRecount(false);
@@ -1820,6 +1892,39 @@ export default function DashboardPage() {
         showMessage("✅ Conteo eliminado.", "success");
         if (user?.role === "Operario") loadOperarioData(selectedStoreId, selectedDate);
         else loadValidadorData(valStoreId, valDate);
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  VALIDADOR / ADMIN — REVERSAR CUMPLIMIENTO
+    //  Elimina TODOS los conteos reales de la tienda+fecha para
+    //  que el operario vuelva a tener acceso a contar.
+    // ════════════════════════════════════════════════════════
+    async function reversarCumplimiento() {
+        if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
+        const storeName = allStores.find(s => s.id === valStoreId)?.name || valStoreId;
+        if (!confirm(`¿Reversar el cumplimiento de ${storeName} en ${valDate}?\n\nEsto eliminará TODOS los conteos del día para que el operario pueda volver a registrarlos. Esta acción no se puede deshacer.`)) return;
+
+        // 1. Obtener todas las asignaciones de la tienda+fecha
+        const asgIds = assignments.map(a => a.id);
+        if (asgIds.length === 0) { showMessage("No hay asignaciones para reversar.", "error"); return; }
+
+        // 2. Eliminar todos los conteos reales (incluyendo flags de sesión)
+        const CHUNK = 400;
+        let errores = 0;
+        for (let i = 0; i < asgIds.length; i += CHUNK) {
+            const { error } = await supabase
+                .from("cyclic_counts")
+                .delete()
+                .in("assignment_id", asgIds.slice(i, i + CHUNK));
+            if (error) { errores++; console.error("Error reversando:", error); }
+        }
+
+        if (errores > 0) {
+            showMessage(`⚠️ Reversado con ${errores} error(es). Algunos conteos podrían no haberse eliminado.`, "error");
+        } else {
+            showMessage(`✅ Cumplimiento reversado para ${storeName} — ${valDate}. El operario puede volver a contar.`, "success");
+        }
+        loadValidadorData(valStoreId, valDate);
     }
 
     // ════════════════════════════════════════════════════════
@@ -3131,9 +3236,23 @@ export default function DashboardPage() {
                                 <div className="space-y-2">
                                     <div className="flex items-center justify-between">
                                         <label className="block font-semibold text-sm text-slate-700">Ubicaciones y cantidades</label>
-                                        <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addRecountRow}>+ Agregar ubicación</button>
+                                        <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addRecountRow} disabled={sinStockRecount}>+ Agregar ubicación</button>
                                     </div>
-                                    {recountRows.map((row, i) => (
+
+                                    {/* Botón Sin stock en reconteo */}
+                                    <button
+                                        className={`w-full py-2.5 rounded-2xl font-bold text-sm border-2 transition-all ${sinStockRecount ? "bg-red-600 text-white border-red-600" : "bg-white text-red-600 border-red-300 hover:bg-red-50"}`}
+                                        onClick={() => setSinStockRecount(prev => !prev)}
+                                    >
+                                        {sinStockRecount ? "🚫 Sin stock — toca para cancelar" : "🚫 Sin stock físico"}
+                                    </button>
+                                    {sinStockRecount && (
+                                        <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 font-medium">
+                                            Se registrará cantidad 0 para <b>{recountAssignment.sku}</b>. Quedará contado con diferencia.
+                                        </div>
+                                    )}
+
+                                    {!sinStockRecount && recountRows.map((row, i) => (
                                         <div key={i} className="rounded-2xl border bg-white p-3 space-y-2">
                                             <div className="flex items-center justify-between gap-2">
                                                 <span className="text-xs font-semibold text-slate-500">Ubicación {recountRows.length > 1 ? i + 1 : ""}</span>
@@ -3178,7 +3297,7 @@ export default function DashboardPage() {
                                     </button>
                                     <button
                                         className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm active:bg-slate-100 active:scale-95 transition-all"
-                                        onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }}
+                                        onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); setSinStockRecount(false); }}
                                         disabled={savingRecount}
                                     >
                                         Cancelar
@@ -3684,8 +3803,27 @@ export default function DashboardPage() {
                                     <h3 className="text-lg font-bold text-slate-900">Registros de conteo</h3>
                                     <p className="text-slate-500 text-xs mt-0.5">{filteredCounts.length} registro{filteredCounts.length !== 1 ? "s" : ""} encontrado{filteredCounts.length !== 1 ? "s" : ""}</p>
                                 </div>
-                                <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>↓ Excel registros</button>
+                                <div className="flex gap-2 flex-wrap">
+                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>↓ Excel registros</button>
+                                    {/* Reversar cumplimiento — solo admin y validador */}
+                                    {isValOrAdm && counts.length > 0 && (
+                                        <button
+                                            className="px-4 py-2 rounded-2xl border-2 border-orange-400 text-orange-700 bg-orange-50 hover:bg-orange-100 text-sm font-bold transition-colors"
+                                            onClick={reversarCumplimiento}
+                                            title="Elimina todos los conteos del día para que el operario pueda volver a registrar"
+                                        >
+                                            🔄 Reversar cumplimiento
+                                        </button>
+                                    )}
+                                </div>
                             </div>
+
+                            {/* Aviso si hay conteos "sin stock" */}
+                            {counts.some(c => c.location === "__sin_stock__") && (
+                                <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 font-medium flex items-center gap-2">
+                                    🚫 <span>Hay {counts.filter(c => c.location === "__sin_stock__").length} código{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} marcado{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} como <b>sin stock físico</b>.</span>
+                                </div>
+                            )}
 
                             <div className="flex gap-3 flex-wrap">
                                 <input className="flex-1 border rounded-2xl p-3 text-sm text-slate-900 bg-white min-w-[180px]" placeholder="Buscar SKU, descripción, usuario..." value={valSearchText} onChange={e => setValSearchText(e.target.value)} />
@@ -3714,11 +3852,17 @@ export default function DashboardPage() {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {filteredCounts.map(c => (
-                                                <tr key={c.id} className="hover:bg-slate-50">
+                                            {filteredCounts.map(c => {
+                                                const isSinStock = c.location === "__sin_stock__";
+                                                return (
+                                                <tr key={c.id} className={isSinStock ? "bg-red-50" : "hover:bg-slate-50"}>
                                                     <td className="p-2 border font-medium">{c.sku}</td>
                                                     <td className="p-2 border text-slate-600 max-w-[180px] truncate">{c.description}</td>
-                                                    <td className="p-2 border text-center font-mono text-xs">{c.location}</td>
+                                                    <td className="p-2 border text-center font-mono text-xs">
+                                                        {isSinStock
+                                                            ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">🚫 Sin stock</span>
+                                                            : c.location}
+                                                    </td>
                                                     <td className="p-2 border text-center font-semibold">{c.counted_quantity}</td>
                                                     <td className="p-2 border text-xs">{c.user_name}</td>
                                                     <td className="p-2 border text-xs text-slate-500 whitespace-nowrap">{formatDateTime(c.counted_at)}</td>
@@ -3728,7 +3872,8 @@ export default function DashboardPage() {
                                                         <button className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 border border-red-200" onClick={() => deleteCount(c)}>✕</button>
                                                     </td>
                                                 </tr>
-                                            ))}
+                                                );
+                                            })}
                                             {filteredCounts.length === 0 && (
                                                 <tr><td className="p-6 border text-center text-slate-400" colSpan={8}>No hay conteos registrados todavía.</td></tr>
                                             )}
@@ -4230,11 +4375,30 @@ export default function DashboardPage() {
                                 <button
                                     className="text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold border active:bg-slate-200 active:scale-95 transition-all"
                                     onClick={addLocationRow}
+                                    disabled={sinStock}
                                 >
                                     + Agregar ubicación
                                 </button>
                             </div>
-                            {locationRows.map((row, i) => (
+
+                            {/* ── Botón "Sin stock" ── */}
+                            <button
+                                className={`w-full py-3 rounded-2xl font-bold text-sm border-2 transition-all ${
+                                    sinStock
+                                        ? "bg-red-600 text-white border-red-600 shadow"
+                                        : "bg-white text-red-600 border-red-300 hover:bg-red-50"
+                                }`}
+                                onClick={() => setSinStock(prev => !prev)}
+                            >
+                                {sinStock ? "🚫 Sin stock físico — toca para cancelar" : "🚫 Sin stock físico"}
+                            </button>
+                            {sinStock && (
+                                <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 font-medium">
+                                    Se registrará <b>cantidad 0</b> para <b>{activeAssignment?.sku}</b>. El producto quedará como contado con diferencia. No necesitas ingresar ubicación.
+                                </div>
+                            )}
+
+                            {!sinStock && locationRows.map((row, i) => (
                                 <div key={i} className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-4 space-y-3">
                                     <div className="flex items-center justify-between gap-2">
                                         <span className="text-sm font-bold text-slate-600">
@@ -4286,7 +4450,7 @@ export default function DashboardPage() {
                             </button>
                             <button
                                 className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm text-slate-700 active:bg-slate-100 active:scale-95 transition-all"
-                                onClick={() => setActiveAssignment(null)}
+                                onClick={() => { setActiveAssignment(null); setSinStock(false); }}
                                 disabled={savingCount}
                             >
                                 Cancelar
