@@ -3770,16 +3770,16 @@ export default function DashboardPage() {
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className="flex-1 p-6 space-y-4 max-w-5xl w-full mx-auto">
+                <div className="flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6">
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
             ════════════════════════════════════════════════════════ */}
             {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && !showRecount && (
                 <>
-                    <section className="bg-white rounded-3xl p-5 shadow space-y-3">
-                        <div className="flex items-center justify-between gap-3 flex-wrap">
-                            <div>
+                    <section className="bg-white rounded-2xl p-4 shadow space-y-3 md:rounded-3xl md:p-5">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:flex-wrap">
+                            <div className="min-w-0">
                                 <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
                                 <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
                                 {countingStatus !== "idle" && isAdmin && (
@@ -3796,10 +3796,10 @@ export default function DashboardPage() {
                                     </span>
                                 )}
                             </div>
-                            <div className="flex gap-3 items-center flex-wrap">
+                            <div className="grid w-full gap-2 md:flex md:w-auto md:items-center md:flex-wrap md:gap-3">
                                 {isAdmin && (
                                     <select
-                                        className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                        className="w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:w-auto"
                                         value={selectedStoreId}
                                         onChange={e => { setSelectedStoreId(e.target.value); if (e.target.value) loadOperarioData(e.target.value, selectedDate); }}
                                     >
@@ -3807,9 +3807,9 @@ export default function DashboardPage() {
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 )}
-                                <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
+                                <input type="date" className="w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:w-auto" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
                                 <button
-                                    className="flex items-center gap-2 px-4 py-2 rounded-2xl border border-blue-200 bg-blue-50 text-blue-700 text-sm font-semibold disabled:opacity-40"
+                                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40 md:w-auto"
                                     onClick={refreshAssignedStocks}
                                     disabled={!selectedStoreId || assignments.length === 0 || bulkRefreshingStocks}
                                     title="Actualizar stocks asignados"
@@ -3817,18 +3817,18 @@ export default function DashboardPage() {
                                     <RefreshCw size={16} className={bulkRefreshingStocks ? "animate-spin" : ""} />
                                     {bulkRefreshingStocks ? "Actualizando" : "Actualizar stocks"}
                                 </button>
-                                <div className="flex items-center gap-2">
+                                <div className="grid w-full grid-cols-2 gap-2 md:flex md:w-auto md:items-center">
                                     <input
-                                        className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white w-40"
+                                        className="col-span-2 w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:col-span-1 md:w-40"
                                         placeholder="Codigo"
                                         value={manualProductCode}
                                         onChange={e => setManualProductCode(e.target.value)}
                                         onKeyDown={e => { if (e.key === "Enter") addProductByTypedCode(); }}
                                     />
-                                    <button className="px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm font-semibold" onClick={addProductByTypedCode}>
+                                    <button className="rounded-2xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white" onClick={addProductByTypedCode}>
                                         Agregar
                                     </button>
-                                    <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
+                                    <button className="flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" onClick={() => openScanner("product")}>
                                         <QrCode size={16} /> Escanear
                                     </button>
                                 </div>
@@ -5206,14 +5206,14 @@ export default function DashboardPage() {
                 MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
             ════════════════════════════════════════════════════════ */}
             {activeAssignment && (
-                <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="fixed inset-0 bg-black/50 flex items-end justify-center p-2 sm:items-center sm:p-4 z-50">
+                    <div className="bg-white rounded-2xl p-4 w-full max-w-md shadow-2xl max-h-[92vh] overflow-y-auto sm:rounded-3xl sm:p-6">
                         <div className="flex items-start justify-between gap-3 mb-4">
                             <div>
-                                <h3 className="text-xl font-bold text-slate-900">Registrar conteo</h3>
+                                <h3 className="text-lg font-bold text-slate-900 sm:text-xl">Registrar conteo</h3>
                                 <p className="text-slate-700 font-semibold mt-0.5">{activeAssignment.sku}</p>
                                 <p className="text-sm text-slate-500">{activeAssignment.description}</p>
-                                <div className="flex items-center gap-2 mt-1.5">
+                                <div className="flex flex-wrap items-center gap-2 mt-1.5">
                                     <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
                                     <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {activeAssignment.system_stock}</span>
                                     <button
@@ -5259,7 +5259,7 @@ export default function DashboardPage() {
                             )}
 
                             {!sinStock && locationRows.map((row, i) => (
-                                <div key={i} className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-4 space-y-3">
+                                <div key={i} className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-3 space-y-3 sm:p-4">
                                     <div className="flex items-center justify-between gap-2">
                                         <span className="text-sm font-bold text-slate-600">
                                             {locationRows.length > 1 ? `📍 Ubicación ${i + 1}` : "📍 Ubicación"}
