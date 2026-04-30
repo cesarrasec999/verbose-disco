@@ -1,11 +1,15 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Camera, CheckCircle2, ClipboardCheck, Edit3, LogOut, PackageSearch, Plus, Save, Search, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, LogOut, Mail, PackageSearch, Plus, QrCode, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
+type MainTab = "sessions" | "register";
+type RegisterTab = "count" | "records" | "summary";
 
 type CyclicUser = {
   id: string;
@@ -41,6 +45,7 @@ type AuditSession = {
   store_id: string;
   auditor_id: string;
   status: "in_progress" | "finished" | "cancelled";
+  observation?: string | null;
   started_at: string;
   finished_at: string | null;
   store_name?: string;
@@ -85,12 +90,6 @@ function normalizeText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-function smartMatch(description: string, query: string) {
-  const words = normalizeText(description).split(/[^a-z0-9]+/).filter(Boolean);
-  const terms = normalizeText(query).split(/\s+/).filter(Boolean);
-  return terms.every(term => words.some(word => word.includes(term) || word.startsWith(term)));
-}
-
 function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -114,6 +113,12 @@ export default function AuditoriaPage() {
   const [editLocation, setEditLocation] = useState("");
   const [editQty, setEditQty] = useState("");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
+  const [mainTab, setMainTab] = useState<MainTab>("register");
+  const [registerTab, setRegisterTab] = useState<RegisterTab>("count");
+  const [observation, setObservation] = useState("");
+  const [savingObservation, setSavingObservation] = useState(false);
+  const [emailHTML, setEmailHTML] = useState("");
+  const [showEmailModal, setShowEmailModal] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerContainerId = "audit-scanner";
@@ -200,6 +205,9 @@ export default function AuditoriaPage() {
   async function openSession(row: AuditSession) {
     setSession(row);
     setStoreId(row.store_id);
+    setObservation(row.observation || "");
+    setMainTab("register");
+    setRegisterTab("count");
     await loadSessionData(row.id);
   }
 
@@ -229,6 +237,9 @@ export default function AuditoriaPage() {
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
+    setObservation("");
+    setMainTab("register");
+    setRegisterTab("count");
     setMessage("Sesión de auditoría iniciada.");
   }
 
@@ -412,6 +423,22 @@ export default function AuditoriaPage() {
     setMessage("Auditoría finalizada.");
   }
 
+  async function saveObservation() {
+    if (!session) return;
+    setSavingObservation(true);
+    const { error } = await supabase
+      .from("audit_sessions")
+      .update({ observation: observation.trim() || null })
+      .eq("id", session.id);
+    setSavingObservation(false);
+    if (error) {
+      setMessage("Error guardando observación: " + error.message + ". Verifica que ejecutaste supabase_auditoria.sql.");
+      return;
+    }
+    setSession({ ...session, observation: observation.trim() || null });
+    setMessage("Observación guardada en la auditoría.");
+  }
+
   const summaryRows = useMemo(() => items.map(item => {
     const total = counts.filter(c => c.item_id === item.id).reduce((acc, c) => acc + Number(c.quantity || 0), 0);
     const diff = total - Number(item.system_stock || 0);
@@ -429,12 +456,120 @@ export default function AuditoriaPage() {
     return {
       audited,
       eri,
-      missing: summaryRows.filter(r => r.status === "Faltante" || r.status === "No contado").length,
+      missing: summaryRows.filter(r => Number(r.item.system_stock || 0) > 0 && (r.status === "Faltante" || r.status === "No contado")).length,
       surplus: summaryRows.filter(r => r.status === "Sobrante" || r.item.source === "extra").length,
       withStock: summaryRows.filter(r => Number(r.item.system_stock || 0) > 0).length,
       value: summaryRows.reduce((acc, r) => acc + r.value, 0),
     };
   }, [summaryRows]);
+
+  function escapeHTML(value: string | number | null | undefined) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function svgDataUrl(svg: string) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+
+  function auditBarChart(title: string, data: { label: string; value: number; color: string }[]) {
+    const width = 640;
+    const height = 260;
+    const max = Math.max(1, ...data.map(d => Math.abs(d.value)));
+    const bars = data.map((d, index) => {
+      const x = 70 + index * 135;
+      const barHeight = Math.max(6, Math.round((Math.abs(d.value) / max) * 140));
+      const y = 190 - barHeight;
+      return `<g><rect x="${x}" y="${y}" width="72" height="${barHeight}" rx="8" fill="${d.color}"/><text x="${x + 36}" y="${y - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${escapeHTML(d.value)}</text><text x="${x + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${escapeHTML(d.label)}</text></g>`;
+    }).join("");
+    return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="640" height="260" rx="18" fill="#f8fafc"/><text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">${escapeHTML(title)}</text><line x1="48" y1="194" x2="594" y2="194" stroke="#cbd5e1" stroke-width="1"/>${bars}</svg>`);
+  }
+
+  function buildAuditReportHTML() {
+    if (!session) return "";
+    const storeName = selectedStore?.name || session.store_name || "Tienda";
+    const topDiffs = [...summaryRows]
+      .filter(r => r.diff !== 0)
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+      .slice(0, 12);
+    const chart = auditBarChart("Indicadores de auditoría", [
+      { label: "ERI", value: totals.eri, color: "#16a34a" },
+      { label: "Con stock", value: totals.withStock, color: "#0f172a" },
+      { label: "Faltantes", value: totals.missing, color: "#dc2626" },
+      { label: "Sobrantes", value: totals.surplus, color: "#2563eb" },
+    ]);
+    const rows = topDiffs.length === 0
+      ? `<tr><td colspan="6" style="padding:12px;text-align:center;color:#64748b;">Sin diferencias registradas.</td></tr>`
+      : topDiffs.map(r => `
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;">${escapeHTML(r.item.system_stock)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(r.total)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(r.diff)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(money(r.value))}</td>
+          </tr>`).join("");
+    const today = new Date().toLocaleString("es-PE");
+    const obs = observation.trim() || session.observation || "Sin observaciones registradas.";
+    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
+<body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+  <div style="max-width:760px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
+    <div style="background:#0f172a;padding:28px 32px;color:#ffffff;">
+      <div style="font-size:12px;font-weight:900;letter-spacing:1.8px;color:#93c5fd;">WMS AUDITORIA DE EXISTENCIAS</div>
+      <h1 style="margin:8px 0 4px;font-size:25px;line-height:1.2;">Informe de auditoría</h1>
+      <p style="margin:0;color:#cbd5e1;font-size:14px;">${escapeHTML(storeName)} - ${escapeHTML(user?.full_name || "")} - ${escapeHTML(today)}</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:22px;"><tr>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#16a34a;">${totals.eri}%</div><div style="font-size:11px;font-weight:800;color:#64748b;">ERI</div></div></td>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#0f172a;">${totals.withStock}</div><div style="font-size:11px;font-weight:800;color:#64748b;">CODIGOS CON STOCK</div></div></td>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#dc2626;">${totals.missing}</div><div style="font-size:11px;font-weight:800;color:#64748b;">FALTANTES / NO CONTADOS</div></div></td>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:22px;font-weight:900;color:${totals.value < 0 ? "#dc2626" : "#2563eb"};">${escapeHTML(money(totals.value))}</div><div style="font-size:11px;font-weight:800;color:#64748b;">DIF. VALORIZADA</div></div></td>
+      </tr></table>
+      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Dashboard compatible</h2>
+      <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="Gráfico auditoría"/></div>
+      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #0f172a;padding-left:10px;">Observación</h2>
+      <p style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px;line-height:1.5;margin:0 0 22px;color:#334155;">${escapeHTML(obs)}</p>
+      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Principales diferencias por código</h2>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CODIGO</th><th style="padding:9px;text-align:left;">DESCRIPCION</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.5;">Este informe fue generado desde el módulo de auditoría WMS. Los gráficos están embebidos como imagen compatible para correo.</p>
+    </div>
+  </div>
+</body></html>`;
+  }
+
+  function generateAuditReport() {
+    if (!session) { setMessage("Selecciona una sesión para generar el informe."); return; }
+    const html = buildAuditReportHTML();
+    setEmailHTML(html);
+    setShowEmailModal(true);
+  }
+
+  function downloadAuditReport() {
+    const html = emailHTML || buildAuditReportHTML();
+    if (!html) return;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `informe_auditoria_${selectedStore?.name || "tienda"}_${new Date().toISOString().slice(0, 10)}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function openEmailDraft() {
+    if (!session) return;
+    const subject = `Informe auditoría ${selectedStore?.name || session.store_name || ""}`;
+    window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(subject)}`, "_blank");
+    setMessage("Se abrió Gmail. Descarga o copia el informe HTML y pégalo en el cuerpo del correo.");
+  }
 
   function logout() {
     localStorage.removeItem("cyclic_user");
@@ -443,160 +578,222 @@ export default function AuditoriaPage() {
 
   if (!user) return <main className="min-h-screen grid place-items-center text-slate-500">Cargando...</main>;
 
+  const tabClass = (active: boolean) => `flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${active ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"}`;
+  const subTabClass = (active: boolean) => `flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition ${active ? "border-blue-700 bg-blue-700 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`;
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
-      <header className="sticky top-0 z-20 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
+      <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-3 py-3 md:px-5">
           <button onClick={() => window.location.href = "/dashboard"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver al dashboard"><ArrowLeft size={18} /></button>
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 font-black text-white">W</div>
           <div className="min-w-0 flex-1">
-            <h1 className="text-base font-bold leading-tight">Auditoría de existencias</h1>
-            <p className="text-xs text-slate-500">{user.full_name} · {selectedStore?.name || "Selecciona tienda"}</p>
+            <h1 className="truncate text-base font-black leading-tight">Auditoria WMS</h1>
+            <p className="truncate text-xs text-slate-500">{user.full_name} - {selectedStore?.name || "Selecciona tienda"}</p>
           </div>
-          <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="max-w-xs rounded-xl border bg-white px-3 py-2 text-sm">
+          <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-4 px-4 py-5 lg:grid-cols-[380px_1fr]">
-        <section className="space-y-4">
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <h2 className="font-bold">Sesión</h2>
-            <p className="mt-1 text-sm text-slate-500">Crea una sesión por tienda para registrar conteos físicos con ubicación y hora.</p>
-            {!session ? (
-              <button onClick={createSession} disabled={!storeId || loading} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"><ClipboardCheck size={18} /> Crear sesión</button>
-            ) : (
-              <div className="mt-4 space-y-2 text-sm">
-                <div className="rounded-xl bg-green-50 p-3 font-semibold text-green-800">{session.status === "finished" ? "Finalizada" : "En progreso"}</div>
-                <button onClick={finishSession} disabled={session.status !== "in_progress"} className="w-full rounded-xl bg-green-700 px-4 py-3 font-bold text-white disabled:opacity-40"><CheckCircle2 className="mr-2 inline" size={18} /> Finalizar auditoría</button>
+      <div className="mx-auto max-w-7xl px-3 py-4 md:px-5">
+        <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border bg-white p-1.5 shadow-sm">
+          <button onClick={() => setMainTab("sessions")} className={tabClass(mainTab === "sessions")}><Settings2 size={16} /> Sesiones</button>
+          <button onClick={() => setMainTab("register")} className={tabClass(mainTab === "register")}><ClipboardList size={16} /> Registro</button>
+        </div>
+
+        {message && <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">{message}</div>}
+
+        {mainTab === "sessions" && (
+          <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
+            <section className="space-y-4">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h2 className="font-black">Crear sesión de auditoría</h2>
+                <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditoría y carga la familia de productos a contar.</p>
+                <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
+                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                {!session ? (
+                  <button onClick={createSession} disabled={!storeId || loading} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"><ClipboardCheck size={18} /> Crear sesión</button>
+                ) : (
+                  <div className="mt-4 space-y-2 text-sm">
+                    <div className="rounded-xl bg-green-50 p-3 font-bold text-green-800">{session.status === "finished" ? "Finalizada" : "En progreso"}</div>
+                    <button onClick={finishSession} disabled={session.status !== "in_progress"} className="w-full rounded-xl bg-green-700 px-4 py-3 font-bold text-white disabled:opacity-40"><CheckCircle2 className="mr-2 inline" size={18} /> Finalizar auditoría</button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <h2 className="font-bold">Sesiones recientes</h2>
-            <div className="mt-3 max-h-56 overflow-auto space-y-2">
-              {sessions.map(s => (
-                <button key={s.id} onClick={() => openSession(s)} className="w-full rounded-xl border p-3 text-left text-xs hover:bg-slate-50">
-                  <div className="font-bold text-slate-900">{s.store_name || s.store_id}</div>
-                  <div className="text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")} · {s.status === "finished" ? "Finalizada" : "En progreso"}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <h2 className="font-bold">Buscar familia</h2>
-            <div className="mt-3 flex gap-2">
-              <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") searchFamily(); }} placeholder="far lat innov ambar" className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm" />
-              <button onClick={searchFamily} disabled={!session || loading} className="rounded-xl bg-blue-700 px-3 text-white disabled:opacity-40"><Search size={18} /></button>
-            </div>
-            <div className="mt-3 flex gap-2">
-              <button onClick={() => setSelected(new Set(results.map(p => p.id)))} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Seleccionar todo</button>
-              <button onClick={() => setSelected(new Set())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Quitar todo</button>
-            </div>
-            <button onClick={addSelectedItems} disabled={!session || selected.size === 0} className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40"><Plus className="mr-2 inline" size={16} /> Agregar seleccionados</button>
-          </div>
-
-          {message && <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">{message}</div>}
-        </section>
-
-        <section className="space-y-4">
-          {results.length > 0 && (
-            <div className="rounded-2xl border bg-white shadow-sm">
-              <div className="border-b px-4 py-3 font-bold">Resultados ({results.length})</div>
-              <div className="max-h-72 overflow-auto">
-                {results.map(p => (
-                  <label key={p.id} className="flex cursor-pointer items-center gap-3 border-b px-4 py-3 text-sm hover:bg-slate-50">
-                    <input type="checkbox" checked={selected.has(p.id)} onChange={() => setSelected(prev => { const next = new Set(prev); next.has(p.id) ? next.delete(p.id) : next.add(p.id); return next; })} />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-bold">{p.sku}</div>
-                      <div className="truncate text-slate-600">{p.description}</div>
-                      <div className="text-xs text-slate-400">UM: {p.unit} · Stock: {p.system_stock || 0} · Costo: {money(p.cost)}</div>
-                    </div>
-                  </label>
-                ))}
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h2 className="font-black">Buscar familia</h2>
+                <div className="mt-3 flex gap-2">
+                  <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") searchFamily(); }} placeholder="far lat innov ambar" className="min-w-0 flex-1 rounded-xl border px-3 py-3 text-sm" />
+                  <button onClick={searchFamily} disabled={!session || loading} className="rounded-xl bg-blue-700 px-4 text-white disabled:opacity-40" title="Buscar"><Search size={18} /></button>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => setSelected(new Set(results.map(p => p.id)))} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Seleccionar todo</button>
+                  <button onClick={() => setSelected(new Set())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Quitar todo</button>
+                </div>
+                <button onClick={addSelectedItems} disabled={!session || selected.size === 0} className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-40"><Plus className="mr-2 inline" size={16} /> Agregar seleccionados</button>
               </div>
-            </div>
-          )}
+            </section>
 
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
-            <h2 className="font-bold">Conteo físico</h2>
-            <div className="mt-3 flex gap-2">
-              <input value={scanCode} onChange={e => setScanCode(e.target.value)} onKeyDown={e => { if (e.key === "Enter") scanProduct(); }} placeholder="Escanea o digita código/barra" className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm" />
-              <button onClick={() => scanProduct()} disabled={!session || session.status !== "in_progress"} className="rounded-xl bg-slate-900 px-4 text-white disabled:opacity-40"><PackageSearch size={18} /></button>
+            <section className="space-y-4">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h2 className="font-black">Sesiones recientes</h2>
+                <div className="mt-3 grid max-h-80 gap-2 overflow-auto md:grid-cols-2">
+                  {sessions.map(s => (
+                    <button key={s.id} onClick={() => openSession(s)} className={`rounded-xl border p-3 text-left text-xs hover:bg-slate-50 ${session?.id === s.id ? "border-blue-600 bg-blue-50" : ""}`}>
+                      <div className="font-black text-slate-900">{s.store_name || s.store_id}</div>
+                      <div className="text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")} - {s.status === "finished" ? "Finalizada" : "En progreso"}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {results.length > 0 && (
+                <div className="rounded-2xl border bg-white shadow-sm">
+                  <div className="border-b px-4 py-3 font-black">Resultados ({results.length})</div>
+                  <div className="max-h-96 overflow-auto">
+                    {results.map(p => (
+                      <label key={p.id} className="flex cursor-pointer items-center gap-3 border-b px-4 py-3 text-sm hover:bg-slate-50">
+                        <input type="checkbox" checked={selected.has(p.id)} onChange={() => setSelected(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })} />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-black">{p.sku}</div>
+                          <div className="truncate text-slate-600">{p.description}</div>
+                          <div className="text-xs text-slate-400">UM: {p.unit} - Stock: {p.system_stock || 0} - Costo: {money(p.cost)}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {mainTab === "register" && (
+          <section className="space-y-4">
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>
+              <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
+              <button onClick={() => setRegisterTab("summary")} className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</button>
             </div>
-            <button onClick={() => setScannerTarget("product")} disabled={!session || session.status !== "in_progress"} className="mt-2 w-full rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-40"><Camera className="mr-2 inline" size={16} />Escanear producto</button>
-            {activeItem && (
-              <div className="mt-4 rounded-xl border bg-slate-50 p-3">
+
+            {registerTab === "count" && (
+              <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-4 shadow-sm md:p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="font-bold">{activeItem.sku}</div>
-                    <div className="text-sm text-slate-600">{activeItem.description}</div>
-                    <div className="text-xs text-slate-400">Stock sistema: {activeItem.system_stock} · {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                    <h2 className="text-lg font-black">Conteo fisico</h2>
+                    <p className="text-xs text-slate-500">Pantalla compacta para celular.</p>
                   </div>
-                  <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={18} /></button>
+                  <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "in_progress" ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}`}>{session?.status === "in_progress" ? "Activa" : "Sin sesión"}</span>
                 </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Ubicación" className="rounded-xl border px-3 py-2 text-sm" />
-                  <input value={qty} onChange={e => setQty(e.target.value)} placeholder="Cantidad" type="number" className="rounded-xl border px-3 py-2 text-sm" />
+
+                <div className="mt-4 space-y-3">
+                  <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Producto</label>
+                  <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
+                    <input value={scanCode} onChange={e => setScanCode(e.target.value)} onKeyDown={e => { if (e.key === "Enter") scanProduct(); }} placeholder="Escanea o digita código/barra" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base outline-none" />
+                    <button onClick={() => setScannerTarget("product")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-slate-900 text-white disabled:opacity-40" title="Escanear QR producto"><QrCode size={22} /></button>
+                  </div>
+                  <button onClick={() => scanProduct()} disabled={!session || session.status !== "in_progress"} className="w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><PackageSearch className="mr-2 inline" size={16} /> Buscar producto</button>
                 </div>
-                <button onClick={saveCount} className="mt-3 w-full rounded-xl bg-green-700 px-4 py-2.5 text-sm font-bold text-white">Guardar conteo</button>
+
+                {activeItem && (
+                  <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-lg font-black">{activeItem.sku}</div>
+                        <div className="line-clamp-2 text-sm text-slate-600">{activeItem.description}</div>
+                        <div className="mt-1 text-xs font-semibold text-slate-400">Stock sistema: {activeItem.system_stock} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                      </div>
+                      <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={20} /></button>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Ubicacion</label>
+                      <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
+                        <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Escanea ubicación" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base font-semibold uppercase outline-none" />
+                        <button onClick={() => setScannerTarget("location")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-green-700 text-white disabled:opacity-40" title="Escanear QR ubicación"><QrCode size={22} /></button>
+                      </div>
+                      <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Cantidad</label>
+                      <input value={qty} onChange={e => setQty(e.target.value)} placeholder="0" inputMode="decimal" type="number" className="w-full rounded-2xl border px-4 py-4 text-center text-2xl font-black outline-none focus:ring-2 focus:ring-blue-200" />
+                      <button onClick={saveCount} className="w-full rounded-2xl bg-green-700 px-4 py-4 text-base font-black text-white">Guardar conteo</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
-          </div>
 
+            {registerTab === "records" && (
+              <div className="rounded-2xl border bg-white shadow-sm">
+                <div className="border-b px-4 py-3 font-black">Registros realizados ({counts.length})</div>
+                <div className="max-h-[70vh] overflow-auto">
+                  <table className="w-full min-w-[760px] text-sm">
+                    <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
+                    <tbody>{counts.map(c => {
+                      const item = items.find(i => i.id === c.item_id);
+                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
-          <div className="rounded-2xl border bg-white shadow-sm">
-            <div className="border-b px-4 py-3 font-bold">Registros realizados ({counts.length})</div>
-            <div className="max-h-80 overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
-                <tbody>{counts.map(c => {
-                  const item = items.find(i => i.id === c.item_id);
-                  return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-bold">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-bold">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
-                })}</tbody>
-              </table>
-            </div>
-          </div>
+            {registerTab === "summary" && (
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{totals.eri}%</div></div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Códigos con stock</div><div className="text-2xl font-black">{totals.withStock}</div></div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Faltantes / no contados</div><div className="text-2xl font-black text-red-600">{totals.missing}</div></div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes / extras</div><div className="text-2xl font-black text-blue-700">{totals.surplus}</div></div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className="text-lg font-black">{money(totals.value)}</div></div>
+                </div>
 
-          <div className="grid gap-3 sm:grid-cols-5">
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{totals.eri}%</div></div>
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Códigos con stock</div><div className="text-2xl font-black">{totals.withStock}</div></div>
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Faltantes / no contados</div><div className="text-2xl font-black text-red-600">{totals.missing}</div></div>
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes / extras</div><div className="text-2xl font-black text-blue-700">{totals.surplus}</div></div>
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className="text-lg font-black">{money(totals.value)}</div></div>
-          </div>
+                <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <h2 className="font-black">Observación e informe</h2>
+                    <div className="flex gap-2">
+                      <button onClick={generateAuditReport} disabled={!session} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"><FileText className="mr-1 inline" size={15} /> Generar informe</button>
+                      <button onClick={openEmailDraft} disabled={!session} className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"><Mail className="mr-1 inline" size={15} /> Correo</button>
+                    </div>
+                  </div>
+                  <textarea value={observation} onChange={e => setObservation(e.target.value)} placeholder="Observación de auditoría para el informe" className="mt-3 min-h-28 w-full rounded-2xl border px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                  <button onClick={saveObservation} disabled={!session || savingObservation} className="mt-3 rounded-xl bg-green-700 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"><Save className="mr-2 inline" size={16} /> Guardar observación</button>
+                </div>
 
-          <div className="rounded-2xl border bg-white shadow-sm">
-            <div className="border-b px-4 py-3 font-bold">Resumen de sesión ({summaryRows.length})</div>
-            <div className="max-h-[420px] overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                  <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th></tr>
-                </thead>
-                <tbody>
-                  {summaryRows.map(r => (
-                    <tr key={r.item.id} className="border-b hover:bg-slate-50">
-                      <td className="p-2 font-bold">{r.item.sku}</td>
-                      <td className="max-w-sm truncate p-2">{r.item.description}</td>
-                      <td className="p-2 text-center">{r.item.system_stock}</td>
-                      <td className="p-2 text-center font-semibold">{r.total}</td>
-                      <td className={`p-2 text-center font-bold ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>
-                      <td className="p-2 text-center text-xs">{money(r.value)}</td>
-                      <td className="p-2 text-center text-xs font-bold">{r.item.source === "extra" ? "Extra · " : ""}{r.status}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
+                <div className="rounded-2xl border bg-white shadow-sm">
+                  <div className="border-b px-4 py-3 font-black">Resumen por código ({summaryRows.length})</div>
+                  <div className="max-h-[520px] overflow-auto">
+                    <table className="w-full min-w-[780px] text-sm">
+                      <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
+                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th></tr>
+                      </thead>
+                      <tbody>
+                        {summaryRows.map(r => (
+                          <tr key={r.item.id} className="border-b hover:bg-slate-50">
+                            <td className="p-2 font-black">{r.item.sku}</td>
+                            <td className="max-w-sm truncate p-2">{r.item.description}</td>
+                            <td className="p-2 text-center">{r.item.system_stock}</td>
+                            <td className="p-2 text-center font-semibold">{r.total}</td>
+                            <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>
+                            <td className="p-2 text-center text-xs">{money(r.value)}</td>
+                            <td className="p-2 text-center text-xs font-black">{r.item.source === "extra" ? "Extra - " : ""}{r.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
       </div>
-      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-bold">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={stopScanner} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
-      {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-bold">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
+
+      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={stopScanner} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
+      {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
+      {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="flex max-h-[86vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
     </main>
   );
 }

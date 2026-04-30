@@ -6,10 +6,14 @@ create table if not exists public.audit_sessions (
   store_id uuid not null references public.stores(id),
   auditor_id uuid not null references public.cyclic_users(id),
   status text not null default 'in_progress' check (status in ('in_progress', 'finished', 'cancelled')),
+  observation text null,
   started_at timestamptz not null default now(),
   finished_at timestamptz null,
   created_at timestamptz not null default now()
 );
+
+alter table public.audit_sessions
+  add column if not exists observation text null;
 
 create table if not exists public.audit_session_items (
   id uuid primary key default gen_random_uuid(),
