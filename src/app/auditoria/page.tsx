@@ -546,7 +546,7 @@ export default function AuditoriaPage() {
     setScanCode("");
     setQty("");
     setLocation("");
-    setMessage(`Producto detectado: ${product.sku} - ${product.description}`);
+    setMessage(`Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
   }
 
   async function saveCount() {
@@ -566,7 +566,7 @@ export default function AuditoriaPage() {
     if (error) { setMessage("Error guardando conteo: " + error.message); return; }
     await loadSessionData(session.id);
     setActiveItem(null);
-    setMessage(`Conteo registrado. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
+    setMessage(`Conteo registrado: ${quantity} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
   }
 
 
@@ -632,7 +632,7 @@ export default function AuditoriaPage() {
       .eq("id", itemId);
     setSavingItemObservationId(null);
     if (error) {
-      setMessage("Error guardando observación por código: " + error.message + ". Verifica que ejecutaste supabase_auditoria.sql.");
+      setMessage("Error guardando observación por código: " + error.message + ". Ejecuta supabase_auditoria.sql para crear la columna y recargar el schema cache.");
       return;
     }
     setItems(prev => prev.map(item => item.id === itemId ? { ...item, observation: text || null } : item));
@@ -709,6 +709,7 @@ export default function AuditoriaPage() {
           <tr>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#334155;">${escapeHTML(r.item.unit || "N/D")}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;">${escapeHTML(r.item.system_stock)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(r.total)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(r.diff)}</td>
@@ -716,19 +717,20 @@ export default function AuditoriaPage() {
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
           </tr>`;
     const missingRows = topMissing.length === 0
-      ? `<tr><td colspan="7" style="padding:12px;text-align:center;color:#64748b;">Sin faltantes registrados.</td></tr>`
+      ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin faltantes registrados.</td></tr>`
       : topMissing.map(diffRow).join("");
     const surplusRows = topSurplus.length === 0
-      ? `<tr><td colspan="7" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
+      ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
       : topSurplus.map(diffRow).join("");
     const today = new Date().toLocaleString("es-PE");
     const observedItems = summaryRows.filter(r => (r.item.observation || "").trim());
     const observedRows = observedItems.length === 0
-      ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#64748b;">Sin observaciones por código.</td></tr>`
+      ? `<tr><td colspan="4" style="padding:12px;text-align:center;color:#64748b;">Sin observaciones por código.</td></tr>`
       : observedItems.map(r => `
           <tr>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#334155;">${escapeHTML(r.item.unit || "N/D")}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
           </tr>`).join("");
     return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
@@ -750,17 +752,17 @@ export default function AuditoriaPage() {
       <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="Gráfico auditoría"/></div>
       <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Top faltantes</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
         <tbody>${missingRows}</tbody>
       </table>
       <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Top sobrantes</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
         <tbody>${surplusRows}</tbody>
       </table>
       <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #0f172a;padding-left:10px;">Observaciones por código</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
         <tbody>${observedRows}</tbody>
       </table>
       <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #16a34a;padding-left:10px;">Firmas de conformidad</h2>
@@ -967,7 +969,7 @@ export default function AuditoriaPage() {
                       <div className="min-w-0">
                         <div className="text-lg font-black">{activeItem.sku}</div>
                         <div className="line-clamp-2 text-sm text-slate-600">{activeItem.description}</div>
-                        <div className="mt-1 text-xs font-semibold text-slate-400">Stock sistema: {activeItem.system_stock} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                        <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {activeItem.system_stock} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
                       </div>
                       <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={20} /></button>
                     </div>
@@ -1032,15 +1034,16 @@ export default function AuditoriaPage() {
                 <div className="rounded-2xl border bg-white shadow-sm">
                   <div className="border-b px-4 py-3 font-black">Resumen por código ({summaryRows.length})</div>
                   <div className="max-h-[520px] overflow-auto">
-                    <table className="w-full min-w-[1080px] text-sm">
+                    <table className="w-full min-w-[1160px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
+                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
                       </thead>
                       <tbody>
                         {summaryRows.map(r => (
                           <tr key={r.item.id} className="border-b hover:bg-slate-50">
                             <td className="p-2 font-black">{r.item.sku}</td>
                             <td className="max-w-sm truncate p-2">{r.item.description}</td>
+                            <td className="p-2 text-center text-xs font-black">{r.item.unit || "N/D"}</td>
                             <td className="p-2 text-center">{r.item.system_stock}</td>
                             <td className="p-2 text-center font-semibold">{r.total}</td>
                             <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>

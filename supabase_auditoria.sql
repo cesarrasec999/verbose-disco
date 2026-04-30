@@ -33,6 +33,10 @@ create table if not exists public.audit_session_items (
 alter table public.audit_session_items
   add column if not exists observation text null;
 
+-- Fuerza a PostgREST/Supabase a recargar el schema cache después de agregar columnas.
+-- Evita errores como "Could not find the 'observation' column ... in the schema cache".
+notify pgrst, 'reload schema';
+
 create table if not exists public.audit_counts (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.audit_sessions(id) on delete cascade,
@@ -48,3 +52,5 @@ create index if not exists idx_audit_sessions_store_status on public.audit_sessi
 create index if not exists idx_audit_items_session on public.audit_session_items(session_id);
 create index if not exists idx_audit_counts_session on public.audit_counts(session_id);
 create index if not exists idx_audit_counts_item on public.audit_counts(item_id);
+
+notify pgrst, 'reload schema';
