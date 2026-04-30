@@ -10,6 +10,7 @@ type Role = "Operario" | "Validador" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
 type MainTab = "sessions" | "register";
 type RegisterTab = "count" | "records" | "summary";
+type AuditScope = "session" | "all";
 
 const AUDIT_MAIN_TAB_KEY = "audit_main_tab";
 const AUDIT_REGISTER_TAB_KEY = "audit_register_tab";
@@ -69,6 +70,8 @@ type AuditItem = {
   barcode?: string | null;
   description?: string;
   unit?: string;
+  session_store_name?: string;
+  session_started_at?: string;
 };
 
 type AuditCount = {
@@ -83,6 +86,8 @@ type AuditCount = {
   sku?: string;
   description?: string;
   unit?: string;
+  session_store_name?: string;
+  session_started_at?: string;
 };
 
 function cleanCode(value: string | number | null | undefined): string {
@@ -146,6 +151,7 @@ export default function AuditoriaPage() {
   const scannerContainerId = "audit-scanner";
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [auditScope, setAuditScope] = useState<AuditScope>("session");
 
   const selectedStore = useMemo(() => stores.find(s => s.id === storeId), [stores, storeId]);
 
@@ -186,6 +192,21 @@ export default function AuditoriaPage() {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
     else sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
   }, [session?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    const refresh = () => {
+      if (auditScope === "all" && user.role === "Administrador") void loadAllAuditData(false);
+      else if (session?.id) void loadSavedSession(session.id);
+      void loadSessions();
+    };
+    const channel = supabase.channel(`audit-live-${user.id}-${auditScope}-${session?.id || "all"}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "audit_counts" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "audit_session_items" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "audit_sessions" }, refresh)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user, auditScope, session?.id]);
 
 
   useEffect(() => {
@@ -310,12 +331,14 @@ export default function AuditoriaPage() {
   async function refreshAuditData() {
     setLoading(true);
     await loadSessions();
-    if (session?.id) await loadSavedSession(session.id);
+    if (auditScope === "all") await loadAllAuditData();
+    else if (session?.id) await loadSavedSession(session.id);
     setLoading(false);
     setMessage("Datos actualizados.");
   }
 
   async function openSession(row: AuditSession) {
+    setAuditScope("session");
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
@@ -371,6 +394,7 @@ export default function AuditoriaPage() {
     }).select("*").single();
     setLoading(false);
     if (error) { setMessage("Error creando sesión: " + error.message); return; }
+    setAuditScope("session");
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
@@ -453,6 +477,82 @@ export default function AuditoriaPage() {
 
     const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at");
     setCounts((countRows || []) as AuditCount[]);
+  }
+
+  async function loadAllAuditData(showLoadedMessage = true) {
+    if (user?.role !== "Administrador") return;
+    setAuditScope("all");
+    setSession(null);
+    setActiveItem(null);
+    sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+
+    const { data: sessionRows } = await supabase
+      .from("audit_sessions")
+      .select("*, stores(name), cyclic_users(full_name)")
+      .order("started_at", { ascending: false });
+    const allSessions = (sessionRows || []).map((r: any) => ({
+      ...r,
+      store_name: r.stores?.name,
+      auditor_name: r.cyclic_users?.full_name,
+    })) as AuditSession[];
+    setSessions(allSessions);
+
+    const sessionIds = allSessions.map(s => s.id);
+    if (sessionIds.length === 0) {
+      setItems([]);
+      setCounts([]);
+      return;
+    }
+
+    const sessionMap = new Map(allSessions.map(s => [s.id, s]));
+    let itemRows: any[] = [];
+    let countRows: AuditCount[] = [];
+
+    for (let i = 0; i < sessionIds.length; i += 500) {
+      const chunk = sessionIds.slice(i, i + 500);
+      const { data: itemChunk } = await supabase
+        .from("audit_session_items")
+        .select("*, cyclic_products(sku, barcode, description, unit)")
+        .in("session_id", chunk)
+        .order("created_at");
+      itemRows = itemRows.concat(itemChunk || []);
+
+      const { data: countChunk } = await supabase
+        .from("audit_counts")
+        .select("*")
+        .in("session_id", chunk)
+        .order("counted_at");
+      countRows = countRows.concat((countChunk || []) as AuditCount[]);
+    }
+
+    const mappedItems = itemRows.map((r: any) => {
+      const s = sessionMap.get(r.session_id);
+      return {
+        ...r,
+        sku: r.cyclic_products?.sku,
+        barcode: r.cyclic_products?.barcode,
+        description: r.cyclic_products?.description,
+        unit: r.cyclic_products?.unit,
+        session_store_name: s?.store_name || s?.store_id,
+        session_started_at: s?.started_at,
+      };
+    }) as AuditItem[];
+    const itemMap = new Map(mappedItems.map(item => [item.id, item]));
+    setItems(mappedItems);
+    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
+    setCounts(countRows.map(count => {
+      const item = itemMap.get(count.item_id);
+      const s = sessionMap.get(count.session_id);
+      return {
+        ...count,
+        sku: item?.sku,
+        description: item?.description,
+        unit: item?.unit,
+        session_store_name: s?.store_name || s?.store_id,
+        session_started_at: s?.started_at,
+      };
+    }));
+    if (showLoadedMessage) setMessage("Vista global de auditorias cargada.");
   }
 
   async function findProductByCode(code: string): Promise<Product | null> {
@@ -801,7 +901,7 @@ export default function AuditoriaPage() {
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 font-black text-white">W</div>
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-base font-black leading-tight">Auditoria WMS</h1>
-            <p className="truncate text-xs text-slate-500">{user.full_name} - {selectedStore?.name || "Selecciona tienda"}</p>
+            <p className="truncate text-xs text-slate-500">{user.full_name} - {auditScope === "all" ? "Todas las auditorias" : selectedStore?.name || "Selecciona tienda"}</p>
           </div>
           <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -895,6 +995,23 @@ export default function AuditoriaPage() {
 
         {mainTab === "register" && (
           <section className="space-y-4">
+            {user.role === "Administrador" && (
+              <div className="flex flex-wrap gap-2 rounded-2xl border bg-white p-2 shadow-sm">
+                <button
+                  onClick={() => { setAuditScope("session"); if (session?.id) void loadSavedSession(session.id); }}
+                  className={`rounded-xl px-3 py-2 text-xs font-black ${auditScope === "session" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}
+                >
+                  SesiÃ³n actual
+                </button>
+                <button
+                  onClick={() => loadAllAuditData()}
+                  className={`rounded-xl px-3 py-2 text-xs font-black ${auditScope === "all" ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-600"}`}
+                >
+                  Todas las sesiones
+                </button>
+                {auditScope === "all" && <span className="self-center text-xs font-semibold text-slate-500">Vista global: solo lectura para evitar mezclar sesiones.</span>}
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>
               <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
@@ -950,10 +1067,10 @@ export default function AuditoriaPage() {
                 <div className="border-b px-4 py-3 font-black">Registros realizados ({counts.length})</div>
                 <div className="max-h-[70vh] overflow-auto">
                   <table className="w-full min-w-[760px] text-sm">
-                    <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
+                    <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr>{auditScope === "all" && <><th className="p-2 text-left">Tienda</th><th className="p-2">Sesión</th></>}<th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
                     <tbody>{counts.map(c => {
                       const item = items.find(i => i.id === c.item_id);
-                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
+                      return <tr key={c.id} className="border-b hover:bg-slate-50">{auditScope === "all" && <><td className="p-2 text-xs font-semibold">{c.session_store_name || item?.session_store_name}</td><td className="p-2 text-center text-xs">{c.session_started_at ? new Date(c.session_started_at).toLocaleDateString("es-PE") : ""}</td></>}<td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center">{auditScope === "session" ? <><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></> : <span className="text-xs font-semibold text-slate-400">Solo lectura</span>}</td></tr>;
                     })}</tbody>
                   </table>
                 </div>
@@ -993,11 +1110,12 @@ export default function AuditoriaPage() {
                   <div className="max-h-[520px] overflow-auto">
                     <table className="w-full min-w-[1080px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
+                        <tr>{auditScope === "all" && <><th className="p-2 text-left">Tienda</th><th className="p-2">Sesión</th></>}<th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
                       </thead>
                       <tbody>
                         {summaryRows.map(r => (
                           <tr key={r.item.id} className="border-b hover:bg-slate-50">
+                            {auditScope === "all" && <><td className="p-2 text-xs font-semibold">{r.item.session_store_name}</td><td className="p-2 text-center text-xs">{r.item.session_started_at ? new Date(r.item.session_started_at).toLocaleDateString("es-PE") : ""}</td></>}
                             <td className="p-2 font-black">{r.item.sku}</td>
                             <td className="max-w-sm truncate p-2">{r.item.description}</td>
                             <td className="p-2 text-center">{r.item.system_stock}</td>
@@ -1016,7 +1134,7 @@ export default function AuditoriaPage() {
                             <td className="p-2 text-center">
                               <button
                                 onClick={() => saveItemObservation(r.item.id)}
-                                disabled={!session || savingItemObservationId === r.item.id}
+                                disabled={auditScope === "all" || !session || savingItemObservationId === r.item.id}
                                 className="rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
                               >
                                 <Save className="mr-1 inline" size={14} /> Guardar
