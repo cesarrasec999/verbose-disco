@@ -40,6 +40,7 @@ type Store = {
 type Product = {
   id: string;
   sku: string;
+  erp_sku?: string | null;
   barcode: string | null;
   description: string;
   unit: string;
@@ -69,6 +70,7 @@ type AuditItem = {
   cost_snapshot: number;
   observation?: string | null;
   sku?: string;
+  erp_sku?: string | null;
   barcode?: string | null;
   description?: string;
   unit?: string;
@@ -103,6 +105,12 @@ function codeCandidates(value: string | number | null | undefined): string[] {
   const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
   const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
   return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
+}
+
+function productStockKey(product: Pick<Product, "sku" | "erp_sku"> | Pick<AuditItem, "sku" | "erp_sku"> | string | null | undefined): string {
+  if (!product) return "";
+  if (typeof product === "string") return cleanCode(product);
+  return cleanCode(product.erp_sku || product.sku || "");
 }
 
 function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
@@ -156,6 +164,8 @@ export default function AuditoriaPage() {
   const [recordsQuery, setRecordsQuery] = useState("");
   const [summaryQuery, setSummaryQuery] = useState("");
   const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: SortDirection }>({ key: "value", direction: "desc" });
+  const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
+  const [manualProductCodePending, setManualProductCodePending] = useState("");
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
   const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
   const [itemStockDrafts, setItemStockDrafts] = useState<Record<string, string>>({});
@@ -369,7 +379,7 @@ export default function AuditoriaPage() {
     const sede = String(store.erp_sede || store.name || "").trim();
     const candidateToSku = new Map<string, string>();
     for (const product of products) {
-      const skuKey = cleanCode(product.sku);
+      const skuKey = productStockKey(product);
       if (!skuKey) continue;
       for (const candidate of codeCandidates(product.sku)) {
         candidateToSku.set(candidate, skuKey);
@@ -384,9 +394,9 @@ export default function AuditoriaPage() {
     for (let i = 0; i < lookupCodes.length; i += 500) {
       const chunk = lookupCodes.slice(i, i + 500);
       const [{ data: byUpc }, { data: byAlu }, { data: byCodsap }] = await Promise.all([
-        supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk),
-        supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk),
-        supabase.from("codigos_barra").select("codsap, upc, alu").in("codsap", chunk),
+        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("upc", chunk),
+        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("alu", chunk),
+        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("codsap", chunk),
       ]);
       for (const row of [...(byUpc || []), ...(byAlu || []), ...(byCodsap || [])]) {
         const skuKey =
@@ -394,6 +404,8 @@ export default function AuditoriaPage() {
           candidateToSku.get(cleanCode(row.upc)) ||
           candidateToSku.get(String(row.alu || "")) ||
           candidateToSku.get(cleanCode(row.alu)) ||
+          candidateToSku.get(String(row.erp_sku || "")) ||
+          candidateToSku.get(cleanCode(row.erp_sku)) ||
           candidateToSku.get(String(row.codsap || "")) ||
           candidateToSku.get(cleanCode(row.codsap));
         if (!skuKey) continue;
@@ -403,14 +415,26 @@ export default function AuditoriaPage() {
         }
       }
     }
-    const skus = [...new Set(candidateToSku.keys())].filter(Boolean);
+    const skus = [...new Set(products.map(productStockKey).filter(Boolean))];
     const map = new Map<string, number>();
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
+      const { data } = await supabase.from("stock_general").select("erp_sku, stock").eq("sede", sede).in("erp_sku", chunk);
+      for (const row of data || []) {
+        const skuKey = cleanCode(row.erp_sku);
+        if (skuKey) map.set(skuKey, Number(row.stock || 0));
+      }
+    }
+    const missingVisibleCodes = products
+      .filter(product => !map.has(productStockKey(product)))
+      .map(product => cleanCode(product.sku))
+      .filter(Boolean);
+    for (let i = 0; i < missingVisibleCodes.length; i += 500) {
+      const chunk = missingVisibleCodes.slice(i, i + 500);
       const { data } = await supabase.from("stock_general").select("codsap, stock").eq("sede", sede).in("codsap", chunk);
       for (const row of data || []) {
-        const skuKey = candidateToSku.get(String(row.codsap || "")) || candidateToSku.get(cleanCode(row.codsap));
-        if (skuKey) map.set(skuKey, Number(row.stock || 0));
+        const product = products.find(item => cleanCode(item.sku) === cleanCode(row.codsap));
+        if (product) map.set(productStockKey(product), Number(row.stock || 0));
       }
     }
     return map;
@@ -470,7 +494,7 @@ export default function AuditoriaPage() {
     }
 
     const stockMap = await getStockMap(allProducts);
-    const enriched = allProducts.map(p => ({ ...p, system_stock: stockMap.get(cleanCode(p.sku)) || 0 }));
+    const enriched = allProducts.map(p => ({ ...p, system_stock: stockMap.get(productStockKey(p)) || 0 }));
     setResults(enriched);
     setSelected(new Set(enriched.map(p => p.id)));
     setLoading(false);
@@ -501,12 +525,13 @@ export default function AuditoriaPage() {
   async function loadSessionData(sessionId: string) {
     const { data: itemRows } = await supabase
       .from("audit_session_items")
-      .select("*, cyclic_products(sku, barcode, description, unit)")
+      .select("*, cyclic_products(sku, erp_sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
     const mappedItems = (itemRows || []).map((r: any) => ({
       ...r,
       sku: r.cyclic_products?.sku,
+      erp_sku: r.cyclic_products?.erp_sku,
       barcode: r.cyclic_products?.barcode,
       description: r.cyclic_products?.description,
       unit: r.cyclic_products?.unit,
@@ -524,8 +549,13 @@ export default function AuditoriaPage() {
     if (candidates.length === 0) return null;
 
     for (const candidate of candidates) {
-      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", candidate).eq("is_active", true).maybeSingle();
+      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("erp_sku", candidate).eq("is_active", true).maybeSingle();
       if (bySku) return bySku as Product;
+    }
+
+    for (const candidate of candidates) {
+      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", candidate).eq("is_active", true).limit(2);
+      if (bySku?.length === 1) return bySku[0] as Product;
     }
 
     for (const candidate of candidates) {
@@ -536,11 +566,17 @@ export default function AuditoriaPage() {
     for (const candidate of candidates) {
       const { data: mapped } = await supabase
         .from("codigos_barra")
-        .select("*")
+        .select("erp_sku,codsap,upc,alu")
         .or(`upc.eq.${candidate},alu.eq.${candidate}`)
         .not("codsap", "is", null)
         .limit(1)
         .maybeSingle();
+
+      const erpSku = cleanCode(String(mapped?.erp_sku || ""));
+      if (erpSku) {
+        const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("erp_sku", erpSku).eq("is_active", true).maybeSingle();
+        if (byMappedSku) return byMappedSku as Product;
+      }
 
       for (const mappedCandidate of mappedProductCodeCandidates(mapped as Record<string, unknown> | null)) {
         const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
@@ -551,9 +587,30 @@ export default function AuditoriaPage() {
     return null;
   }
 
+  async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
+    const code = cleanCode(codeValue);
+    if (!code) return [];
+    const { data } = await supabase
+      .from("cyclic_products")
+      .select("*")
+      .eq("sku", code)
+      .eq("is_active", true)
+      .limit(20);
+    return (data || []) as Product[];
+  }
+
   async function scanProduct(codeOverride?: string) {
     const code = codeOverride ?? scanCode;
     if (!session || !code.trim()) return;
+    if (!codeOverride) {
+      const candidates = await findManualProductCandidates(code);
+      if (candidates.length > 1) {
+        setManualProductCodePending(code);
+        setManualProductCandidates(candidates);
+        setMessage(`El cÃ³digo ${cleanCode(code)} tiene ${candidates.length} opciones. Elige el producto correcto.`);
+        return;
+      }
+    }
     const product = await findProductByCode(code);
     if (!product) { setMessage("Código no encontrado en maestro."); return; }
 
@@ -564,13 +621,14 @@ export default function AuditoriaPage() {
         session_id: session.id,
         product_id: product.id,
         source: "extra",
-        system_stock: stockMap.get(cleanCode(product.sku)) || 0,
+        system_stock: stockMap.get(productStockKey(product)) || 0,
         cost_snapshot: Number(product.cost || 0),
-      }).select("*, cyclic_products(sku, barcode, description, unit)").single();
+      }).select("*, cyclic_products(sku, erp_sku, barcode, description, unit)").single();
       if (error) { setMessage("Error agregando extra: " + error.message); return; }
       item = {
         ...data,
         sku: data.cyclic_products?.sku,
+        erp_sku: data.cyclic_products?.erp_sku,
         barcode: data.cyclic_products?.barcode,
         description: data.cyclic_products?.description,
         unit: data.cyclic_products?.unit,
@@ -585,6 +643,11 @@ export default function AuditoriaPage() {
     setQty("");
     setLocation("");
     setMessage(`Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
+  }
+
+  async function selectManualAuditProduct(product: Product) {
+    setManualProductCandidates([]);
+    await scanProduct(product.erp_sku || product.sku);
   }
 
   async function saveCount() {
@@ -1292,6 +1355,8 @@ export default function AuditoriaPage() {
           </section>
         )}
       </div>
+
+      {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="font-black">Elige el producto</h3><p className="text-xs text-slate-500">El codigo {cleanCode(manualProductCodePending)} existe en mas de un SKU interno.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={() => selectManualAuditProduct(product)} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="text-sm font-black text-slate-900">{product.sku}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>SKU ERP: {product.erp_sku || "-"}</span></div></button>))}</div></div></div>)}
 
       {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
       {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}

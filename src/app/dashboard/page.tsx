@@ -35,6 +35,7 @@ type Store = {
 type Product = {
     id: string;
     sku: string;
+    erp_sku?: string | null;
     barcode: string | null;
     description: string;
     unit: string;
@@ -50,6 +51,7 @@ type Assignment = {
     assigned_date: string;
     assigned_by: string | null;
     sku?: string;
+    erp_sku?: string | null;
     barcode?: string | null;
     description?: string;
     unit?: string;
@@ -76,6 +78,7 @@ type CountRecord = {
     counted_at: string;
     updated_at: string;
     sku?: string;
+    erp_sku?: string | null;
     barcode?: string | null;
     description?: string;
     unit?: string;
@@ -161,6 +164,12 @@ function codeCandidates(value: string | null | undefined): string[] {
     const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
     const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
     return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
+}
+
+function productStockKey(product: Pick<Product, "sku" | "erp_sku"> | Pick<Assignment, "sku" | "erp_sku"> | string | null | undefined): string {
+    if (!product) return "";
+    if (typeof product === "string") return cleanCode(product);
+    return cleanCode(product.erp_sku || product.sku || "");
 }
 
 function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
@@ -383,6 +392,8 @@ export default function DashboardPage() {
     const [emailHTML, setEmailHTML]           = useState("");
     const [emailRecipients, setEmailRecipients] = useState("");
     const [manualProductCode, setManualProductCode] = useState("");
+    const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
+    const [manualProductCodePending, setManualProductCodePending] = useState("");
 
     // ─── Dashboard ───────────────────────────────────────────
     const [dashPeriod, setDashPeriod] = useState<"dia"|"mes"|"rango">("dia");
@@ -742,14 +753,14 @@ export default function DashboardPage() {
         if (!storeId) return;
         const { data: asgn } = await supabase
             .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, barcode, description, unit, cost)")
+            .select("*, cyclic_products(sku, erp_sku, barcode, description, unit, cost)")
             .eq("store_id", storeId)
             .eq("assigned_date", date)
             .order("created_at");
         const rows: Assignment[] = (asgn || []).map((a: any) => ({
             id: a.id, store_id: a.store_id, product_id: a.product_id,
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
+            sku: a.cyclic_products?.sku, erp_sku: a.cyclic_products?.erp_sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             cost: Number(a.cyclic_products?.cost) || 0,
         }));
@@ -775,7 +786,7 @@ export default function DashboardPage() {
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
+            return { ...c, sku: asg?.sku, erp_sku: asg?.erp_sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
         });
         setCounts(enriched);
 
@@ -811,14 +822,14 @@ export default function DashboardPage() {
         if (!storeId) return;
         const { data: asgn } = await supabase
             .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, barcode, description, unit, cost), stores(name)")
+            .select("*, cyclic_products(sku, erp_sku, barcode, description, unit, cost), stores(name)")
             .eq("store_id", storeId)
             .eq("assigned_date", date)
             .order("created_at");
         const rows: Assignment[] = (asgn || []).map((a: any) => ({
             id: a.id, store_id: a.store_id, product_id: a.product_id,
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
+            sku: a.cyclic_products?.sku, erp_sku: a.cyclic_products?.erp_sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             // Prioridad: cost del assignment > cost del producto maestro
             cost: Number(a.cyclic_products?.cost) || 0,
@@ -834,7 +845,7 @@ export default function DashboardPage() {
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
+            return { ...c, sku: asg?.sku, erp_sku: asg?.erp_sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
         });
         setCounts(enriched);
     }
@@ -1323,25 +1334,38 @@ export default function DashboardPage() {
         setRecountAssignment(asgn);
     }
 
-    async function getSystemStockForStore(productSku: string, storeId: string): Promise<number> {
+    async function getSystemStockForStore(product: Pick<Product, "sku" | "erp_sku"> | Pick<Assignment, "sku" | "erp_sku"> | string, storeId: string): Promise<number> {
         const store = allStores.find(s => s.id === storeId) || stores.find(s => s.id === storeId);
         const sede = store?.erp_sede || store?.name || "";
         if (!sede) return 0;
+        const key = productStockKey(product);
+        if (!key) return 0;
 
         const { data } = await supabase
             .from("stock_general")
             .select("stock")
-            .eq("codsap", cleanCode(productSku))
+            .eq("erp_sku", key)
             .eq("sede", sede)
             .maybeSingle();
 
-        return Number(data?.stock || 0);
+        if (data) return Number(data.stock || 0);
+
+        const visibleCode = typeof product === "string" ? cleanCode(product) : cleanCode(product.sku || "");
+        const { data: byVisible } = await supabase
+            .from("stock_general")
+            .select("stock")
+            .eq("codsap", visibleCode)
+            .eq("sede", sede)
+            .limit(1)
+            .maybeSingle();
+
+        return Number(byVisible?.stock || 0);
     }
 
     async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
-        const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
+        const latestStock = await getSystemStockForStore(asgn, asgn.store_id);
         const updated = { ...asgn, system_stock: latestStock };
 
         // Si el código ya tiene conteo guardado, el snapshot queda intacto en la BD
@@ -1384,28 +1408,28 @@ export default function DashboardPage() {
         }
 
         setBulkRefreshingStocks(true);
-        const skus = [...new Set(assignments.map(a => cleanCode(a.sku || "")).filter(Boolean))];
+        const skus = [...new Set(assignments.map(a => productStockKey(a)).filter(Boolean))];
         const stockMap = new Map<string, number>();
         const chunkSize = 500;
         for (let i = 0; i < skus.length; i += chunkSize) {
             const chunk = skus.slice(i, i + chunkSize);
             const { data, error } = await supabase
                 .from("stock_general")
-                .select("codsap, stock")
+                .select("erp_sku, stock")
                 .eq("sede", sede)
-                .in("codsap", chunk);
+                .in("erp_sku", chunk);
             if (error) {
                 setBulkRefreshingStocks(false);
                 showMessage("Error actualizando stocks: " + error.message, "error");
                 return;
             }
-            for (const row of data || []) stockMap.set(cleanCode(row.codsap), Number(row.stock || 0));
+            for (const row of data || []) stockMap.set(cleanCode(row.erp_sku), Number(row.stock || 0));
         }
 
         const countedIds = new Set(counts.map(c => c.assignment_id));
 
         const updates = assignments
-            .map(a => ({ assignment: a, stock: stockMap.get(cleanCode(a.sku || "")) ?? Number(a.system_stock || 0) }))
+            .map(a => ({ assignment: a, stock: stockMap.get(productStockKey(a)) ?? Number(a.system_stock || 0) }))
             .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
 
         if (updates.length > 0) {
@@ -1453,19 +1477,41 @@ export default function DashboardPage() {
             const { data: bySku } = await supabase
                 .from("cyclic_products")
                 .select("*")
-                .eq("sku", code)
+                .eq("erp_sku", code)
                 .eq("is_active", true)
                 .maybeSingle();
             if (bySku) return bySku as Product;
         }
 
         for (const code of candidates) {
+            const { data: bySku } = await supabase
+                .from("cyclic_products")
+                .select("*")
+                .eq("sku", code)
+                .eq("is_active", true)
+                .limit(2);
+            if (bySku?.length === 1) return bySku[0] as Product;
+        }
+
+        for (const code of candidates) {
             const { data: barcodeRow } = await supabase
                 .from("codigos_barra")
-                .select("*")
+                .select("erp_sku,codsap,upc,alu")
                 .or(`upc.eq.${code},alu.eq.${code}`)
                 .limit(1)
                 .maybeSingle();
+
+            const erpSku = cleanCode(String(barcodeRow?.erp_sku || ""));
+            if (erpSku) {
+                const { data: product } = await supabase
+                    .from("cyclic_products")
+                    .select("*")
+                    .eq("erp_sku", erpSku)
+                    .eq("is_active", true)
+                    .maybeSingle();
+
+                if (product) return product as Product;
+            }
 
             for (const mappedCode of mappedProductCodeCandidates(barcodeRow as Record<string, unknown> | null)) {
                 const { data: product } = await supabase
@@ -1482,6 +1528,18 @@ export default function DashboardPage() {
         return null;
     }
 
+    async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
+        const code = cleanCode(codeValue);
+        if (!code) return [];
+        const { data } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("sku", code)
+            .eq("is_active", true)
+            .limit(20);
+        return (data || []) as Product[];
+    }
+
     async function openScannedProduct(product: Product) {
         if (!selectedStoreId || !selectedDate || !user) {
             showMessage("Selecciona tienda y fecha antes de escanear.", "error");
@@ -1495,7 +1553,7 @@ export default function DashboardPage() {
             return;
         }
 
-        const stock = await getSystemStockForStore(product.sku, selectedStoreId);
+        const stock = await getSystemStockForStore(product, selectedStoreId);
         const { data: existing } = await supabase
             .from("cyclic_assignments")
             .select("id, store_id, product_id, system_stock, assigned_date, assigned_by")
@@ -1533,6 +1591,7 @@ export default function DashboardPage() {
             assigned_date: selectedDate,
             assigned_by: existing?.assigned_by ?? user.id,
             sku: product.sku,
+            erp_sku: product.erp_sku,
             barcode: product.barcode,
             description: product.description,
             unit: product.unit,
@@ -1550,6 +1609,16 @@ export default function DashboardPage() {
         if (!code) {
             showMessage("Digita un codigo para agregar.", "error");
             return;
+        }
+
+        if (clearTypedInput) {
+            const candidates = await findManualProductCandidates(code);
+            if (candidates.length > 1) {
+                setManualProductCodePending(code);
+                setManualProductCandidates(candidates);
+                showMessage(`El codigo ${cleanCode(code)} tiene ${candidates.length} opciones. Elige el producto correcto.`, "info");
+                return;
+            }
         }
 
         const found = await findProductBySystemBarcode(code);
@@ -1805,7 +1874,7 @@ export default function DashboardPage() {
             const codeArr = [...codigosEnArchivo];
             const prodBySkuMap = new Map<string, Product>();
             const prodByBarcodeMap = new Map<string, Product>();
-            const codSapByAltCode = new Map<string, string>();
+            const erpSkuByAltCode = new Map<string, string>();
             const CHUNK = 500;
 
             for (let i = 0; i < codeArr.length; i += CHUNK) {
@@ -1813,6 +1882,7 @@ export default function DashboardPage() {
                 const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
                 for (const p of prods || []) {
                     prodBySkuMap.set(cleanCode(p.sku), p as Product);
+                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
                     if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
                 }
             }
@@ -1824,35 +1894,36 @@ export default function DashboardPage() {
                 for (const p of prods || []) {
                     if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
                     prodBySkuMap.set(cleanCode(p.sku), p as Product);
+                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
                 }
             }
 
             const notFoundDirect = codeArr.filter(code => !prodBySkuMap.has(code) && !prodByBarcodeMap.has(code));
             for (let i = 0; i < notFoundDirect.length; i += CHUNK) {
                 const chunk = notFoundDirect.slice(i, i + CHUNK);
-                const { data: byUpc } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk);
-                const { data: byAlu } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk);
+                const { data: byUpc } = await supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("upc", chunk);
+                const { data: byAlu } = await supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("alu", chunk);
                 for (const row of [...(byUpc || []), ...(byAlu || [])]) {
-                    const codsap = cleanCode(row.codsap);
-                    if (!codsap) continue;
-                    if (row.upc) codSapByAltCode.set(cleanCode(String(row.upc)), codsap);
-                    if (row.alu) codSapByAltCode.set(cleanCode(String(row.alu)), codsap);
+                    const erpSku = cleanCode(row.erp_sku || row.codsap);
+                    if (!erpSku) continue;
+                    if (row.upc) erpSkuByAltCode.set(cleanCode(String(row.upc)), erpSku);
+                    if (row.alu) erpSkuByAltCode.set(cleanCode(String(row.alu)), erpSku);
                 }
             }
 
-            const mappedSkus = [...new Set([...codSapByAltCode.values()].filter(sku => !prodBySkuMap.has(sku)))];
+            const mappedSkus = [...new Set([...erpSkuByAltCode.values()].filter(sku => !prodBySkuMap.has(sku)))];
             for (let i = 0; i < mappedSkus.length; i += CHUNK) {
                 const chunk = mappedSkus.slice(i, i + CHUNK);
-                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("erp_sku", chunk).eq("is_active", true);
                 for (const p of prods || []) {
-                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
+                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
                     if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
                 }
             }
 
             const resolveProduct = (code: string): Product | null => {
                 const clean = cleanCode(code);
-                const mappedSku = codSapByAltCode.get(clean);
+                const mappedSku = erpSkuByAltCode.get(clean);
                 return prodBySkuMap.get(clean) || prodByBarcodeMap.get(clean) || (mappedSku ? prodBySkuMap.get(mappedSku) : null) || null;
             };
 
@@ -1875,15 +1946,15 @@ export default function DashboardPage() {
                 return String(st?.erp_sede || st?.name || "").trim();
             }).filter(Boolean))];
 
-            const productSkus = [...new Set([...prodBySkuMap.values()].map(p => cleanCode(p.sku)).filter(Boolean))];
+            const productSkus = [...new Set([...prodBySkuMap.values()].map(p => productStockKey(p)).filter(Boolean))];
             const stockBySedeSku = new Map<string, number>();
             for (let i = 0; i < productSkus.length; i += CHUNK) {
                 const chunk = productSkus.slice(i, i + CHUNK);
-                let q = supabase.from("stock_general").select("codsap, sede, stock").in("codsap", chunk);
+                let q = supabase.from("stock_general").select("erp_sku, sede, stock").in("erp_sku", chunk);
                 if (sedesArr.length > 0) q = q.in("sede", sedesArr);
                 const { data: stockRows } = await q;
                 for (const row of stockRows || []) {
-                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + cleanCode(row.codsap), Number(row.stock || 0));
+                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + cleanCode(row.erp_sku), Number(row.stock || 0));
                 }
             }
 
@@ -1927,7 +1998,7 @@ export default function DashboardPage() {
 
                 const store = storeById.get(targetStoreId);
                 const sede = String(store?.erp_sede || store?.name || "").trim();
-                const syncedStock = stockBySedeSku.get(sede + "__" + cleanCode(prod.sku));
+                const syncedStock = stockBySedeSku.get(sede + "__" + productStockKey(prod));
                 const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
                 const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
                 if (!hasManualStock && syncedStock === undefined) stockNotFound++;
@@ -5860,6 +5931,41 @@ export default function DashboardPage() {
                                 style={{ minHeight: "700px", border: "none" }}
                                 title="Vista previa correo"
                             />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {manualProductCandidates.length > 1 && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+                    <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b px-4 py-3">
+                            <div>
+                                <h3 className="font-black">Elige el producto</h3>
+                                <p className="text-xs text-slate-500">El codigo {cleanCode(manualProductCodePending)} existe en mas de un SKU interno.</p>
+                            </div>
+                            <button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button>
+                        </div>
+                        <div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">
+                            {manualProductCandidates.map(product => (
+                                <button
+                                    key={product.id}
+                                    onClick={async () => {
+                                        setManualProductCandidates([]);
+                                        await openScannedProduct(product);
+                                        setManualProductCode("");
+                                    }}
+                                    className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"
+                                >
+                                    <div className="text-sm font-black text-slate-900">{product.sku}</div>
+                                    <div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div>
+                                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500">
+                                        <span>UM: {product.unit || "N/D"}</span>
+                                        <span>Costo: {formatMoney(product.cost)}</span>
+                                        <span>SKU ERP: {product.erp_sku || "-"}</span>
+                                    </div>
+                                </button>
+                            ))}
                         </div>
                     </div>
                 </div>
