@@ -153,6 +153,16 @@ function cleanCode(value: string | null | undefined): string {
     return s;
 }
 
+function codeCandidates(value: string | null | undefined): string[] {
+    const raw = String(value || "").trim();
+    const clean = cleanCode(raw);
+    const withoutPrefix = raw.replace(/^[A-Za-z]+/, "");
+    const withoutPrefixClean = cleanCode(withoutPrefix);
+    const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
+    const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
+    return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
+}
+
 function normalizeText(v: string | null | undefined) {
     return String(v || "").trim().toLowerCase();
 }
@@ -1419,8 +1429,7 @@ export default function DashboardPage() {
 
     async function findProductBySystemBarcode(scanned: string): Promise<Product | null> {
         const raw = String(scanned || "").trim();
-        const clean = cleanCode(raw);
-        const candidates = Array.from(new Set([raw, clean].filter(Boolean)));
+        const candidates = codeCandidates(raw);
 
         for (const code of candidates) {
             const { data: byProductBarcode } = await supabase
@@ -1436,7 +1445,7 @@ export default function DashboardPage() {
             const { data: bySku } = await supabase
                 .from("cyclic_products")
                 .select("*")
-                .eq("sku", cleanCode(code))
+                .eq("sku", code)
                 .eq("is_active", true)
                 .maybeSingle();
             if (bySku) return bySku as Product;
@@ -1452,14 +1461,16 @@ export default function DashboardPage() {
 
             if (!barcodeRow?.codsap) continue;
 
-            const { data: product } = await supabase
-                .from("cyclic_products")
-                .select("*")
-                .eq("sku", cleanCode(barcodeRow.codsap))
-                .eq("is_active", true)
-                .maybeSingle();
+            for (const mappedCode of codeCandidates(barcodeRow.codsap)) {
+                const { data: product } = await supabase
+                    .from("cyclic_products")
+                    .select("*")
+                    .eq("sku", mappedCode)
+                    .eq("is_active", true)
+                    .maybeSingle();
 
-            if (product) return product as Product;
+                if (product) return product as Product;
+            }
         }
 
         return null;

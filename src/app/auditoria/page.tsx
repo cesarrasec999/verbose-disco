@@ -92,6 +92,16 @@ function cleanCode(value: string | number | null | undefined): string {
   return numeric || raw;
 }
 
+function codeCandidates(value: string | number | null | undefined): string[] {
+  const raw = String(value ?? "").trim();
+  const clean = cleanCode(raw);
+  const withoutPrefix = raw.replace(/^[A-Za-z]+/, "");
+  const withoutPrefixClean = cleanCode(withoutPrefix);
+  const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
+  const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
+  return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
+}
+
 function normalizeText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
@@ -470,20 +480,30 @@ export default function AuditoriaPage() {
   }
 
   async function findProductByCode(code: string): Promise<Product | null> {
-    const clean = cleanCode(code);
-    if (!clean) return null;
+    const candidates = codeCandidates(code);
+    if (candidates.length === 0) return null;
 
-    const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", clean).eq("is_active", true).maybeSingle();
-    if (bySku) return bySku as Product;
+    for (const candidate of candidates) {
+      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", candidate).eq("is_active", true).maybeSingle();
+      if (bySku) return bySku as Product;
+    }
 
-    const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", clean).eq("is_active", true).maybeSingle();
-    if (byBarcode) return byBarcode as Product;
+    for (const candidate of candidates) {
+      const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", candidate).eq("is_active", true).maybeSingle();
+      if (byBarcode) return byBarcode as Product;
+    }
 
-    const { data: mapped } = await supabase.from("codigos_barra").select("codsap").or(`upc.eq.${clean},alu.eq.${clean}`).limit(1).maybeSingle();
-    if (!mapped?.codsap) return null;
+    for (const candidate of candidates) {
+      const { data: mapped } = await supabase.from("codigos_barra").select("codsap").or(`upc.eq.${candidate},alu.eq.${candidate}`).limit(1).maybeSingle();
+      if (!mapped?.codsap) continue;
 
-    const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", cleanCode(mapped.codsap)).eq("is_active", true).maybeSingle();
-    return (byMappedSku as Product | null) || null;
+      for (const mappedCandidate of codeCandidates(mapped.codsap)) {
+        const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
+        if (byMappedSku) return byMappedSku as Product;
+      }
+    }
+
+    return null;
   }
 
   async function scanProduct(codeOverride?: string) {
