@@ -2580,17 +2580,18 @@ export default function DashboardPage() {
             : `${dashRangeFrom} al ${dashRangeTo}`;
 
         // ── Métricas globales ──────────────────────────────
-        const filasConDatos = filteredDashData.filter(r => r.total_asignados > 0);
+        const emailKpiRows = filteredDashData.filter(r => dashPeriod === "dia" ? r.cumplio : r.dias_cumplidos > 0);
+        const filasConDatos = emailKpiRows.filter(r => r.total_asignados > 0);
         const okTotal       = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
         const asigTotal     = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
         const eriGlobal     = asigTotal > 0 ? Math.round((okTotal / asigTotal) * 100) : 0;
-        const totalDifVal   = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalDifVal   = emailKpiRows.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
         const cumplidos     = dashPeriod === "dia"
             ? filteredDashData.filter(r => r.cumplio).length
             : filteredDashData.filter(r => r.dias_cumplidos > 0).length;
         const pctCumplimiento = filteredDashData.length > 0 ? Math.round((cumplidos / filteredDashData.length) * 100) : 0;
-        const totalFaltantes = filteredDashData.reduce((s, r) => s + r.total_faltantes, 0);
-        const totalSobrantes = filteredDashData.reduce((s, r) => s + r.total_sobrantes, 0);
+        const totalFaltantes = emailKpiRows.reduce((s, r) => s + r.total_faltantes, 0);
+        const totalSobrantes = emailKpiRows.reduce((s, r) => s + r.total_sobrantes, 0);
 
         // ── Top 10 por código: consultar BD con el rango del período ──
         showMessage("⏳ Calculando top por código...", "info");
@@ -2616,7 +2617,7 @@ export default function DashboardPage() {
             while (true) {
                 const { data: chunk } = await supabase
                     .from("cyclic_assignments")
-                    .select("id, product_id, system_stock")
+                    .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", dateFrom)
                     .lte("assigned_date", dateTo)
                     .range(pg * PAGE, (pg + 1) * PAGE - 1);
@@ -2661,8 +2662,28 @@ export default function DashboardPage() {
                 }
 
                 // 5. Agrupar por product_id → diferencia valorizada
-                const prodAgg = new Map<string, { sku: string; description: string; cost: number; systemStock: number; counted: number }>();
+                const asgnsByDay = new Map<string, any[]>();
                 for (const asgn of asgnRows) {
+                    const key = `${asgn.store_id}__${asgn.assigned_date}`;
+                    if (!asgnsByDay.has(key)) asgnsByDay.set(key, []);
+                    asgnsByDay.get(key)!.push(asgn);
+                }
+
+                const fulfilledDayKeys = new Set<string>();
+                for (const [key, dayAsgns] of asgnsByDay) {
+                    const countedProductIds = new Set<string>();
+                    for (const asgn of dayAsgns) {
+                        if (cntByAsgn.has(asgn.id)) countedProductIds.add(asgn.product_id);
+                    }
+                    const assignedProductIds = new Set(dayAsgns.map((asgn: any) => asgn.product_id));
+                    const completed = [...assignedProductIds].every(productId => countedProductIds.has(productId));
+                    if (completed) fulfilledDayKeys.add(key);
+                }
+
+                const fulfilledAsgnRows = asgnRows.filter((asgn: any) => fulfilledDayKeys.has(`${asgn.store_id}__${asgn.assigned_date}`));
+
+                const prodAgg = new Map<string, { sku: string; description: string; cost: number; systemStock: number; counted: number }>();
+                for (const asgn of fulfilledAsgnRows) {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
                     const prev = prodAgg.get(asgn.product_id) ?? { sku: prod.sku || "", description: prod.description || "", cost: parseCost(prod.cost), systemStock: 0, counted: 0 };
@@ -2724,9 +2745,15 @@ export default function DashboardPage() {
         const maxBar = 360;
         const barH   = 24;
         const gap    = 8;
-        const stores = [...filteredDashData].sort((a, b) => a.eri - b.eri);
+        const stores = [...emailKpiRows].sort((a, b) => a.eri - b.eri);
+        const complianceStores = [...filteredDashData].sort((a, b) => {
+            const ap = dashPeriod === "dia" ? (a.cumplio ? 100 : 0) : a.cumplimiento_pct;
+            const bp = dashPeriod === "dia" ? (b.cumplio ? 100 : 0) : b.cumplimiento_pct;
+            return ap - bp;
+        });
         const svgW   = 560;
         const svgH   = stores.length * (barH + gap) + 40;
+        const svgCumplH = complianceStores.length * (barH + gap) + 40;
 
         const eriBarsInner = stores.map((r, i) => {
             const y   = i * (barH + gap) + 24;
@@ -2747,7 +2774,7 @@ export default function DashboardPage() {
           ${eriBarsInner}
         </svg>`;
 
-        const cumplBarsInner = stores.map((r, i) => {
+        const cumplBarsInner = complianceStores.map((r, i) => {
             const y   = i * (barH + gap) + 24;
             const pct = dashPeriod === "dia" ? (r.cumplio ? 100 : 0) : r.cumplimiento_pct;
             const w   = Math.max(4, Math.round((pct / 100) * maxBar));
@@ -2757,18 +2784,18 @@ export default function DashboardPage() {
               <rect x="140" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
               <text x="${140 + w + 5}" y="${y + barH / 2 + 5}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${pct}%</text>`;
         }).join("\n");
-        const svgCumpl = `<svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-          <rect width="${svgW}" height="${svgH}" fill="#f8fafc"/>
+        const svgCumpl = `<svg width="${svgW}" height="${svgCumplH}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgW}" height="${svgCumplH}" fill="#f8fafc"/>
           <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
           <text x="140" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
           <text x="320" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
           <text x="500" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
-          <line x1="320" y1="16" x2="320" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
+          <line x1="320" y1="16" x2="320" y2="${svgCumplH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
           ${cumplBarsInner}
         </svg>`;
 
-        const maxAbsDif = Math.max(...filteredDashData.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const storesDif = [...filteredDashData].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
+        const maxAbsDif = Math.max(...emailKpiRows.map(r => Math.abs(r.dif_valorizada || 0)), 1);
+        const storesDif = [...emailKpiRows].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
         const svgDifH   = storesDif.length * (barH + gap) + 40;
         const difBarsInner = storesDif.map((r, i) => {
             const y    = i * (barH + gap) + 24;
@@ -2794,7 +2821,7 @@ export default function DashboardPage() {
         // Convertir los 3 SVGs a PNG base64
         const [pngERI, pngCumpl, pngDif] = await Promise.all([
             svgToPng(svgERI,   svgW, svgH),
-            svgToPng(svgCumpl, svgW, svgH),
+            svgToPng(svgCumpl, svgW, svgCumplH),
             svgToPng(svgDif,   svgW, svgDifH),
         ]);
 
@@ -3471,10 +3498,14 @@ export default function DashboardPage() {
         return dashData.filter(r => r.store_id === dashStoreFilter);
     }, [dashData, dashStoreFilter]);
 
+    const kpiDashData = useMemo(() => {
+        return filteredDashData.filter(r => dashPeriod === "dia" ? r.cumplio : r.dias_cumplidos > 0);
+    }, [filteredDashData, dashPeriod]);
+
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
         // ERI: suma OKs / suma asignados — en mes/rango los rows ya solo incluyen días que cumplieron
-        const filasConDatos = filteredDashData.filter(r => r.total_asignados > 0);
+        const filasConDatos = kpiDashData.filter(r => r.total_asignados > 0);
         const okTotal = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
         const asignadosTotal = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
         const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
@@ -3484,13 +3515,14 @@ export default function DashboardPage() {
             : filteredDashData.filter(r => r.dias_cumplidos > 0).length;
         const total = filteredDashData.length;
         // Duración promedio: solo aplica en vista día
-        const avgDurMin = dashPeriod === "dia" && filteredDashData.filter(r => r.duracion_min !== null).length > 0
-            ? Math.round(filteredDashData.filter(r => r.duracion_min !== null).reduce((s, r) => s + (r.duracion_min || 0), 0) / filteredDashData.filter(r => r.duracion_min !== null).length)
+        const filasConDuracion = kpiDashData.filter(r => r.duracion_min !== null);
+        const avgDurMin = dashPeriod === "dia" && filasConDuracion.length > 0
+            ? Math.round(filasConDuracion.reduce((s, r) => s + (r.duracion_min || 0), 0) / filasConDuracion.length)
             : null;
         // Dif. valorizada: en mes/rango los rows ya solo suman días que cumplieron
-        const totalDifVal = filteredDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalDifVal = kpiDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
         return { avgEri, cumplidos, total, avgDurMin, totalDifVal };
-    }, [filteredDashData, dashPeriod]);
+    }, [filteredDashData, kpiDashData, dashPeriod]);
 
     // ════════════════════════════════════════════════════════
     //  RENDER
