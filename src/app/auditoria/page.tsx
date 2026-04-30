@@ -336,6 +336,38 @@ export default function AuditoriaPage() {
     return map;
   }
 
+  async function getLatestStockForSku(sku: string) {
+    if (!selectedStore) return 0;
+    const sede = selectedStore.erp_sede || selectedStore.name;
+    const { data } = await supabase
+      .from("stock_general")
+      .select("stock")
+      .eq("sede", sede)
+      .eq("codsap", cleanCode(sku))
+      .maybeSingle();
+    return Number(data?.stock || 0);
+  }
+
+  async function refreshAuditItemStock(item: AuditItem) {
+    if (!item.sku) return item;
+    const latestStock = await getLatestStockForSku(item.sku);
+    if (Number(item.system_stock || 0) !== latestStock) {
+      const { error } = await supabase
+        .from("audit_session_items")
+        .update({ system_stock: latestStock })
+        .eq("id", item.id);
+      if (error) {
+        setMessage("Error actualizando stock del código: " + error.message);
+        return item;
+      }
+    }
+
+    const updated = { ...item, system_stock: latestStock };
+    setItems(prev => prev.map(row => row.id === item.id ? { ...row, system_stock: latestStock } : row));
+    setActiveItem(prev => prev?.id === item.id ? { ...prev, system_stock: latestStock } : prev);
+    return updated;
+  }
+
   async function createSession() {
     if (!user || !storeId) return;
     setLoading(true);
@@ -475,6 +507,7 @@ export default function AuditoriaPage() {
       setMessage("Producto extra agregado a la auditoría.");
     }
 
+    item = await refreshAuditItemStock(item);
     setActiveItem(item);
     setScanCode("");
     setQty("");
@@ -487,10 +520,11 @@ export default function AuditoriaPage() {
     const quantity = Number(qty);
     if (!location.trim()) { setMessage("Ingresa ubicación."); return; }
     if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
+    const currentItem = await refreshAuditItemStock(activeItem);
     const { error } = await supabase.from("audit_counts").insert({
       session_id: session.id,
-      item_id: activeItem.id,
-      product_id: activeItem.product_id,
+      item_id: currentItem.id,
+      product_id: currentItem.product_id,
       location: location.trim().toUpperCase(),
       quantity,
       counted_by: user?.id,
@@ -498,7 +532,7 @@ export default function AuditoriaPage() {
     if (error) { setMessage("Error guardando conteo: " + error.message); return; }
     await loadSessionData(session.id);
     setActiveItem(null);
-    setMessage("Conteo registrado.");
+    setMessage(`Conteo registrado. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
   }
 
 
