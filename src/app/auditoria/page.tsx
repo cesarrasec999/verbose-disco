@@ -150,8 +150,11 @@ export default function AuditoriaPage() {
     if (saved === "count" || saved === "records" || saved === "summary") return saved;
     return window.matchMedia("(max-width: 767px)").matches ? "records" : "count";
   });
+  const [recordsQuery, setRecordsQuery] = useState("");
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
   const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
+  const [itemStockDrafts, setItemStockDrafts] = useState<Record<string, string>>({});
+  const [savingItemStockId, setSavingItemStockId] = useState<string | null>(null);
   const [leadAuditor, setLeadAuditor] = useState("");
   const [storeLeader, setStoreLeader] = useState("");
   const [warehouseAdvisor, setWarehouseAdvisor] = useState("");
@@ -356,41 +359,60 @@ export default function AuditoriaPage() {
   }
 
   async function getStockMap(products: Product[]) {
-    if (!selectedStore || products.length === 0) return new Map<string, number>();
-    const sede = selectedStore.erp_sede || selectedStore.name;
-    const skus = [...new Set(products.map(p => cleanCode(p.sku)).filter(Boolean))];
+    const store = selectedStore || stores.find(s => s.id === session?.store_id);
+    if (!store || products.length === 0) return new Map<string, number>();
+    const sede = String(store.erp_sede || store.name || "").trim();
+    const candidateToSku = new Map<string, string>();
+    for (const product of products) {
+      const skuKey = cleanCode(product.sku);
+      if (!skuKey) continue;
+      for (const candidate of codeCandidates(product.sku)) {
+        candidateToSku.set(candidate, skuKey);
+        candidateToSku.set(cleanCode(candidate), skuKey);
+      }
+      for (const candidate of codeCandidates(product.barcode)) {
+        candidateToSku.set(candidate, skuKey);
+        candidateToSku.set(cleanCode(candidate), skuKey);
+      }
+    }
+    const lookupCodes = [...new Set(candidateToSku.keys())].filter(Boolean);
+    for (let i = 0; i < lookupCodes.length; i += 500) {
+      const chunk = lookupCodes.slice(i, i + 500);
+      const [{ data: byUpc }, { data: byAlu }, { data: byCodsap }] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk),
+        supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk),
+        supabase.from("codigos_barra").select("codsap, upc, alu").in("codsap", chunk),
+      ]);
+      for (const row of [...(byUpc || []), ...(byAlu || []), ...(byCodsap || [])]) {
+        const skuKey =
+          candidateToSku.get(String(row.upc || "")) ||
+          candidateToSku.get(cleanCode(row.upc)) ||
+          candidateToSku.get(String(row.alu || "")) ||
+          candidateToSku.get(cleanCode(row.alu)) ||
+          candidateToSku.get(String(row.codsap || "")) ||
+          candidateToSku.get(cleanCode(row.codsap));
+        if (!skuKey) continue;
+        for (const candidate of codeCandidates(row.codsap)) {
+          candidateToSku.set(candidate, skuKey);
+          candidateToSku.set(cleanCode(candidate), skuKey);
+        }
+      }
+    }
+    const skus = [...new Set(candidateToSku.keys())].filter(Boolean);
     const map = new Map<string, number>();
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
       const { data } = await supabase.from("stock_general").select("codsap, stock").eq("sede", sede).in("codsap", chunk);
-      for (const row of data || []) map.set(cleanCode(row.codsap), Number(row.stock || 0));
+      for (const row of data || []) {
+        const skuKey = candidateToSku.get(String(row.codsap || "")) || candidateToSku.get(cleanCode(row.codsap));
+        if (skuKey) map.set(skuKey, Number(row.stock || 0));
+      }
     }
     return map;
   }
 
-  async function getLatestStockForSku(sku: string) {
-    if (!selectedStore) return 0;
-    const sede = selectedStore.erp_sede || selectedStore.name;
-    const { data } = await supabase
-      .from("stock_general")
-      .select("stock")
-      .eq("sede", sede)
-      .eq("codsap", cleanCode(sku))
-      .maybeSingle();
-    return Number(data?.stock || 0);
-  }
-
   async function refreshAuditItemStock(item: AuditItem) {
-    // Solo actualiza en memoria para mostrar el stock actual al operario.
-    // NO escribe en la BD: el system_stock guardado en audit_session_items
-    // es un snapshot del momento en que se agregó el producto y debe
-    // mantenerse intacto para reportes históricos.
-    if (!item.sku) return item;
-    const latestStock = await getLatestStockForSku(item.sku);
-    const updated = { ...item, system_stock: latestStock };
-    setItems(prev => prev.map(row => row.id === item.id ? { ...row, system_stock: latestStock } : row));
-    setActiveItem(prev => prev?.id === item.id ? { ...prev, system_stock: latestStock } : prev);
-    return updated;
+    return item;
   }
 
   async function createSession() {
@@ -452,8 +474,11 @@ export default function AuditoriaPage() {
 
   async function addSelectedItems() {
     if (!session) return;
-    const chosen = results.filter(p => selected.has(p.id));
-    if (chosen.length === 0) { setMessage("Selecciona al menos un producto."); return; }
+    const existingProductIds = new Set(items.map(item => item.product_id));
+    const selectedProducts = results.filter(p => selected.has(p.id));
+    const chosen = selectedProducts.filter(p => !existingProductIds.has(p.id));
+    if (selectedProducts.length === 0) { setMessage("Selecciona al menos un producto."); return; }
+    if (chosen.length === 0) { setMessage("Los productos seleccionados ya están en la fotografía de esta auditoría."); return; }
     const rows = chosen.map(p => ({
       session_id: session.id,
       product_id: p.id,
@@ -461,10 +486,11 @@ export default function AuditoriaPage() {
       system_stock: Number(p.system_stock || 0),
       cost_snapshot: Number(p.cost || 0),
     }));
-    const { error } = await supabase.from("audit_session_items").upsert(rows, { onConflict: "session_id,product_id" });
+    const { error } = await supabase.from("audit_session_items").insert(rows);
     if (error) { setMessage("Error agregando productos: " + error.message); return; }
     await loadSessionData(session.id);
-    setMessage(`${rows.length} productos agregados a la sesión.`);
+    const omitted = selectedProducts.length - rows.length;
+    setMessage(`${rows.length} productos agregados a la sesión.${omitted > 0 ? ` ${omitted} ya estaban en la fotografía y no se modificaron.` : ""}`);
   }
 
   async function loadSessionData(sessionId: string) {
@@ -482,8 +508,9 @@ export default function AuditoriaPage() {
     })) as AuditItem[];
     setItems(mappedItems);
     setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
+    setItemStockDrafts(Object.fromEntries(mappedItems.map(item => [item.id, String(Number(item.system_stock || 0))])));
 
-    const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at");
+    const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at", { ascending: false });
     setCounts((countRows || []) as AuditCount[]);
   }
 
@@ -502,7 +529,13 @@ export default function AuditoriaPage() {
     }
 
     for (const candidate of candidates) {
-      const { data: mapped } = await supabase.from("codigos_barra").select("*").or(`upc.eq.${candidate},alu.eq.${candidate}`).limit(1).maybeSingle();
+      const { data: mapped } = await supabase
+        .from("codigos_barra")
+        .select("*")
+        .or(`upc.eq.${candidate},alu.eq.${candidate}`)
+        .not("codsap", "is", null)
+        .limit(1)
+        .maybeSingle();
 
       for (const mappedCandidate of mappedProductCodeCandidates(mapped as Record<string, unknown> | null)) {
         const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
@@ -639,6 +672,28 @@ export default function AuditoriaPage() {
     setMessage("Observación del código guardada.");
   }
 
+  async function saveItemStockSnapshot(itemId: string) {
+    if (!session || user?.role !== "Administrador") return;
+    const stock = Number(itemStockDrafts[itemId]);
+    if (!Number.isFinite(stock) || stock < 0) {
+      setMessage("Ingresa un stock sistema válido.");
+      return;
+    }
+    setSavingItemStockId(itemId);
+    const { error } = await supabase
+      .from("audit_session_items")
+      .update({ system_stock: stock })
+      .eq("id", itemId);
+    setSavingItemStockId(null);
+    if (error) {
+      setMessage("Error actualizando stock de la fotografía: " + error.message);
+      return;
+    }
+    setItems(prev => prev.map(item => item.id === itemId ? { ...item, system_stock: stock } : item));
+    setItemStockDrafts(prev => ({ ...prev, [itemId]: String(stock) }));
+    setMessage("Stock de la fotografía actualizado solo para esta auditoría.");
+  }
+
   const summaryRows = useMemo(() => items.map(item => {
     const total = counts.filter(c => c.item_id === item.id).reduce((acc, c) => acc + Number(c.quantity || 0), 0);
     const diff = total - Number(item.system_stock || 0);
@@ -662,6 +717,25 @@ export default function AuditoriaPage() {
       value: summaryRows.reduce((acc, r) => acc + r.value, 0),
     };
   }, [summaryRows]);
+
+  const filteredCounts = useMemo(() => {
+    const term = normalizeText(recordsQuery.trim());
+    return [...counts]
+      .sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime())
+      .filter(count => {
+        if (!term) return true;
+        const item = items.find(row => row.id === count.item_id);
+        const haystack = normalizeText([
+          item?.sku || count.sku,
+          item?.description || count.description,
+          item?.unit || count.unit,
+          count.location,
+          count.quantity,
+          new Date(count.counted_at).toLocaleString("es-PE"),
+        ].join(" "));
+        return haystack.includes(term);
+      });
+  }, [counts, items, recordsQuery]);
 
   function escapeHTML(value: string | number | null | undefined) {
     return String(value ?? "")
@@ -990,11 +1064,22 @@ export default function AuditoriaPage() {
 
             {registerTab === "records" && (
               <div className="rounded-2xl border bg-white shadow-sm">
-                <div className="border-b px-4 py-3 font-black">Registros realizados ({counts.length})</div>
+                <div className="border-b px-4 py-3">
+                  <div className="font-black">Registros realizados ({filteredCounts.length}/{counts.length})</div>
+                  <div className="mt-3 flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
+                    <input
+                      value={recordsQuery}
+                      onChange={e => setRecordsQuery(e.target.value)}
+                      placeholder="Buscar código, descripción, UM o ubicación"
+                      className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm outline-none"
+                    />
+                    <Search className="mx-3 self-center text-slate-400" size={18} />
+                  </div>
+                </div>
                 <div className="max-h-[70vh] overflow-auto">
                   <table className="w-full min-w-[760px] text-sm">
                     <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
-                    <tbody>{counts.map(c => {
+                    <tbody>{filteredCounts.map(c => {
                       const item = items.find(i => i.id === c.item_id);
                       return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
                     })}</tbody>
@@ -1036,7 +1121,7 @@ export default function AuditoriaPage() {
                   <div className="max-h-[520px] overflow-auto">
                     <table className="w-full min-w-[1160px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
+                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Stock foto</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
                       </thead>
                       <tbody>
                         {summaryRows.map(r => (
@@ -1044,7 +1129,28 @@ export default function AuditoriaPage() {
                             <td className="p-2 font-black">{r.item.sku}</td>
                             <td className="max-w-sm truncate p-2">{r.item.description}</td>
                             <td className="p-2 text-center text-xs font-black">{r.item.unit || "N/D"}</td>
-                            <td className="p-2 text-center">{r.item.system_stock}</td>
+                            <td className="p-2 text-center">
+                              {user?.role === "Administrador" ? (
+                                <div className="flex min-w-28 items-center justify-center gap-1">
+                                  <input
+                                    value={itemStockDrafts[r.item.id] ?? String(r.item.system_stock || 0)}
+                                    onChange={e => setItemStockDrafts(prev => ({ ...prev, [r.item.id]: e.target.value }))}
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    className="w-20 rounded-lg border px-2 py-1 text-center text-xs font-black outline-none focus:ring-2 focus:ring-amber-200"
+                                  />
+                                  <button
+                                    onClick={() => saveItemStockSnapshot(r.item.id)}
+                                    disabled={savingItemStockId === r.item.id}
+                                    className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 disabled:opacity-40"
+                                    title="Guardar stock de fotografía"
+                                  >
+                                    <Save size={13} />
+                                  </button>
+                                </div>
+                              ) : r.item.system_stock}
+                            </td>
                             <td className="p-2 text-center font-semibold">{r.total}</td>
                             <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>
                             <td className="p-2 text-center text-xs">{money(r.value)}</td>
