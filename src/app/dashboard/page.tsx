@@ -1321,14 +1321,23 @@ export default function DashboardPage() {
     }
 
     async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
-        // Solo actualiza en memoria para mostrar el stock actual al operario.
-        // NO escribe en la BD: el system_stock guardado en cyclic_assignments
-        // es un snapshot del momento en que se asignó el producto y debe
-        // mantenerse intacto para reportes históricos.
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
         const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
         const updated = { ...asgn, system_stock: latestStock };
+
+        // Si el código ya tiene conteo guardado, el snapshot queda intacto en la BD
+        // (foto del momento en que el operario contó). Solo se actualiza en memoria
+        // para no alterar el histórico.
+        // Si aún no tiene conteo, sí se actualiza en BD para que el snapshot que
+        // se grabe al guardar refleje el stock real de ese momento.
+        const yaContado = counts.some(c => c.assignment_id === asgn.id);
+        if (!yaContado && Number(asgn.system_stock || 0) !== latestStock) {
+            await supabase
+                .from("cyclic_assignments")
+                .update({ system_stock: latestStock })
+                .eq("id", asgn.id);
+        }
 
         setAssignments(prev => prev.map(item => item.id === asgn.id ? { ...item, system_stock: latestStock } : item));
         setCounts(prev => prev.map(c => c.assignment_id === asgn.id ? {
@@ -1375,12 +1384,26 @@ export default function DashboardPage() {
             for (const row of data || []) stockMap.set(cleanCode(row.codsap), Number(row.stock || 0));
         }
 
-        // Solo actualiza en memoria — NO escribe en la BD para preservar snapshots históricos.
+        const countedIds = new Set(counts.map(c => c.assignment_id));
+
         const updates = assignments
             .map(a => ({ assignment: a, stock: stockMap.get(cleanCode(a.sku || "")) ?? Number(a.system_stock || 0) }))
             .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
 
         if (updates.length > 0) {
+            // Solo escribe en BD los que aún no tienen conteo guardado (snapshot no sellado).
+            // Los ya contados se actualizan solo en memoria para no alterar su histórico.
+            const toWriteDB = updates.filter(row => !countedIds.has(row.assignment.id));
+            for (let i = 0; i < toWriteDB.length; i += 100) {
+                const batch = toWriteDB.slice(i, i + 100);
+                await Promise.all(batch.map(row =>
+                    supabase
+                        .from("cyclic_assignments")
+                        .update({ system_stock: row.stock })
+                        .eq("id", row.assignment.id)
+                ));
+            }
+
             const updateMap = new Map(updates.map(row => [row.assignment.id, row.stock]));
             setAssignments(prev => prev.map(a => updateMap.has(a.id) ? { ...a, system_stock: updateMap.get(a.id)! } : a));
             setCounts(prev => prev.map(c => updateMap.has(c.assignment_id) ? {
