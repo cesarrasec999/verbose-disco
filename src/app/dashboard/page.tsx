@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, Store as StoreIcon, Users } from "lucide-react";
+import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Store as StoreIcon, Users } from "lucide-react";
 
 // ══════════════════════════════════════════════════════════
 //  TIPOS
@@ -72,6 +72,7 @@ type CountRecord = {
     validator_name: string | null;
     status: "Pendiente" | "Diferencia" | "Validado" | "Corregido";
     note: string | null;
+    stock_snapshot?: number | null;
     counted_at: string;
     updated_at: string;
     sku?: string;
@@ -252,6 +253,8 @@ export default function DashboardPage() {
 
     // ─── Operario: conteo activo — múltiples filas ─
     const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
+    const [refreshingStockId, setRefreshingStockId] = useState<string | null>(null);
+    const [bulkRefreshingStocks, setBulkRefreshingStocks] = useState(false);
     const [locationRows, setLocationRows]         = useState<LocationRow[]>([{ location: "", qty: "" }]);
     const [sinStock, setSinStock]                 = useState(false); // marcar "sin stock físico"
 
@@ -1199,26 +1202,28 @@ export default function DashboardPage() {
     async function saveCount() {
         if (!activeAssignment || !user || savingCount) return;
         setSavingCount(true);
+        const currentAssignment = await refreshAssignmentStock(activeAssignment, false);
 
         // ── Modo "Sin stock físico" ──────────────────────────
         if (sinStock) {
             // Registrar un único conteo con qty=0 y ubicación especial "__sin_stock__"
-            await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", currentAssignment.id);
             const { error } = await supabase.from("cyclic_counts").insert({
-                assignment_id: activeAssignment.id,
-                store_id: activeAssignment.store_id,
-                product_id: activeAssignment.product_id,
+                assignment_id: currentAssignment.id,
+                store_id: currentAssignment.store_id,
+                product_id: currentAssignment.product_id,
                 counted_quantity: 0,
                 location: "__sin_stock__",
                 user_id: user.id,
                 user_name: user.full_name,
                 status: "Diferencia" as CountRecord["status"],
                 note: "Sin stock físico en tienda",
+                stock_snapshot: Number(currentAssignment.system_stock || 0),
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); setSavingCount(false); return; }
-            await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
+            await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
             showMessage(`✅ "${activeAssignment.sku}" marcado como sin stock.`, "success");
             setSinStock(false);
             setActiveAssignment(null);
@@ -1241,21 +1246,24 @@ export default function DashboardPage() {
             }
         }
 
-        await supabase.from("cyclic_counts").delete().eq("assignment_id", activeAssignment.id);
+        await supabase.from("cyclic_counts").delete().eq("assignment_id", currentAssignment.id);
+
+        const totalQty = r2(locationRows.reduce((acc, row) => acc + Number(row.qty || 0), 0));
+        const totalDiff = r2(totalQty - Number(currentAssignment.system_stock || 0));
+        const status: CountRecord["status"] = totalDiff === 0 ? "Pendiente" : "Diferencia";
 
         for (const row of locationRows) {
             const qty = Number(row.qty);
-            const diff = qty - Number(activeAssignment.system_stock || 0);
-            const status: CountRecord["status"] = diff === 0 ? "Pendiente" : "Diferencia";
             const { error } = await supabase.from("cyclic_counts").insert({
-                assignment_id: activeAssignment.id,
-                store_id: activeAssignment.store_id,
-                product_id: activeAssignment.product_id,
+                assignment_id: currentAssignment.id,
+                store_id: currentAssignment.store_id,
+                product_id: currentAssignment.product_id,
                 counted_quantity: qty,
                 location: row.location.trim(),
                 user_id: user.id,
                 user_name: user.full_name,
                 status,
+                stock_snapshot: Number(currentAssignment.system_stock || 0),
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -1263,7 +1271,7 @@ export default function DashboardPage() {
         }
 
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
-        await setSessionFlag(activeAssignment.store_id, selectedDate, "__session_counting__", true);
+        await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
 
         showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
         setSinStock(false);
@@ -1310,6 +1318,104 @@ export default function DashboardPage() {
             .maybeSingle();
 
         return Number(data?.stock || 0);
+    }
+
+    async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
+        if (!asgn.sku) return asgn;
+        setRefreshingStockId(asgn.id);
+        const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
+        const updated = { ...asgn, system_stock: latestStock };
+
+        if (Number(asgn.system_stock || 0) !== latestStock) {
+            const { error } = await supabase
+                .from("cyclic_assignments")
+                .update({ system_stock: latestStock })
+                .eq("id", asgn.id);
+
+            if (error) {
+                setRefreshingStockId(null);
+                if (notify) showMessage("No se pudo actualizar stock: " + error.message, "error");
+                return asgn;
+            }
+        }
+
+        setAssignments(prev => prev.map(item => item.id === asgn.id ? { ...item, system_stock: latestStock } : item));
+        setCounts(prev => prev.map(c => c.assignment_id === asgn.id ? {
+            ...c,
+            system_stock: latestStock,
+            difference: r2(Number(c.counted_quantity || 0) - latestStock),
+        } : c));
+        setActiveAssignment(prev => prev?.id === asgn.id ? { ...prev, system_stock: latestStock } : prev);
+        setRecountAssignment(prev => prev?.id === asgn.id ? { ...prev, system_stock: latestStock } : prev);
+        setRefreshingStockId(null);
+
+        if (notify) {
+            const changed = Number(asgn.system_stock || 0) !== latestStock;
+            showMessage(changed ? `Stock actualizado de ${asgn.system_stock} a ${latestStock}.` : "Stock sistema ya está actualizado.", "success");
+        }
+        return updated;
+    }
+
+    async function refreshAssignedStocks() {
+        if (!selectedStoreId || assignments.length === 0 || bulkRefreshingStocks) return;
+        const store = allStores.find(s => s.id === selectedStoreId) || stores.find(s => s.id === selectedStoreId);
+        const sede = String(store?.erp_sede || store?.name || "").trim();
+        if (!sede) {
+            showMessage("No se encontró sede ERP para actualizar stock.", "error");
+            return;
+        }
+
+        setBulkRefreshingStocks(true);
+        const skus = [...new Set(assignments.map(a => cleanCode(a.sku || "")).filter(Boolean))];
+        const stockMap = new Map<string, number>();
+        const chunkSize = 500;
+        for (let i = 0; i < skus.length; i += chunkSize) {
+            const chunk = skus.slice(i, i + chunkSize);
+            const { data, error } = await supabase
+                .from("stock_general")
+                .select("codsap, stock")
+                .eq("sede", sede)
+                .in("codsap", chunk);
+            if (error) {
+                setBulkRefreshingStocks(false);
+                showMessage("Error actualizando stocks: " + error.message, "error");
+                return;
+            }
+            for (const row of data || []) stockMap.set(cleanCode(row.codsap), Number(row.stock || 0));
+        }
+
+        const updates = assignments
+            .map(a => ({ assignment: a, stock: stockMap.get(cleanCode(a.sku || "")) ?? 0 }))
+            .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
+
+        for (let i = 0; i < updates.length; i += 100) {
+            const batch = updates.slice(i, i + 100);
+            const results = await Promise.all(batch.map(row =>
+                supabase
+                    .from("cyclic_assignments")
+                    .update({ system_stock: row.stock })
+                    .eq("id", row.assignment.id)
+            ));
+            const failed = results.find(r => r.error);
+            if (failed?.error) {
+                setBulkRefreshingStocks(false);
+                showMessage("Error actualizando asignaciones: " + failed.error.message, "error");
+                return;
+            }
+        }
+
+        if (updates.length > 0) {
+            const updateMap = new Map(updates.map(row => [row.assignment.id, row.stock]));
+            setAssignments(prev => prev.map(a => updateMap.has(a.id) ? { ...a, system_stock: updateMap.get(a.id)! } : a));
+            setCounts(prev => prev.map(c => updateMap.has(c.assignment_id) ? {
+                ...c,
+                system_stock: updateMap.get(c.assignment_id)!,
+                difference: r2(Number(c.counted_quantity || 0) - updateMap.get(c.assignment_id)!),
+            } : c));
+        }
+
+        setBulkRefreshingStocks(false);
+        showMessage(updates.length > 0 ? `${updates.length} stock${updates.length !== 1 ? "s" : ""} actualizado${updates.length !== 1 ? "s" : ""}.` : "Todos los stocks asignados ya están actualizados.", "success");
     }
 
     async function findProductBySystemBarcode(scanned: string): Promise<Product | null> {
@@ -1449,20 +1555,22 @@ export default function DashboardPage() {
     async function saveRecount() {
         if (!recountAssignment || !user || savingRecount) return;
         setSavingRecount(true);
+        const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false);
 
         // ── Modo "Sin stock físico" en reconteo ──────────────
         if (sinStockRecount) {
-            await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
+            await supabase.from("cyclic_counts").delete().eq("assignment_id", currentRecountAssignment.id);
             const { error } = await supabase.from("cyclic_counts").insert({
-                assignment_id: recountAssignment.id,
-                store_id: recountAssignment.store_id,
-                product_id: recountAssignment.product_id,
+                assignment_id: currentRecountAssignment.id,
+                store_id: currentRecountAssignment.store_id,
+                product_id: currentRecountAssignment.product_id,
                 counted_quantity: 0,
                 location: "__sin_stock__",
                 user_id: user.id,
                 user_name: user.full_name,
                 status: "Diferencia" as CountRecord["status"],
                 note: "Sin stock físico en tienda",
+                stock_snapshot: Number(currentRecountAssignment.system_stock || 0),
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -1489,21 +1597,24 @@ export default function DashboardPage() {
             }
         }
 
-        await supabase.from("cyclic_counts").delete().eq("assignment_id", recountAssignment.id);
+        await supabase.from("cyclic_counts").delete().eq("assignment_id", currentRecountAssignment.id);
+
+        const totalQty = r2(recountRows.reduce((acc, row) => acc + Number(row.qty || 0), 0));
+        const totalDiff = r2(totalQty - Number(currentRecountAssignment.system_stock || 0));
+        const status: CountRecord["status"] = totalDiff === 0 ? "Corregido" : "Diferencia";
 
         for (const row of recountRows) {
             const qty = Number(row.qty);
-            const diff = qty - Number(recountAssignment.system_stock || 0);
-            const status: CountRecord["status"] = diff === 0 ? "Corregido" : "Diferencia";
             const { error } = await supabase.from("cyclic_counts").insert({
-                assignment_id: recountAssignment.id,
-                store_id: recountAssignment.store_id,
-                product_id: recountAssignment.product_id,
+                assignment_id: currentRecountAssignment.id,
+                store_id: currentRecountAssignment.store_id,
+                product_id: currentRecountAssignment.product_id,
                 counted_quantity: qty,
                 location: row.location.trim(),
                 user_id: user.id,
                 user_name: user.full_name,
                 status,
+                stock_snapshot: Number(currentRecountAssignment.system_stock || 0),
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -2028,6 +2139,7 @@ export default function DashboardPage() {
         const { error } = await supabase.from("cyclic_counts").update({
             counted_quantity: qty, location: editLocation.trim(), status: editStatus,
             note: editNote.trim(), validator_id: user.id, validator_name: user.full_name,
+            stock_snapshot: Number(asg?.system_stock ?? editingCount.stock_snapshot ?? 0),
             updated_at: new Date().toISOString(),
         }).eq("id", editingCount.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
@@ -2072,17 +2184,19 @@ export default function DashboardPage() {
                 // Ordenar por fecha más reciente primero
                 const sorted = [...cntsDeProd].sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime());
                 const nuevoTotal = ov.total_counted;
+                const stockSnapshot = Number(ov.system_stock ?? assignments.find(a => a.product_id === product_id)?.system_stock ?? 0);
 
                 // El primer conteo (más reciente) toma el total completo
                 const { error: e1 } = await supabase
                     .from("cyclic_counts")
                     .update({
                         counted_quantity: nuevoTotal,
-                        status: nuevoTotal === (assignments.find(a => a.product_id === product_id)?.system_stock ?? nuevoTotal)
+                        status: nuevoTotal === stockSnapshot
                             ? "Validado"
-                            : nuevoTotal > (assignments.find(a => a.product_id === product_id)?.system_stock ?? 0)
+                            : nuevoTotal > stockSnapshot
                             ? "Corregido"
                             : "Corregido",
+                        stock_snapshot: stockSnapshot,
                         validator_id: user?.id ?? null,
                         validator_name: user?.full_name ?? null,
                         updated_at: now,
@@ -2411,6 +2525,7 @@ export default function DashboardPage() {
         const rows = filteredCounts.map(c => ({
             TIENDA: c.store_name || storeName,
             SKU: c.sku, DESCRIPCION: c.description, UNIDAD: c.unit,
+            STOCK_USADO: c.stock_snapshot ?? c.system_stock ?? "",
             CONTADO: c.counted_quantity,
             UBICACION: c.location,
             USUARIO: c.user_name,
@@ -3696,6 +3811,15 @@ export default function DashboardPage() {
                                     </select>
                                 )}
                                 <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
+                                <button
+                                    className="flex items-center gap-2 px-4 py-2 rounded-2xl border border-blue-200 bg-blue-50 text-blue-700 text-sm font-semibold disabled:opacity-40"
+                                    onClick={refreshAssignedStocks}
+                                    disabled={!selectedStoreId || assignments.length === 0 || bulkRefreshingStocks}
+                                    title="Actualizar stocks asignados"
+                                >
+                                    <RefreshCw size={16} className={bulkRefreshingStocks ? "animate-spin" : ""} />
+                                    {bulkRefreshingStocks ? "Actualizando" : "Actualizar stocks"}
+                                </button>
                                 <div className="flex items-center gap-2">
                                     <input
                                         className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white w-40"
@@ -4552,6 +4676,7 @@ export default function DashboardPage() {
                                             <tr>
                                                 <th className="p-2 border text-left">SKU</th>
                                                 <th className="p-2 border text-left">Descripción</th>
+                                                <th className="p-2 border">Stock usado</th>
                                                 <th className="p-2 border">Ubicación</th>
                                                 <th className="p-2 border">Cantidad</th>
                                                 <th className="p-2 border">Usuario</th>
@@ -4567,6 +4692,7 @@ export default function DashboardPage() {
                                                 <tr key={c.id} className={isSinStock ? "bg-red-50" : "hover:bg-slate-50"}>
                                                     <td className="p-2 border font-medium">{c.sku}</td>
                                                     <td className="p-2 border text-slate-600 max-w-[180px] truncate">{c.description}</td>
+                                                    <td className="p-2 border text-center font-semibold">{c.stock_snapshot ?? c.system_stock ?? "—"}</td>
                                                     <td className="p-2 border text-center font-mono text-xs">
                                                         {isSinStock
                                                             ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">🚫 Sin stock</span>
@@ -4584,7 +4710,7 @@ export default function DashboardPage() {
                                                 );
                                             })}
                                             {filteredCounts.length === 0 && (
-                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={8}>No hay conteos registrados todavía.</td></tr>
+                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={9}>No hay conteos registrados todavía.</td></tr>
                                             )}
                                         </tbody>
                                     </table>
@@ -5093,6 +5219,14 @@ export default function DashboardPage() {
                                 <div className="flex items-center gap-2 mt-1.5">
                                     <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
                                     <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {activeAssignment.system_stock}</span>
+                                    <button
+                                        onClick={() => refreshAssignmentStock(activeAssignment)}
+                                        disabled={refreshingStockId === activeAssignment.id || savingCount}
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-blue-200 bg-white text-blue-700 disabled:opacity-40"
+                                        title="Actualizar stock sistema"
+                                    >
+                                        <RefreshCw size={14} className={refreshingStockId === activeAssignment.id ? "animate-spin" : ""} />
+                                    </button>
                                 </div>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
