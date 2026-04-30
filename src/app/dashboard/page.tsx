@@ -19,6 +19,7 @@ type CyclicUser = {
     role: Role;
     store_id: string | null;
     can_access_all_stores: boolean;
+    can_access_audit?: boolean;
     is_active: boolean;
     whatsapp?: string | null;
 };
@@ -328,6 +329,7 @@ export default function DashboardPage() {
     const [newUserStoreId, setNewUserStoreId] = useState("");
     const [newUserAllStores, setNewUserAllStores] = useState(false);
     const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
+    const [newUserAuditAccess, setNewUserAuditAccess] = useState(false);
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
     const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
@@ -354,6 +356,7 @@ export default function DashboardPage() {
     const [editUserAllStores, setEditUserAllStores] = useState(false);
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
+    const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -2292,12 +2295,13 @@ export default function DashboardPage() {
             full_name: newFullName.trim(), role: newRole,
             store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
             can_access_all_stores: newRole !== "Operario",
+            can_access_audit: newRole === "Administrador" ? true : newUserAuditAccess,
             is_active: true,
             whatsapp: wsp || null,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp("");
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false);
         loadAllUsers();
     }
 
@@ -2309,6 +2313,7 @@ export default function DashboardPage() {
         setEditUserActive(u.is_active);
         setEditUserPassword("");
         setEditUserWhatsapp(u.whatsapp || "");
+        setEditUserAuditAccess(u.role === "Administrador" ? true : !!u.can_access_audit);
     }
 
     async function saveEditUser() {
@@ -2318,6 +2323,7 @@ export default function DashboardPage() {
             role: editUserRole,
             store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
             can_access_all_stores: editUserRole !== "Operario",
+            can_access_audit: editUserRole === "Administrador" ? true : editUserAuditAccess,
             is_active: editUserActive,
             whatsapp: wsp || null,
         };
@@ -5008,6 +5014,10 @@ export default function DashboardPage() {
                                             </select>
                                         </div>
                                     )}
+                                    <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700 md:col-span-2">
+                                        <input type="checkbox" checked={newRole === "Administrador" || newUserAuditAccess} disabled={newRole === "Administrador"} onChange={e => setNewUserAuditAccess(e.target.checked)} />
+                                        Puede acceder a auditorías
+                                    </label>
                                 </div>
                                 <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createUser}>+ Crear usuario</button>
                             </div>
@@ -5022,6 +5032,7 @@ export default function DashboardPage() {
                                                 <th className="p-2 border">Rol</th>
                                                 <th className="p-2 border">Tienda</th>
                                                 <th className="p-2 border">WhatsApp</th>
+                                                <th className="p-2 border">Auditoría</th>
                                                 <th className="p-2 border">Estado</th>
                                                 <th className="p-2 border">Acción</th>
                                             </tr>
@@ -5043,6 +5054,9 @@ export default function DashboardPage() {
                                                                 : <span className="text-slate-400">—</span>}
                                                         </td>
                                                         <td className="p-2 border text-center">
+                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${(u.role === "Administrador" || u.can_access_audit) ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{(u.role === "Administrador" || u.can_access_audit) ? "Si" : "No"}</span>
+                                                        </td>
+                                                        <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
                                                         </td>
                                                         <td className="p-2 border text-center">
@@ -5052,7 +5066,7 @@ export default function DashboardPage() {
                                                     </tr>
                                                 );
                                             })}
-                                            {allUsers.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">No hay usuarios.</td></tr>}
+                                            {allUsers.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-slate-400">No hay usuarios.</td></tr>}
                                         </tbody>
                                     </table>
                                 </div>
@@ -5301,6 +5315,10 @@ export default function DashboardPage() {
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
                             </div>
+                            <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
+                                <input type="checkbox" checked={editUserRole === "Administrador" || editUserAuditAccess} disabled={editUserRole === "Administrador"} onChange={e => setEditUserAuditAccess(e.target.checked)} />
+                                Puede acceder a auditorías
+                            </label>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
                                 <div className="flex gap-3">

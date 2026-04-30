@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
@@ -18,6 +18,7 @@ type CyclicUser = {
   role: Role;
   store_id: string | null;
   can_access_all_stores: boolean;
+  can_access_audit?: boolean;
   is_active: boolean;
 };
 
@@ -139,7 +140,15 @@ export default function AuditoriaPage() {
     if (!raw) { window.location.replace("/"); return; }
     const parsed = JSON.parse(raw) as CyclicUser;
     if (parsed.role === "Operario") { window.location.replace("/dashboard"); return; }
-    setUser(parsed);
+    supabase.from("cyclic_users").select("*").eq("id", parsed.id).maybeSingle().then(({ data }) => {
+      const currentUser = (data || parsed) as CyclicUser;
+      if (currentUser.role !== "Administrador" && !currentUser.can_access_audit) {
+        window.location.replace("/dashboard");
+        return;
+      }
+      setUser(currentUser);
+      localStorage.setItem("cyclic_user", JSON.stringify(currentUser));
+    });
 
     supabase.from("stores").select("*").eq("is_active", true).order("name").then(({ data }) => {
       const list = (data || []) as Store[];
@@ -474,6 +483,24 @@ export default function AuditoriaPage() {
     setMessage("Auditoría finalizada.");
   }
 
+  async function deleteSession(row: AuditSession) {
+    if (user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede eliminar sesiones.");
+      return;
+    }
+    if (!confirm(`¿Eliminar la sesión de auditoría de ${row.store_name || row.store_id}? Esta acción borrará sus productos y conteos.`)) return;
+    const { error } = await supabase.from("audit_sessions").delete().eq("id", row.id);
+    if (error) { setMessage("Error eliminando sesión: " + error.message); return; }
+    if (session?.id === row.id) {
+      setSession(null);
+      setItems([]);
+      setCounts([]);
+      setActiveItem(null);
+    }
+    await loadSessions();
+    setMessage("Sesión eliminada.");
+  }
+
   async function saveItemObservation(itemId: string) {
     if (!session) return;
     const text = (itemObservationDrafts[itemId] || "").trim();
@@ -749,10 +776,17 @@ export default function AuditoriaPage() {
                 <h2 className="font-black">Sesiones recientes</h2>
                 <div className="mt-3 grid max-h-80 gap-2 overflow-auto md:grid-cols-2">
                   {sessions.map(s => (
-                    <button key={s.id} onClick={() => openSession(s)} className={`rounded-xl border p-3 text-left text-xs hover:bg-slate-50 ${session?.id === s.id ? "border-blue-600 bg-blue-50" : ""}`}>
-                      <div className="font-black text-slate-900">{s.store_name || s.store_id}</div>
-                      <div className="text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")} - {s.status === "finished" ? "Finalizada" : "En progreso"}</div>
-                    </button>
+                    <div key={s.id} className={`rounded-xl border p-3 text-xs hover:bg-slate-50 ${session?.id === s.id ? "border-blue-600 bg-blue-50" : ""}`}>
+                      <button onClick={() => openSession(s)} className="w-full text-left">
+                        <div className="font-black text-slate-900">{s.store_name || s.store_id}</div>
+                        <div className="text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")} - {s.status === "finished" ? "Finalizada" : "En progreso"}</div>
+                      </button>
+                      {user.role === "Administrador" && (
+                        <button onClick={() => deleteSession(s)} className="mt-2 rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-600 hover:bg-red-50">
+                          <Trash2 className="mr-1 inline" size={13} /> Eliminar
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>

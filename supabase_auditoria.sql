@@ -1,6 +1,9 @@
 ﻿-- Tablas para el módulo /auditoria
 -- Ejecutar en Supabase SQL Editor antes de usar la pantalla.
 
+alter table public.cyclic_users
+  add column if not exists can_access_audit boolean not null default false;
+
 create table if not exists public.audit_sessions (
   id uuid primary key default gen_random_uuid(),
   store_id uuid not null references public.stores(id),
