@@ -163,6 +163,14 @@ function codeCandidates(value: string | null | undefined): string[] {
     return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
 }
 
+function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
+    if (!row) return [];
+    const values = Object.entries(row)
+        .filter(([key]) => ["codsap", "codigosap", "productreference", "sku"].includes(key.toLowerCase().replace(/[^a-z0-9]/g, "")))
+        .flatMap(([, value]) => codeCandidates(String(value ?? "")));
+    return Array.from(new Set(values));
+}
+
 function normalizeText(v: string | null | undefined) {
     return String(v || "").trim().toLowerCase();
 }
@@ -1454,14 +1462,12 @@ export default function DashboardPage() {
         for (const code of candidates) {
             const { data: barcodeRow } = await supabase
                 .from("codigos_barra")
-                .select("codsap")
+                .select("*")
                 .or(`upc.eq.${code},alu.eq.${code}`)
                 .limit(1)
                 .maybeSingle();
 
-            if (!barcodeRow?.codsap) continue;
-
-            for (const mappedCode of codeCandidates(barcodeRow.codsap)) {
+            for (const mappedCode of mappedProductCodeCandidates(barcodeRow as Record<string, unknown> | null)) {
                 const { data: product } = await supabase
                     .from("cyclic_products")
                     .select("*")

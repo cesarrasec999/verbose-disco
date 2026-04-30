@@ -102,6 +102,14 @@ function codeCandidates(value: string | number | null | undefined): string[] {
   return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
 }
 
+function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
+  if (!row) return [];
+  const values = Object.entries(row)
+    .filter(([key]) => ["codsap", "codigosap", "productreference", "sku"].includes(key.toLowerCase().replace(/[^a-z0-9]/g, "")))
+    .flatMap(([, value]) => codeCandidates(String(value ?? "")));
+  return Array.from(new Set(values));
+}
+
 function normalizeText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
@@ -494,10 +502,9 @@ export default function AuditoriaPage() {
     }
 
     for (const candidate of candidates) {
-      const { data: mapped } = await supabase.from("codigos_barra").select("codsap").or(`upc.eq.${candidate},alu.eq.${candidate}`).limit(1).maybeSingle();
-      if (!mapped?.codsap) continue;
+      const { data: mapped } = await supabase.from("codigos_barra").select("*").or(`upc.eq.${candidate},alu.eq.${candidate}`).limit(1).maybeSingle();
 
-      for (const mappedCandidate of codeCandidates(mapped.codsap)) {
+      for (const mappedCandidate of mappedProductCodeCandidates(mapped as Record<string, unknown> | null)) {
         const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
         if (byMappedSku) return byMappedSku as Product;
       }
