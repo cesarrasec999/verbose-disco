@@ -10,14 +10,18 @@ type CyclicUser = {
     role: string;
     store_id: string | null;
     can_access_all_stores: boolean;
+    can_access_audit?: boolean;
     is_active: boolean;
     whatsapp?: string | null;
 };
+
+type LoginDestination = "/dashboard" | "/auditoria";
 
 export default function LoginPage() {
     const [username, setUsername]         = useState("");
     const [password, setPassword]         = useState("");
     const [showPassword, setShowPassword] = useState(false);
+    const [destination, setDestination]    = useState<LoginDestination>("/dashboard");
     const [error, setError]               = useState("");
     const [loading, setLoading]           = useState(false);
 
@@ -32,6 +36,20 @@ export default function LoginPage() {
     const [showConfirmPass, setShowConfirmPass]   = useState(false);
     const [modalError, setModalError]             = useState("");
     const [modalLoading, setModalLoading]         = useState(false);
+
+    function canEnterDestination(user: CyclicUser) {
+        return destination !== "/auditoria" || user.role === "Administrador" || user.can_access_audit;
+    }
+
+    function enterSelectedDestination(user: CyclicUser) {
+        if (!canEnterDestination(user)) {
+            setError("Tu usuario no tiene acceso a Auditoria. Selecciona Conteo ciclico para continuar.");
+            return false;
+        }
+        localStorage.setItem("cyclic_user", JSON.stringify(user));
+        window.location.href = destination;
+        return true;
+    }
 
     async function handleLogin() {
         setLoading(true);
@@ -52,6 +70,12 @@ export default function LoginPage() {
 
         const user = data as CyclicUser;
 
+        if (!canEnterDestination(user)) {
+            setError("Tu usuario no tiene acceso a Auditoria. Selecciona Conteo ciclico para continuar.");
+            setLoading(false);
+            return;
+        }
+
         // Si no tiene WhatsApp, pedir antes de entrar
         if (!user.whatsapp) {
             setPendingUser(user);
@@ -60,8 +84,7 @@ export default function LoginPage() {
             return;
         }
 
-        localStorage.setItem("cyclic_user", JSON.stringify(user));
-        window.location.href = "/dashboard";
+        enterSelectedDestination(user);
     }
 
     async function handleSaveWhatsapp() {
@@ -84,9 +107,15 @@ export default function LoginPage() {
             return;
         }
         const updatedUser = { ...pendingUser, whatsapp: wsp };
-        localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
+        if (!canEnterDestination(updatedUser)) {
+            setModalMode(null);
+            setPendingUser(null);
+            setError("Tu usuario no tiene acceso a Auditoria. Selecciona Conteo ciclico para continuar.");
+            setModalLoading(false);
+            return;
+        }
         setModalLoading(false);
-        window.location.href = "/dashboard";
+        enterSelectedDestination(updatedUser);
     }
 
     async function handleChangePassword() {
@@ -124,9 +153,15 @@ export default function LoginPage() {
             return;
         }
         const updatedUser = { ...pendingUser, password: newPass, whatsapp: wsp || pendingUser.whatsapp };
-        localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
+        if (!canEnterDestination(updatedUser)) {
+            setModalMode(null);
+            setPendingUser(null);
+            setError("Tu usuario no tiene acceso a Auditoria. Selecciona Conteo ciclico para continuar.");
+            setModalLoading(false);
+            return;
+        }
         setModalLoading(false);
-        window.location.href = "/dashboard";
+        enterSelectedDestination(updatedUser);
     }
 
     return (
@@ -279,6 +314,19 @@ export default function LoginPage() {
                             {showPassword ? "🙈" : "👁️"}
                         </button>
                     </div>
+
+                    <select
+                        className="w-full rounded-2xl p-3 text-sm text-white outline-none transition-all"
+                        style={{
+                            background: "rgba(255,255,255,0.08)",
+                            border: "1px solid rgba(255,255,255,0.15)",
+                        }}
+                        value={destination}
+                        onChange={e => setDestination(e.target.value as LoginDestination)}
+                    >
+                        <option value="/dashboard" className="text-slate-900">Conteo ciclico</option>
+                        <option value="/auditoria" className="text-slate-900">Auditoria</option>
+                    </select>
                 </div>
 
                 {/* Botón cambiar contraseña */}
