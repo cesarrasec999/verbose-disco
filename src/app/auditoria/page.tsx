@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, LogOut, Mail, PackageSearch, Plus, QrCode, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
@@ -114,6 +114,7 @@ export default function AuditoriaPage() {
   const [editLocation, setEditLocation] = useState("");
   const [editQty, setEditQty] = useState("");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
+  const [torchOn, setTorchOn] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab>("register");
   const [registerTab, setRegisterTab] = useState<RegisterTab>("count");
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
@@ -125,6 +126,8 @@ export default function AuditoriaPage() {
   const [showEmailModal, setShowEmailModal] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
+  const scannerTargetRef = useRef<ScannerTarget>(null);
+  const scannerHistoryRef = useRef(false);
   const scannerContainerId = "audit-scanner";
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -146,6 +149,20 @@ export default function AuditoriaPage() {
     loadSessions();
   }, []);
 
+
+  useEffect(() => {
+    scannerTargetRef.current = scannerTarget;
+  }, [scannerTarget]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!scannerTargetRef.current) return;
+      scannerHistoryRef.current = false;
+      void stopScanner(false);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
 
   useEffect(() => {
@@ -178,13 +195,22 @@ export default function AuditoriaPage() {
         );
       } catch (err: any) {
         setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
-        setScannerTarget(null);
+        await stopScanner();
       }
     })();
-    return () => { cancelled = true; stopScanner(); };
+    return () => { cancelled = true; void stopScanner(false); };
   }, [scannerTarget]);
 
-  async function stopScanner() {
+  function openScanner(target: Exclude<ScannerTarget, null>) {
+    if (!scannerHistoryRef.current) {
+      window.history.pushState({ auditScanner: true }, "", window.location.href);
+      scannerHistoryRef.current = true;
+    }
+    setTorchOn(false);
+    setScannerTarget(target);
+  }
+
+  async function stopScanner(removeHistory = true) {
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -194,7 +220,28 @@ export default function AuditoriaPage() {
     } catch {}
     scannerRef.current = null;
     scannerBusyRef.current = false;
+    scannerTargetRef.current = null;
+    setTorchOn(false);
     setScannerTarget(null);
+    if (removeHistory && scannerHistoryRef.current) {
+      scannerHistoryRef.current = false;
+      window.history.back();
+    }
+  }
+
+  async function toggleTorch() {
+    try {
+      const next = !torchOn;
+      const scanner = scannerRef.current;
+      if (!scanner?.applyVideoConstraints) {
+        setMessage("La linterna no está disponible en este dispositivo.");
+        return;
+      }
+      await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch {
+      setMessage("La linterna no está disponible en este dispositivo.");
+    }
   }
 
   async function loadSessions() {
@@ -753,7 +800,7 @@ export default function AuditoriaPage() {
                   <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Producto</label>
                   <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
                     <input value={scanCode} onChange={e => setScanCode(e.target.value)} onKeyDown={e => { if (e.key === "Enter") scanProduct(); }} placeholder="Escanea o digita código/barra" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base outline-none" />
-                    <button onClick={() => setScannerTarget("product")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-slate-900 text-white disabled:opacity-40" title="Escanear QR producto"><QrCode size={22} /></button>
+                    <button onClick={() => openScanner("product")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-slate-900 text-white disabled:opacity-40" title="Escanear QR producto"><QrCode size={22} /></button>
                   </div>
                   <button onClick={() => scanProduct()} disabled={!session || session.status !== "in_progress"} className="w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><PackageSearch className="mr-2 inline" size={16} /> Buscar producto</button>
                 </div>
@@ -772,7 +819,7 @@ export default function AuditoriaPage() {
                       <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Ubicacion</label>
                       <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
                         <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Escanea ubicación" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base font-semibold uppercase outline-none" />
-                        <button onClick={() => setScannerTarget("location")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-green-700 text-white disabled:opacity-40" title="Escanear QR ubicación"><QrCode size={22} /></button>
+                        <button onClick={() => openScanner("location")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-green-700 text-white disabled:opacity-40" title="Escanear QR ubicación"><QrCode size={22} /></button>
                       </div>
                       <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Cantidad</label>
                       <input value={qty} onChange={e => setQty(e.target.value)} placeholder="0" inputMode="decimal" type="number" className="w-full rounded-2xl border px-4 py-4 text-center text-2xl font-black outline-none focus:ring-2 focus:ring-blue-200" />
@@ -872,7 +919,7 @@ export default function AuditoriaPage() {
         )}
       </div>
 
-      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={stopScanner} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
+      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
       {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
       {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="flex max-h-[86vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
     </main>
