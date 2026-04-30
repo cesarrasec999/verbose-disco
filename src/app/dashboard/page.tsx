@@ -1626,78 +1626,138 @@ export default function DashboardPage() {
                 return idx >= 0 ? idx : -1;
             };
 
-            // Detectar si hay columna de tienda (col A con "tda", "tienda", etc.)
-            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "local", "tda"].some(n => String(h || "").toLowerCase().includes(n)));
+            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "almacén", "local", "tda", "sede"].some(n => String(h || "").toLowerCase().includes(n)));
             let colTienda = -1;
-            let colCodigo: number, colCosto: number, colStock: number;
+            let colCodigo: number;
+            let colCosto = -1;
+            let colStock = -1;
 
             if (hasStoreCol) {
-                colTienda = findCol(["tienda", "store", "almacen", "local", "tda"]);
-                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : (colTienda >= 0 ? colTienda + 1 : 1);
-                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : (colTienda >= 0 ? colTienda + 4 : 4);
-                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : (colTienda >= 0 ? colTienda + 5 : 5);
+                colTienda = findCol(["tienda", "store", "almacen", "almacén", "local", "tda", "sede"]);
+                const detectedCodigo = findCol(["codigo", "código", "code", "sku", "cod", "codsap", "barra", "barcode"]);
+                colCodigo = detectedCodigo >= 0 ? detectedCodigo : (colTienda >= 0 ? colTienda + 1 : 1);
+                colCosto = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]);
+                colStock = findCol(["stock", "cantidad", "qty", "saldo", "existencia"]);
             } else {
-                colCodigo = findCol(["codigo", "code", "sku", "cod"]) >= 0 ? findCol(["codigo", "code", "sku", "cod"]) : 0;
-                colCosto  = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) >= 0 ? findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]) : 3;
-                colStock  = findCol(["stock", "cantidad", "qty", "saldo"]) >= 0 ? findCol(["stock", "cantidad", "qty", "saldo"]) : 4;
+                const detectedCodigo = findCol(["codigo", "código", "code", "sku", "cod", "codsap", "barra", "barcode"]);
+                colCodigo = detectedCodigo >= 0 ? detectedCodigo : 0;
+                colCosto = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]);
+                colStock = findCol(["stock", "cantidad", "qty", "saldo", "existencia"]);
             }
 
             const dataRows = allRows.slice(1).filter(r => r.some((v: any) => String(v || "").trim()));
 
             // ── PASO 1: Construir mapa de tiendas ────────────────────────
-            const storeNameMap = new Map<string, string>(); // nombre normalizado → id
-            for (const s of allStores) storeNameMap.set(s.name.trim().toLowerCase(), s.id);
-
-            // ── PASO 2: Extraer SKUs únicos del archivo ───────────────────
-            setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
-            const skusEnArchivo = new Set<string>();
-            for (const row of dataRows) {
-                const rawSku = cleanCode(String(row[colCodigo] || ""));
-                if (rawSku) skusEnArchivo.add(rawSku);
-            }
-
-            // ── PASO 3: Traer todos los productos relevantes de una vez ───
-            setBulkAssignProgress({ step: "Cargando productos del maestro...", pct: 15 });
-            const skuArr = [...skusEnArchivo];
-            const prodBySkuMap = new Map<string, Product>(); // sku → product
-            const prodByBarcodeMap = new Map<string, Product>(); // barcode → product
-            const CHUNK = 500;
-            for (let i = 0; i < skuArr.length; i += CHUNK) {
-                const chunk = skuArr.slice(i, i + CHUNK);
-                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk);
-                for (const p of prods || []) {
-                    prodBySkuMap.set(p.sku, p as Product);
-                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
+            const normalizeStoreKey = (value: string | null | undefined) => String(value || "").trim().toLowerCase();
+            const storeNameMap = new Map<string, string>();
+            const storeById = new Map<string, Store>();
+            for (const st of allStores) {
+                storeById.set(st.id, st);
+                for (const key of [st.name, st.code, st.erp_sede]) {
+                    const normalized = normalizeStoreKey(key || "");
+                    if (normalized) storeNameMap.set(normalized, st.id);
                 }
             }
-            // Buscar también por barcode los que no se encontraron por SKU
-            const notFoundBySku = skuArr.filter(s => !prodBySkuMap.has(s));
+
+            // ── PASO 2: Extraer códigos únicos del archivo ────────────────
+            setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
+            const codigosEnArchivo = new Set<string>();
+            for (const row of dataRows) {
+                const rawCode = cleanCode(String(row[colCodigo] || ""));
+                if (rawCode) codigosEnArchivo.add(rawCode);
+            }
+
+            // ── PASO 3: Traer productos relevantes de una vez ────────────
+            setBulkAssignProgress({ step: "Cargando productos del maestro...", pct: 15 });
+            const codeArr = [...codigosEnArchivo];
+            const prodBySkuMap = new Map<string, Product>();
+            const prodByBarcodeMap = new Map<string, Product>();
+            const codSapByAltCode = new Map<string, string>();
+            const CHUNK = 500;
+
+            for (let i = 0; i < codeArr.length; i += CHUNK) {
+                const chunk = codeArr.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
+                for (const p of prods || []) {
+                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
+                }
+            }
+
+            const notFoundBySku = codeArr.filter(code => !prodBySkuMap.has(code));
             for (let i = 0; i < notFoundBySku.length; i += CHUNK) {
                 const chunk = notFoundBySku.slice(i, i + CHUNK);
-                const { data: prods } = await supabase.from("cyclic_products").select("*").in("barcode", chunk);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("barcode", chunk).eq("is_active", true);
                 for (const p of prods || []) {
-                    if (p.barcode) prodByBarcodeMap.set(String(p.barcode), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
+                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
                 }
             }
 
-            // ── PASO 4: Traer asignaciones existentes para la fecha ───────
-            setBulkAssignProgress({ step: "Revisando asignaciones existentes...", pct: 30 });
-            // Tiendas únicas del archivo
+            const notFoundDirect = codeArr.filter(code => !prodBySkuMap.has(code) && !prodByBarcodeMap.has(code));
+            for (let i = 0; i < notFoundDirect.length; i += CHUNK) {
+                const chunk = notFoundDirect.slice(i, i + CHUNK);
+                const { data: byUpc } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk);
+                const { data: byAlu } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk);
+                for (const row of [...(byUpc || []), ...(byAlu || [])]) {
+                    const codsap = cleanCode(row.codsap);
+                    if (!codsap) continue;
+                    if (row.upc) codSapByAltCode.set(cleanCode(String(row.upc)), codsap);
+                    if (row.alu) codSapByAltCode.set(cleanCode(String(row.alu)), codsap);
+                }
+            }
+
+            const mappedSkus = [...new Set([...codSapByAltCode.values()].filter(sku => !prodBySkuMap.has(sku)))];
+            for (let i = 0; i < mappedSkus.length; i += CHUNK) {
+                const chunk = mappedSkus.slice(i, i + CHUNK);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
+                for (const p of prods || []) {
+                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
+                }
+            }
+
+            const resolveProduct = (code: string): Product | null => {
+                const clean = cleanCode(code);
+                const mappedSku = codSapByAltCode.get(clean);
+                return prodBySkuMap.get(clean) || prodByBarcodeMap.get(clean) || (mappedSku ? prodBySkuMap.get(mappedSku) : null) || null;
+            };
+
+            // ── PASO 4: Tiendas y stock sincronizado por tienda/código ───
+            setBulkAssignProgress({ step: "Cargando stock sincronizado por tienda...", pct: 30 });
             const storeIdsDelArchivo = new Set<string>();
             if (hasStoreCol && colTienda >= 0) {
                 for (const row of dataRows) {
-                    const rawN = String(row[colTienda] || "").trim();
-                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    const rawStore = normalizeStoreKey(String(row[colTienda] || ""));
+                    const sid = storeNameMap.get(rawStore);
                     if (sid) storeIdsDelArchivo.add(sid);
                 }
             } else if (valStoreId) {
                 storeIdsDelArchivo.add(valStoreId);
             }
 
-            // Traer asignaciones existentes para esas tiendas en la fecha
+            const storeIdsArr = [...storeIdsDelArchivo];
+            const sedesArr = [...new Set(storeIdsArr.map(id => {
+                const st = storeById.get(id);
+                return String(st?.erp_sede || st?.name || "").trim();
+            }).filter(Boolean))];
+
+            const productSkus = [...new Set([...prodBySkuMap.values()].map(p => cleanCode(p.sku)).filter(Boolean))];
+            const stockBySedeSku = new Map<string, number>();
+            for (let i = 0; i < productSkus.length; i += CHUNK) {
+                const chunk = productSkus.slice(i, i + CHUNK);
+                let q = supabase.from("stock_general").select("codsap, sede, stock").in("codsap", chunk);
+                if (sedesArr.length > 0) q = q.in("sede", sedesArr);
+                const { data: stockRows } = await q;
+                for (const row of stockRows || []) {
+                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + cleanCode(row.codsap), Number(row.stock || 0));
+                }
+            }
+
+            // ── PASO 5: Traer asignaciones existentes para la fecha ──────
+            setBulkAssignProgress({ step: "Revisando asignaciones existentes...", pct: 45 });
             type ExistingAssignment = { id: string; store_id: string; product_id: string; system_stock: number };
             let existingAsgns: ExistingAssignment[] = [];
-            const storeIdsArr = [...storeIdsDelArchivo];
             for (let i = 0; i < storeIdsArr.length; i += 100) {
                 const chunk = storeIdsArr.slice(i, i + 100);
                 const { data: ea } = await supabase.from("cyclic_assignments")
@@ -1706,54 +1766,64 @@ export default function DashboardPage() {
                     .eq("assigned_date", valDate);
                 existingAsgns = existingAsgns.concat((ea || []) as ExistingAssignment[]);
             }
-            // key: storeId__productId → assignment
             const existingMap = new Map<string, ExistingAssignment>();
-            for (const ea of existingAsgns) existingMap.set(`${ea.store_id}__${ea.product_id}`, ea);
+            for (const ea of existingAsgns) existingMap.set(ea.store_id + "__" + ea.product_id, ea);
 
-            // ── PASO 5: Procesar filas y construir lotes ─────────────────
-            setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 50 });
-            let skip = 0, notFound = 0, storeNotFound = 0;
-            const toInsert: any[] = [];
-            const toUpdate: { id: string; system_stock: number; cost?: number }[] = [];
+            // ── PASO 6: Procesar filas y construir lotes ────────────────
+            setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 60 });
+            let skip = 0, notFound = 0, storeNotFound = 0, stockNotFound = 0;
+            const assignmentDrafts = new Map<string, { store_id: string; product_id: string; system_stock: number }>();
             const costUpdates: { id: string; cost: number }[] = [];
 
             for (const row of dataRows) {
-                const rawSku = cleanCode(String(row[colCodigo] || ""));
-                if (!rawSku) { skip++; continue; }
+                const rawCode = cleanCode(String(row[colCodigo] || ""));
+                if (!rawCode) { skip++; continue; }
 
                 let targetStoreId = valStoreId || "";
                 if (hasStoreCol && colTienda >= 0) {
-                    const rawN = String(row[colTienda] || "").trim();
-                    if (!rawN) { skip++; continue; }
-                    const sid = storeNameMap.get(rawN.toLowerCase());
+                    const rawStore = normalizeStoreKey(String(row[colTienda] || ""));
+                    if (!rawStore) { skip++; continue; }
+                    const sid = storeNameMap.get(rawStore);
                     if (!sid) { storeNotFound++; continue; }
                     targetStoreId = sid;
                 }
                 if (!targetStoreId) { skip++; continue; }
 
-                const prod = prodBySkuMap.get(rawSku) || prodByBarcodeMap.get(rawSku) || null;
+                const prod = resolveProduct(rawCode);
                 if (!prod) { notFound++; continue; }
 
-                const stock = Number(row[colStock] || 0);
-                const cost = parseCost(row[colCosto]);
-                if (cost > 0 && cost !== prod.cost) {
-                    costUpdates.push({ id: prod.id, cost });
+                const store = storeById.get(targetStoreId);
+                const sede = String(store?.erp_sede || store?.name || "").trim();
+                const syncedStock = stockBySedeSku.get(sede + "__" + cleanCode(prod.sku));
+                const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
+                const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
+                if (!hasManualStock && syncedStock === undefined) stockNotFound++;
+
+                if (colCosto >= 0 && String(row[colCosto] ?? "").trim() !== "") {
+                    const cost = parseCost(row[colCosto]);
+                    if (cost > 0 && cost !== prod.cost) costUpdates.push({ id: prod.id, cost });
                 }
 
-                const key = `${targetStoreId}__${prod.id}`;
+                assignmentDrafts.set(targetStoreId + "__" + prod.id, {
+                    store_id: targetStoreId,
+                    product_id: prod.id,
+                    system_stock: stock,
+                });
+            }
+
+            const toInsert: any[] = [];
+            const toUpdate: { id: string; system_stock: number }[] = [];
+            for (const [key, draft] of assignmentDrafts) {
                 const existing = existingMap.get(key);
                 if (existing) {
-                    if (existing.system_stock !== stock) toUpdate.push({ id: existing.id, system_stock: stock });
+                    if (existing.system_stock !== draft.system_stock) toUpdate.push({ id: existing.id, system_stock: draft.system_stock });
                 } else {
-                    toInsert.push({
-                        store_id: targetStoreId, product_id: prod.id, system_stock: stock,
-                        assigned_date: valDate, assigned_by: user?.id,
-                    });
+                    toInsert.push({ ...draft, assigned_date: valDate, assigned_by: user?.id });
                 }
             }
 
-            // ── PASO 6: Ejecutar actualizaciones de costo en lote ────────
-            setBulkAssignProgress({ step: "Actualizando costos...", pct: 60 });
+            // ── PASO 7: Actualizar costos opcionales ────────────────────
+            setBulkAssignProgress({ step: "Actualizando costos opcionales...", pct: 70 });
             const now = new Date().toISOString();
             for (let i = 0; i < costUpdates.length; i += 200) {
                 const chunk = costUpdates.slice(i, i + 200);
@@ -1762,8 +1832,8 @@ export default function DashboardPage() {
                 ));
             }
 
-            // ── PASO 7: Actualizaciones de stock en lote ─────────────────
-            setBulkAssignProgress({ step: `Actualizando ${toUpdate.length} asignaciones...`, pct: 70 });
+            // ── PASO 8: Actualizaciones de stock en lote ────────────────
+            setBulkAssignProgress({ step: "Actualizando " + toUpdate.length + " asignaciones...", pct: 78 });
             for (let i = 0; i < toUpdate.length; i += 200) {
                 const chunk = toUpdate.slice(i, i + 200);
                 await Promise.all(chunk.map(u =>
@@ -1771,26 +1841,27 @@ export default function DashboardPage() {
                 ));
             }
 
-            // ── PASO 8: Insertar nuevas asignaciones en lote ─────────────
-            setBulkAssignProgress({ step: `Insertando ${toInsert.length} nuevas asignaciones...`, pct: 85 });
+            // ── PASO 9: Insertar nuevas asignaciones en lote ────────────
+            setBulkAssignProgress({ step: "Insertando " + toInsert.length + " nuevas asignaciones...", pct: 88 });
             const INSERT_BATCH = 200;
             let insertOk = 0;
             for (let i = 0; i < toInsert.length; i += INSERT_BATCH) {
                 const batch = toInsert.slice(i, i + INSERT_BATCH);
                 const { error } = await supabase.from("cyclic_assignments").insert(batch);
                 if (!error) insertOk += batch.length;
-                setBulkAssignProgress({ step: `Insertando... ${Math.min(i + INSERT_BATCH, toInsert.length)} / ${toInsert.length}`, pct: 85 + Math.round((i / toInsert.length) * 10) });
+                const pct = toInsert.length > 0 ? 88 + Math.round((i / toInsert.length) * 10) : 98;
+                setBulkAssignProgress({ step: "Insertando... " + Math.min(i + INSERT_BATCH, toInsert.length) + " / " + toInsert.length, pct });
             }
 
             setBulkAssignProgress(null);
-            const storeMsg = storeNotFound > 0 ? ` ${storeNotFound} tiendas no encontradas.` : "";
-            showMessage(`✅ ${insertOk} nuevos asignados, ${toUpdate.length} actualizados. ${skip} vacíos. ${notFound} no encontrados en maestro.${storeMsg}`, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
+            const storeMsg = storeNotFound > 0 ? " " + storeNotFound + " tiendas no encontradas." : "";
+            const stockMsg = stockNotFound > 0 ? " " + stockNotFound + " sin stock sincronizado; se asignaron con 0." : "";
+            showMessage("✅ " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacíos. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId) loadValidadorData(valStoreId, valDate);
 
-            // ── PASO 9: Modal WhatsApp masivo ─────────────────────────────
+            // ── PASO 10: Modal WhatsApp masivo ──────────────────────────
             if (insertOk > 0 || toUpdate.length > 0) {
-                // Traer TODOS los operarios con WhatsApp de las tiendas del archivo de una sola vez
                 const wspStoreIds = [...storeIdsDelArchivo];
                 const allOps: any[] = [];
                 for (let i = 0; i < wspStoreIds.length; i += 200) {
@@ -1811,10 +1882,10 @@ export default function DashboardPage() {
                         operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
                     }
                 }
-                // Contar asignaciones totales por tienda usando los datos ya en memoria
+
                 const cntByStore = new Map<string, number>();
-                for (const ins of toInsert) cntByStore.set(ins.store_id, (cntByStore.get(ins.store_id) || 0) + 1);
                 for (const ea of existingAsgns) cntByStore.set(ea.store_id, (cntByStore.get(ea.store_id) || 0) + 1);
+                for (const ins of toInsert) cntByStore.set(ins.store_id, (cntByStore.get(ins.store_id) || 0) + 1);
 
                 const wspStoresData: typeof bulkWspStores = wspStoreIds.map(sid => ({
                     id: sid,
@@ -4355,10 +4426,10 @@ export default function DashboardPage() {
                                     <div>
                                         <p className="text-sm font-semibold text-slate-700">📦 Carga masiva por Excel — <span className="text-blue-700">Todas las tiendas</span></p>
                                         <div className="mt-1.5 rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1 text-xs text-slate-600">
-                                            <p>✅ <b>Formato multi-tienda (recomendado):</b> <b>A: Tienda</b> · <b>B: Código</b> · <b>C: Descripción</b> · <b>D: Unidad</b> · <b>E: Costo</b> · <b>F: Stock</b>.<br/>
-                                            El nombre de tienda en col A debe coincidir exactamente con el sistema. No necesitas seleccionar tienda arriba.</p>
-                                            <p className="text-slate-400">Formato simple (sin col tienda): <b>A: Código</b> · <b>B: Desc</b> · <b>C: Unidad</b> · <b>D: Costo</b> · <b>E: Stock</b>. Requiere tienda seleccionada arriba.</p>
-                                            <p className="text-blue-700 font-semibold">⚡ Carga optimizada: todos los productos se procesan en lote, sin esperar fila por fila.</p>
+                                            <p>✅ <b>Formato multi-tienda recomendado:</b> <b>A: Tienda</b> · <b>B: Código</b>.<br/>
+                                            El sistema busca descripción, UM y costo en el maestro, y toma el stock desde la sincronización por tienda.</p>
+                                            <p className="text-slate-400">Formato simple: <b>A: Código</b>. Requiere tienda seleccionada arriba. Si incluyes una columna <b>Stock</b>, se usará como override manual.</p>
+                                            <p className="text-blue-700 font-semibold">⚡ Puedes usar nombre, código o sede ERP de la tienda. Los códigos pueden ser SKU o código de barra.</p>
                                         </div>
                                     </div>
                                     {bulkAssignProgress && (
