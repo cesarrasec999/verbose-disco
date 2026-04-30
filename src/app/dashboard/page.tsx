@@ -1321,23 +1321,14 @@ export default function DashboardPage() {
     }
 
     async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
+        // Solo actualiza en memoria para mostrar el stock actual al operario.
+        // NO escribe en la BD: el system_stock guardado en cyclic_assignments
+        // es un snapshot del momento en que se asignó el producto y debe
+        // mantenerse intacto para reportes históricos.
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
         const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
         const updated = { ...asgn, system_stock: latestStock };
-
-        if (Number(asgn.system_stock || 0) !== latestStock) {
-            const { error } = await supabase
-                .from("cyclic_assignments")
-                .update({ system_stock: latestStock })
-                .eq("id", asgn.id);
-
-            if (error) {
-                setRefreshingStockId(null);
-                if (notify) showMessage("No se pudo actualizar stock: " + error.message, "error");
-                return asgn;
-            }
-        }
 
         setAssignments(prev => prev.map(item => item.id === asgn.id ? { ...item, system_stock: latestStock } : item));
         setCounts(prev => prev.map(c => c.assignment_id === asgn.id ? {
@@ -1384,25 +1375,10 @@ export default function DashboardPage() {
             for (const row of data || []) stockMap.set(cleanCode(row.codsap), Number(row.stock || 0));
         }
 
+        // Solo actualiza en memoria — NO escribe en la BD para preservar snapshots históricos.
         const updates = assignments
-            .map(a => ({ assignment: a, stock: stockMap.get(cleanCode(a.sku || "")) ?? 0 }))
+            .map(a => ({ assignment: a, stock: stockMap.get(cleanCode(a.sku || "")) ?? Number(a.system_stock || 0) }))
             .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
-
-        for (let i = 0; i < updates.length; i += 100) {
-            const batch = updates.slice(i, i + 100);
-            const results = await Promise.all(batch.map(row =>
-                supabase
-                    .from("cyclic_assignments")
-                    .update({ system_stock: row.stock })
-                    .eq("id", row.assignment.id)
-            ));
-            const failed = results.find(r => r.error);
-            if (failed?.error) {
-                setBulkRefreshingStocks(false);
-                showMessage("Error actualizando asignaciones: " + failed.error.message, "error");
-                return;
-            }
-        }
 
         if (updates.length > 0) {
             const updateMap = new Map(updates.map(row => [row.assignment.id, row.stock]));
