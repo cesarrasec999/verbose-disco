@@ -554,7 +554,7 @@ export default function DashboardPage() {
                 setScannerRunning(true);
                 await qr.start(
                     { facingMode: "environment" },
-                    { fps: 8, qrbox: { width: 220, height: 120 }, aspectRatio: 1.6 },
+                    { fps: 15, qrbox: { width: 260, height: 160 }, aspectRatio: 1.6 },
                     (decoded: string) => { applyScannedValue(decoded); },
                     () => {}
                 );
@@ -568,8 +568,8 @@ export default function DashboardPage() {
                 setScannerTarget(null);
             }
         }
-        const t = setTimeout(() => startScanner(), 150);
-        return () => { cancelled = true; clearTimeout(t); stopScanner(); };
+        void startScanner();
+        return () => { cancelled = true; stopScanner(); };
     }, [scannerTarget]);
 
     // Botón atrás del celular cierra overlays
@@ -1528,8 +1528,8 @@ export default function DashboardPage() {
         showMessage(`Producto voluntario agregado: ${product.sku}`, "success");
     }
 
-    async function addProductByTypedCode() {
-        const code = manualProductCode.trim();
+    async function addProductByCode(codeValue: string, clearTypedInput = false) {
+        const code = codeValue.trim();
         if (!code) {
             showMessage("Digita un codigo para agregar.", "error");
             return;
@@ -1542,7 +1542,11 @@ export default function DashboardPage() {
         }
 
         await openScannedProduct(found);
-        setManualProductCode("");
+        if (clearTypedInput) setManualProductCode("");
+    }
+
+    async function addProductByTypedCode() {
+        await addProductByCode(manualProductCode, true);
     }
 
     function addRecountRow() { setRecountRows(prev => [...prev, { location: "", qty: "" }]); }
@@ -2485,14 +2489,8 @@ export default function DashboardPage() {
         scanHandledRef.current = true;
 
         if (scannerTarget === "product") {
-            const clean = cleanCode(v);
-            const found = await findProductBySystemBarcode(v);
-            if (!found) {
-                showMessage(`⚠️ Código "${clean}" no encontrado en el maestro.`, "error");
-                scanHandledRef.current = false; return;
-            }
             closeScanner();
-            await openScannedProduct(found);
+            await addProductByCode(v);
             return;
         }
 
@@ -4004,7 +4002,7 @@ export default function DashboardPage() {
                     {myAssignments.length === 0 && (
                         <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
                             No hay productos asignados para hoy en tu tienda.
-                            <br />Contacta al validador para que asigne los conteos.
+                            <br />Puedes digitar o escanear un codigo para agregarlo voluntariamente al conteo.
                         </div>
                     )}
                 </>
@@ -5694,7 +5692,7 @@ export default function DashboardPage() {
                                 {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicación ${(locationRows.length > 1 || recountRows.length > 1) ? scanningRowIndex + 1 : ""}`}
                             </h3>
                             <p className="text-sm text-slate-500">
-                                {scannerTarget === "product" ? "Busca por código de barra del producto asignado." : "Escanea o escribe la ubicación."}
+                                {scannerTarget === "product" ? "Escanea el codigo del producto." : "Escanea o escribe la ubicación."}
                             </p>
                         </div>
                         <div className="rounded-2xl overflow-hidden border bg-black min-h-[260px] flex items-center justify-center">

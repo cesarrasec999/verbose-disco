@@ -215,7 +215,7 @@ export default function AuditoriaPage() {
         scannerBusyRef.current = false;
         await scanner.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 260, height: 180 } },
+          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
@@ -249,6 +249,9 @@ export default function AuditoriaPage() {
   }
 
   async function stopScanner(removeHistory = true) {
+    scannerTargetRef.current = null;
+    setTorchOn(false);
+    setScannerTarget(null);
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -258,9 +261,6 @@ export default function AuditoriaPage() {
     } catch {}
     scannerRef.current = null;
     scannerBusyRef.current = false;
-    scannerTargetRef.current = null;
-    setTorchOn(false);
-    setScannerTarget(null);
     if (removeHistory && scannerHistoryRef.current) {
       scannerHistoryRef.current = false;
       window.history.back();
