@@ -2605,9 +2605,10 @@ export default function DashboardPage() {
             dateFrom = dashRangeFrom; dateTo = dashRangeTo;
         }
 
-        type SkuAgg = { sku: string; description: string; totalDif: number; totalDifVal: number };
+        type SkuAgg = { store_name: string; sku: string; description: string; totalDif: number; totalDifVal: number };
         const skuFaltMap = new Map<string, SkuAgg>();
         const skuSobMap  = new Map<string, SkuAgg>();
+        const storeNameById = new Map(filteredDashData.map(row => [row.store_id, row.store_name]));
 
         try {
             // 1. Traer assignments del período
@@ -2648,7 +2649,7 @@ export default function DashboardPage() {
                 for (let i = 0; i < asgnIds.length; i += CHUNK) {
                     const { data: cc } = await supabase
                         .from("cyclic_counts")
-                        .select("assignment_id, counted_quantity, location")
+                        .select("assignment_id, counted_quantity, location, status")
                         .in("assignment_id", asgnIds.slice(i, i + CHUNK));
                     if (cc) cntRows = cntRows.concat(cc);
                 }
@@ -2676,31 +2677,46 @@ export default function DashboardPage() {
                         if (cntByAsgn.has(asgn.id)) countedProductIds.add(asgn.product_id);
                     }
                     const assignedProductIds = new Set(dayAsgns.map((asgn: any) => asgn.product_id));
-                    const completed = [...assignedProductIds].every(productId => countedProductIds.has(productId));
+                    const hasCorrected = cntRows.some((c: any) => {
+                        const asgn = asgnById.get(c.assignment_id);
+                        return asgn && `${asgn.store_id}__${asgn.assigned_date}` === key && c.status === "Corregido";
+                    });
+                    const completed = hasCorrected || [...assignedProductIds].every(productId => countedProductIds.has(productId));
                     if (completed) fulfilledDayKeys.add(key);
                 }
 
                 const fulfilledAsgnRows = asgnRows.filter((asgn: any) => fulfilledDayKeys.has(`${asgn.store_id}__${asgn.assigned_date}`));
 
-                const prodAgg = new Map<string, { sku: string; description: string; cost: number; systemStock: number; counted: number }>();
+                const prodAgg = new Map<string, { store_id: string; store_name: string; sku: string; description: string; cost: number; systemStock: number; counted: number }>();
                 for (const asgn of fulfilledAsgnRows) {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
-                    const prev = prodAgg.get(asgn.product_id) ?? { sku: prod.sku || "", description: prod.description || "", cost: parseCost(prod.cost), systemStock: 0, counted: 0 };
+                    const aggKey = `${asgn.store_id}__${asgn.product_id}`;
+                    const prev = prodAgg.get(aggKey) ?? {
+                        store_id: asgn.store_id,
+                        store_name: storeNameById.get(asgn.store_id) || asgn.store_id,
+                        sku: prod.sku || "",
+                        description: prod.description || "",
+                        cost: parseCost(prod.cost),
+                        systemStock: 0,
+                        counted: 0,
+                    };
                     prev.systemStock = r2(prev.systemStock + Number(asgn.system_stock || 0));
                     prev.counted = r2(prev.counted + (cntByAsgn.get(asgn.id) || 0));
-                    prodAgg.set(asgn.product_id, prev);
+                    prodAgg.set(aggKey, prev);
                 }
 
                 for (const [, entry] of prodAgg) {
                     const diff = r2(entry.counted - entry.systemStock);
                     const difVal = r2(diff * entry.cost);
                     if (diff < 0) {
-                        const prev = skuFaltMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
-                        skuFaltMap.set(entry.sku, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
+                        const key = `${entry.store_id}__${entry.sku}`;
+                        const prev = skuFaltMap.get(key) ?? { store_name: entry.store_name, sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
+                        skuFaltMap.set(key, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
                     } else if (diff > 0) {
-                        const prev = skuSobMap.get(entry.sku) ?? { sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
-                        skuSobMap.set(entry.sku, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
+                        const key = `${entry.store_id}__${entry.sku}`;
+                        const prev = skuSobMap.get(key) ?? { store_name: entry.store_name, sku: entry.sku, description: entry.description, totalDif: 0, totalDifVal: 0 };
+                        skuSobMap.set(key, { ...prev, totalDif: r2(prev.totalDif + diff), totalDifVal: r2(prev.totalDifVal + difVal) });
                     }
                 }
             }
@@ -2826,7 +2842,7 @@ export default function DashboardPage() {
         ]);
 
         // ── Tabla detalle por tienda ──
-        const storeRows = [...filteredDashData]
+        const storeRows = [...emailKpiRows]
             .sort((a, b) => a.eri - b.eri)
             .map(r => {
                 const cumpl = dashPeriod === "dia"
@@ -2848,9 +2864,10 @@ export default function DashboardPage() {
 
         // ── Tabla top faltantes por código ──
         const faltantesRows = topFaltantes.length === 0
-            ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el período</td></tr>`
+            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el período</td></tr>`
             : topFaltantes.map(r => `
                 <tr style="border-bottom:1px solid #fef2f2;">
+                  <td style="padding:8px 10px;font-size:11px;font-weight:700;color:#1e293b;">${r.store_name}</td>
                   <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
                   <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
                   <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:700;">${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -2859,9 +2876,10 @@ export default function DashboardPage() {
 
         // ── Tabla top sobrantes por código ──
         const sobrantesRows = topSobrantes.length === 0
-            ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el período</td></tr>`
+            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el período</td></tr>`
             : topSobrantes.map(r => `
                 <tr style="border-bottom:1px solid #eff6ff;">
+                  <td style="padding:8px 10px;font-size:11px;font-weight:700;color:#1e293b;">${r.store_name}</td>
                   <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
                   <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
                   <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:700;">+${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -2977,6 +2995,7 @@ export default function DashboardPage() {
           <div style="border:1.5px solid #fee2e2;border-radius:12px;overflow:hidden;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
               <thead><tr style="background:#fef2f2;">
+                <th style="padding:8px 10px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">TIENDA</th>
                 <th style="padding:8px 12px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">SKU</th>
                 <th style="padding:8px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">DESCRIPCIÓN</th>
                 <th style="padding:8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">DIF.</th>
@@ -2991,6 +3010,7 @@ export default function DashboardPage() {
           <div style="border:1.5px solid #dbeafe;border-radius:12px;overflow:hidden;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
               <thead><tr style="background:#eff6ff;">
+                <th style="padding:8px 10px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">TIENDA</th>
                 <th style="padding:8px 12px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">SKU</th>
                 <th style="padding:8px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">DESCRIPCIÓN</th>
                 <th style="padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">DIF.</th>
