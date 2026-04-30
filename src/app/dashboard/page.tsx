@@ -282,7 +282,6 @@ export default function DashboardPage() {
     // ─── Validador: asignación ───────────────────────────────
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
-    const [assignStockMap, setAssignStockMap] = useState<Record<string,string>>({});
     const [bulkAssignFile, setBulkAssignFile] = useState<File|null>(null);
     const [bulkAssignFileName, setBulkAssignFileName] = useState("");
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
@@ -1576,16 +1575,16 @@ export default function DashboardPage() {
 
     async function assignProduct(product: Product) {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
-        const stock = Number(assignStockMap[product.id] ?? 0);
         const { data: existing } = await supabase.from("cyclic_assignments")
             .select("id").eq("store_id", valStoreId).eq("product_id", product.id).eq("assigned_date", valDate).maybeSingle();
         if (existing) { showMessage("Este producto ya está asignado para esa tienda y fecha.", "error"); return; }
+        const stock = await getSystemStockForStore(product.sku, valStoreId);
         const { error } = await supabase.from("cyclic_assignments").insert({
             store_id: valStoreId, product_id: product.id, system_stock: stock,
             assigned_date: valDate, assigned_by: user?.id,
         });
         if (error) { showMessage("Error al asignar: " + error.message, "error"); return; }
-        showMessage(`✅ "${product.sku}" asignado.`, "success");
+        showMessage("✅ \"" + product.sku + "\" asignado con stock sistema " + stock + ".", "success");
         loadValidadorData(valStoreId, valDate);
     }
 
@@ -4397,16 +4396,6 @@ export default function DashboardPage() {
                                                                 <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <div>
-                                                                    <label className="text-xs text-slate-500 block">Stock sistema</label>
-                                                                    <input
-                                                                        className="w-24 border rounded-xl p-1.5 text-sm text-slate-900 bg-white"
-                                                                        type="number"
-                                                                        placeholder="Stock"
-                                                                        value={assignStockMap[p.id] ?? ""}
-                                                                        onChange={e => setAssignStockMap(prev => ({ ...prev, [p.id]: e.target.value }))}
-                                                                    />
-                                                                </div>
                                                                 {alreadyAssigned ? (
                                                                     <span className="text-xs text-green-700 font-semibold px-3 py-2">✓ Asignado</span>
                                                                 ) : (
