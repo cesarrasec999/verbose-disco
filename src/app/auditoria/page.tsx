@@ -349,19 +349,12 @@ export default function AuditoriaPage() {
   }
 
   async function refreshAuditItemStock(item: AuditItem) {
+    // Solo actualiza en memoria para mostrar el stock actual al operario.
+    // NO escribe en la BD: el system_stock guardado en audit_session_items
+    // es un snapshot del momento en que se agregó el producto y debe
+    // mantenerse intacto para reportes históricos.
     if (!item.sku) return item;
     const latestStock = await getLatestStockForSku(item.sku);
-    if (Number(item.system_stock || 0) !== latestStock) {
-      const { error } = await supabase
-        .from("audit_session_items")
-        .update({ system_stock: latestStock })
-        .eq("id", item.id);
-      if (error) {
-        setMessage("Error actualizando stock del código: " + error.message);
-        return item;
-      }
-    }
-
     const updated = { ...item, system_stock: latestStock };
     setItems(prev => prev.map(row => row.id === item.id ? { ...row, system_stock: latestStock } : row));
     setActiveItem(prev => prev?.id === item.id ? { ...prev, system_stock: latestStock } : prev);
