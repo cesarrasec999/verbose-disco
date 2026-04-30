@@ -506,7 +506,7 @@ export default function AuditoriaPage() {
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
       .slice(0, 10);
     const chart = auditBarChart("Indicadores de auditoría", [
-      { label: "ERI", value: totals.eri, color: "#16a34a" },
+      { label: "OK", value: totals.eri, color: "#16a34a" },
       { label: "Faltantes", value: totals.missing, color: "#dc2626" },
       { label: "Sobrantes", value: totals.surplus, color: "#2563eb" },
     ]);
@@ -588,7 +588,12 @@ export default function AuditoriaPage() {
           </td>
         </tr>
       </table>
-      <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.5;">Este informe fue generado desde el módulo de auditoría WMS. Los gráficos están embebidos como imagen compatible para correo.</p>
+      <div style="margin:24px 0 0;text-align:right;">
+        <span style="display:inline-flex;align-items:center;gap:8px;color:#0f172a;font-weight:900;font-size:13px;">
+          <span style="display:inline-block;width:24px;height:24px;border-radius:7px;background:#0f172a;color:#ffffff;text-align:center;line-height:24px;font-size:15px;font-weight:900;">R</span>
+          Rasecorp
+        </span>
+      </div>
     </div>
   </div>
 </body></html>`;
