@@ -22,9 +22,13 @@ create table if not exists public.audit_session_items (
   source text not null default 'selected' check (source in ('selected', 'extra')),
   system_stock numeric not null default 0,
   cost_snapshot numeric not null default 0,
+  observation text null,
   created_at timestamptz not null default now(),
   unique (session_id, product_id)
 );
+
+alter table public.audit_session_items
+  add column if not exists observation text null;
 
 create table if not exists public.audit_counts (
   id uuid primary key default gen_random_uuid(),

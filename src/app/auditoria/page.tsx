@@ -59,6 +59,7 @@ type AuditItem = {
   source: "selected" | "extra";
   system_stock: number;
   cost_snapshot: number;
+  observation?: string | null;
   sku?: string;
   barcode?: string | null;
   description?: string;
@@ -115,8 +116,11 @@ export default function AuditoriaPage() {
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [mainTab, setMainTab] = useState<MainTab>("register");
   const [registerTab, setRegisterTab] = useState<RegisterTab>("count");
-  const [observation, setObservation] = useState("");
-  const [savingObservation, setSavingObservation] = useState(false);
+  const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
+  const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
+  const [leadAuditor, setLeadAuditor] = useState("");
+  const [storeLeader, setStoreLeader] = useState("");
+  const [warehouseAdvisor, setWarehouseAdvisor] = useState("");
   const [emailHTML, setEmailHTML] = useState("");
   const [showEmailModal, setShowEmailModal] = useState(false);
   const scannerRef = useRef<any>(null);
@@ -205,7 +209,6 @@ export default function AuditoriaPage() {
   async function openSession(row: AuditSession) {
     setSession(row);
     setStoreId(row.store_id);
-    setObservation(row.observation || "");
     setMainTab("register");
     setRegisterTab("count");
     await loadSessionData(row.id);
@@ -237,7 +240,6 @@ export default function AuditoriaPage() {
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
-    setObservation("");
     setMainTab("register");
     setRegisterTab("count");
     setMessage("Sesión de auditoría iniciada.");
@@ -305,13 +307,15 @@ export default function AuditoriaPage() {
       .select("*, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
-    setItems((itemRows || []).map((r: any) => ({
+    const mappedItems = (itemRows || []).map((r: any) => ({
       ...r,
       sku: r.cyclic_products?.sku,
       barcode: r.cyclic_products?.barcode,
       description: r.cyclic_products?.description,
       unit: r.cyclic_products?.unit,
-    })) as AuditItem[]);
+    })) as AuditItem[];
+    setItems(mappedItems);
+    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
 
     const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at");
     setCounts((countRows || []) as AuditCount[]);
@@ -423,20 +427,21 @@ export default function AuditoriaPage() {
     setMessage("Auditoría finalizada.");
   }
 
-  async function saveObservation() {
+  async function saveItemObservation(itemId: string) {
     if (!session) return;
-    setSavingObservation(true);
+    const text = (itemObservationDrafts[itemId] || "").trim();
+    setSavingItemObservationId(itemId);
     const { error } = await supabase
-      .from("audit_sessions")
-      .update({ observation: observation.trim() || null })
-      .eq("id", session.id);
-    setSavingObservation(false);
+      .from("audit_session_items")
+      .update({ observation: text || null })
+      .eq("id", itemId);
+    setSavingItemObservationId(null);
     if (error) {
-      setMessage("Error guardando observación: " + error.message + ". Verifica que ejecutaste supabase_auditoria.sql.");
+      setMessage("Error guardando observación por código: " + error.message + ". Verifica que ejecutaste supabase_auditoria.sql.");
       return;
     }
-    setSession({ ...session, observation: observation.trim() || null });
-    setMessage("Observación guardada en la auditoría.");
+    setItems(prev => prev.map(item => item.id === itemId ? { ...item, observation: text || null } : item));
+    setMessage("Observación del código guardada.");
   }
 
   const summaryRows = useMemo(() => items.map(item => {
@@ -492,19 +497,20 @@ export default function AuditoriaPage() {
   function buildAuditReportHTML() {
     if (!session) return "";
     const storeName = selectedStore?.name || session.store_name || "Tienda";
-    const topDiffs = [...summaryRows]
-      .filter(r => r.diff !== 0)
+    const topMissing = [...summaryRows]
+      .filter(r => r.diff < 0)
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-      .slice(0, 12);
+      .slice(0, 10);
+    const topSurplus = [...summaryRows]
+      .filter(r => r.diff > 0 || r.item.source === "extra")
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+      .slice(0, 10);
     const chart = auditBarChart("Indicadores de auditoría", [
       { label: "ERI", value: totals.eri, color: "#16a34a" },
-      { label: "Con stock", value: totals.withStock, color: "#0f172a" },
       { label: "Faltantes", value: totals.missing, color: "#dc2626" },
       { label: "Sobrantes", value: totals.surplus, color: "#2563eb" },
     ]);
-    const rows = topDiffs.length === 0
-      ? `<tr><td colspan="6" style="padding:12px;text-align:center;color:#64748b;">Sin diferencias registradas.</td></tr>`
-      : topDiffs.map(r => `
+    const diffRow = (r: typeof summaryRows[number]) => `
           <tr>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
@@ -512,9 +518,24 @@ export default function AuditoriaPage() {
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(r.total)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(r.diff)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(money(r.value))}</td>
-          </tr>`).join("");
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
+          </tr>`;
+    const missingRows = topMissing.length === 0
+      ? `<tr><td colspan="7" style="padding:12px;text-align:center;color:#64748b;">Sin faltantes registrados.</td></tr>`
+      : topMissing.map(diffRow).join("");
+    const surplusRows = topSurplus.length === 0
+      ? `<tr><td colspan="7" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
+      : topSurplus.map(diffRow).join("");
     const today = new Date().toLocaleString("es-PE");
-    const obs = observation.trim() || session.observation || "Sin observaciones registradas.";
+    const observedItems = summaryRows.filter(r => (r.item.observation || "").trim());
+    const observedRows = observedItems.length === 0
+      ? `<tr><td colspan="3" style="padding:12px;text-align:center;color:#64748b;">Sin observaciones por código.</td></tr>`
+      : observedItems.map(r => `
+          <tr>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
+          </tr>`).join("");
     return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
 <body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
   <div style="max-width:760px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
@@ -526,18 +547,46 @@ export default function AuditoriaPage() {
     <div style="padding:28px 32px;">
       <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:22px;"><tr>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#16a34a;">${totals.eri}%</div><div style="font-size:11px;font-weight:800;color:#64748b;">ERI</div></div></td>
-        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#0f172a;">${totals.withStock}</div><div style="font-size:11px;font-weight:800;color:#64748b;">CODIGOS CON STOCK</div></div></td>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#dc2626;">${totals.missing}</div><div style="font-size:11px;font-weight:800;color:#64748b;">FALTANTES / NO CONTADOS</div></div></td>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#2563eb;">${totals.surplus}</div><div style="font-size:11px;font-weight:800;color:#64748b;">SOBRANTES / EXTRAS</div></div></td>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:22px;font-weight:900;color:${totals.value < 0 ? "#dc2626" : "#2563eb"};">${escapeHTML(money(totals.value))}</div><div style="font-size:11px;font-weight:800;color:#64748b;">DIF. VALORIZADA</div></div></td>
       </tr></table>
       <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Dashboard compatible</h2>
       <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="Gráfico auditoría"/></div>
-      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #0f172a;padding-left:10px;">Observación</h2>
-      <p style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:14px;line-height:1.5;margin:0 0 22px;color:#334155;">${escapeHTML(obs)}</p>
-      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Principales diferencias por código</h2>
+      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Top faltantes</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CODIGO</th><th style="padding:9px;text-align:left;">DESCRIPCION</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th></tr></thead>
-        <tbody>${rows}</tbody>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <tbody>${missingRows}</tbody>
+      </table>
+      <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Top sobrantes</h2>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <tbody>${surplusRows}</tbody>
+      </table>
+      <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #0f172a;padding-left:10px;">Observaciones por código</h2>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <tbody>${observedRows}</tbody>
+      </table>
+      <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #16a34a;padding-left:10px;">Firmas de conformidad</h2>
+      <table width="100%" cellpadding="0" cellspacing="8" style="margin-top:6px;">
+        <tr>
+          <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
+            <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
+            <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(leadAuditor)}</div>
+            <div style="font-size:11px;color:#64748b;">Auditor líder</div>
+          </td>
+          <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
+            <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
+            <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(storeLeader)}</div>
+            <div style="font-size:11px;color:#64748b;">Líder de tienda</div>
+          </td>
+          <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
+            <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
+            <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(warehouseAdvisor)}</div>
+            <div style="font-size:11px;color:#64748b;">Asesor de almacén</div>
+          </td>
+        </tr>
       </table>
       <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.5;">Este informe fue generado desde el módulo de auditoría WMS. Los gráficos están embebidos como imagen compatible para correo.</p>
     </div>
@@ -547,6 +596,10 @@ export default function AuditoriaPage() {
 
   function generateAuditReport() {
     if (!session) { setMessage("Selecciona una sesión para generar el informe."); return; }
+    if (!leadAuditor.trim() || !storeLeader.trim() || !warehouseAdvisor.trim()) {
+      setMessage("Completa auditor líder, líder de tienda y asesor de almacén antes de generar el informe.");
+      return;
+    }
     const html = buildAuditReportHTML();
     setEmailHTML(html);
     setShowEmailModal(true);
@@ -752,22 +805,28 @@ export default function AuditoriaPage() {
 
                 <div className="rounded-2xl border bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <h2 className="font-black">Observación e informe</h2>
+                    <div>
+                      <h2 className="font-black">Informe de auditoría</h2>
+                      <p className="text-xs text-slate-500">Completa los responsables antes de generar el informe.</p>
+                    </div>
                     <div className="flex gap-2">
                       <button onClick={generateAuditReport} disabled={!session} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"><FileText className="mr-1 inline" size={15} /> Generar informe</button>
                       <button onClick={openEmailDraft} disabled={!session} className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"><Mail className="mr-1 inline" size={15} /> Correo</button>
                     </div>
                   </div>
-                  <textarea value={observation} onChange={e => setObservation(e.target.value)} placeholder="Observación de auditoría para el informe" className="mt-3 min-h-28 w-full rounded-2xl border px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
-                  <button onClick={saveObservation} disabled={!session || savingObservation} className="mt-3 rounded-xl bg-green-700 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"><Save className="mr-2 inline" size={16} /> Guardar observación</button>
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <input value={leadAuditor} onChange={e => setLeadAuditor(e.target.value)} placeholder="Auditor líder" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                    <input value={storeLeader} onChange={e => setStoreLeader(e.target.value)} placeholder="Líder de tienda" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                    <input value={warehouseAdvisor} onChange={e => setWarehouseAdvisor(e.target.value)} placeholder="Asesor de almacén" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border bg-white shadow-sm">
                   <div className="border-b px-4 py-3 font-black">Resumen por código ({summaryRows.length})</div>
                   <div className="max-h-[520px] overflow-auto">
-                    <table className="w-full min-w-[780px] text-sm">
+                    <table className="w-full min-w-[1080px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th></tr>
+                        <tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">Stock</th><th className="p-2">Contado</th><th className="p-2">Dif.</th><th className="p-2">Valor</th><th className="p-2">Estado</th><th className="p-2 text-left">Observación</th><th className="p-2">Guardar</th></tr>
                       </thead>
                       <tbody>
                         {summaryRows.map(r => (
@@ -779,6 +838,23 @@ export default function AuditoriaPage() {
                             <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>
                             <td className="p-2 text-center text-xs">{money(r.value)}</td>
                             <td className="p-2 text-center text-xs font-black">{r.item.source === "extra" ? "Extra - " : ""}{r.status}</td>
+                            <td className="p-2">
+                              <textarea
+                                value={itemObservationDrafts[r.item.id] ?? ""}
+                                onChange={e => setItemObservationDrafts(prev => ({ ...prev, [r.item.id]: e.target.value }))}
+                                placeholder="Observación por código"
+                                className="min-h-16 w-full min-w-56 rounded-xl border px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-200"
+                              />
+                            </td>
+                            <td className="p-2 text-center">
+                              <button
+                                onClick={() => saveItemObservation(r.item.id)}
+                                disabled={!session || savingItemObservationId === r.item.id}
+                                className="rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                              >
+                                <Save className="mr-1 inline" size={14} /> Guardar
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
