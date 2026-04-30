@@ -3,13 +3,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
 type MainTab = "sessions" | "register";
 type RegisterTab = "count" | "records" | "summary";
+
+const AUDIT_MAIN_TAB_KEY = "audit_main_tab";
+const AUDIT_REGISTER_TAB_KEY = "audit_register_tab";
+const AUDIT_SESSION_ID_KEY = "audit_session_id";
 
 type CyclicUser = {
   id: string;
@@ -116,8 +120,18 @@ export default function AuditoriaPage() {
   const [editQty, setEditQty] = useState("");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
-  const [mainTab, setMainTab] = useState<MainTab>("register");
-  const [registerTab, setRegisterTab] = useState<RegisterTab>("count");
+  const [mainTab, setMainTab] = useState<MainTab>(() => {
+    if (typeof window === "undefined") return "register";
+    const saved = sessionStorage.getItem(AUDIT_MAIN_TAB_KEY);
+    if (saved === "sessions" || saved === "register") return saved;
+    return window.matchMedia("(max-width: 767px)").matches ? "register" : "sessions";
+  });
+  const [registerTab, setRegisterTab] = useState<RegisterTab>(() => {
+    if (typeof window === "undefined") return "count";
+    const saved = sessionStorage.getItem(AUDIT_REGISTER_TAB_KEY);
+    if (saved === "count" || saved === "records" || saved === "summary") return saved;
+    return window.matchMedia("(max-width: 767px)").matches ? "records" : "count";
+  });
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
   const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
   const [leadAuditor, setLeadAuditor] = useState("");
@@ -156,7 +170,22 @@ export default function AuditoriaPage() {
       setStoreId(parsed.store_id || list[0]?.id || "");
     });
     loadSessions();
+    const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
+    if (savedSessionId) void loadSavedSession(savedSessionId);
   }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem(AUDIT_MAIN_TAB_KEY, mainTab);
+  }, [mainTab]);
+
+  useEffect(() => {
+    sessionStorage.setItem(AUDIT_REGISTER_TAB_KEY, registerTab);
+  }, [registerTab]);
+
+  useEffect(() => {
+    if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
+    else sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+  }, [session?.id]);
 
 
   useEffect(() => {
@@ -262,6 +291,30 @@ export default function AuditoriaPage() {
     setSessions((data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[]);
   }
 
+  async function loadSavedSession(sessionId: string) {
+    const { data } = await supabase
+      .from("audit_sessions")
+      .select("*, stores(name), cyclic_users(full_name)")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (!data) {
+      sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+      return;
+    }
+    const row = { ...data, store_name: data.stores?.name, auditor_name: data.cyclic_users?.full_name } as AuditSession;
+    setSession(row);
+    setStoreId(row.store_id);
+    await loadSessionData(row.id);
+  }
+
+  async function refreshAuditData() {
+    setLoading(true);
+    await loadSessions();
+    if (session?.id) await loadSavedSession(session.id);
+    setLoading(false);
+    setMessage("Datos actualizados.");
+  }
+
   async function openSession(row: AuditSession) {
     setSession(row);
     setStoreId(row.store_id);
@@ -296,8 +349,8 @@ export default function AuditoriaPage() {
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
-    setMainTab("register");
-    setRegisterTab("count");
+    sessionStorage.setItem(AUDIT_SESSION_ID_KEY, data.id);
+    await loadSessions();
     setMessage("Sesión de auditoría iniciada.");
   }
 
@@ -726,6 +779,7 @@ export default function AuditoriaPage() {
           <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+          <button onClick={refreshAuditData} disabled={loading} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40" title="Actualizar datos"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
           <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
         </div>
       </header>
