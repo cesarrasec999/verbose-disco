@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import * as XLSX from "xlsx";
-import { QrCode } from "lucide-react";
+import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, Store as StoreIcon, Users } from "lucide-react";
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  TIPOS
@@ -359,6 +359,7 @@ export default function DashboardPage() {
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
     const [emailRecipients, setEmailRecipients] = useState("");
+    const [manualProductCode, setManualProductCode] = useState("");
 
     // â”€â”€â”€ Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [dashPeriod, setDashPeriod] = useState<"dia"|"mes"|"rango">("dia");
@@ -1418,6 +1419,23 @@ export default function DashboardPage() {
         if (showRecount) openRecountItem(asgn);
         else openCount(asgn);
         showMessage(`Producto voluntario agregado: ${product.sku}`, "success");
+    }
+
+    async function addProductByTypedCode() {
+        const code = manualProductCode.trim();
+        if (!code) {
+            showMessage("Digita un codigo para agregar.", "error");
+            return;
+        }
+
+        const found = await findProductBySystemBarcode(code);
+        if (!found) {
+            showMessage(`Codigo "${cleanCode(code)}" no encontrado en el maestro ni en UPC/ALU.`, "error");
+            return;
+        }
+
+        await openScannedProduct(found);
+        setManualProductCode("");
     }
 
     function addRecountRow() { setRecountRows(prev => [...prev, { location: "", qty: "" }]); }
@@ -3356,7 +3374,7 @@ export default function DashboardPage() {
                                         : "text-slate-400 hover:bg-slate-800 hover:text-white"
                                 }`}
                             >
-                                <span className="text-base">ðŸ“‹</span>
+                                <ClipboardList size={16} />
                                 <span>Operario</span>
                             </button>
                         </div>
@@ -3371,12 +3389,15 @@ export default function DashboardPage() {
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
-                                    { key: "asignar",   icon: "ðŸ“¦", label: "Asignar productos" },
-                                    { key: "registros", icon: "ðŸ“‹", label: "Registros"          },
-                                    { key: "resumen",   icon: "ðŸ“Š", label: "Resumen por cÃ³digo" },
-                                    { key: "progreso",  icon: "ðŸª", label: "Progreso tiendas"   },
-                                    { key: "dashboard", icon: "ðŸ“ˆ", label: "Dashboard"           },
+                                    { key: "asignar",   icon: Package,       label: "Asignar productos" },
+                                    { key: "registros", icon: ClipboardList, label: "Registros"          },
+                                    { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo" },
+                                    { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas"   },
+                                    { key: "dashboard", icon: LineChart,     label: "Dashboard"           },
                                 ] as const).map(item => (
+                                    (() => {
+                                        const Icon = item.icon;
+                                        return (
                                     <button
                                         key={item.key}
                                         onClick={() => {
@@ -3395,9 +3416,11 @@ export default function DashboardPage() {
                                                 : "text-slate-400 hover:bg-slate-800 hover:text-white"
                                         }`}
                                     >
-                                        <span className="text-base">{item.icon}</span>
+                                        <Icon size={16} />
                                         <span className="truncate">{item.label}</span>
                                     </button>
+                                        );
+                                    })()
                                 ))}
                             </div>
                         </>
@@ -3411,10 +3434,13 @@ export default function DashboardPage() {
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
-                                    { key: "productos", icon: "ðŸ—ƒ", label: "Maestro productos" },
-                                    { key: "tiendas",   icon: "ðŸª", label: "Tiendas"           },
-                                    { key: "usuarios",  icon: "ðŸ‘¤", label: "Usuarios"           },
+                                    { key: "productos", icon: Database,  label: "Maestro productos" },
+                                    { key: "tiendas",   icon: StoreIcon, label: "Tiendas"           },
+                                    { key: "usuarios",  icon: Users,     label: "Usuarios"           },
                                 ] as const).map(item => (
+                                    (() => {
+                                        const Icon = item.icon;
+                                        return (
                                     <button
                                         key={item.key}
                                         onClick={() => { setActiveTab("admin"); setAdminTab(item.key); setSidebarOpen(false); }}
@@ -3424,9 +3450,11 @@ export default function DashboardPage() {
                                                 : "text-slate-400 hover:bg-slate-800 hover:text-white"
                                         }`}
                                     >
-                                        <span className="text-base">{item.icon}</span>
+                                        <Icon size={16} />
                                         <span className="truncate">{item.label}</span>
                                     </button>
+                                        );
+                                    })()
                                 ))}
                             </div>
                         </>
@@ -3439,7 +3467,7 @@ export default function DashboardPage() {
                         onClick={() => { handleLogout(); setSidebarOpen(false); }}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-red-600/20 hover:text-red-300 transition-all"
                     >
-                        <span className="text-base">ðŸšª</span>
+                        <LogOut size={16} />
                         <span>Cerrar sesiÃ³n</span>
                     </button>
                 </div>
@@ -3466,15 +3494,15 @@ export default function DashboardPage() {
                     </button>
                     <div className="flex-1 min-w-0">
                         <h1 className="font-bold text-slate-900 text-base leading-tight">
-                            {activeTab === "operario"  ? "ðŸ“‹ Conteos del dÃ­a" :
-                             activeTab === "validador" && valTab === "asignar"   ? "ðŸ“¦ Asignar productos" :
-                             activeTab === "validador" && valTab === "registros" ? "ðŸ“‹ Registros de conteo" :
-                             activeTab === "validador" && valTab === "resumen"   ? "ðŸ“Š Resumen por cÃ³digo" :
-                             activeTab === "validador" && valTab === "progreso"  ? "ðŸª Progreso tiendas" :
-                             activeTab === "validador" && valTab === "dashboard" ? "ðŸ“ˆ Dashboard" :
-                             activeTab === "admin"     && adminTab === "productos" ? "ðŸ—ƒ Maestro de productos" :
-                             activeTab === "admin"     && adminTab === "tiendas"   ? "ðŸª Tiendas" :
-                             activeTab === "admin"     && adminTab === "usuarios"  ? "ðŸ‘¤ Usuarios" : "CÃ­clicos"}
+                            {activeTab === "operario"  ? "Conteos del dia" :
+                             activeTab === "validador" && valTab === "asignar"   ? "Asignar productos" :
+                             activeTab === "validador" && valTab === "registros" ? "Registros de conteo" :
+                             activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
+                             activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
+                             activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
+                             activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
+                             activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
+                             activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
                             {activeTab === "validador" && valTab !== "dashboard" && valStoreId
@@ -3592,9 +3620,21 @@ export default function DashboardPage() {
                                     </select>
                                 )}
                                 <input type="date" className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
-                                <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
-                                    <QrCode size={16} /> Escanear
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white w-40"
+                                        placeholder="Codigo"
+                                        value={manualProductCode}
+                                        onChange={e => setManualProductCode(e.target.value)}
+                                        onKeyDown={e => { if (e.key === "Enter") addProductByTypedCode(); }}
+                                    />
+                                    <button className="px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm font-semibold" onClick={addProductByTypedCode}>
+                                        Agregar
+                                    </button>
+                                    <button className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold" onClick={() => openScanner("product")}>
+                                        <QrCode size={16} /> Escanear
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -3783,6 +3823,19 @@ export default function DashboardPage() {
                                 <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
                             </div>
                             <div className="flex items-center gap-2">
+                                <input
+                                    className="border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white w-40"
+                                    placeholder="Codigo"
+                                    value={manualProductCode}
+                                    onChange={e => setManualProductCode(e.target.value)}
+                                    onKeyDown={e => { if (e.key === "Enter") addProductByTypedCode(); }}
+                                />
+                                <button
+                                    className="px-4 py-2 rounded-2xl bg-blue-600 text-white text-sm font-semibold"
+                                    onClick={addProductByTypedCode}
+                                >
+                                    Agregar
+                                </button>
                                 <button
                                     className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-slate-900 text-white text-sm font-semibold"
                                     onClick={() => openScanner("product")}
