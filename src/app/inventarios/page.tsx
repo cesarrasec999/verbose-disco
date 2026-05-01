@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
+type ValidatorTab = "preparacion" | "registros" | "resumen";
 
 type CyclicUser = {
   id: string;
@@ -175,6 +176,7 @@ export default function InventariosPage() {
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryQuery, setSummaryQuery] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
+  const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
 
   const isValidator = user?.role === "Administrador" || user?.role === "Validador";
   const selectedSession = useMemo(
@@ -331,27 +333,49 @@ export default function InventariosPage() {
     return rows;
   }
 
+  async function loadPagedSessionRows(table: string, select: string, sessionId: string, orderColumn = "id"): Promise<any[]> {
+    const rows: any[] = [];
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .eq("session_id", sessionId)
+        .order(orderColumn, { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        setMessage(`Error leyendo ${table}: ${error.message}`);
+        break;
+      }
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+    }
+    return rows;
+  }
+
   async function loadSummary(sessionId: string) {
-    const [snapshotRes, countsRes, obsRes, nonInvRes] = await Promise.all([
-      supabase.from("general_inventory_stock_snapshot").select("*").eq("session_id", sessionId),
-      supabase.from("general_inventory_counts").select("product_id,sku,description,unit,quantity,cost_snapshot").eq("session_id", sessionId),
-      supabase.from("general_inventory_item_observations").select("*").eq("session_id", sessionId),
-      supabase.from("general_inventory_non_inventory_products").select("sku").eq("session_id", sessionId),
+    const [snapshotRows, countRows, observationRows, nonInventoryRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
+      loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
+      loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_non_inventory_products", "sku", sessionId, "sku"),
     ]);
 
-    const nonInventorySkus = new Set((nonInvRes.data || []).map(row => row.sku));
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => row.sku));
     const countedByProduct = new Map<string, number>();
-    for (const row of countsRes.data || []) {
+    for (const row of countRows) {
       if (nonInventorySkus.has(row.sku)) continue;
       countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
 
     const observations = new Map<string, string>();
-    for (const row of obsRes.data || []) observations.set(row.product_id, row.observation || "");
+    for (const row of observationRows) observations.set(row.product_id, row.observation || "");
 
     const productIdsInSnapshot = new Set<string>();
     const rows: SummaryRow[] = [];
-    for (const snap of snapshotRes.data || []) {
+    for (const snap of snapshotRows) {
       if (nonInventorySkus.has(snap.sku)) continue;
       productIdsInSnapshot.add(snap.product_id);
       const counted = countedByProduct.get(snap.product_id) || 0;
@@ -372,7 +396,7 @@ export default function InventariosPage() {
       });
     }
 
-    for (const row of countsRes.data || []) {
+    for (const row of countRows) {
       if (nonInventorySkus.has(row.sku)) continue;
       if (productIdsInSnapshot.has(row.product_id)) continue;
       const counted = countedByProduct.get(row.product_id) || 0;
@@ -554,6 +578,25 @@ export default function InventariosPage() {
     }
     setMessage("Inventario finalizado. Los operadores ya no podran entrar.");
     await loadInitial(selectedSessionId);
+  }
+
+  async function deleteSession() {
+    if (!selectedSessionId || user?.role !== "Administrador") return;
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .delete()
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo eliminar la sesion: " + error.message);
+      return;
+    }
+    setSelectedSessionId("");
+    localStorage.removeItem(SESSION_KEY);
+    setLocations([]);
+    setCounts([]);
+    setSummary([]);
+    setMessage("Sesion eliminada.");
+    await loadInitial("");
   }
 
   async function registerOperator() {
@@ -931,6 +974,11 @@ export default function InventariosPage() {
               <button onClick={finishSession} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white">
                 Finalizar inventario
               </button>
+              {user?.role === "Administrador" && (
+                <button onClick={deleteSession} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700">
+                  Eliminar sesion
+                </button>
+              )}
             </section>
           )}
         </aside>
@@ -938,7 +986,23 @@ export default function InventariosPage() {
         <section className="space-y-4">
           {message && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm">{message}</div>}
 
-          {operator && selectedSession && canOperatorEnter(selectedSession.status) && (
+          {isValidator && selectedSessionId && (
+            <section className="rounded-2xl border bg-white p-2 shadow-sm">
+              <div className="grid grid-cols-3 gap-2">
+                <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Preparacion
+                </button>
+                <button onClick={() => setValidatorTab("registros")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Registros
+                </button>
+                <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Resumen
+                </button>
+              </div>
+            </section>
+          )}
+
+          {operator && selectedSession && canOperatorEnter(selectedSession.status) && !isValidator && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div>
@@ -958,7 +1022,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {isValidator && selectedSessionId && (
+          {isValidator && selectedSessionId && validatorTab === "resumen" && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-black">Dashboard de inventario</h2>
@@ -982,6 +1046,7 @@ export default function InventariosPage() {
             </section>
           )}
 
+          {(!isValidator || !selectedSessionId || validatorTab === "registros") && (
           <section className="rounded-2xl border bg-white shadow-sm">
             <div className="border-b p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1017,8 +1082,9 @@ export default function InventariosPage() {
               {filteredCounts.length === 0 && <div className="p-8 text-center text-sm text-slate-400">Sin registros.</div>}
             </div>
           </section>
+          )}
 
-          {isValidator && selectedSessionId && (
+          {isValidator && selectedSessionId && validatorTab === "resumen" && (
             <section className="rounded-2xl border bg-white shadow-sm">
               <div className="border-b p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
