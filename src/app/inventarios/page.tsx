@@ -105,7 +105,7 @@ type SummaryRow = {
 
 type RecountType = "surplus" | "missing";
 type RecountColumn = "zone" | "zone_ref" | "lineal" | "ticket";
-type ScannerTarget = "location" | "product" | null;
+type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
 
 type RecountCandidate = {
   product_id: string;
@@ -278,6 +278,7 @@ export default function InventariosPage() {
   const [inventoryOperatorDrafts, setInventoryOperatorDrafts] = useState<Record<string, InventoryOperatorDraft>>({});
   const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
+  const [operatorRecountContextItems, setOperatorRecountContextItems] = useState<RecountItem[]>([]);
   const [recountType, setRecountType] = useState<RecountType>("surplus");
   const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
   const [recountValue, setRecountValue] = useState("");
@@ -289,6 +290,7 @@ export default function InventariosPage() {
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
+  const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
   const scannerContainerId = "inventory-scanner";
 
@@ -564,6 +566,7 @@ export default function InventariosPage() {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
             const target = scannerTargetRef.current;
+            const activeRecountScanId = activeRecountScanIdRef.current;
             await stopScanner();
             const clean = decodedText.trim();
             if (target === "location") {
@@ -575,6 +578,14 @@ export default function InventariosPage() {
               setProductCode(clean);
               setMessage("Código de producto escaneado.");
               setTimeout(() => qtyInputRef.current?.focus(), 50);
+            }
+            if (target === "recount_location" && activeRecountScanId) {
+              updateRecountDraft(activeRecountScanId, "locationCode", clean.toUpperCase());
+              setMessage("Ubicacion de reconteo escaneada.");
+            }
+            if (target === "recount_product" && activeRecountScanId) {
+              updateRecountDraft(activeRecountScanId, "productCode", clean);
+              setMessage("Codigo de reconteo escaneado.");
             }
           },
           () => {}
@@ -596,8 +607,14 @@ export default function InventariosPage() {
     setScannerTarget(target);
   }
 
+  function openRecountScanner(rowId: string, target: "recount_location" | "recount_product") {
+    activeRecountScanIdRef.current = rowId;
+    openScanner(target);
+  }
+
   async function stopScanner(removeHistory = true) {
     scannerTargetRef.current = null;
+    activeRecountScanIdRef.current = null;
     setTorchOn(false);
     setScannerTarget(null);
     try {
@@ -832,6 +849,42 @@ export default function InventariosPage() {
     if (selectedSessionId) await loadRecountAssignments(selectedSessionId);
   }
 
+  async function deleteInventoryOperator(id: string) {
+    if (user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede eliminar usuarios de inventario.");
+      return;
+    }
+    const row = inventoryOperators.find(item => item.id === id);
+    if (!row || !confirm(`Eliminar usuario de inventario ${row.full_name} (${row.phone})?`)) return;
+
+    const [countsRes, recountCountsRes, recountItemsRes] = await Promise.all([
+      supabase.from("general_inventory_counts").select("id").eq("operator_id", id).limit(1),
+      supabase.from("general_inventory_recount_counts").select("id").eq("operator_id", id).limit(1),
+      supabase.from("general_inventory_recount_items").select("id").eq("assigned_operator_id", id).limit(1),
+    ]);
+
+    if ((countsRes.data || []).length > 0 || (recountCountsRes.data || []).length > 0 || (recountItemsRes.data || []).length > 0) {
+      setMessage("No se puede eliminar: este usuario tiene registros o reconteos asignados. Edita sus datos o reasigna primero.");
+      return;
+    }
+
+    const sessionCleanup = await supabase.from("general_inventory_session_operators").delete().eq("operator_id", id);
+    if (sessionCleanup.error) {
+      setMessage("No se pudo limpiar sesiones del usuario: " + sessionCleanup.error.message);
+      return;
+    }
+
+    const { error } = await supabase.from("general_inventory_operators").delete().eq("id", id);
+    if (error) {
+      setMessage("No se pudo eliminar usuario: " + error.message);
+      return;
+    }
+
+    setMessage("Usuario de inventario eliminado.");
+    await loadInventoryOperators();
+    if (selectedSessionId) await loadRecountAssignments(selectedSessionId);
+  }
+
   async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
     const operatorIds = new Set([operatorId]);
     if (operator?.phone) {
@@ -861,7 +914,7 @@ export default function InventariosPage() {
       return;
     }
     const openRows = (data || []).filter((row: any) => !["counted", "cancelled"].includes(row.status || ""));
-    setRecountItems(sortOperatorRecountCards(openRows.map((row: any) => ({
+    const mappedRows = sortOperatorRecountCards(openRows.map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -882,6 +935,43 @@ export default function InventariosPage() {
       value_diff: Number(row.value_diff || 0),
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operator?.full_name || null,
+      status: row.status || "assigned",
+    })) as RecountItem[]);
+    setRecountItems(mappedRows);
+
+    const surplusProductIds = [...new Set(mappedRows.filter(row => row.recount_type === "surplus").map(row => row.product_id))];
+    if (surplusProductIds.length === 0) {
+      setOperatorRecountContextItems([]);
+      return;
+    }
+
+    const contextRes = await supabase
+      .from("general_inventory_recount_items")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("recount_type", "surplus")
+      .in("product_id", surplusProductIds);
+    setOperatorRecountContextItems(sortOperatorRecountCards((contextRes.data || []).map((row: any) => ({
+      id: row.id,
+      product_id: row.product_id,
+      sku: row.sku,
+      description: row.description || "",
+      unit: row.unit || "",
+      location_id: row.location_id,
+      location_code: row.location_code,
+      full_location: row.full_location || null,
+      zone: row.zone || null,
+      zone_ref: row.zone_ref || null,
+      lineal: row.lineal || null,
+      ticket: row.ticket || row.location_code || null,
+      recount_type: row.recount_type,
+      system_stock: Number(row.system_stock || 0),
+      counted_qty: Number(row.counted_qty || 0),
+      diff_qty: Number(row.diff_qty || 0),
+      cost_snapshot: Number(row.cost_snapshot || 0),
+      value_diff: Number(row.value_diff || 0),
+      assigned_operator_id: row.assigned_operator_id,
+      assigned_operator_name: null,
       status: row.status || "assigned",
     })) as RecountItem[]));
   }
@@ -2105,6 +2195,9 @@ export default function InventariosPage() {
               <div className="grid gap-3 md:grid-cols-2">
                 {recountItems.map(row => {
                   const draft = recountDraftFor(row);
+                  const relatedSurplusRows = row.recount_type === "surplus"
+                    ? operatorRecountContextItems.filter(item => item.product_id === row.product_id)
+                    : [];
                   return (
                   <article key={row.id} className="rounded-2xl border bg-slate-50 p-4">
                     <div className="mb-3 flex items-start justify-between gap-3">
@@ -2122,14 +2215,53 @@ export default function InventariosPage() {
                         <div className="truncate">{row.full_location || "Reconteo por código"}</div>
                         {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                       </div>
+                      {row.recount_type === "surplus" && relatedSurplusRows.length > 1 && (
+                        <div className="rounded-xl border bg-white p-3">
+                          <div className="mb-2 font-black text-slate-900">Registros del mismo codigo</div>
+                          <div className="space-y-2">
+                            {relatedSurplusRows.map(item => (
+                              <div key={item.id} className={`rounded-lg border px-3 py-2 ${item.id === row.id ? "border-blue-600 bg-blue-50" : "bg-slate-50 opacity-75"}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-black">{item.location_code || "Sin ubicacion"}</span>
+                                  <span className={item.id === row.id ? "font-black text-blue-700" : "font-bold text-slate-400"}>
+                                    {item.id === row.id ? "Asignado" : "Referencia"}
+                                  </span>
+                                </div>
+                                <div className="truncate text-slate-500">{item.full_location || "Reconteo por codigo"}</div>
+                                <div className="mt-1 grid grid-cols-3 gap-1 text-center">
+                                  <MiniMetric label="Sistema" value={item.system_stock} />
+                                  <MiniMetric label="Contado" value={item.counted_qty} />
+                                  <MiniMetric label="Dif." value={item.diff_qty} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <div className="grid grid-cols-3 gap-2">
                         <MiniMetric label="Sistema" value={row.system_stock} />
                         <MiniMetric label="Contado" value={row.counted_qty} />
                         <MiniMetric label="Dif." value={row.diff_qty} />
                       </div>
                       <div className="grid gap-2">
-                        <input value={draft.locationCode} onChange={event => updateRecountDraft(row.id, "locationCode", event.target.value.toUpperCase())} placeholder="Ubicacion / ticket final" className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
-                        <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", event.target.value)} placeholder="Codigo final" className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
+                        <div>
+                          <label className="mb-1 block text-[11px] font-black text-slate-500">{row.recount_type === "missing" && !row.location_code ? "Ubicacion final del faltante" : "Ubicacion asignada"}</label>
+                          <div className="flex rounded-xl border bg-white p-1">
+                            <input value={draft.locationCode} onChange={event => updateRecountDraft(row.id, "locationCode", event.target.value.toUpperCase())} placeholder="Ubicacion / ticket final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
+                            <button onClick={() => openRecountScanner(row.id, "recount_location")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear ubicacion">
+                              <QrCode size={18} />
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-black text-slate-500">Codigo final</label>
+                          <div className="flex rounded-xl border bg-white p-1">
+                            <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", event.target.value)} placeholder="Codigo final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
+                            <button onClick={() => openRecountScanner(row.id, "recount_product")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear producto">
+                              <QrCode size={18} />
+                            </button>
+                          </div>
+                        </div>
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input value={draft.quantity} onChange={event => updateRecountDraft(row.id, "quantity", event.target.value)} placeholder="Cantidad final" inputMode="decimal" className="min-w-0 rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
@@ -2326,7 +2458,7 @@ export default function InventariosPage() {
                       <th className="p-2 text-left">Celular</th>
                       <th className="p-2 text-left">Clave</th>
                       <th className="p-2 text-left">ID usuario</th>
-                      <th className="p-2 text-center">Accion</th>
+                      <th className="p-2 text-center">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2358,13 +2490,21 @@ export default function InventariosPage() {
                           </td>
                           <td className="p-2 font-mono text-xs text-slate-500">{row.id}</td>
                           <td className="p-2 text-center">
-                            <button
-                              onClick={() => saveInventoryOperator(row.id)}
-                              disabled={savingInventoryOperatorId === row.id}
-                              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white disabled:opacity-40"
-                            >
-                              {savingInventoryOperatorId === row.id ? "Guardando" : "Guardar"}
-                            </button>
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => saveInventoryOperator(row.id)}
+                                disabled={savingInventoryOperatorId === row.id}
+                                className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white disabled:opacity-40"
+                              >
+                                {savingInventoryOperatorId === row.id ? "Guardando" : "Guardar"}
+                              </button>
+                              <button
+                                onClick={() => deleteInventoryOperator(row.id)}
+                                className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-xs font-black text-red-700"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
