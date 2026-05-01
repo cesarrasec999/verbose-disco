@@ -174,6 +174,26 @@ function visibleProductCode(value: string | number | null | undefined): string {
     return cleanCode(suffix);
 }
 
+function isShortVisibleOnlyCode(value: string | number | null | undefined): boolean {
+    return /^\d{1,5}$/.test(fullProductCode(value));
+}
+
+function preferFullCodsapProducts<T extends Product>(rows: T[]): T[] {
+    const groups = new Map<string, T[]>();
+    for (const row of rows) {
+        const key = visibleProductCode(row.sku) || fullProductCode(row.sku);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(row);
+    }
+
+    const result: T[] = [];
+    for (const group of groups.values()) {
+        const hasFullCode = group.some(row => !isShortVisibleOnlyCode(row.sku));
+        result.push(...(hasFullCode ? group.filter(row => !isShortVisibleOnlyCode(row.sku)) : group));
+    }
+    return result;
+}
+
 function codeCandidates(value: string | null | undefined): string[] {
     const raw = String(value || "").trim();
     const clean = cleanCode(raw);
@@ -1460,23 +1480,21 @@ export default function DashboardPage() {
     }
 
     async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
-        const visible = visibleProductCode(codeValue);
-        if (!visible) return [];
+        const code = fullProductCode(codeValue);
+        if (!code) return [];
 
         const { data, error } = await supabase
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .ilike("sku", `%${visible}`);
+            .ilike("sku", `%${code}%`);
 
         if (error) {
             showMessage("Error buscando codigo manual: " + error.message, "error");
             return [];
         }
 
-        const products = ((data || []) as Product[]).filter(product => visibleProductCode(product.sku) === visible);
-        const fullCodeProducts = products.filter(product => fullProductCode(product.sku) !== visibleProductCode(product.sku));
-        const candidates = fullCodeProducts.length > 0 ? fullCodeProducts : products;
+        const candidates = preferFullCodsapProducts((data || []) as Product[]);
         if (!selectedStoreId || candidates.length === 0) return candidates;
 
         const enriched = await Promise.all(candidates.map(async product => ({
@@ -1489,22 +1507,6 @@ export default function DashboardPage() {
     async function findProductBySystemBarcode(scanned: string): Promise<Product | "AMBIGUOUS" | null> {
         const raw = String(scanned || "").trim();
         if (!raw) return null;
-
-        const { data: byProductBarcode } = await supabase
-            .from("cyclic_products")
-            .select("*")
-            .eq("barcode", raw)
-            .eq("is_active", true)
-            .maybeSingle();
-        if (byProductBarcode) return byProductBarcode as Product;
-
-        const { data: bySku } = await supabase
-            .from("cyclic_products")
-            .select("*")
-            .eq("sku", fullProductCode(raw))
-            .eq("is_active", true)
-            .maybeSingle();
-        if (bySku) return bySku as Product;
 
         const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
             supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
@@ -1538,6 +1540,22 @@ export default function DashboardPage() {
             showMessage(`El codigo de barra ${raw} existe en ${mappedProducts.length} codigos. Elige el correcto.`, "info");
             return "AMBIGUOUS";
         }
+
+        const { data: bySku } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("sku", fullProductCode(raw))
+            .eq("is_active", true)
+            .maybeSingle();
+        if (bySku) return bySku as Product;
+
+        const { data: byProductBarcode } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("barcode", raw)
+            .eq("is_active", true)
+            .maybeSingle();
+        if (byProductBarcode) return byProductBarcode as Product;
 
         return null;
     }
@@ -1765,22 +1783,32 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  VALIDADOR — ASIGNAR PRODUCTOS
     // ════════════════════════════════════════════════════════
+    async function searchProductsByTypedCode(text: string, limit = 120): Promise<Product[]> {
+        const code = fullProductCode(text);
+        if (code.length < 3) return [];
+
+        const { data } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("is_active", true)
+            .ilike("sku", `%${code}%`)
+            .limit(limit);
+
+        return preferFullCodsapProducts((data || []) as Product[]);
+    }
+
     async function searchProductsForAssign(text: string) {
         setAssignSearch(text);
         if (!text.trim()) { setAssignResults([]); return; }
         const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const byCode = await searchProductsByTypedCode(text);
         let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
         for (const w of words) q = q.ilike("description", `%${w}%`);
         const { data: byDesc } = await q.limit(200);
-        let q2 = supabase.from("cyclic_products").select("*").eq("is_active", true);
-        for (const w of words) q2 = q2.ilike("sku", `%${w}%`);
-        const { data: bySku } = await q2.limit(200);
-        const q3 = supabase.from("cyclic_products").select("*").eq("is_active", true).eq("barcode", text.trim());
-        const { data: byBarcode } = await q3.limit(5);
-        const combined = [...(byBarcode || []), ...(byDesc || []), ...(bySku || [])];
+        const combined = [...byCode, ...(byDesc || [])];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-        setAssignResults(deduped.slice(0, 30) as Product[]);
+        setAssignResults(preferFullCodsapProducts(deduped as Product[]).slice(0, 30));
     }
 
     async function assignProduct(product: Product) {
@@ -1903,9 +1931,8 @@ export default function DashboardPage() {
                 }
             }
 
-            const notFoundDirect = codeArr.filter(code => !prodBySkuMap.has(code) && !prodByBarcodeMap.has(code));
-            for (let i = 0; i < notFoundDirect.length; i += CHUNK) {
-                const chunk = notFoundDirect.slice(i, i + CHUNK);
+            for (let i = 0; i < codeArr.length; i += CHUNK) {
+                const chunk = codeArr.slice(i, i + CHUNK);
                 const { data: byUpc } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk);
                 const { data: byAlu } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk);
                 for (const row of [...(byUpc || []), ...(byAlu || [])]) {
@@ -1929,7 +1956,7 @@ export default function DashboardPage() {
             const resolveProduct = (code: string): Product | null => {
                 const clean = fullProductCode(code);
                 const mappedSku = codSapByAltCode.get(clean);
-                return prodBySkuMap.get(clean) || prodByBarcodeMap.get(clean) || (mappedSku ? prodBySkuMap.get(mappedSku) : null) || null;
+                return (mappedSku ? prodBySkuMap.get(mappedSku) : null) || prodByBarcodeMap.get(clean) || prodBySkuMap.get(clean) || null;
             };
 
             // ── PASO 4: Tiendas y stock sincronizado por tienda/código ───
@@ -2382,9 +2409,25 @@ export default function DashboardPage() {
             const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
             const dataRows = allRows.slice(1); // ignorar fila 1 (encabezado)
 
+            const inputCodes = [...new Set(dataRows.map(row => fullProductCode(String(row[0] || ""))).filter(Boolean))];
+            const codSapByInputCode = new Map<string, string>();
+            const CHUNK = 500;
+            for (let i = 0; i < inputCodes.length; i += CHUNK) {
+                const chunk = inputCodes.slice(i, i + CHUNK);
+                const { data: byUpc } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk);
+                const { data: byAlu } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk);
+                for (const row of [...(byUpc || []), ...(byAlu || [])]) {
+                    const codsap = fullProductCode(row.codsap);
+                    if (!codsap) continue;
+                    if (row.upc) codSapByInputCode.set(fullProductCode(String(row.upc)), codsap);
+                    if (row.alu) codSapByInputCode.set(fullProductCode(String(row.alu)), codsap);
+                }
+            }
+
             const map = new Map<string, any>();
             for (const row of dataRows) {
-                const rawSku = fullProductCode(String(row[0] || ""));
+                const inputSku = fullProductCode(String(row[0] || ""));
+                const rawSku = codSapByInputCode.get(inputSku) || inputSku;
                 if (!rawSku) continue;
                 const desc = String(row[1] || "").trim();
                 if (!desc) continue;
@@ -4651,7 +4694,7 @@ export default function DashboardPage() {
                                 <div className="space-y-2">
                                     <input
                                         className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
-                                        placeholder="Buscar por SKU, descripción o código de barra..."
+                                        placeholder="Buscar por codsap completo o descripcion..."
                                         value={assignSearch}
                                         onChange={e => searchProductsForAssign(e.target.value)}
                                     />

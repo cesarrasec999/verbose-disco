@@ -108,6 +108,26 @@ function visibleProductCode(value: string | number | null | undefined): string {
   return cleanCode(suffix);
 }
 
+function isShortVisibleOnlyCode(value: string | number | null | undefined): boolean {
+  return /^\d{1,5}$/.test(fullProductCode(value));
+}
+
+function preferFullCodsapProducts<T extends Product>(rows: T[]): T[] {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = visibleProductCode(row.sku) || fullProductCode(row.sku);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  }
+
+  const result: T[] = [];
+  for (const group of groups.values()) {
+    const hasFullCode = group.some(row => !isShortVisibleOnlyCode(row.sku));
+    result.push(...(hasFullCode ? group.filter(row => !isShortVisibleOnlyCode(row.sku)) : group));
+  }
+  return result;
+}
+
 function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
   if (!row) return [];
   const value = row.codsap ?? row.codigosap ?? row.ProductReference ?? row.productreference ?? row.sku;
@@ -412,6 +432,20 @@ export default function AuditoriaPage() {
     setMessage("Sesión de auditoría iniciada.");
   }
 
+  async function searchProductsByTypedCode(text: string, limit = 120): Promise<Product[]> {
+    const code = fullProductCode(text);
+    if (code.length < 3) return [];
+
+    const { data } = await supabase
+      .from("cyclic_products")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("sku", `%${code}%`)
+      .limit(limit);
+
+    return preferFullCodsapProducts((data || []) as Product[]);
+  }
+
   async function searchFamily() {
     const terms = normalizeText(query).split(/\s+/).filter(Boolean);
     if (terms.length === 0) return;
@@ -443,8 +477,15 @@ export default function AuditoriaPage() {
       from += pageSize;
     }
 
-    const stockMap = await getStockMap(allProducts);
-    const enriched = allProducts.map(p => ({ ...p, system_stock: stockMap.get(fullProductCode(p.sku)) || 0 }));
+    const byCode = await searchProductsByTypedCode(query, 200);
+    const seen = new Set<string>();
+    const preferredProducts = preferFullCodsapProducts([...byCode, ...allProducts].filter(product => {
+      if (seen.has(product.id)) return false;
+      seen.add(product.id);
+      return true;
+    }));
+    const stockMap = await getStockMap(preferredProducts);
+    const enriched = preferredProducts.map(p => ({ ...p, system_stock: stockMap.get(fullProductCode(p.sku)) || 0 }));
     setResults(enriched);
     setSelected(new Set(enriched.map(p => p.id)));
     setLoading(false);
@@ -497,12 +538,6 @@ export default function AuditoriaPage() {
     const raw = String(code || "").trim();
     if (!raw) return null;
 
-    const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", fullProductCode(raw)).eq("is_active", true).maybeSingle();
-    if (bySku) return bySku as Product;
-
-    const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", raw).eq("is_active", true).maybeSingle();
-    if (byBarcode) return byBarcode as Product;
-
     const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
@@ -525,20 +560,24 @@ export default function AuditoriaPage() {
       return "AMBIGUOUS";
     }
 
+    const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", fullProductCode(raw)).eq("is_active", true).maybeSingle();
+    if (bySku) return bySku as Product;
+
+    const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", raw).eq("is_active", true).maybeSingle();
+    if (byBarcode) return byBarcode as Product;
+
     return null;
   }
 
   async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
-    const visible = visibleProductCode(codeValue);
-    if (!visible) return [];
+    const code = fullProductCode(codeValue);
+    if (!code) return [];
     const { data } = await supabase
       .from("cyclic_products")
       .select("*")
       .eq("is_active", true)
-      .ilike("sku", `%${visible}`);
-    const products = ((data || []) as Product[]).filter(product => visibleProductCode(product.sku) === visible);
-    const fullCodeProducts = products.filter(product => fullProductCode(product.sku) !== visibleProductCode(product.sku));
-    const candidates = fullCodeProducts.length > 0 ? fullCodeProducts : products;
+      .ilike("sku", `%${code}%`);
+    const candidates = preferFullCodsapProducts((data || []) as Product[]);
     const stockMap = await getStockMap(candidates);
     return candidates.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 }));
   }
