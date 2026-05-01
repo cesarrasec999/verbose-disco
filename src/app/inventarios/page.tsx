@@ -216,6 +216,11 @@ export default function InventariosPage() {
   const [productCode, setProductCode] = useState("");
   const [quantity, setQuantity] = useState("");
   const [editingCountId, setEditingCountId] = useState<string | null>(null);
+  const [productCandidates, setProductCandidates] = useState<Product[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [productLookupMessage, setProductLookupMessage] = useState("");
+  const [savingCount, setSavingCount] = useState(false);
+  const savingCountRef = useRef(false);
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -447,6 +452,30 @@ export default function InventariosPage() {
     if (!selectedSessionId || !operator || isValidator) return;
     void loadOperatorRecountItems(selectedSessionId, operator.id);
   }, [selectedSessionId, operator?.id, isValidator]);
+
+  useEffect(() => {
+    if (!operator || isValidator) return;
+    const raw = productCode.trim();
+    if (selectedProduct && raw.toUpperCase() === selectedProduct.sku) return;
+    setSelectedProduct(null);
+    setProductLookupMessage("");
+    if (raw.length < 3 || !selectedSessionId) {
+      setProductCandidates([]);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await findProductCandidates(raw);
+        setProductCandidates(result.products);
+        setProductLookupMessage(result.message);
+        if (result.products.length === 1) setSelectedProduct(result.products[0]);
+      } catch {
+        setProductCandidates([]);
+        setProductLookupMessage("No se pudo consultar el producto. Intenta nuevamente.");
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [productCode, selectedSessionId, operator?.id, isValidator, selectedProduct]);
 
   useEffect(() => {
     scannerTargetRef.current = scannerTarget;
@@ -1111,39 +1140,61 @@ export default function InventariosPage() {
     setMessage(`Bienvenido, ${operatorRow.full_name}.`);
   }
 
-  async function resolveProduct(code: string): Promise<Product | null | "NON_INVENTORY"> {
+  async function findProductCandidates(code: string): Promise<{ products: Product[]; message: string }> {
     const raw = normalizeCode(code).toUpperCase();
-    if (!raw || !selectedSessionId) return null;
+    if (!raw || !selectedSessionId) return { products: [], message: "" };
 
     const [byUpc, byAlu] = await Promise.all([
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
     ]);
     const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
-    const candidates = [...new Set([raw, ...mapped])];
+    const candidateSkus = [...new Set([raw, ...mapped])];
+    const productMap = new Map<string, Product>();
 
-    for (const sku of candidates) {
-      const nonInv = await supabase
-        .from("general_inventory_non_inventory_products")
-        .select("id")
-        .eq("session_id", selectedSessionId)
-        .eq("sku", sku)
-        .maybeSingle();
-      if (nonInv.data) return "NON_INVENTORY";
-
+    if (candidateSkus.length > 0) {
       const { data } = await supabase
         .from("cyclic_products")
         .select("*")
-        .eq("sku", sku)
+        .in("sku", candidateSkus)
         .eq("is_active", true)
-        .maybeSingle();
-      if (data) return data as Product;
+        .limit(20);
+      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
     }
 
-    return null;
+    if (raw.length >= 4) {
+      const { data } = await supabase
+        .from("cyclic_products")
+        .select("*")
+        .eq("is_active", true)
+        .ilike("sku", `%${raw}%`)
+        .limit(12);
+      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+    }
+
+    const products = [...productMap.values()];
+    if (products.length === 0) return { products: [], message: "Codigo no existe en el maestro ni en codigos de barra." };
+
+    const { data: nonInvRows } = await supabase
+      .from("general_inventory_non_inventory_products")
+      .select("sku")
+      .eq("session_id", selectedSessionId)
+      .in("sku", products.map(product => product.sku));
+    const nonInvSkus = new Set((nonInvRows || []).map(row => row.sku));
+    const allowed = products.filter(product => !nonInvSkus.has(product.sku));
+
+    if (allowed.length === 0) {
+      return { products: [], message: "Este codigo esta en la lista de no inventariables y no puede registrarse." };
+    }
+
+    return {
+      products: allowed.sort((a, b) => a.sku.localeCompare(b.sku, "es", { numeric: true })),
+      message: allowed.length > 1 ? "El codigo coincide con varios productos. Elige una tarjeta antes de guardar." : "",
+    };
   }
 
   async function saveCount() {
+    if (savingCountRef.current) return;
     if (!operator || !selectedSession || !canOperatorEnter(selectedSession.status)) {
       setMessage("No hay inventario activo para registrar.");
       return;
@@ -1162,58 +1213,79 @@ export default function InventariosPage() {
       return;
     }
 
-    const product = await resolveProduct(productCode);
-    if (product === "NON_INVENTORY") {
-      setMessage("Este codigo esta en la lista de no inventariables y no puede registrarse.");
-      return;
+    savingCountRef.current = true;
+    setSavingCount(true);
+
+    try {
+      const latestCandidates = selectedProduct ? productCandidates : (await findProductCandidates(productCode)).products;
+      const product = selectedProduct || (latestCandidates.length === 1 ? latestCandidates[0] : null);
+      if (!product) {
+        setProductCandidates(latestCandidates);
+        setMessage(latestCandidates.length > 1 ? "Elige el producto correcto antes de guardar." : "Codigo no existe en el maestro ni en codigos de barra.");
+        return;
+      }
+
+      const snapshot = await supabase
+        .from("general_inventory_stock_snapshot")
+        .select("cost")
+        .eq("session_id", selectedSession.id)
+        .eq("product_id", product.id)
+        .maybeSingle();
+
+      const row = {
+        session_id: selectedSession.id,
+        operator_id: operator.id,
+        location_id: loc.id,
+        location_code: loc.location_code,
+        product_id: product.id,
+        sku: product.sku,
+        description: product.description,
+        unit: product.unit,
+        quantity: qty,
+        cost_snapshot: Number(snapshot.data?.cost ?? product.cost ?? 0),
+        updated_at: new Date().toISOString(),
+      };
+
+      const request = editingCountId
+        ? supabase.from("general_inventory_counts").update(row).eq("id", editingCountId)
+        : supabase.from("general_inventory_counts").insert(row);
+      const { error } = await request;
+
+      if (error) {
+        setMessage("No se pudo guardar conteo: " + error.message);
+        return;
+      }
+
+      setProductCode("");
+      setProductCandidates([]);
+      setSelectedProduct(null);
+      setProductLookupMessage("");
+      setQuantity("");
+      setEditingCountId(null);
+      setMessage("Conteo guardado.");
+      await loadSessionData(selectedSession.id, isValidator ? validatorTab : "registros");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "No se pudo guardar conteo.");
+    } finally {
+      savingCountRef.current = false;
+      setSavingCount(false);
     }
-    if (!product) {
-      setMessage("Codigo no existe en el maestro ni en codigos de barra.");
-      return;
-    }
-
-    const snapshot = await supabase
-      .from("general_inventory_stock_snapshot")
-      .select("cost")
-      .eq("session_id", selectedSession.id)
-      .eq("product_id", product.id)
-      .maybeSingle();
-
-    const row = {
-      session_id: selectedSession.id,
-      operator_id: operator.id,
-      location_id: loc.id,
-      location_code: loc.location_code,
-      product_id: product.id,
-      sku: product.sku,
-      description: product.description,
-      unit: product.unit,
-      quantity: qty,
-      cost_snapshot: Number(snapshot.data?.cost ?? product.cost ?? 0),
-      updated_at: new Date().toISOString(),
-    };
-
-    const request = editingCountId
-      ? supabase.from("general_inventory_counts").update(row).eq("id", editingCountId)
-      : supabase.from("general_inventory_counts").insert(row);
-    const { error } = await request;
-
-    if (error) {
-      setMessage("No se pudo guardar conteo: " + error.message);
-      return;
-    }
-
-    setProductCode("");
-    setQuantity("");
-    setEditingCountId(null);
-    setMessage("Conteo guardado.");
-    await loadSessionData(selectedSession.id, isValidator ? validatorTab : "registros");
   }
 
   async function editCount(row: CountRow) {
     setEditingCountId(row.id);
     setLocationCode(row.location_code);
     setProductCode(row.sku);
+    setSelectedProduct({
+      id: row.product_id,
+      sku: row.sku,
+      barcode: null,
+      description: row.description,
+      unit: row.unit,
+      cost: row.cost_snapshot,
+      is_active: true,
+    });
+    setProductCandidates([]);
     setQuantity(String(row.quantity));
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1653,20 +1725,44 @@ export default function InventariosPage() {
                 </select>
                 <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
                   <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
-                  <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white" title="Escanear ubicación">
+                  <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicación">
                     <QrCode size={22} />
                   </button>
                 </div>
                 <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
                   <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
-                  <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white" title="Escanear producto">
+                  <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear producto">
                     <QrCode size={22} />
                   </button>
                 </div>
+                {(productLookupMessage || productCandidates.length > 0) && (
+                  <div className="space-y-2">
+                    {productLookupMessage && <div className="rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700">{productLookupMessage}</div>}
+                    {productCandidates.map(product => (
+                      <button
+                        key={product.id}
+                        type="button"
+                        onClick={() => { setSelectedProduct(product); setProductCode(product.sku); setProductLookupMessage(""); setTimeout(() => qtyInputRef.current?.focus(), 50); }}
+                        className={`w-full rounded-xl border p-3 text-left transition active:scale-[0.99] ${selectedProduct?.id === product.id ? "border-green-600 bg-green-50" : "bg-white hover:border-slate-400"}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-black text-slate-950">{product.sku}</div>
+                            <div className="line-clamp-2 text-sm font-semibold text-slate-700">{product.description}</div>
+                            <div className="mt-1 text-xs text-slate-500">UM: {product.unit || "N/D"} · Costo: {money(Number(product.cost || 0))}</div>
+                          </div>
+                          <span className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-black ${selectedProduct?.id === product.id ? "bg-green-700 text-white" : "bg-slate-100 text-slate-600"}`}>
+                            {selectedProduct?.id === product.id ? "Elegido" : "Elegir"}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="grid grid-cols-[1fr_auto] gap-2">
                   <input ref={qtyInputRef} value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
-                  <button onClick={saveCount} disabled={!selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                  <Save size={16} /> Guardar
+                  <button onClick={saveCount} disabled={savingCount || !selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white transition active:scale-95 active:bg-slate-700 disabled:opacity-40 disabled:active:scale-100">
+                  <Save size={16} /> {savingCount ? "Guardando..." : "Guardar"}
                   </button>
                 </div>
               </div>

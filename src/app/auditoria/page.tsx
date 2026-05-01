@@ -184,6 +184,8 @@ export default function AuditoriaPage() {
   const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
   const [itemStockDrafts, setItemStockDrafts] = useState<Record<string, string>>({});
   const [savingItemStockId, setSavingItemStockId] = useState<string | null>(null);
+  const [savingCount, setSavingCount] = useState(false);
+  const savingCountRef = useRef(false);
   const [leadAuditor, setLeadAuditor] = useState("");
   const [storeLeader, setStoreLeader] = useState("");
   const [warehouseAdvisor, setWarehouseAdvisor] = useState("");
@@ -667,23 +669,36 @@ export default function AuditoriaPage() {
   }
 
   async function saveCount() {
+    if (savingCountRef.current) return;
     if (!session || !activeItem) return;
     const quantity = Number(qty);
     if (!location.trim()) { setMessage("Ingresa ubicación."); return; }
     if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
-    const currentItem = await refreshAuditItemStock(activeItem);
-    const { error } = await supabase.from("audit_counts").insert({
-      session_id: session.id,
-      item_id: currentItem.id,
-      product_id: currentItem.product_id,
-      location: location.trim().toUpperCase(),
-      quantity,
-      counted_by: user?.id,
-    });
-    if (error) { setMessage("Error guardando conteo: " + error.message); return; }
-    await loadSessionData(session.id);
-    setActiveItem(null);
-    setMessage(`Conteo registrado: ${quantity} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
+    savingCountRef.current = true;
+    setSavingCount(true);
+    try {
+      const currentItem = await refreshAuditItemStock(activeItem);
+      const { error } = await supabase.from("audit_counts").insert({
+        session_id: session.id,
+        item_id: currentItem.id,
+        product_id: currentItem.product_id,
+        location: location.trim().toUpperCase(),
+        quantity,
+        counted_by: user?.id,
+      });
+      if (error) {
+        setMessage("Error guardando conteo: " + error.message);
+        return;
+      }
+      await loadSessionData(session.id);
+      setActiveItem(null);
+      setMessage(`Conteo registrado: ${quantity} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Error guardando conteo.");
+    } finally {
+      savingCountRef.current = false;
+      setSavingCount(false);
+    }
   }
 
 
@@ -1216,7 +1231,7 @@ export default function AuditoriaPage() {
                       </div>
                       <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Cantidad</label>
                       <input value={qty} onChange={e => setQty(e.target.value)} placeholder="0" inputMode="decimal" type="number" className="w-full rounded-2xl border px-4 py-4 text-center text-2xl font-black outline-none focus:ring-2 focus:ring-blue-200" />
-                      <button onClick={saveCount} className="w-full rounded-2xl bg-green-700 px-4 py-4 text-base font-black text-white">Guardar conteo</button>
+                      <button onClick={saveCount} disabled={savingCount} className="w-full rounded-2xl bg-green-700 px-4 py-4 text-base font-black text-white transition active:scale-95 active:bg-green-800 disabled:opacity-40 disabled:active:scale-100">{savingCount ? "Guardando..." : "Guardar conteo"}</button>
                     </div>
                   </div>
                 )}

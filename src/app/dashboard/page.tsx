@@ -406,6 +406,8 @@ export default function DashboardPage() {
     // ─── Protección anti-doble clic en guardados ─────────────
     const [savingCount, setSavingCount]         = useState(false);
     const [savingRecount, setSavingRecount]     = useState(false);
+    const savingCountRef = useRef(false);
+    const savingRecountRef = useRef(false);
     const [savingAnalysis, setSavingAnalysis]   = useState(false);
 
     // ─── Terminar sesión de conteo ───────────────────────────
@@ -1263,7 +1265,8 @@ export default function DashboardPage() {
     }
 
     async function saveCount() {
-        if (!activeAssignment || !user || savingCount) return;
+        if (!activeAssignment || !user || savingCountRef.current) return;
+        savingCountRef.current = true;
         setSavingCount(true);
         const currentAssignment = await refreshAssignmentStock(activeAssignment, false);
 
@@ -1285,12 +1288,13 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar: " + error.message, "error"); setSavingCount(false); return; }
+            if (error) { showMessage("Error al guardar: " + error.message, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
             showMessage(`✅ "${activeAssignment.sku}" marcado como sin stock.`, "success");
             setSinStock(false);
             setActiveAssignment(null);
             loadOperarioData(selectedStoreId, selectedDate);
+            savingCountRef.current = false;
             setSavingCount(false);
             return;
         }
@@ -1298,13 +1302,14 @@ export default function DashboardPage() {
         // ── Validación normal ────────────────────────────────
         for (let i = 0; i < locationRows.length; i++) {
             const row = locationRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingCount(false); return; }
-            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingCount(false); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingCount(false); return; }
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             // ⛔ No se permite cantidad 0 con ubicación — usar "Sin stock" para eso
             if (qty === 0) {
                 showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Si no hay stock físico, usa el botón "Sin stock".`, "error");
+                savingCountRef.current = false;
                 setSavingCount(false); return;
             }
         }
@@ -1330,7 +1335,7 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar: " + error.message, "error"); setSavingCount(false); return; }
+            if (error) { showMessage("Error al guardar: " + error.message, "error"); savingCountRef.current = false; setSavingCount(false); return; }
         }
 
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
@@ -1340,6 +1345,7 @@ export default function DashboardPage() {
         setSinStock(false);
         setActiveAssignment(null);
         loadOperarioData(selectedStoreId, selectedDate);
+        savingCountRef.current = false;
         setSavingCount(false);
     }
 
@@ -1700,7 +1706,8 @@ export default function DashboardPage() {
     }
 
     async function saveRecount() {
-        if (!recountAssignment || !user || savingRecount) return;
+        if (!recountAssignment || !user || savingRecountRef.current) return;
+        savingRecountRef.current = true;
         setSavingRecount(true);
         const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false);
 
@@ -1721,11 +1728,12 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); setSavingRecount(false); return; }
+            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             showMessage(`✅ "${recountAssignment.sku}" marcado como sin stock.`, "success");
             setSinStockRecount(false);
             setRecountAssignment(null);
             setRecountRows([{ location: "", qty: "" }]);
+            savingRecountRef.current = false;
             setSavingRecount(false);
             loadOperarioData(selectedStoreId, selectedDate);
             return;
@@ -1734,12 +1742,13 @@ export default function DashboardPage() {
         // ── Validación normal ────────────────────────────────
         for (let i = 0; i < recountRows.length; i++) {
             const row = recountRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); setSavingRecount(false); return; }
-            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); setSavingRecount(false); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
+            if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); setSavingRecount(false); return; }
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             if (qty === 0) {
                 showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Usa el botón "Sin stock" si no hay producto físico.`, "error");
+                savingRecountRef.current = false;
                 setSavingRecount(false); return;
             }
         }
@@ -1765,13 +1774,14 @@ export default function DashboardPage() {
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
-            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); setSavingRecount(false); return; }
+            if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
         }
 
         showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
         setSinStockRecount(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
+        savingRecountRef.current = false;
         setSavingRecount(false);
         loadOperarioData(selectedStoreId, selectedDate);
     }
