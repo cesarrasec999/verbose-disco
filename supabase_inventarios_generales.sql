@@ -28,9 +28,12 @@ create table if not exists general_inventory_operators (
   id uuid primary key default gen_random_uuid(),
   full_name text not null,
   phone text not null unique,
+  password text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table general_inventory_operators add column if not exists password text;
 
 create table if not exists general_inventory_session_operators (
   id uuid primary key default gen_random_uuid(),

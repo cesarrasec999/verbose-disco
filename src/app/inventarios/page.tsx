@@ -47,6 +47,7 @@ type InventoryOperator = {
   id: string;
   full_name: string;
   phone: string;
+  password?: string;
 };
 
 type InventoryLocation = {
@@ -194,6 +195,7 @@ export default function InventariosPage() {
   const [operator, setOperator] = useState<InventoryOperator | null>(null);
   const [operatorName, setOperatorName] = useState("");
   const [operatorPhone, setOperatorPhone] = useState("");
+  const [operatorPassword, setOperatorPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -238,7 +240,8 @@ export default function InventariosPage() {
     [sessions]
   );
 
-  const showSidePanel = !isValidator;
+  const isOperatorView = !!operator && !isValidator;
+  const showSidePanel = !isValidator && !operator;
 
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
@@ -953,8 +956,8 @@ export default function InventariosPage() {
 
   async function registerOperator() {
     const phone = normalizePhone(operatorPhone);
-    if (!operatorName.trim() || phone.length < 8 || !selectedSession) {
-      setMessage("Completa nombre, celular y selecciona un inventario activo.");
+    if (!operatorName.trim() || phone.length < 8 || !operatorPassword.trim() || !selectedSession) {
+      setMessage("Completa nombre, celular, clave y selecciona un inventario activo.");
       return;
     }
     if (!canOperatorEnter(selectedSession.status)) {
@@ -966,14 +969,18 @@ export default function InventariosPage() {
     const existing = await supabase.from("general_inventory_operators").select("*").eq("phone", phone).maybeSingle();
     if (existing.data) {
       operatorRow = existing.data as InventoryOperator;
+      if (operatorRow.password && operatorRow.password !== operatorPassword.trim()) {
+        setMessage("Celular ya registrado. Ingresa desde el login principal con tu clave.");
+        return;
+      }
       if (operatorRow.full_name !== operatorName.trim()) {
-        await supabase.from("general_inventory_operators").update({ full_name: operatorName.trim() }).eq("id", operatorRow.id);
-        operatorRow = { ...operatorRow, full_name: operatorName.trim() };
+        await supabase.from("general_inventory_operators").update({ full_name: operatorName.trim(), password: operatorPassword.trim() }).eq("id", operatorRow.id);
+        operatorRow = { ...operatorRow, full_name: operatorName.trim(), password: operatorPassword.trim() };
       }
     } else {
       const created = await supabase
         .from("general_inventory_operators")
-        .insert({ full_name: operatorName.trim(), phone })
+        .insert({ full_name: operatorName.trim(), phone, password: operatorPassword.trim() })
         .select("*")
         .single();
       if (created.error) {
@@ -1235,7 +1242,7 @@ export default function InventariosPage() {
         </div>
       </header>
 
-      <div className={`mx-auto grid max-w-7xl gap-4 px-3 py-4 ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
+      <div className={`mx-auto grid ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
         {showSidePanel && (
         <aside className="space-y-4">
           {isValidator && (
@@ -1284,6 +1291,7 @@ export default function InventariosPage() {
               <div className="mt-3 space-y-2">
                 <input value={operatorName} onChange={event => setOperatorName(event.target.value)} placeholder="Nombres completos" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <input value={operatorPhone} onChange={event => setOperatorPhone(event.target.value)} placeholder="Celular" inputMode="numeric" className="w-full rounded-xl border px-3 py-3 text-sm" />
+                <input value={operatorPassword} onChange={event => setOperatorPassword(event.target.value)} placeholder="Clave" type="password" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <button onClick={registerOperator} disabled={!selectedSessionId} className="w-full rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                   Entrar al inventario
                 </button>
@@ -1520,22 +1528,30 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && selectedSession && canOperatorEnter(selectedSession.status) && !isValidator && (
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between gap-2">
+          {operator && !isValidator && (
+            <section className="rounded-2xl border bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
                   <h2 className="font-black">Conteo por ubicación</h2>
-                  <p className="text-xs text-slate-500">{operator.full_name}</p>
+                  <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
                 </div>
                 {editingCountId && <button onClick={() => { setEditingCountId(null); setProductCode(""); setQuantity(""); }} className="rounded-xl border px-3 py-2 text-xs font-black">Cancelar edición</button>}
               </div>
-              <div className="grid gap-2 md:grid-cols-[1fr_1fr_120px_auto]">
-                <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación" className="min-w-0 rounded-xl border px-3 py-3 text-sm font-bold" />
-                <input value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra" className="min-w-0 rounded-xl border px-3 py-3 text-sm" />
-                <input value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-sm" />
-                <button onClick={saveCount} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+              <div className="space-y-2">
+                <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
+                  <option value="">Selecciona inventario activo</option>
+                  {activeSessions.map(session => (
+                    <option key={session.id} value={session.id}>{session.name} - {session.store_name || session.store_id}</option>
+                  ))}
+                </select>
+                <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 rounded-xl border px-3 py-3 text-base font-black" />
+                <input value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 rounded-xl border px-3 py-3 text-base" />
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <input value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
+                  <button onClick={saveCount} disabled={!selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                   <Save size={16} /> Guardar
-                </button>
+                  </button>
+                </div>
               </div>
             </section>
           )}

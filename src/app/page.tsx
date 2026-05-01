@@ -15,13 +15,22 @@ type CyclicUser = {
     whatsapp?: string | null;
 };
 
-type LoginDestination = "/dashboard" | "/auditoria";
+type InventoryOperator = {
+    id: string;
+    full_name: string;
+    phone: string;
+};
+
+type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios";
+type InventoryAuthMode = "login" | "register";
 
 export default function LoginPage() {
     const [username, setUsername]         = useState("");
     const [password, setPassword]         = useState("");
     const [showPassword, setShowPassword] = useState(false);
     const [destination, setDestination]    = useState<LoginDestination>("/dashboard");
+    const [inventoryMode, setInventoryMode] = useState<InventoryAuthMode>("login");
+    const [inventoryFullName, setInventoryFullName] = useState("");
     const [error, setError]               = useState("");
     const [loading, setLoading]           = useState(false);
 
@@ -51,7 +60,82 @@ export default function LoginPage() {
         return true;
     }
 
+    function normalizePhone(value: string) {
+        return value.replace(/\D/g, "");
+    }
+
+    function enterInventory(operator: InventoryOperator) {
+        localStorage.removeItem("cyclic_user");
+        localStorage.setItem("general_inventory_operator", JSON.stringify(operator));
+        window.location.href = "/inventarios";
+    }
+
+    async function handleInventoryAuth() {
+        const phone = normalizePhone(username);
+        const pass = password.trim();
+        setError("");
+
+        if (phone.length < 8 || pass.length < 4) {
+            setError("Ingresa celular y clave de al menos 4 caracteres.");
+            return;
+        }
+
+        setLoading(true);
+
+        if (inventoryMode === "register") {
+            if (!inventoryFullName.trim()) {
+                setError("Ingresa tus nombres completos.");
+                setLoading(false);
+                return;
+            }
+
+            const existing = await supabase
+                .from("general_inventory_operators")
+                .select("id")
+                .eq("phone", phone)
+                .maybeSingle();
+
+            if (existing.data) {
+                setError("Este celular ya esta registrado. Usa Iniciar sesion.");
+                setLoading(false);
+                return;
+            }
+
+            const created = await supabase
+                .from("general_inventory_operators")
+                .insert({ full_name: inventoryFullName.trim(), phone, password: pass })
+                .select("id,full_name,phone")
+                .single();
+
+            setLoading(false);
+            if (created.error || !created.data) {
+                setError("No se pudo registrar operador. Verifica que ejecutaste el SQL.");
+                return;
+            }
+            enterInventory(created.data as InventoryOperator);
+            return;
+        }
+
+        const { data, error: dbError } = await supabase
+            .from("general_inventory_operators")
+            .select("id,full_name,phone")
+            .eq("phone", phone)
+            .eq("password", pass)
+            .maybeSingle();
+
+        setLoading(false);
+        if (dbError || !data) {
+            setError("Celular o clave incorrectos.");
+            return;
+        }
+        enterInventory(data as InventoryOperator);
+    }
+
     async function handleLogin() {
+        if (destination === "/inventarios") {
+            await handleInventoryAuth();
+            return;
+        }
         setLoading(true);
         setError("");
         const { data, error: dbError } = await supabase
@@ -265,8 +349,8 @@ export default function LoginPage() {
                             </p>
                         </div>
                     </div>
-                    <h1 className="text-2xl font-bold text-white">Cíclicos</h1>
-                    <p className="text-slate-400 text-sm">Ingresa con tus credenciales</p>
+                    <h1 className="text-2xl font-bold text-white">{destination === "/inventarios" ? "Inventario general" : "Cíclicos"}</h1>
+                    <p className="text-slate-400 text-sm">{destination === "/inventarios" ? "Acceso exclusivo para conteo general" : "Ingresa con tus credenciales"}</p>
                 </div>
 
                 {/* Error */}
@@ -279,17 +363,52 @@ export default function LoginPage() {
 
                 {/* Campos */}
                 <div className="space-y-3">
+                    {destination === "/inventarios" && (
+                        <div className="grid grid-cols-2 overflow-hidden rounded-2xl p-1"
+                            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}>
+                            <button
+                                type="button"
+                                className={`rounded-xl px-3 py-2 text-xs font-bold transition-all ${inventoryMode === "login" ? "bg-orange-600 text-white" : "text-slate-300"}`}
+                                onClick={() => setInventoryMode("login")}
+                            >
+                                Iniciar sesión
+                            </button>
+                            <button
+                                type="button"
+                                className={`rounded-xl px-3 py-2 text-xs font-bold transition-all ${inventoryMode === "register" ? "bg-orange-600 text-white" : "text-slate-300"}`}
+                                onClick={() => setInventoryMode("register")}
+                            >
+                                Registrarme
+                            </button>
+                        </div>
+                    )}
+
+                    {destination === "/inventarios" && inventoryMode === "register" && (
+                        <input
+                            className="w-full rounded-2xl p-3 text-sm text-white placeholder-slate-400 outline-none transition-all"
+                            style={{
+                                background: "rgba(255,255,255,0.08)",
+                                border: "1px solid rgba(255,255,255,0.15)",
+                            }}
+                            placeholder="Nombres completos"
+                            value={inventoryFullName}
+                            onChange={e => setInventoryFullName(e.target.value)}
+                            autoComplete="name"
+                        />
+                    )}
+
                     <input
                         className="w-full rounded-2xl p-3 text-sm text-white placeholder-slate-400 outline-none transition-all"
                         style={{
                             background: "rgba(255,255,255,0.08)",
                             border: "1px solid rgba(255,255,255,0.15)",
                         }}
-                        placeholder="Usuario"
+                        placeholder={destination === "/inventarios" ? "Celular" : "Usuario"}
                         value={username}
                         onChange={e => setUsername(e.target.value)}
                         onKeyDown={e => e.key === "Enter" && handleLogin()}
-                        autoComplete="username"
+                        inputMode={destination === "/inventarios" ? "numeric" : "text"}
+                        autoComplete={destination === "/inventarios" ? "tel" : "username"}
                     />
 
                     <div className="relative">
@@ -326,10 +445,12 @@ export default function LoginPage() {
                     >
                         <option value="/dashboard" className="text-slate-900">Conteo ciclico</option>
                         <option value="/auditoria" className="text-slate-900">Auditoria</option>
+                        <option value="/inventarios" className="text-slate-900">Inventario general</option>
                     </select>
                 </div>
 
                 {/* Botón cambiar contraseña */}
+                {destination !== "/inventarios" && (
                 <div className="text-center">
                     <button
                         type="button"
@@ -364,6 +485,7 @@ export default function LoginPage() {
                         Cambiar contraseña
                     </button>
                 </div>
+                )}
 
                 {/* Botón ingresar */}
                 <button
@@ -386,7 +508,7 @@ export default function LoginPage() {
                             </svg>
                             Ingresando...
                         </span>
-                    ) : "Ingresar"}
+                    ) : destination === "/inventarios" && inventoryMode === "register" ? "Registrarme e ingresar" : "Ingresar"}
                 </button>
 
                 {/* Footer */}
