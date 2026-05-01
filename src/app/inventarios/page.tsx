@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogIn, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -1188,6 +1188,17 @@ export default function InventariosPage() {
     localStorage.removeItem(OPERATOR_KEY);
   }
 
+  function logoutUser() {
+    setUser(null);
+    setValidatorTab("preparacion");
+    localStorage.removeItem("cyclic_user");
+    window.location.href = "/";
+  }
+
+  function goLogin() {
+    window.location.href = "/";
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
@@ -1203,9 +1214,22 @@ export default function InventariosPage() {
           <button onClick={refreshCurrentView} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
-          {operator && (
-            <button onClick={logoutOperator} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Salir operador">
+          {user && (
+            <button onClick={logoutUser} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
               <LogOut size={18} />
+              <span className="hidden sm:inline">Cerrar sesión</span>
+            </button>
+          )}
+          {operator && !user && (
+            <button onClick={logoutOperator} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Salir operador">
+              <LogOut size={18} />
+              <span className="hidden sm:inline">Salir operador</span>
+            </button>
+          )}
+          {!user && !operator && (
+            <button onClick={goLogin} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesión">
+              <LogIn size={18} />
+              <span className="hidden sm:inline">Iniciar sesión</span>
             </button>
           )}
         </div>
