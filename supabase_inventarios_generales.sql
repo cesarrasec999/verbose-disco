@@ -47,13 +47,29 @@ create table if not exists general_inventory_locations (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references general_inventory_sessions(id) on delete cascade,
   location_code text not null,
+  ticket text,
+  zone text,
+  zone_ref text,
+  lineal text,
+  reference text,
+  full_location text,
   description text,
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   unique (session_id, location_code)
 );
 
+alter table general_inventory_locations add column if not exists ticket text;
+alter table general_inventory_locations add column if not exists zone text;
+alter table general_inventory_locations add column if not exists zone_ref text;
+alter table general_inventory_locations add column if not exists lineal text;
+alter table general_inventory_locations add column if not exists reference text;
+alter table general_inventory_locations add column if not exists full_location text;
+
 create index if not exists idx_gi_locations_session_code on general_inventory_locations(session_id, location_code);
+create index if not exists idx_gi_locations_session_zone on general_inventory_locations(session_id, zone);
+create index if not exists idx_gi_locations_session_zone_ref on general_inventory_locations(session_id, zone_ref);
+create index if not exists idx_gi_locations_session_lineal on general_inventory_locations(session_id, lineal);
 
 create table if not exists general_inventory_non_inventory_products (
   id uuid primary key default gen_random_uuid(),

@@ -2,8 +2,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -48,6 +48,12 @@ type InventoryLocation = {
   id: string;
   session_id: string;
   location_code: string;
+  ticket?: string | null;
+  zone?: string | null;
+  zone_ref?: string | null;
+  lineal?: string | null;
+  reference?: string | null;
+  full_location?: string | null;
   description?: string | null;
   is_active: boolean;
 };
@@ -117,6 +123,28 @@ function canOperatorEnter(status: SessionStatus) {
   return status === "open" || status === "frozen";
 }
 
+async function readWorkbookRows(file: File): Promise<Record<string, string>[]> {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json<Record<string, string>>(sheet, { defval: "", raw: false });
+}
+
+function pickColumn(row: Record<string, string>, names: string[]) {
+  const entries = Object.entries(row);
+  for (const name of names) {
+    const normalized = name.trim().toLowerCase();
+    const found = entries.find(([key]) => key.trim().toLowerCase() === normalized);
+    if (found) return String(found[1] ?? "").trim();
+  }
+  return "";
+}
+
+function firstColumnValue(row: Record<string, string>) {
+  const first = Object.values(row)[0];
+  return String(first ?? "").trim();
+}
+
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -131,8 +159,10 @@ export default function InventariosPage() {
   const [newStoreId, setNewStoreId] = useState("");
   const [newName, setNewName] = useState("");
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
-  const [locationsText, setLocationsText] = useState("");
-  const [nonInventoryText, setNonInventoryText] = useState("");
+  const [locationsFile, setLocationsFile] = useState<File | null>(null);
+  const [nonInventoryFile, setNonInventoryFile] = useState<File | null>(null);
+  const locationsFileRef = useRef<HTMLInputElement | null>(null);
+  const nonInventoryFileRef = useRef<HTMLInputElement | null>(null);
 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [counts, setCounts] = useState<CountRow[]>([]);
@@ -177,6 +207,11 @@ export default function InventariosPage() {
       String(row.observation || "").toLowerCase().includes(q)
     );
   }, [summary, summaryQuery]);
+
+  const pendingLocations = useMemo(() => {
+    const counted = new Set(counts.map(row => row.location_code));
+    return locations.filter(location => !counted.has(location.location_code));
+  }, [locations, counts]);
 
   const kpis = useMemo(() => {
     const rows = summary;
@@ -264,25 +299,50 @@ export default function InventariosPage() {
   }
 
   async function loadSessionData(sessionId: string) {
-    const [locRes, countRes] = await Promise.all([
+    const [locRes, countRows] = await Promise.all([
       supabase.from("general_inventory_locations").select("*").eq("session_id", sessionId).eq("is_active", true).order("location_code"),
-      supabase.from("general_inventory_counts").select("*").eq("session_id", sessionId).order("counted_at", { ascending: false }).limit(300),
+      loadAllCounts(sessionId),
     ]);
 
     setLocations((locRes.data || []) as InventoryLocation[]);
-    setCounts((countRes.data || []) as CountRow[]);
-    if (isValidator) await loadSummary(sessionId);
+    setCounts(countRows);
+    await loadSummary(sessionId);
+  }
+
+  async function loadAllCounts(sessionId: string): Promise<CountRow[]> {
+    const rows: CountRow[] = [];
+    const pageSize = 1000;
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("general_inventory_counts")
+        .select("*")
+        .eq("session_id", sessionId)
+        .order("counted_at", { ascending: false })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        setMessage("Error leyendo registros: " + error.message);
+        break;
+      }
+      rows.push(...((data || []) as CountRow[]));
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+    }
+    return rows;
   }
 
   async function loadSummary(sessionId: string) {
-    const [snapshotRes, countsRes, obsRes] = await Promise.all([
+    const [snapshotRes, countsRes, obsRes, nonInvRes] = await Promise.all([
       supabase.from("general_inventory_stock_snapshot").select("*").eq("session_id", sessionId),
       supabase.from("general_inventory_counts").select("product_id,sku,description,unit,quantity,cost_snapshot").eq("session_id", sessionId),
       supabase.from("general_inventory_item_observations").select("*").eq("session_id", sessionId),
+      supabase.from("general_inventory_non_inventory_products").select("sku").eq("session_id", sessionId),
     ]);
 
+    const nonInventorySkus = new Set((nonInvRes.data || []).map(row => row.sku));
     const countedByProduct = new Map<string, number>();
     for (const row of countsRes.data || []) {
+      if (nonInventorySkus.has(row.sku)) continue;
       countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
 
@@ -292,6 +352,7 @@ export default function InventariosPage() {
     const productIdsInSnapshot = new Set<string>();
     const rows: SummaryRow[] = [];
     for (const snap of snapshotRes.data || []) {
+      if (nonInventorySkus.has(snap.sku)) continue;
       productIdsInSnapshot.add(snap.product_id);
       const counted = countedByProduct.get(snap.product_id) || 0;
       const systemStock = Number(snap.system_stock || 0);
@@ -312,6 +373,7 @@ export default function InventariosPage() {
     }
 
     for (const row of countsRes.data || []) {
+      if (nonInventorySkus.has(row.sku)) continue;
       if (productIdsInSnapshot.has(row.product_id)) continue;
       const counted = countedByProduct.get(row.product_id) || 0;
       const cost = Number(row.cost_snapshot || 0);
@@ -366,22 +428,72 @@ export default function InventariosPage() {
   }
 
   async function importLocations() {
-    if (!selectedSessionId || !locationsText.trim()) return;
-    const rows = [...new Set(locationsText.split(/\r?\n/).map(line => line.trim().toUpperCase()).filter(Boolean))]
-      .map(location_code => ({ session_id: selectedSessionId, location_code }));
+    if (!selectedSessionId || !locationsFile) {
+      setMessage("Selecciona el Excel de ubicaciones.");
+      return;
+    }
+    const excelRows = await readWorkbookRows(locationsFile);
+    const uniqueRows = new Map<string, {
+      session_id: string;
+      location_code: string;
+      ticket: string;
+      zone: string | null;
+      zone_ref: string | null;
+      lineal: string | null;
+      reference: string | null;
+      full_location: string | null;
+      description: string | null;
+    }>();
+    for (const row of excelRows) {
+      const ticket = firstColumnValue(row);
+      const locationCode = normalizeCode(ticket).toUpperCase();
+      if (!locationCode) continue;
+      const zona = pickColumn(row, ["ZONA"]);
+      const zonaRef = pickColumn(row, ["ZONA REF"]);
+      const lineal = pickColumn(row, ["LINEAL"]);
+      const referencia = pickColumn(row, ["REFERENCIA"]);
+      const fullLocation = pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]);
+      uniqueRows.set(locationCode, {
+        session_id: selectedSessionId,
+        location_code: locationCode,
+        ticket: locationCode,
+        zone: zona || null,
+        zone_ref: zonaRef || null,
+        lineal: lineal || null,
+        reference: referencia || null,
+        full_location: fullLocation || null,
+        description: fullLocation || [zona, zonaRef, lineal, referencia].filter(Boolean).join(" - ") || null,
+      });
+    }
+    const rows = [...uniqueRows.values()];
+    if (rows.length === 0) {
+      setMessage("No encontre ubicaciones en el Excel.");
+      return;
+    }
     const { error } = await supabase.from("general_inventory_locations").upsert(rows, { onConflict: "session_id,location_code" });
     if (error) {
       setMessage("Error cargando ubicaciones: " + error.message);
       return;
     }
-    setLocationsText("");
-    setMessage(`${rows.length} ubicaciones cargadas.`);
+    setLocationsFile(null);
+    if (locationsFileRef.current) locationsFileRef.current.value = "";
+    setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
     await loadSessionData(selectedSessionId);
   }
 
   async function importNonInventory() {
-    if (!selectedSessionId || !nonInventoryText.trim()) return;
-    const skus = [...new Set(nonInventoryText.split(/\r?\n/).map(line => normalizeCode(line).toUpperCase()).filter(Boolean))];
+    if (!selectedSessionId || !nonInventoryFile) {
+      setMessage("Selecciona el Excel de no inventariables.");
+      return;
+    }
+    const excelRows = await readWorkbookRows(nonInventoryFile);
+    const skus = [...new Set(excelRows
+      .map(row => normalizeCode(pickColumn(row, ["ID", "CODSAP", "CODIGO", "CÓDIGO", "SKU"])).toUpperCase())
+      .filter(Boolean))];
+    if (skus.length === 0) {
+      setMessage("No encontre codigos en el Excel.");
+      return;
+    }
     const productRows: any[] = [];
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
@@ -389,23 +501,29 @@ export default function InventariosPage() {
       productRows.push(...(data || []));
     }
     const productBySku = new Map(productRows.map(row => [row.sku, row]));
-    const rows = skus.map(sku => {
+    const rows = skus.filter(sku => productBySku.has(sku)).map(sku => {
       const product = productBySku.get(sku);
       return {
         session_id: selectedSessionId,
-        product_id: product?.id || null,
+        product_id: product.id,
         sku,
-        description: product?.description || null,
+        description: product.description || null,
         reason: "No inventariable",
       };
     });
+    if (rows.length === 0) {
+      setMessage("Ningun codigo del Excel coincide exactamente con el maestro.");
+      return;
+    }
     const { error } = await supabase.from("general_inventory_non_inventory_products").upsert(rows, { onConflict: "session_id,sku" });
     if (error) {
       setMessage("Error cargando no inventariables: " + error.message);
       return;
     }
-    setNonInventoryText("");
-    setMessage(`${rows.length} codigos no inventariables cargados.`);
+    setNonInventoryFile(null);
+    if (nonInventoryFileRef.current) nonInventoryFileRef.current.value = "";
+    setMessage(`${rows.length} codigos no inventariables cargados. Omitidos por no coincidir: ${skus.length - rows.length}.`);
+    await loadSummary(selectedSessionId);
   }
 
   async function freezeStock() {
@@ -619,6 +737,25 @@ export default function InventariosPage() {
     await loadSummary(selectedSessionId);
   }
 
+  async function markSummaryAsNonInventory(row: SummaryRow) {
+    if (!selectedSessionId) return;
+    const { error } = await supabase
+      .from("general_inventory_non_inventory_products")
+      .upsert({
+        session_id: selectedSessionId,
+        product_id: row.product_id,
+        sku: row.sku,
+        description: row.description,
+        reason: observationDrafts[row.product_id] || "Marcado desde resumen por codigo",
+      }, { onConflict: "session_id,sku" });
+    if (error) {
+      setMessage("No se pudo marcar como no inventariable: " + error.message);
+      return;
+    }
+    setMessage(`${row.sku} marcado como no inventariable. Ya no se considerara en KPIs ni resumen.`);
+    await loadSummary(selectedSessionId);
+  }
+
   function exportRecords() {
     const rows = counts.map(row => ({
       FECHA: new Date(row.counted_at).toLocaleString("es-PE"),
@@ -720,7 +857,7 @@ export default function InventariosPage() {
             )}
           </section>
 
-          {!operator && (
+          {!operator && !isValidator && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Registro operador</h2>
               <p className="mt-1 text-xs text-slate-500">Un celular solo puede tener un registro en inventario general.</p>
@@ -738,14 +875,55 @@ export default function InventariosPage() {
             <section className="space-y-3 rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Preparación</h2>
               <div>
-                <label className="text-xs font-bold text-slate-500">Ubicaciones autorizadas</label>
-                <textarea value={locationsText} onChange={event => setLocationsText(event.target.value)} placeholder="Una ubicación por línea" className="mt-1 h-28 w-full rounded-xl border px-3 py-2 text-sm" />
-                <button onClick={importLocations} className="mt-2 w-full rounded-xl border px-4 py-2 text-sm font-black">Cargar ubicaciones</button>
+                <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
+                <input
+                  ref={locationsFileRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={event => setLocationsFile(event.target.files?.[0] || null)}
+                />
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
+                    <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
+                  </button>
+                  <button onClick={importLocations} disabled={!locationsFile} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    Subir ubicaciones
+                  </button>
+                </div>
               </div>
               <div>
-                <label className="text-xs font-bold text-slate-500">No inventariables</label>
-                <textarea value={nonInventoryText} onChange={event => setNonInventoryText(event.target.value)} placeholder="Un codsap por línea" className="mt-1 h-28 w-full rounded-xl border px-3 py-2 text-sm" />
-                <button onClick={importNonInventory} className="mt-2 w-full rounded-xl border px-4 py-2 text-sm font-black">Cargar no inventariables</button>
+                <label className="text-xs font-bold text-slate-500">No inventariables / no considerar</label>
+                <input
+                  ref={nonInventoryFileRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={event => setNonInventoryFile(event.target.files?.[0] || null)}
+                />
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <button onClick={() => nonInventoryFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
+                    <FolderOpen size={16} /> {nonInventoryFile ? nonInventoryFile.name : "Seleccionar Excel"}
+                  </button>
+                  <button onClick={importNonInventory} disabled={!nonInventoryFile} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    Subir no inventariables
+                  </button>
+                </div>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                <div className="font-black text-slate-900">Ubicaciones</div>
+                <div>Total: {locations.length} | Pendientes: {pendingLocations.length}</div>
+                {pendingLocations.length > 0 && (
+                  <div className="mt-2 max-h-32 overflow-auto rounded-lg border bg-white p-2">
+                    {pendingLocations.slice(0, 80).map(location => (
+                      <div key={location.id} className="border-b py-1 last:border-b-0">
+                        <span className="font-black">{location.location_code}</span>
+                        {location.full_location || location.description ? <span className="text-slate-500"> - {location.full_location || location.description}</span> : null}
+                      </div>
+                    ))}
+                    {pendingLocations.length > 80 && <div className="py-1 text-slate-400">+{pendingLocations.length - 80} pendientes mas</div>}
+                  </div>
+                )}
               </div>
               <button onClick={freezeStock} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 <FileLock2 size={16} /> Congelar stock
@@ -860,7 +1038,7 @@ export default function InventariosPage() {
                       <th className="p-2">Dif.</th>
                       <th className="p-2">Dif. Val.</th>
                       <th className="p-2 text-left">Observación</th>
-                      <th className="p-2">Guardar</th>
+                      <th className="p-2">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -877,7 +1055,10 @@ export default function InventariosPage() {
                           <input value={observationDrafts[row.product_id] || ""} onChange={event => setObservationDrafts(prev => ({ ...prev, [row.product_id]: event.target.value }))} className="w-full rounded-lg border px-2 py-1 text-xs" />
                         </td>
                         <td className="p-2 text-center">
-                          <button onClick={() => saveObservation(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Guardar</button>
+                          <div className="flex justify-center gap-1">
+                            <button onClick={() => saveObservation(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Guardar</button>
+                            <button onClick={() => markSummaryAsNonInventory(row)} className="rounded-lg border border-amber-300 px-2 py-1 text-xs font-black text-amber-700">No inv.</button>
+                          </div>
                         </td>
                       </tr>
                     ))}
