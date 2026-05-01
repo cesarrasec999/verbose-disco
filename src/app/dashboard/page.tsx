@@ -1382,6 +1382,26 @@ export default function DashboardPage() {
         return Number(data?.stock || 0);
     }
 
+    async function filterProductsInStoreStock(productsToFilter: Product[], storeId: string): Promise<Product[]> {
+        const store = allStores.find(s => s.id === storeId) || stores.find(s => s.id === storeId);
+        const sede = String(store?.erp_sede || store?.name || "").trim();
+        if (!sede || productsToFilter.length === 0) return productsToFilter;
+
+        const skus = [...new Set(productsToFilter.map(product => fullProductCode(product.sku)).filter(Boolean))];
+        const available = new Set<string>();
+        for (let i = 0; i < skus.length; i += 500) {
+            const chunk = skus.slice(i, i + 500);
+            const { data } = await supabase
+                .from("stock_general")
+                .select("codsap")
+                .eq("sede", sede)
+                .in("codsap", chunk);
+            for (const row of data || []) available.add(fullProductCode(row.codsap));
+        }
+
+        return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
+    }
+
     async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
@@ -1494,7 +1514,7 @@ export default function DashboardPage() {
             return [];
         }
 
-        const candidates = preferFullCodsapProducts((data || []) as Product[]);
+        const candidates = await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]), selectedStoreId);
         if (!selectedStoreId || candidates.length === 0) return candidates;
 
         const enriched = await Promise.all(candidates.map(async product => ({
@@ -1527,17 +1547,21 @@ export default function DashboardPage() {
             if (product) mappedProducts.push(product as Product);
         }
 
-        if (mappedProducts.length === 1) return mappedProducts[0];
-        if (mappedProducts.length > 1) {
+        const stockMappedProducts = selectedStoreId
+            ? await filterProductsInStoreStock(mappedProducts, selectedStoreId)
+            : mappedProducts;
+
+        if (stockMappedProducts.length === 1) return stockMappedProducts[0];
+        if (stockMappedProducts.length > 1) {
             const enriched = selectedStoreId
-                ? await Promise.all(mappedProducts.map(async product => ({
+                ? await Promise.all(stockMappedProducts.map(async product => ({
                     ...product,
                     system_stock: await getSystemStockForStore(product.sku, selectedStoreId),
                 })))
-                : mappedProducts;
+                : stockMappedProducts;
             setManualProductCodePending(raw);
             setManualProductCandidates(enriched);
-            showMessage(`El codigo de barra ${raw} existe en ${mappedProducts.length} codigos. Elige el correcto.`, "info");
+            showMessage(`El codigo de barra ${raw} existe en ${stockMappedProducts.length} codigos. Elige el correcto.`, "info");
             return "AMBIGUOUS";
         }
 
@@ -1547,7 +1571,10 @@ export default function DashboardPage() {
             .eq("sku", fullProductCode(raw))
             .eq("is_active", true)
             .maybeSingle();
-        if (bySku) return bySku as Product;
+        if (bySku) {
+            const productsInStore = selectedStoreId ? await filterProductsInStoreStock([bySku as Product], selectedStoreId) : [bySku as Product];
+            if (productsInStore.length === 1) return productsInStore[0];
+        }
 
         const { data: byProductBarcode } = await supabase
             .from("cyclic_products")
@@ -1555,7 +1582,10 @@ export default function DashboardPage() {
             .eq("barcode", raw)
             .eq("is_active", true)
             .maybeSingle();
-        if (byProductBarcode) return byProductBarcode as Product;
+        if (byProductBarcode) {
+            const productsInStore = selectedStoreId ? await filterProductsInStoreStock([byProductBarcode as Product], selectedStoreId) : [byProductBarcode as Product];
+            if (productsInStore.length === 1) return productsInStore[0];
+        }
 
         return null;
     }
@@ -1794,7 +1824,9 @@ export default function DashboardPage() {
             .ilike("sku", `%${code}%`)
             .limit(limit);
 
-        return preferFullCodsapProducts((data || []) as Product[]);
+        return valStoreId
+            ? await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]), valStoreId)
+            : preferFullCodsapProducts((data || []) as Product[]);
     }
 
     async function searchProductsForAssign(text: string) {
@@ -1805,7 +1837,10 @@ export default function DashboardPage() {
         let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
         for (const w of words) q = q.ilike("description", `%${w}%`);
         const { data: byDesc } = await q.limit(200);
-        const combined = [...byCode, ...(byDesc || [])];
+        const stockFilteredDesc = valStoreId
+            ? await filterProductsInStoreStock((byDesc || []) as Product[], valStoreId)
+            : ((byDesc || []) as Product[]);
+        const combined = [...byCode, ...stockFilteredDesc];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
         setAssignResults(preferFullCodsapProducts(deduped as Product[]).slice(0, 30));

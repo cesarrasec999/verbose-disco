@@ -410,6 +410,27 @@ export default function AuditoriaPage() {
     return map;
   }
 
+  async function filterProductsInStoreStock(productsToFilter: Product[]): Promise<Product[]> {
+    const store = selectedStore || stores.find(s => s.id === session?.store_id);
+    if (!store || productsToFilter.length === 0) return productsToFilter;
+    const sede = String(store.erp_sede || store.name || "").trim();
+    if (!sede) return productsToFilter;
+
+    const skus = [...new Set(productsToFilter.map(product => fullProductCode(product.sku)).filter(Boolean))];
+    const available = new Set<string>();
+    for (let i = 0; i < skus.length; i += 500) {
+      const chunk = skus.slice(i, i + 500);
+      const { data } = await supabase
+        .from("stock_general")
+        .select("codsap")
+        .eq("sede", sede)
+        .in("codsap", chunk);
+      for (const row of data || []) available.add(fullProductCode(row.codsap));
+    }
+
+    return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
+  }
+
   async function refreshAuditItemStock(item: AuditItem) {
     return item;
   }
@@ -443,7 +464,7 @@ export default function AuditoriaPage() {
       .ilike("sku", `%${code}%`)
       .limit(limit);
 
-    return preferFullCodsapProducts((data || []) as Product[]);
+    return filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]));
   }
 
   async function searchFamily() {
@@ -478,8 +499,9 @@ export default function AuditoriaPage() {
     }
 
     const byCode = await searchProductsByTypedCode(query, 200);
+    const stockFilteredDesc = await filterProductsInStoreStock(allProducts);
     const seen = new Set<string>();
-    const preferredProducts = preferFullCodsapProducts([...byCode, ...allProducts].filter(product => {
+    const preferredProducts = preferFullCodsapProducts([...byCode, ...stockFilteredDesc].filter(product => {
       if (seen.has(product.id)) return false;
       seen.add(product.id);
       return true;
@@ -551,20 +573,27 @@ export default function AuditoriaPage() {
       if (byMappedSku) mappedProducts.push(byMappedSku as Product);
     }
 
-    if (mappedProducts.length === 1) return mappedProducts[0];
-    if (mappedProducts.length > 1) {
-      const stockMap = await getStockMap(mappedProducts);
+    const stockMappedProducts = await filterProductsInStoreStock(mappedProducts);
+    if (stockMappedProducts.length === 1) return stockMappedProducts[0];
+    if (stockMappedProducts.length > 1) {
+      const stockMap = await getStockMap(stockMappedProducts);
       setManualProductCodePending(raw);
-      setManualProductCandidates(mappedProducts.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 })));
-      setMessage(`El codigo de barra ${raw} existe en ${mappedProducts.length} codigos. Elige el correcto.`);
+      setManualProductCandidates(stockMappedProducts.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 })));
+      setMessage(`El codigo de barra ${raw} existe en ${stockMappedProducts.length} codigos. Elige el correcto.`);
       return "AMBIGUOUS";
     }
 
     const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", fullProductCode(raw)).eq("is_active", true).maybeSingle();
-    if (bySku) return bySku as Product;
+    if (bySku) {
+      const productsInStore = await filterProductsInStoreStock([bySku as Product]);
+      if (productsInStore.length === 1) return productsInStore[0];
+    }
 
     const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", raw).eq("is_active", true).maybeSingle();
-    if (byBarcode) return byBarcode as Product;
+    if (byBarcode) {
+      const productsInStore = await filterProductsInStoreStock([byBarcode as Product]);
+      if (productsInStore.length === 1) return productsInStore[0];
+    }
 
     return null;
   }
@@ -577,7 +606,7 @@ export default function AuditoriaPage() {
       .select("*")
       .eq("is_active", true)
       .ilike("sku", `%${code}%`);
-    const candidates = preferFullCodsapProducts((data || []) as Product[]);
+    const candidates = await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]));
     const stockMap = await getStockMap(candidates);
     return candidates.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 }));
   }
