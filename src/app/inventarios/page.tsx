@@ -14,6 +14,7 @@ type OperatorMode = "conteo" | "reconteo";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
+type RecountAssignedSortKey = "status" | "recount_type" | "ticket" | "location_code" | "sku" | "description" | "system_stock" | "counted_qty" | "diff_qty" | "value_diff" | "assigned_operator_name";
 type SortState<T extends string> = { key: T; direction: SortDirection };
 
 type CyclicUser = {
@@ -220,13 +221,15 @@ function sortRecountAssignmentLines<T extends Pick<RecountCandidate, "value_diff
 
 function sortOperatorRecountCards<T extends Pick<RecountCandidate, "location_code" | "ticket" | "sku" | "value_diff">>(rows: T[]) {
   return [...rows].sort((a, b) => {
-    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
-    if (locationCompare !== 0) return locationCompare;
     const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
     if (ticketCompare !== 0) return ticketCompare;
+    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    if (valueCompare !== 0) return valueCompare;
+    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
+    if (locationCompare !== 0) return locationCompare;
     const skuCompare = String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
     if (skuCompare !== 0) return skuCompare;
-    return Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    return 0;
   });
 }
 
@@ -273,11 +276,14 @@ export default function InventariosPage() {
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
   const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
+  const [recountAssignedSort, setRecountAssignedSort] = useState<SortState<RecountAssignedSortKey>>({ key: "ticket", direction: "asc" });
+  const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
   const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
   const [inventoryOperators, setInventoryOperators] = useState<InventoryOperator[]>([]);
   const [inventoryOperatorDrafts, setInventoryOperatorDrafts] = useState<Record<string, InventoryOperatorDraft>>({});
   const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
+  const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
   const [operatorRecountContextItems, setOperatorRecountContextItems] = useState<RecountItem[]>([]);
   const [recountType, setRecountType] = useState<RecountType>("surplus");
   const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
@@ -428,12 +434,46 @@ export default function InventariosPage() {
     [assignedRecountKeys, selectedRecountCandidates]
   );
 
+  const assignedRecountRows = useMemo(() => {
+    const q = recountAssignedQuery.trim().toLowerCase();
+    const rows = recountItems.filter(row =>
+      row.status !== "cancelled" &&
+      (!q ||
+        row.sku.toLowerCase().includes(q) ||
+        row.description.toLowerCase().includes(q) ||
+        String(row.location_code || "").toLowerCase().includes(q) ||
+        String(row.full_location || "").toLowerCase().includes(q) ||
+        String(row.ticket || "").toLowerCase().includes(q))
+    );
+    return [...rows].sort((a, b) => {
+      if (recountAssignedSort.key === "ticket") {
+        const ticketCompare = compareValues(String(a.ticket || ""), String(b.ticket || ""), recountAssignedSort.direction);
+        if (ticketCompare !== 0) return ticketCompare;
+        const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+        if (valueCompare !== 0) return valueCompare;
+      }
+      if (recountAssignedSort.key === "value_diff") {
+        const multiplier = recountAssignedSort.direction === "asc" ? 1 : -1;
+        const valueCompare = (Math.abs(Number(a.value_diff || 0)) - Math.abs(Number(b.value_diff || 0))) * multiplier;
+        if (valueCompare !== 0) return valueCompare;
+        return String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
+      }
+      const left = recountAssignedSort.key === "assigned_operator_name" ? String(a.assigned_operator_name || "") : a[recountAssignedSort.key];
+      const right = recountAssignedSort.key === "assigned_operator_name" ? String(b.assigned_operator_name || "") : b[recountAssignedSort.key];
+      return compareValues(left as string | number, right as string | number, recountAssignedSort.direction);
+    });
+  }, [recountAssignedQuery, recountAssignedSort, recountItems]);
+
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
   }
 
   function toggleSummarySort(key: SummarySortKey) {
     setSummarySort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
+  }
+
+  function toggleRecountAssignedSort(key: RecountAssignedSortKey) {
+    setRecountAssignedSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
   }
 
   const pendingLocations = useMemo(() => {
@@ -782,6 +822,7 @@ export default function InventariosPage() {
       status: row.status || "assigned",
     })) as RecountItem[]);
     setRecountItems(rows);
+    setReassignOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, row.assigned_operator_id || ""])));
   }
 
   async function loadInventoryOperators() {
@@ -1147,6 +1188,36 @@ export default function InventariosPage() {
     }
 
     setMessage(`${rows.length} items asignados para reconteo.`);
+    await loadRecountAssignments(selectedSessionId);
+  }
+
+  async function reassignRecountItem(item: RecountItem) {
+    if (!selectedSessionId || !user || !isValidator) {
+      setMessage("Solo el validador o administrador puede reasignar reconteos.");
+      return;
+    }
+    if (item.status === "counted") {
+      setMessage("Este reconteo ya fue contado y no se puede reasignar sin anular la validacion.");
+      return;
+    }
+    const nextOperatorId = reassignOperatorDrafts[item.id];
+    if (!nextOperatorId) {
+      setMessage("Selecciona el nuevo operador.");
+      return;
+    }
+    const { error } = await supabase
+      .from("general_inventory_recount_items")
+      .update({
+        assigned_operator_id: nextOperatorId,
+        status: "assigned",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", item.id);
+    if (error) {
+      setMessage("No se pudo reasignar reconteo: " + error.message);
+      return;
+    }
+    setMessage("Reconteo reasignado.");
     await loadRecountAssignments(selectedSessionId);
   }
 
@@ -2328,12 +2399,13 @@ export default function InventariosPage() {
                     {unassignedRecountCandidates.length} pendientes | {recountItems.length} asignados
                   </div>
                 </div>
+                <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: ticket primero, luego mayor diferencia valorizada.</p>
               </section>
 
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Lineas pendientes por asignar</h3>
-                  <div className="text-xs font-bold text-slate-500">Ordenado por Dif. val. y ticket</div>
+                  <div className="text-xs font-bold text-slate-500">Ordenado por ticket y luego Dif. val.</div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
                   <table className="w-full min-w-[1260px] text-xs">
@@ -2382,6 +2454,94 @@ export default function InventariosPage() {
                         <tr>
                           <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
                             No hay lineas pendientes para asignar con el filtro actual.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-black">Lineas asignadas / reasignar</h3>
+                  <div className="flex min-w-[240px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                    <input
+                      value={recountAssignedQuery}
+                      onChange={event => setRecountAssignedQuery(event.target.value)}
+                      placeholder="Buscar codigo, descripcion o ubicacion"
+                      className="min-w-0 flex-1 px-2 text-sm outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="overflow-auto rounded-xl border">
+                  <table className="w-full min-w-[1320px] text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <SortHeader label="Estado" active={recountAssignedSort.key === "status"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("status")} align="left" />
+                        <SortHeader label="Tipo" active={recountAssignedSort.key === "recount_type"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("recount_type")} align="left" />
+                        <SortHeader label="Ticket" active={recountAssignedSort.key === "ticket"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("ticket")} align="left" />
+                        <SortHeader label="Ubicacion" active={recountAssignedSort.key === "location_code"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("location_code")} align="left" />
+                        <SortHeader label="Codigo" active={recountAssignedSort.key === "sku"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("sku")} align="left" />
+                        <SortHeader label="Descripcion" active={recountAssignedSort.key === "description"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("description")} align="left" />
+                        <SortHeader label="Sistema" active={recountAssignedSort.key === "system_stock"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("system_stock")} />
+                        <SortHeader label="Contado" active={recountAssignedSort.key === "counted_qty"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("counted_qty")} />
+                        <SortHeader label="Dif." active={recountAssignedSort.key === "diff_qty"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("diff_qty")} />
+                        <SortHeader label="Dif. val." active={recountAssignedSort.key === "value_diff"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("value_diff")} />
+                        <SortHeader label="Asignado actual" active={recountAssignedSort.key === "assigned_operator_name"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("assigned_operator_name")} align="left" />
+                        <th className="p-2 text-left">Nuevo operador</th>
+                        <th className="p-2 text-center">Accion</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignedRecountRows.map(row => (
+                        <tr key={row.id} className="border-t">
+                          <td className="p-2 font-black">{row.status === "counted" ? "Contado" : "Asignado"}</td>
+                          <td className="p-2 font-black">
+                            <span className={row.recount_type === "missing" ? "text-red-600" : "text-blue-700"}>
+                              {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
+                            </span>
+                          </td>
+                          <td className="p-2 font-black">{row.ticket || "-"}</td>
+                          <td className="p-2">{row.location_code || "Por codigo"}</td>
+                          <td className="p-2 font-black text-slate-950">{row.sku}</td>
+                          <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
+                          <td className="p-2 text-center font-bold">{row.system_stock}</td>
+                          <td className="p-2 text-center font-bold">{row.counted_qty}</td>
+                          <td className="p-2 text-center font-black">{row.diff_qty}</td>
+                          <td className="p-2 text-center font-black">{money(row.value_diff)}</td>
+                          <td className="p-2">{row.assigned_operator_name || "-"}</td>
+                          <td className="p-2">
+                            <select
+                              value={reassignOperatorDrafts[row.id] || row.assigned_operator_id || ""}
+                              onChange={event => setReassignOperatorDrafts(prev => ({ ...prev, [row.id]: event.target.value }))}
+                              disabled={row.status === "counted"}
+                              className="w-full rounded-xl border bg-white px-3 py-2 text-xs disabled:opacity-40"
+                            >
+                              <option value="">Selecciona operador</option>
+                              {sessionOperators.map(operatorRow => (
+                                <option key={operatorRow.id} value={operatorRow.id}>
+                                  {operatorRow.full_name}{operatorRow.phone ? ` - ${operatorRow.phone}` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => reassignRecountItem(row)}
+                              disabled={row.status === "counted"}
+                              className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                            >
+                              Reasignar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {assignedRecountRows.length === 0 && (
+                        <tr>
+                          <td colSpan={13} className="p-8 text-center text-sm text-slate-400">
+                            No hay reconteos asignados con ese filtro.
                           </td>
                         </tr>
                       )}
