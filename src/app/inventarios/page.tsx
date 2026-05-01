@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
-type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen";
+type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
@@ -140,6 +140,12 @@ type RecountDraft = {
   quantity: string;
 };
 
+type InventoryOperatorDraft = {
+  full_name: string;
+  phone: string;
+  password: string;
+};
+
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
@@ -268,6 +274,9 @@ export default function InventariosPage() {
   const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
   const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
+  const [inventoryOperators, setInventoryOperators] = useState<InventoryOperator[]>([]);
+  const [inventoryOperatorDrafts, setInventoryOperatorDrafts] = useState<Record<string, InventoryOperatorDraft>>({});
+  const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
   const [recountType, setRecountType] = useState<RecountType>("surplus");
   const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
@@ -667,6 +676,10 @@ export default function InventariosPage() {
         await loadRecountData(sessionId);
         return;
       }
+      if (tab === "usuarios") {
+        await loadInventoryOperators();
+        return;
+      }
       await loadSummary(sessionId);
       return;
     }
@@ -727,7 +740,7 @@ export default function InventariosPage() {
     setSessionOperators(operators);
     if (!recountOperatorId && operators[0]?.id) setRecountOperatorId(operators[0].id);
 
-    const operatorById = new Map(operators.map(row => [row.id, row.full_name]));
+    const operatorById = new Map(operators.map(row => [row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`]));
     const rows = sortRecountAssignmentLines((itemsRes.data || []).map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
@@ -754,6 +767,71 @@ export default function InventariosPage() {
     setRecountItems(rows);
   }
 
+  async function loadInventoryOperators() {
+    const { data, error } = await supabase
+      .from("general_inventory_operators")
+      .select("id,full_name,phone,password")
+      .order("full_name", { ascending: true })
+      .order("phone", { ascending: true });
+
+    if (error) {
+      setMessage("No se pudo leer usuarios de inventario: " + error.message);
+      return;
+    }
+
+    const rows = (data || []) as InventoryOperator[];
+    setInventoryOperators(rows);
+    setInventoryOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, {
+      full_name: row.full_name || "",
+      phone: row.phone || "",
+      password: row.password || "",
+    }])));
+  }
+
+  function updateInventoryOperatorDraft(id: string, field: keyof InventoryOperatorDraft, value: string) {
+    setInventoryOperatorDrafts(prev => ({
+      ...prev,
+      [id]: {
+        full_name: prev[id]?.full_name || "",
+        phone: prev[id]?.phone || "",
+        password: prev[id]?.password || "",
+        [field]: value,
+      },
+    }));
+  }
+
+  async function saveInventoryOperator(id: string) {
+    if (user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede editar usuarios de inventario.");
+      return;
+    }
+    const draft = inventoryOperatorDrafts[id];
+    if (!draft) return;
+    const fullName = draft.full_name.trim();
+    const phone = normalizePhone(draft.phone);
+    const password = draft.password.trim();
+    if (!fullName || phone.length < 8 || !password) {
+      setMessage("Completa nombre, celular valido y clave.");
+      return;
+    }
+
+    setSavingInventoryOperatorId(id);
+    const { error } = await supabase
+      .from("general_inventory_operators")
+      .update({ full_name: fullName, phone, password })
+      .eq("id", id);
+    setSavingInventoryOperatorId(null);
+
+    if (error) {
+      setMessage("No se pudo actualizar usuario. Revisa si el celular ya existe: " + error.message);
+      return;
+    }
+
+    setMessage("Usuario de inventario actualizado.");
+    await loadInventoryOperators();
+    if (selectedSessionId) await loadRecountAssignments(selectedSessionId);
+  }
+
   async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
     const operatorIds = new Set([operatorId]);
     if (operator?.phone) {
@@ -762,6 +840,13 @@ export default function InventariosPage() {
         .select("id")
         .eq("phone", operator.phone);
       for (const row of samePhone.data || []) operatorIds.add(row.id);
+    }
+    if (operator?.full_name) {
+      const sameName = await supabase
+        .from("general_inventory_operators")
+        .select("id")
+        .eq("full_name", operator.full_name);
+      for (const row of sameName.data || []) operatorIds.add(row.id);
     }
 
     const { data, error } = await supabase
@@ -1564,6 +1649,10 @@ export default function InventariosPage() {
     window.location.href = "/";
   }
 
+  function goModule(path: string) {
+    window.location.href = path;
+  }
+
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
@@ -1583,6 +1672,18 @@ export default function InventariosPage() {
           <button onClick={refreshCurrentView} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
+          {user?.role === "Administrador" && (
+            <select
+              value="/inventarios"
+              onChange={event => goModule(event.target.value)}
+              className="hidden shrink-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700 md:block"
+              title="Cambiar modulo"
+            >
+              <option value="/dashboard">Ciclicos</option>
+              <option value="/auditoria">Auditorias</option>
+              <option value="/inventarios">Inventarios</option>
+            </select>
+          )}
           {user && (
             <button onClick={logoutUser} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
               <LogOut size={18} />
@@ -1736,7 +1837,7 @@ export default function InventariosPage() {
 
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
-              <div className="grid grid-cols-4 gap-2">
+              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
                 <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Preparacion
                 </button>
@@ -1749,6 +1850,11 @@ export default function InventariosPage() {
                 <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Resumen
                 </button>
+                {user?.role === "Administrador" && (
+                  <button onClick={() => setValidatorTab("usuarios")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "usuarios" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                    Usuarios
+                  </button>
+                )}
               </div>
             </section>
           )}
@@ -2083,7 +2189,7 @@ export default function InventariosPage() {
 
                   <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} className="rounded-xl border bg-white px-3 py-3 text-sm">
                     <option value="">Operador activo</option>
-                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}</option>)}
+                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}{row.phone ? ` - ${row.phone}` : ""}</option>)}
                   </select>
 
                   <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
@@ -2198,6 +2304,81 @@ export default function InventariosPage() {
                   )}
                 </div>
               </section>
+            </section>
+          )}
+
+          {isValidator && user?.role === "Administrador" && validatorTab === "usuarios" && (
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Usuarios de inventario</h2>
+                  <p className="text-xs text-slate-500">Edita nombre, celular y clave usados solo en inventarios generales.</p>
+                </div>
+                <button onClick={loadInventoryOperators} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50">
+                  Actualizar
+                </button>
+              </div>
+              <div className="overflow-auto rounded-xl border">
+                <table className="w-full min-w-[820px] text-sm">
+                  <thead className="bg-slate-50 text-xs text-slate-600">
+                    <tr>
+                      <th className="p-2 text-left">Nombre</th>
+                      <th className="p-2 text-left">Celular</th>
+                      <th className="p-2 text-left">Clave</th>
+                      <th className="p-2 text-left">ID usuario</th>
+                      <th className="p-2 text-center">Accion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventoryOperators.map(row => {
+                      const draft = inventoryOperatorDrafts[row.id] || { full_name: row.full_name || "", phone: row.phone || "", password: row.password || "" };
+                      return (
+                        <tr key={row.id} className="border-t">
+                          <td className="p-2">
+                            <input
+                              value={draft.full_name}
+                              onChange={event => updateInventoryOperatorDraft(row.id, "full_name", event.target.value)}
+                              className="w-full rounded-xl border px-3 py-2 text-sm"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              value={draft.phone}
+                              onChange={event => updateInventoryOperatorDraft(row.id, "phone", event.target.value)}
+                              inputMode="numeric"
+                              className="w-full rounded-xl border px-3 py-2 text-sm"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              value={draft.password}
+                              onChange={event => updateInventoryOperatorDraft(row.id, "password", event.target.value)}
+                              className="w-full rounded-xl border px-3 py-2 text-sm"
+                            />
+                          </td>
+                          <td className="p-2 font-mono text-xs text-slate-500">{row.id}</td>
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => saveInventoryOperator(row.id)}
+                              disabled={savingInventoryOperatorId === row.id}
+                              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white disabled:opacity-40"
+                            >
+                              {savingInventoryOperatorId === row.id ? "Guardando" : "Guardar"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {inventoryOperators.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="p-8 text-center text-sm text-slate-400">
+                          No hay usuarios registrados en inventarios generales.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 

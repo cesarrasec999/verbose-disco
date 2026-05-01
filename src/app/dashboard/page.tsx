@@ -3858,6 +3858,34 @@ export default function DashboardPage() {
                         </>
                     )}
 
+                    {isAdmin && (
+                        <>
+                            <div className="px-5 pt-4 pb-1">
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
+                            </div>
+                            <div className="px-3 space-y-0.5">
+                                <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 text-white">
+                                    <ClipboardList size={16} />
+                                    <span className="truncate">Ciclicos</span>
+                                </button>
+                                <button
+                                    onClick={() => { window.location.href = "/auditoria"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <FileText size={16} />
+                                    <span className="truncate">Auditorias</span>
+                                </button>
+                                <button
+                                    onClick={() => { window.location.href = "/inventarios"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <Package size={16} />
+                                    <span className="truncate">Inventarios</span>
+                                </button>
+                            </div>
+                        </>
+                    )}
+
                     {/* MÓDULO ADMIN */}
                     {isAdmin && (
                         <>

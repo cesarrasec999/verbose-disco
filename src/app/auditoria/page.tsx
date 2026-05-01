@@ -1099,6 +1099,13 @@ export default function AuditoriaPage() {
           <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
+          {user.role === "Administrador" && (
+            <select value="/auditoria" onChange={e => { window.location.href = e.target.value; }} className="hidden rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700 md:block" title="Cambiar modulo">
+              <option value="/dashboard">Ciclicos</option>
+              <option value="/auditoria">Auditorias</option>
+              <option value="/inventarios">Inventarios</option>
+            </select>
+          )}
           <button onClick={refreshAuditData} disabled={loading} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40" title="Actualizar datos"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
           <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
         </div>
