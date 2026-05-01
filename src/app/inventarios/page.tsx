@@ -1386,34 +1386,34 @@ export default function InventariosPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-900">
+    <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-3 py-3">
-          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver">
+        <div className="mx-auto flex max-w-7xl items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
+          <button onClick={() => window.location.href = "/"} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver">
             <ArrowLeft size={18} />
           </button>
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-base font-black leading-tight">Inventarios generales</h1>
             <p className="truncate text-xs text-slate-500">RASECORP - conteo por ubicaciones</p>
           </div>
-          <button onClick={refreshCurrentView} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
+          <button onClick={refreshCurrentView} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
           {user && (
-            <button onClick={logoutUser} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
+            <button onClick={logoutUser} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
               <LogOut size={18} />
               <span className="hidden sm:inline">Cerrar sesión</span>
             </button>
           )}
           {operator && !user && (
-            <button onClick={logoutOperator} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Salir operador">
+            <button onClick={logoutOperator} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Salir operador">
               <LogOut size={18} />
               <span className="hidden sm:inline">Salir operador</span>
             </button>
           )}
           {!user && !operator && (
-            <button onClick={goLogin} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesión">
+            <button onClick={goLogin} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesión">
               <LogIn size={18} />
               <span className="hidden sm:inline">Iniciar sesión</span>
             </button>
@@ -1421,7 +1421,7 @@ export default function InventariosPage() {
         </div>
       </header>
 
-      <div className={`mx-auto grid ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
+      <div className={`mx-auto grid w-full min-w-0 ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
         {showSidePanel && (
         <aside className="space-y-4">
           {isValidator && (
@@ -1548,7 +1548,7 @@ export default function InventariosPage() {
         </aside>
         )}
 
-        <section className="space-y-4">
+        <section className="min-w-0 space-y-4">
           {message && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm">{message}</div>}
 
           {isValidator && selectedSessionId && (
@@ -1708,7 +1708,7 @@ export default function InventariosPage() {
           )}
 
           {operator && !isValidator && (
-            <section className="rounded-2xl border bg-white p-3 shadow-sm">
+            <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
                   <h2 className="font-black">Conteo por ubicación</h2>
@@ -1717,19 +1717,19 @@ export default function InventariosPage() {
                 {editingCountId && <button onClick={() => { setEditingCountId(null); setProductCode(""); setQuantity(""); }} className="rounded-xl border px-3 py-2 text-xs font-black">Cancelar edición</button>}
               </div>
               <div className="space-y-2">
-                <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
+                <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full min-w-0 rounded-xl border bg-white px-3 py-3 text-sm font-bold">
                   <option value="">Selecciona inventario activo</option>
                   {activeSessions.map(session => (
                     <option key={session.id} value={session.id}>{session.name} - {session.store_name || session.store_id}</option>
                   ))}
                 </select>
-                <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
+                <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
                   <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
                   <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicación">
                     <QrCode size={22} />
                   </button>
                 </div>
-                <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
+                <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
                   <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
                   <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear producto">
                     <QrCode size={22} />
@@ -1759,10 +1759,10 @@ export default function InventariosPage() {
                     ))}
                   </div>
                 )}
-                <div className="grid grid-cols-[1fr_auto] gap-2">
+                <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_3.25rem] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <input ref={qtyInputRef} value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
-                  <button onClick={saveCount} disabled={savingCount || !selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white transition active:scale-95 active:bg-slate-700 disabled:opacity-40 disabled:active:scale-100">
-                  <Save size={16} /> {savingCount ? "Guardando..." : "Guardar"}
+                  <button onClick={saveCount} disabled={savingCount || !selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-0 py-3 text-sm font-black text-white transition active:scale-95 active:bg-slate-700 disabled:opacity-40 disabled:active:scale-100 sm:min-w-28 sm:px-4">
+                  <Save size={16} /> <span className="hidden sm:inline">{savingCount ? "Guardando..." : "Guardar"}</span>
                   </button>
                 </div>
               </div>
@@ -1770,7 +1770,7 @@ export default function InventariosPage() {
           )}
 
           {operator && !isValidator && (
-            <section className="rounded-2xl border bg-white shadow-sm">
+            <section className="min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm">
               <div className="border-b p-3">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
@@ -1784,13 +1784,13 @@ export default function InventariosPage() {
               <div className="divide-y">
                 {filteredCounts.slice(0, 40).map(row => (
                   <div key={row.id} className="p-3">
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-black text-slate-900">{row.location_code}</span>
                           <span className="font-black text-blue-700">{row.sku}</span>
                         </div>
-                        <div className="truncate text-sm text-slate-600">{row.description}</div>
+                        <div className="max-w-full truncate text-sm text-slate-600">{row.description}</div>
                         <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
                       </div>
                       <div className="text-right">
