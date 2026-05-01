@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogIn, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -104,6 +104,7 @@ type SummaryRow = {
 
 type RecountType = "surplus" | "missing";
 type RecountColumn = "zone" | "zone_ref" | "lineal" | "ticket";
+type ScannerTarget = "location" | "product" | null;
 
 type RecountCandidate = {
   product_id: string;
@@ -215,6 +216,8 @@ export default function InventariosPage() {
   const [productCode, setProductCode] = useState("");
   const [quantity, setQuantity] = useState("");
   const [editingCountId, setEditingCountId] = useState<string | null>(null);
+  const productInputRef = useRef<HTMLInputElement | null>(null);
+  const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryQuery, setSummaryQuery] = useState("");
@@ -228,6 +231,13 @@ export default function InventariosPage() {
   const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
   const [recountValue, setRecountValue] = useState("");
   const [recountOperatorId, setRecountOperatorId] = useState("");
+  const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
+  const [torchOn, setTorchOn] = useState(false);
+  const scannerRef = useRef<any>(null);
+  const scannerBusyRef = useRef(false);
+  const scannerTargetRef = useRef<ScannerTarget>(null);
+  const scannerHistoryRef = useRef(false);
+  const scannerContainerId = "inventory-scanner";
 
   const isValidator = user?.role === "Administrador" || user?.role === "Validador";
   const selectedSession = useMemo(
@@ -437,6 +447,103 @@ export default function InventariosPage() {
     if (!selectedSessionId || !operator || isValidator) return;
     void loadOperatorRecountItems(selectedSessionId, operator.id);
   }, [selectedSessionId, operator?.id, isValidator]);
+
+  useEffect(() => {
+    scannerTargetRef.current = scannerTarget;
+  }, [scannerTarget]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!scannerTargetRef.current) return;
+      scannerHistoryRef.current = false;
+      void stopScanner(false);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!scannerTarget) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { Html5Qrcode } = await import("html5-qrcode");
+        if (cancelled) return;
+        const scanner = new Html5Qrcode(scannerContainerId);
+        scannerRef.current = scanner;
+        scannerBusyRef.current = false;
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
+          async (decodedText: string) => {
+            if (scannerBusyRef.current) return;
+            scannerBusyRef.current = true;
+            const target = scannerTargetRef.current;
+            await stopScanner();
+            const clean = decodedText.trim();
+            if (target === "location") {
+              setLocationCode(clean.toUpperCase());
+              setMessage("Ubicación escaneada.");
+              setTimeout(() => productInputRef.current?.focus(), 50);
+            }
+            if (target === "product") {
+              setProductCode(clean);
+              setMessage("Código de producto escaneado.");
+              setTimeout(() => qtyInputRef.current?.focus(), 50);
+            }
+          },
+          () => {}
+        );
+      } catch (err: any) {
+        setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
+        await stopScanner();
+      }
+    })();
+    return () => { cancelled = true; void stopScanner(false); };
+  }, [scannerTarget]);
+
+  function openScanner(target: Exclude<ScannerTarget, null>) {
+    if (!scannerHistoryRef.current) {
+      window.history.pushState({ inventoryScanner: true }, "", window.location.href);
+      scannerHistoryRef.current = true;
+    }
+    setTorchOn(false);
+    setScannerTarget(target);
+  }
+
+  async function stopScanner(removeHistory = true) {
+    scannerTargetRef.current = null;
+    setTorchOn(false);
+    setScannerTarget(null);
+    try {
+      if (scannerRef.current) {
+        const state = scannerRef.current.getState?.();
+        if (state !== 1) await scannerRef.current.stop();
+        await scannerRef.current.clear();
+      }
+    } catch {}
+    scannerRef.current = null;
+    scannerBusyRef.current = false;
+    if (removeHistory && scannerHistoryRef.current) {
+      scannerHistoryRef.current = false;
+      window.history.back();
+    }
+  }
+
+  async function toggleTorch() {
+    try {
+      const next = !torchOn;
+      const scanner = scannerRef.current;
+      if (!scanner?.applyVideoConstraints) {
+        setMessage("La linterna no está disponible en este dispositivo.");
+        return;
+      }
+      await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch {
+      setMessage("La linterna no está disponible en este dispositivo.");
+    }
+  }
 
   async function loadInitial(preferredSessionId = "") {
     setLoading(true);
@@ -1544,14 +1651,62 @@ export default function InventariosPage() {
                     <option key={session.id} value={session.id}>{session.name} - {session.store_name || session.store_id}</option>
                   ))}
                 </select>
-                <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 rounded-xl border px-3 py-3 text-base font-black" />
-                <input value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 rounded-xl border px-3 py-3 text-base" />
+                <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
+                  <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
+                  <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white" title="Escanear ubicación">
+                    <QrCode size={22} />
+                  </button>
+                </div>
+                <div className="flex rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
+                  <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
+                  <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white" title="Escanear producto">
+                    <QrCode size={22} />
+                  </button>
+                </div>
                 <div className="grid grid-cols-[1fr_auto] gap-2">
-                  <input value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
+                  <input ref={qtyInputRef} value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
                   <button onClick={saveCount} disabled={!selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-28 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                   <Save size={16} /> Guardar
                   </button>
                 </div>
+              </div>
+            </section>
+          )}
+
+          {operator && !isValidator && (
+            <section className="rounded-2xl border bg-white shadow-sm">
+              <div className="border-b p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
+                  <div className="text-xs font-bold text-slate-500">{filteredCounts.length}</div>
+                </div>
+                <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
+                  <Search size={16} className="shrink-0 text-slate-400" />
+                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                </div>
+              </div>
+              <div className="divide-y">
+                {filteredCounts.slice(0, 40).map(row => (
+                  <div key={row.id} className="p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-black text-slate-900">{row.location_code}</span>
+                          <span className="font-black text-blue-700">{row.sku}</span>
+                        </div>
+                        <div className="truncate text-sm text-slate-600">{row.description}</div>
+                        <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xl font-black text-slate-950">{row.quantity}</div>
+                        {operator.id === row.operator_id && (
+                          <button onClick={() => editCount(row)} className="mt-1 rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {filteredCounts.length === 0 && <div className="p-8 text-center text-sm text-slate-400">Sin registros.</div>}
               </div>
             </section>
           )}
@@ -1711,7 +1866,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {(!isValidator || !selectedSessionId || validatorTab === "registros") && (
+          {((!isValidator && !operator) || !selectedSessionId || (isValidator && validatorTab === "registros")) && (
           <section className="rounded-2xl border bg-white shadow-sm">
             <div className="border-b p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1824,6 +1979,28 @@ export default function InventariosPage() {
           )}
         </section>
       </div>
+
+      {scannerTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3>
+                <p className="text-xs text-slate-500">Apunta al código con la cámara.</p>
+              </div>
+              <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
+                <Flashlight className="mr-2 inline" size={18} /> Linterna
+              </button>
+            </div>
+            <div className="overflow-hidden rounded-xl bg-black">
+              <div id={scannerContainerId} className="min-h-[280px] w-full" />
+            </div>
+            <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
+              Cerrar cámara
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
