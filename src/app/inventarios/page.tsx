@@ -3,13 +3,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, FolderOpen, LogOut, PackageSearch, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
-type ValidatorTab = "preparacion" | "registros" | "resumen";
+type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
@@ -101,6 +101,36 @@ type SummaryRow = {
   observation?: string | null;
 };
 
+type RecountType = "surplus" | "missing";
+type RecountColumn = "zone" | "zone_ref" | "lineal" | "ticket";
+
+type RecountCandidate = {
+  product_id: string;
+  sku: string;
+  description: string;
+  unit: string;
+  location_id: string | null;
+  location_code: string | null;
+  full_location: string | null;
+  zone: string | null;
+  zone_ref: string | null;
+  lineal: string | null;
+  ticket: string | null;
+  recount_type: RecountType;
+  system_stock: number;
+  counted_qty: number;
+  diff_qty: number;
+  cost_snapshot: number;
+  value_diff: number;
+};
+
+type RecountItem = RecountCandidate & {
+  id: string;
+  status: string;
+  assigned_operator_id: string | null;
+  assigned_operator_name?: string | null;
+};
+
 const OPERATOR_KEY = "general_inventory_operator";
 const SESSION_KEY = "general_inventory_session_id";
 
@@ -177,6 +207,7 @@ export default function InventariosPage() {
 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [counts, setCounts] = useState<CountRow[]>([]);
+  const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
   const [locationCode, setLocationCode] = useState("");
   const [productCode, setProductCode] = useState("");
@@ -189,6 +220,12 @@ export default function InventariosPage() {
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
   const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
+  const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
+  const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
+  const [recountType, setRecountType] = useState<RecountType>("surplus");
+  const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
+  const [recountValue, setRecountValue] = useState("");
+  const [recountOperatorId, setRecountOperatorId] = useState("");
 
   const isValidator = user?.role === "Administrador" || user?.role === "Validador";
   const selectedSession = useMemo(
@@ -237,6 +274,86 @@ export default function InventariosPage() {
     });
   }, [summary, summaryQuery, summarySort]);
 
+  const recountCandidates = useMemo(() => {
+    const summaryByProduct = new Map(summary.map(row => [row.product_id, row]));
+    const locationById = new Map(locations.map(row => [row.id, row]));
+    const surplusGroups = new Map<string, RecountCandidate>();
+
+    for (const row of counts) {
+      const summaryRow = summaryByProduct.get(row.product_id);
+      if (!summaryRow || summaryRow.diff <= 0) continue;
+      const location = locationById.get(row.location_id) || null;
+      const key = `${row.product_id}__${row.location_id || row.location_code}`;
+      const current = surplusGroups.get(key);
+      if (current) {
+        current.counted_qty += Number(row.quantity || 0);
+        current.value_diff = current.counted_qty * current.cost_snapshot;
+        continue;
+      }
+      surplusGroups.set(key, {
+        product_id: row.product_id,
+        sku: row.sku,
+        description: row.description,
+        unit: row.unit,
+        location_id: row.location_id,
+        location_code: row.location_code,
+        full_location: location?.full_location || location?.description || null,
+        zone: location?.zone || null,
+        zone_ref: location?.zone_ref || null,
+        lineal: location?.lineal || null,
+        ticket: location?.ticket || row.location_code,
+        recount_type: "surplus",
+        system_stock: summaryRow.system_stock,
+        counted_qty: Number(row.quantity || 0),
+        diff_qty: summaryRow.diff,
+        cost_snapshot: Number(row.cost_snapshot || summaryRow.cost || 0),
+        value_diff: Number(row.quantity || 0) * Number(row.cost_snapshot || summaryRow.cost || 0),
+      });
+    }
+
+    const missingRows = summary
+      .filter(row => row.diff < 0)
+      .map(row => ({
+        product_id: row.product_id,
+        sku: row.sku,
+        description: row.description,
+        unit: row.unit,
+        location_id: null,
+        location_code: null,
+        full_location: null,
+        zone: null,
+        zone_ref: null,
+        lineal: null,
+        ticket: null,
+        recount_type: "missing" as const,
+        system_stock: row.system_stock,
+        counted_qty: row.counted,
+        diff_qty: row.diff,
+        cost_snapshot: row.cost,
+        value_diff: row.valueDiff,
+      }));
+
+    return [...surplusGroups.values(), ...missingRows].sort((a, b) => {
+      const locCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true });
+      if (locCompare !== 0) return locCompare;
+      return Math.abs(b.value_diff) - Math.abs(a.value_diff);
+    });
+  }, [counts, locations, summary]);
+
+  const recountValues = useMemo(() => {
+    const values = locations
+      .map(location => String(location[recountColumn] || "").trim())
+      .filter(Boolean);
+    return [...new Set(values)].sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+  }, [locations, recountColumn]);
+
+  const selectedRecountCandidates = useMemo(() => {
+    if (recountType === "missing") {
+      return recountCandidates.filter(row => row.recount_type === "missing").sort((a, b) => Math.abs(b.value_diff) - Math.abs(a.value_diff));
+    }
+    return recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue);
+  }, [recountCandidates, recountColumn, recountType, recountValue]);
+
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
   }
@@ -246,9 +363,9 @@ export default function InventariosPage() {
   }
 
   const pendingLocations = useMemo(() => {
-    const counted = new Set(counts.map(row => row.location_code));
+    const counted = new Set(countedLocationCodes);
     return locations.filter(location => !counted.has(location.location_code));
-  }, [locations, counts]);
+  }, [locations, countedLocationCodes]);
 
   const kpis = useMemo(() => {
     const rows = summary;
@@ -310,8 +427,13 @@ export default function InventariosPage() {
   useEffect(() => {
     if (!selectedSessionId) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
-    void loadSessionData(selectedSessionId);
-  }, [selectedSessionId]);
+    void loadSessionData(selectedSessionId, validatorTab);
+  }, [selectedSessionId, validatorTab]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !operator || isValidator) return;
+    void loadOperatorRecountItems(selectedSessionId, operator.id);
+  }, [selectedSessionId, operator?.id, isValidator]);
 
   async function loadInitial(preferredSessionId = "") {
     setLoading(true);
@@ -340,15 +462,145 @@ export default function InventariosPage() {
     setLoading(false);
   }
 
-  async function loadSessionData(sessionId: string) {
+  async function refreshCurrentView() {
+    await loadInitial(selectedSessionId);
+    if (selectedSessionId) await loadSessionData(selectedSessionId, validatorTab);
+  }
+
+  async function loadSessionData(sessionId: string, tab: ValidatorTab = validatorTab) {
+    if (isValidator) {
+      if (tab === "preparacion") {
+        await loadPreparationData(sessionId);
+        return;
+      }
+      if (tab === "registros") {
+        await loadRecordsData(sessionId);
+        return;
+      }
+      if (tab === "reconteo") {
+        await loadRecountData(sessionId);
+        return;
+      }
+      await loadSummary(sessionId);
+      return;
+    }
+
+    await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId)]);
+  }
+
+  async function loadPreparationData(sessionId: string) {
     const [locRes, countRows] = await Promise.all([
       supabase.from("general_inventory_locations").select("*").eq("session_id", sessionId).eq("is_active", true).order("location_code"),
-      loadAllCounts(sessionId),
+      loadPagedSessionRows("general_inventory_counts", "location_code", sessionId, "location_code"),
     ]);
 
     setLocations((locRes.data || []) as InventoryLocation[]);
+    setCountedLocationCodes([...new Set(countRows.map(row => row.location_code).filter(Boolean))]);
+  }
+
+  async function loadRecordsData(sessionId: string) {
+    const countRows = await loadAllCounts(sessionId);
     setCounts(countRows);
-    await loadSummary(sessionId);
+    setCountedLocationCodes([...new Set(countRows.map(row => row.location_code).filter(Boolean))]);
+  }
+
+  async function loadRecountData(sessionId: string) {
+    await Promise.all([
+      loadPreparationData(sessionId),
+      loadRecordsData(sessionId),
+      loadSummary(sessionId),
+      loadRecountAssignments(sessionId),
+    ]);
+  }
+
+  async function loadRecountAssignments(sessionId: string) {
+    const [operatorsRes, itemsRes] = await Promise.all([
+      supabase
+        .from("general_inventory_session_operators")
+        .select("operator_id,status,general_inventory_operators(id,full_name,phone)")
+        .eq("session_id", sessionId)
+        .eq("status", "active"),
+      supabase
+        .from("general_inventory_recount_items")
+        .select("*")
+        .eq("session_id", sessionId)
+        .order("location_code", { ascending: true, nullsFirst: false })
+        .order("value_diff", { ascending: false }),
+    ]);
+
+    if (operatorsRes.error) {
+      setMessage("Error leyendo operadores activos: " + operatorsRes.error.message);
+    }
+    if (itemsRes.error) {
+      setMessage("Ejecuta primero el SQL de reconteo. Error: " + itemsRes.error.message);
+    }
+
+    const operators = (operatorsRes.data || [])
+      .map((row: any) => row.general_inventory_operators)
+      .filter(Boolean) as InventoryOperator[];
+    setSessionOperators(operators);
+    if (!recountOperatorId && operators[0]?.id) setRecountOperatorId(operators[0].id);
+
+    const operatorById = new Map(operators.map(row => [row.id, row.full_name]));
+    const rows = (itemsRes.data || []).map((row: any) => ({
+      id: row.id,
+      product_id: row.product_id,
+      sku: row.sku,
+      description: row.description || "",
+      unit: row.unit || "",
+      location_id: row.location_id,
+      location_code: row.location_code,
+      full_location: row.full_location || null,
+      zone: row.zone || null,
+      zone_ref: row.zone_ref || null,
+      lineal: row.lineal || null,
+      ticket: row.ticket || row.location_code || null,
+      recount_type: row.recount_type,
+      system_stock: Number(row.system_stock || 0),
+      counted_qty: Number(row.counted_qty || 0),
+      diff_qty: Number(row.diff_qty || 0),
+      cost_snapshot: Number(row.cost_snapshot || 0),
+      value_diff: Number(row.value_diff || 0),
+      assigned_operator_id: row.assigned_operator_id,
+      assigned_operator_name: operatorById.get(row.assigned_operator_id) || null,
+      status: row.status || "assigned",
+    })) as RecountItem[];
+    setRecountItems(rows);
+  }
+
+  async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
+    const { data, error } = await supabase
+      .from("general_inventory_recount_items")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("assigned_operator_id", operatorId)
+      .eq("status", "assigned")
+      .order("location_code", { ascending: true, nullsFirst: false })
+      .order("value_diff", { ascending: false });
+    if (error) return;
+    setRecountItems((data || []).map((row: any) => ({
+      id: row.id,
+      product_id: row.product_id,
+      sku: row.sku,
+      description: row.description || "",
+      unit: row.unit || "",
+      location_id: row.location_id,
+      location_code: row.location_code,
+      full_location: row.full_location || null,
+      zone: row.zone || null,
+      zone_ref: row.zone_ref || null,
+      lineal: row.lineal || null,
+      ticket: row.ticket || row.location_code || null,
+      recount_type: row.recount_type,
+      system_stock: Number(row.system_stock || 0),
+      counted_qty: Number(row.counted_qty || 0),
+      diff_qty: Number(row.diff_qty || 0),
+      cost_snapshot: Number(row.cost_snapshot || 0),
+      value_diff: Number(row.value_diff || 0),
+      assigned_operator_id: row.assigned_operator_id,
+      assigned_operator_name: operator?.full_name || null,
+      status: row.status || "assigned",
+    })) as RecountItem[]);
   }
 
   async function loadAllCounts(sessionId: string): Promise<CountRow[]> {
@@ -461,6 +713,58 @@ export default function InventariosPage() {
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
   }
 
+  async function assignRecountBlock() {
+    if (!selectedSessionId || !user || !recountOperatorId) {
+      setMessage("Selecciona operador activo para asignar reconteo.");
+      return;
+    }
+    if (recountType === "surplus" && !recountValue) {
+      setMessage("Selecciona el bloque de ubicaciones para sobrantes.");
+      return;
+    }
+
+    const rows = selectedRecountCandidates.map(row => ({
+      session_id: selectedSessionId,
+      product_id: row.product_id,
+      location_id: row.location_id,
+      location_code: row.location_code || "FALTANTE",
+      ticket: row.ticket,
+      zone: row.zone,
+      zone_ref: row.zone_ref,
+      lineal: row.lineal,
+      full_location: row.full_location,
+      recount_type: row.recount_type,
+      sku: row.sku,
+      description: row.description,
+      unit: row.unit,
+      system_stock: row.system_stock,
+      counted_qty: row.counted_qty,
+      diff_qty: row.diff_qty,
+      cost_snapshot: row.cost_snapshot,
+      value_diff: row.value_diff,
+      assigned_operator_id: recountOperatorId,
+      assigned_by: user.id,
+      status: "assigned",
+      updated_at: new Date().toISOString(),
+    }));
+
+    if (rows.length === 0) {
+      setMessage("No hay diferencias para asignar con ese filtro.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("general_inventory_recount_items")
+      .upsert(rows, { onConflict: "session_id,product_id,location_code,recount_type" });
+    if (error) {
+      setMessage("No se pudo asignar reconteo. Ejecuta el SQL si aun no lo hiciste: " + error.message);
+      return;
+    }
+
+    setMessage(`${rows.length} items asignados para reconteo.`);
+    await loadRecountAssignments(selectedSessionId);
+  }
+
   async function createSession() {
     if (!user || !newStoreId || !newName.trim()) {
       setMessage("Completa tienda y nombre de inventario.");
@@ -542,7 +846,7 @@ export default function InventariosPage() {
     setLocationsFile(null);
     if (locationsFileRef.current) locationsFileRef.current.value = "";
     setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
-    await loadSessionData(selectedSessionId);
+    await loadPreparationData(selectedSessionId);
   }
 
   async function importNonInventory() {
@@ -587,7 +891,7 @@ export default function InventariosPage() {
     setNonInventoryFile(null);
     if (nonInventoryFileRef.current) nonInventoryFileRef.current.value = "";
     setMessage(`${rows.length} codigos no inventariables cargados. Omitidos por no coincidir: ${skus.length - rows.length}.`);
-    await loadSummary(selectedSessionId);
+    if (validatorTab === "resumen") await loadSummary(selectedSessionId);
   }
 
   async function freezeStock() {
@@ -609,8 +913,8 @@ export default function InventariosPage() {
       .gt("system_stock", 0);
     setMessage(`Stock congelado. Productos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
     await loadInitial(selectedSessionId);
-    await loadSessionData(selectedSessionId);
     setValidatorTab("resumen");
+    await loadSummary(selectedSessionId);
   }
 
   async function finishSession() {
@@ -641,6 +945,7 @@ export default function InventariosPage() {
     localStorage.removeItem(SESSION_KEY);
     setLocations([]);
     setCounts([]);
+    setCountedLocationCodes([]);
     setSummary([]);
     setMessage("Sesion eliminada.");
     await loadInitial("");
@@ -788,7 +1093,7 @@ export default function InventariosPage() {
     setQuantity("");
     setEditingCountId(null);
     setMessage("Conteo guardado.");
-    await loadSessionData(selectedSession.id);
+    await loadSessionData(selectedSession.id, isValidator ? validatorTab : "registros");
   }
 
   async function editCount(row: CountRow) {
@@ -805,7 +1110,7 @@ export default function InventariosPage() {
       setMessage("No se pudo eliminar: " + error.message);
       return;
     }
-    await loadSessionData(row.session_id);
+    await loadSessionData(row.session_id, isValidator ? validatorTab : "registros");
   }
 
   async function saveObservation(row: SummaryRow) {
@@ -895,7 +1200,7 @@ export default function InventariosPage() {
             <h1 className="truncate text-base font-black leading-tight">Inventarios generales</h1>
             <p className="truncate text-xs text-slate-500">RASECORP - conteo por ubicaciones</p>
           </div>
-          <button onClick={() => loadInitial(selectedSessionId)} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
+          <button onClick={refreshCurrentView} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
           {operator && (
@@ -1037,12 +1342,15 @@ export default function InventariosPage() {
 
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Preparacion
                 </button>
                 <button onClick={() => setValidatorTab("registros")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Registros
+                </button>
+                <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Reconteo
                 </button>
                 <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Resumen
@@ -1208,6 +1516,134 @@ export default function InventariosPage() {
             </section>
           )}
 
+          {operator && !isValidator && recountItems.length > 0 && (
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-3">
+                <h2 className="font-black">Mis reconteos asignados</h2>
+                <p className="text-xs text-slate-500">Ordenados por ubicación de menor a mayor.</p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {recountItems.map(row => (
+                  <article key={row.id} className="rounded-2xl border bg-slate-50 p-4">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-black text-slate-950">{row.sku}</div>
+                        <div className="line-clamp-2 text-sm font-semibold text-slate-700">{row.description}</div>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
+                        {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
+                      </span>
+                    </div>
+                    <div className="space-y-2 text-xs text-slate-600">
+                      <div className="rounded-xl border bg-white p-3">
+                        <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
+                        <div className="truncate">{row.full_location || "Reconteo por código"}</div>
+                        {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <MiniMetric label="Sistema" value={row.system_stock} />
+                        <MiniMetric label="Contado" value={row.counted_qty} />
+                        <MiniMetric label="Dif." value={row.diff_qty} />
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {isValidator && selectedSessionId && validatorTab === "reconteo" && (
+            <section className="space-y-4">
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Reconteo</h2>
+                    <p className="text-xs text-slate-500">Asigna diferencias por bloques a operadores activos.</p>
+                  </div>
+                  <button onClick={assignRecountBlock} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                    Asignar bloque
+                  </button>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr_220px]">
+                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border p-1">
+                    <button onClick={() => setRecountType("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
+                    <button onClick={() => setRecountType("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <select value={recountColumn} onChange={event => { setRecountColumn(event.target.value as RecountColumn); setRecountValue(""); }} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
+                      <option value="zone">Zona</option>
+                      <option value="zone_ref">Zona ref</option>
+                      <option value="lineal">Lineal</option>
+                      <option value="ticket">Ticket</option>
+                    </select>
+                    <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
+                      <option value="">Selecciona bloque</option>
+                      {recountValues.map(value => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </div>
+
+                  <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} className="rounded-xl border bg-white px-3 py-3 text-sm">
+                    <option value="">Operador activo</option>
+                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}</option>)}
+                  </select>
+
+                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
+                    {selectedRecountCandidates.length} items por asignar
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-black">Cards de reconteo</h3>
+                  <div className="text-xs font-bold text-slate-500">{recountItems.length} asignados</div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {(recountItems.length > 0 ? recountItems : selectedRecountCandidates).map((row: any) => (
+                    <article key={`${row.product_id}-${row.location_code || row.recount_type}`} className="rounded-2xl border bg-slate-50 p-4">
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-black text-slate-950">{row.sku}</div>
+                          <div className="line-clamp-2 text-sm font-semibold text-slate-700">{row.description}</div>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
+                          {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 text-xs text-slate-600">
+                        <div className="rounded-xl border bg-white p-3">
+                          <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
+                          <div className="truncate">{row.full_location || "Reconteo por código"}</div>
+                          {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <MiniMetric label="Sistema" value={row.system_stock} />
+                          <MiniMetric label="Contado" value={row.counted_qty} />
+                          <MiniMetric label="Dif." value={row.diff_qty} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <MiniMetric label="Costo" value={money(row.cost_snapshot)} />
+                          <MiniMetric label="Dif. val." value={money(row.value_diff)} />
+                        </div>
+                        <div className="rounded-xl bg-white p-3 font-bold">
+                          Asignado: {row.assigned_operator_name || sessionOperators.find(op => op.id === row.assigned_operator_id)?.full_name || "Sin asignar"}
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                  {(recountItems.length === 0 && selectedRecountCandidates.length === 0) && (
+                    <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm text-slate-400 md:col-span-2 xl:col-span-3">
+                      No hay diferencias para reconteo con el filtro actual.
+                    </div>
+                  )}
+                </div>
+              </section>
+            </section>
+          )}
+
           {isValidator && selectedSessionId && validatorTab === "resumen" && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1364,6 +1800,15 @@ function SortHeader({ label, active, direction, onClick, align = "center" }: { l
         <span className="text-[10px]">{active ? (direction === "desc" ? "↓" : "↑") : "↕"}</span>
       </button>
     </th>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-xl bg-white p-2 text-center">
+      <div className="text-sm font-black text-slate-950">{value}</div>
+      <div className="text-[11px] font-bold text-slate-500">{label}</div>
+    </div>
   );
 }
 

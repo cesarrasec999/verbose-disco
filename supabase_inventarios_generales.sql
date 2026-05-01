@@ -125,6 +125,58 @@ create index if not exists idx_gi_counts_session_sku on general_inventory_counts
 create index if not exists idx_gi_counts_operator on general_inventory_counts(operator_id);
 create index if not exists idx_gi_counts_location on general_inventory_counts(location_id);
 
+create table if not exists general_inventory_recount_items (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references general_inventory_sessions(id) on delete cascade,
+  product_id uuid not null references cyclic_products(id),
+  location_id uuid references general_inventory_locations(id),
+  location_code text,
+  ticket text,
+  zone text,
+  zone_ref text,
+  lineal text,
+  full_location text,
+  recount_type text not null check (recount_type in ('surplus', 'missing')),
+  sku text not null,
+  description text,
+  unit text,
+  system_stock numeric(14,3) not null default 0,
+  counted_qty numeric(14,3) not null default 0,
+  diff_qty numeric(14,3) not null default 0,
+  cost_snapshot numeric(14,6) not null default 0,
+  value_diff numeric(14,2) not null default 0,
+  assigned_operator_id uuid references general_inventory_operators(id),
+  assigned_by uuid references cyclic_users(id),
+  status text not null default 'assigned' check (status in ('assigned', 'counted', 'reviewed', 'cancelled')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (session_id, product_id, location_code, recount_type)
+);
+
+create index if not exists idx_gi_recount_items_session on general_inventory_recount_items(session_id);
+create index if not exists idx_gi_recount_items_operator on general_inventory_recount_items(assigned_operator_id);
+create index if not exists idx_gi_recount_items_location on general_inventory_recount_items(session_id, location_code);
+
+alter table general_inventory_recount_items add column if not exists ticket text;
+alter table general_inventory_recount_items add column if not exists zone text;
+alter table general_inventory_recount_items add column if not exists zone_ref text;
+alter table general_inventory_recount_items add column if not exists lineal text;
+alter table general_inventory_recount_items add column if not exists full_location text;
+
+create table if not exists general_inventory_recount_counts (
+  id uuid primary key default gen_random_uuid(),
+  recount_item_id uuid not null references general_inventory_recount_items(id) on delete cascade,
+  session_id uuid not null references general_inventory_sessions(id) on delete cascade,
+  operator_id uuid not null references general_inventory_operators(id),
+  quantity numeric(14,3) not null check (quantity >= 0),
+  note text,
+  counted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_gi_recount_counts_item on general_inventory_recount_counts(recount_item_id);
+create index if not exists idx_gi_recount_counts_session on general_inventory_recount_counts(session_id);
+
 create table if not exists general_inventory_item_observations (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references general_inventory_sessions(id) on delete cascade,
