@@ -281,7 +281,7 @@ export default function InventariosPage() {
   );
 
   const isOperatorView = !!operator && !isValidator;
-  const showSidePanel = !isValidator && !operator;
+  const showSidePanel = false;
 
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
@@ -741,16 +741,28 @@ export default function InventariosPage() {
   }
 
   async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
+    const operatorIds = new Set([operatorId]);
+    if (operator?.phone) {
+      const samePhone = await supabase
+        .from("general_inventory_operators")
+        .select("id")
+        .eq("phone", operator.phone);
+      for (const row of samePhone.data || []) operatorIds.add(row.id);
+    }
+
     const { data, error } = await supabase
       .from("general_inventory_recount_items")
       .select("*")
       .eq("session_id", sessionId)
-      .eq("assigned_operator_id", operatorId)
-      .eq("status", "assigned")
+      .in("assigned_operator_id", [...operatorIds])
       .order("location_code", { ascending: true, nullsFirst: false })
       .order("value_diff", { ascending: false });
-    if (error) return;
-    setRecountItems((data || []).map((row: any) => ({
+    if (error) {
+      setMessage("No se pudo leer reconteos asignados: " + error.message);
+      return;
+    }
+    const openRows = (data || []).filter((row: any) => !["counted", "cancelled"].includes(row.status || ""));
+    setRecountItems(sortRecountLines(openRows.map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -772,7 +784,7 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operator?.full_name || null,
       status: row.status || "assigned",
-    })) as RecountItem[]);
+    })) as RecountItem[]));
   }
 
   async function loadAllCounts(sessionId: string): Promise<CountRow[]> {
@@ -1542,8 +1554,12 @@ export default function InventariosPage() {
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
-          <button onClick={() => operator && !user ? logoutOperator() : window.location.href = "/"} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title={operator && !user ? "Cerrar sesión" : "Volver"}>
-            {operator && !user ? <LogOut size={18} /> : <ArrowLeft size={18} />}
+          <button
+            onClick={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
+            className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
+            title={operator && !user ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesión") : "Volver"}
+          >
+            {operator && !user ? (operatorMode === "reconteo" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <ArrowLeft size={18} />}
           </button>
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
           <div className="min-w-0 flex-1">

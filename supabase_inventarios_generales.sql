@@ -187,7 +187,6 @@ create table if not exists general_inventory_recount_counts (
 
 create index if not exists idx_gi_recount_counts_item on general_inventory_recount_counts(recount_item_id);
 create index if not exists idx_gi_recount_counts_session on general_inventory_recount_counts(session_id);
-create index if not exists idx_gi_recount_counts_sku on general_inventory_recount_counts(session_id, sku);
 
 alter table general_inventory_recount_counts add column if not exists location_id uuid references general_inventory_locations(id);
 alter table general_inventory_recount_counts add column if not exists location_code text;
@@ -196,6 +195,8 @@ alter table general_inventory_recount_counts add column if not exists sku text;
 alter table general_inventory_recount_counts add column if not exists description text;
 alter table general_inventory_recount_counts add column if not exists unit text;
 alter table general_inventory_recount_counts add column if not exists cost_snapshot numeric(14,6) not null default 0;
+
+create index if not exists idx_gi_recount_counts_sku on general_inventory_recount_counts(session_id, sku);
 
 do $$
 begin
