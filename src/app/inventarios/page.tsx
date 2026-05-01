@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase/client";
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen";
+type OperatorMode = "conteo" | "reconteo";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
@@ -134,6 +135,7 @@ type RecountItem = RecountCandidate & {
 };
 
 const OPERATOR_KEY = "general_inventory_operator";
+const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 
 function normalizePhone(value: string) {
@@ -194,6 +196,7 @@ export default function InventariosPage() {
   const [sessions, setSessions] = useState<InventorySession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [operator, setOperator] = useState<InventoryOperator | null>(null);
+  const [operatorMode, setOperatorMode] = useState<OperatorMode>("conteo");
   const [operatorName, setOperatorName] = useState("");
   const [operatorPhone, setOperatorPhone] = useState("");
   const [operatorPassword, setOperatorPassword] = useState("");
@@ -431,6 +434,8 @@ export default function InventariosPage() {
     if (rawOperator) {
       try {
         setOperator(JSON.parse(rawOperator) as InventoryOperator);
+        const savedMode = localStorage.getItem(OPERATOR_MODE_KEY);
+        if (savedMode === "reconteo") setOperatorMode("reconteo");
       } catch {
         localStorage.removeItem(OPERATOR_KEY);
       }
@@ -1371,7 +1376,20 @@ export default function InventariosPage() {
 
   function logoutOperator() {
     setOperator(null);
+    setOperatorMode("conteo");
     localStorage.removeItem(OPERATOR_KEY);
+    localStorage.removeItem(OPERATOR_MODE_KEY);
+  }
+
+  async function openOperatorRecountMode() {
+    setOperatorMode("reconteo");
+    localStorage.setItem(OPERATOR_MODE_KEY, "reconteo");
+    if (selectedSessionId && operator) await loadOperatorRecountItems(selectedSessionId, operator.id);
+  }
+
+  function openOperatorCountMode() {
+    setOperatorMode("conteo");
+    localStorage.setItem(OPERATOR_MODE_KEY, "conteo");
   }
 
   function logoutUser() {
@@ -1389,8 +1407,8 @@ export default function InventariosPage() {
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
-          <button onClick={() => window.location.href = "/"} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver">
-            <ArrowLeft size={18} />
+          <button onClick={() => operator && !user ? logoutOperator() : window.location.href = "/"} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title={operator && !user ? "Cerrar sesión" : "Volver"}>
+            {operator && !user ? <LogOut size={18} /> : <ArrowLeft size={18} />}
           </button>
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
           <div className="min-w-0 flex-1">
@@ -1407,9 +1425,9 @@ export default function InventariosPage() {
             </button>
           )}
           {operator && !user && (
-            <button onClick={logoutOperator} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Salir operador">
-              <LogOut size={18} />
-              <span className="hidden sm:inline">Salir operador</span>
+            <button onClick={operatorMode === "reconteo" ? openOperatorCountMode : openOperatorRecountMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "reconteo" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "reconteo" ? "Volver a conteo" : "Modo reconteo"}>
+              {operatorMode === "reconteo" ? <ClipboardList size={18} /> : <PackageSearch size={18} />}
+              <span className="hidden sm:inline">{operatorMode === "reconteo" ? "Conteo" : "Reconteo"}</span>
             </button>
           )}
           {!user && !operator && (
@@ -1707,7 +1725,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && (
+          {operator && !isValidator && operatorMode === "conteo" && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
@@ -1769,7 +1787,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && (
+          {operator && !isValidator && operatorMode === "conteo" && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white shadow-sm">
               <div className="border-b p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -1807,11 +1825,11 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && recountItems.length > 0 && (
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+          {operator && !isValidator && operatorMode === "reconteo" && (
+            <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="font-black">Mis reconteos asignados</h2>
-                <p className="text-xs text-slate-500">Ordenados por ubicación de menor a mayor.</p>
+                <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 {recountItems.map(row => (
@@ -1839,6 +1857,11 @@ export default function InventariosPage() {
                     </div>
                   </article>
                 ))}
+                {recountItems.length === 0 && (
+                  <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                    No tienes códigos asignados para reconteo en este inventario.
+                  </div>
+                )}
               </div>
             </section>
           )}
