@@ -171,14 +171,59 @@ create table if not exists general_inventory_recount_counts (
   recount_item_id uuid not null references general_inventory_recount_items(id) on delete cascade,
   session_id uuid not null references general_inventory_sessions(id) on delete cascade,
   operator_id uuid not null references general_inventory_operators(id),
+  location_id uuid references general_inventory_locations(id),
+  location_code text,
+  product_id uuid references cyclic_products(id),
+  sku text,
+  description text,
+  unit text,
   quantity numeric(14,3) not null check (quantity >= 0),
+  cost_snapshot numeric(14,6) not null default 0,
   note text,
   counted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique (recount_item_id)
 );
 
 create index if not exists idx_gi_recount_counts_item on general_inventory_recount_counts(recount_item_id);
 create index if not exists idx_gi_recount_counts_session on general_inventory_recount_counts(session_id);
+create index if not exists idx_gi_recount_counts_sku on general_inventory_recount_counts(session_id, sku);
+
+alter table general_inventory_recount_counts add column if not exists location_id uuid references general_inventory_locations(id);
+alter table general_inventory_recount_counts add column if not exists location_code text;
+alter table general_inventory_recount_counts add column if not exists product_id uuid references cyclic_products(id);
+alter table general_inventory_recount_counts add column if not exists sku text;
+alter table general_inventory_recount_counts add column if not exists description text;
+alter table general_inventory_recount_counts add column if not exists unit text;
+alter table general_inventory_recount_counts add column if not exists cost_snapshot numeric(14,6) not null default 0;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'general_inventory_recount_counts_recount_item_id_key'
+  ) then
+    delete from general_inventory_recount_counts
+    where id in (
+      select id
+      from (
+        select
+          id,
+          row_number() over (
+            partition by recount_item_id
+            order by updated_at desc, counted_at desc, id desc
+          ) as rn
+        from general_inventory_recount_counts
+      ) duplicated
+      where duplicated.rn > 1
+    );
+
+    alter table general_inventory_recount_counts
+      add constraint general_inventory_recount_counts_recount_item_id_key unique (recount_item_id);
+  end if;
+end;
+$$;
 
 create table if not exists general_inventory_item_observations (
   id uuid primary key default gen_random_uuid(),

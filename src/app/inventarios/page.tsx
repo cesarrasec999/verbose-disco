@@ -134,6 +134,12 @@ type RecountItem = RecountCandidate & {
   assigned_operator_name?: string | null;
 };
 
+type RecountDraft = {
+  locationCode: string;
+  productCode: string;
+  quantity: string;
+};
+
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
@@ -190,6 +196,20 @@ function compareValues(a: string | number, b: string | number, direction: SortDi
   return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }) * multiplier;
 }
 
+function recountKey(row: Pick<RecountCandidate, "product_id" | "location_code" | "recount_type">) {
+  return `${row.product_id}__${row.location_code || "FALTANTE"}__${row.recount_type}`;
+}
+
+function sortRecountLines<T extends Pick<RecountCandidate, "value_diff" | "ticket" | "location_code">>(rows: T[]) {
+  return [...rows].sort((a, b) => {
+    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    if (valueCompare !== 0) return valueCompare;
+    const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
+    if (ticketCompare !== 0) return ticketCompare;
+    return String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
+  });
+}
+
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -239,6 +259,8 @@ export default function InventariosPage() {
   const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
   const [recountValue, setRecountValue] = useState("");
   const [recountOperatorId, setRecountOperatorId] = useState("");
+  const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
+  const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
   const scannerRef = useRef<any>(null);
@@ -354,11 +376,7 @@ export default function InventariosPage() {
         value_diff: row.valueDiff,
       }));
 
-    return [...surplusGroups.values(), ...missingRows].sort((a, b) => {
-      const locCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true });
-      if (locCompare !== 0) return locCompare;
-      return Math.abs(b.value_diff) - Math.abs(a.value_diff);
-    });
+    return sortRecountLines([...surplusGroups.values(), ...missingRows]);
   }, [counts, locations, summary]);
 
   const recountValues = useMemo(() => {
@@ -370,10 +388,20 @@ export default function InventariosPage() {
 
   const selectedRecountCandidates = useMemo(() => {
     if (recountType === "missing") {
-      return recountCandidates.filter(row => row.recount_type === "missing").sort((a, b) => Math.abs(b.value_diff) - Math.abs(a.value_diff));
+      return sortRecountLines(recountCandidates.filter(row => row.recount_type === "missing"));
     }
-    return recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue);
+    return sortRecountLines(recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue));
   }, [recountCandidates, recountColumn, recountType, recountValue]);
+
+  const assignedRecountKeys = useMemo(
+    () => new Set(recountItems.filter(row => row.status !== "cancelled").map(row => recountKey(row))),
+    [recountItems]
+  );
+
+  const unassignedRecountCandidates = useMemo(
+    () => selectedRecountCandidates.filter(row => !assignedRecountKeys.has(recountKey(row))),
+    [assignedRecountKeys, selectedRecountCandidates]
+  );
 
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
@@ -792,17 +820,28 @@ export default function InventariosPage() {
   }
 
   async function loadSummary(sessionId: string) {
-    const [snapshotRows, countRows, observationRows, nonInventoryRows] = await Promise.all([
+    const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
       loadPagedSessionRows("general_inventory_non_inventory_products", "sku", sessionId, "sku"),
+      loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
+      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,counted_qty", sessionId, "product_id"),
     ]);
 
     const nonInventorySkus = new Set(nonInventoryRows.map(row => row.sku));
     const countedByProduct = new Map<string, number>();
     for (const row of countRows) {
       if (nonInventorySkus.has(row.sku)) continue;
+      countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
+    }
+    const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
+    for (const row of recountCountRows) {
+      if (nonInventorySkus.has(row.sku)) continue;
+      const original = recountItemById.get(row.recount_item_id);
+      if (original?.product_id) {
+        countedByProduct.set(original.product_id, (countedByProduct.get(original.product_id) || 0) - Number(original.counted_qty || 0));
+      }
       countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
 
@@ -857,7 +896,7 @@ export default function InventariosPage() {
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
   }
 
-  async function assignRecountBlock() {
+  async function assignRecountBlock(limit?: number) {
     if (!selectedSessionId || !user || !recountOperatorId) {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
@@ -867,7 +906,8 @@ export default function InventariosPage() {
       return;
     }
 
-    const rows = selectedRecountCandidates.map(row => ({
+    const sourceRows = typeof limit === "number" ? unassignedRecountCandidates.slice(0, limit) : unassignedRecountCandidates;
+    const rows = sourceRows.map(row => ({
       session_id: selectedSessionId,
       product_id: row.product_id,
       location_id: row.location_id,
@@ -893,7 +933,7 @@ export default function InventariosPage() {
     }));
 
     if (rows.length === 0) {
-      setMessage("No hay diferencias para asignar con ese filtro.");
+      setMessage("No hay diferencias pendientes para asignar con ese filtro.");
       return;
     }
 
@@ -1274,6 +1314,101 @@ export default function InventariosPage() {
     } finally {
       savingCountRef.current = false;
       setSavingCount(false);
+    }
+  }
+
+  function recountDraftFor(row: RecountItem) {
+    return recountDrafts[row.id] || {
+      locationCode: row.location_code || "",
+      productCode: row.sku,
+      quantity: "",
+    };
+  }
+
+  function updateRecountDraft(rowId: string, field: keyof RecountDraft, value: string) {
+    setRecountDrafts(prev => ({
+      ...prev,
+      [rowId]: {
+        locationCode: prev[rowId]?.locationCode || "",
+        productCode: prev[rowId]?.productCode || "",
+        quantity: prev[rowId]?.quantity || "",
+        [field]: value,
+      },
+    }));
+  }
+
+  async function saveRecountValidation(row: RecountItem) {
+    if (!operator || !selectedSessionId || savingRecountId) return;
+    const draft = recountDraftFor(row);
+    const locCode = draft.locationCode.trim().toUpperCase();
+    const loc = locations.find(location => location.location_code === locCode);
+    if (!loc) {
+      setMessage("Ubicacion no autorizada para esta sesion.");
+      return;
+    }
+
+    const qty = Number(draft.quantity);
+    if (!draft.productCode.trim() || !Number.isFinite(qty) || qty < 0) {
+      setMessage("Ingresa codigo y cantidad valida para el reconteo.");
+      return;
+    }
+
+    setSavingRecountId(row.id);
+    try {
+      const candidates = (await findProductCandidates(draft.productCode)).products;
+      const product = candidates.find(item => item.sku === draft.productCode.trim().toUpperCase()) || (candidates.length === 1 ? candidates[0] : null);
+      if (!product) {
+        setMessage(candidates.length > 1 ? "El codigo del reconteo coincide con varios productos. Ingresa el CodSap exacto." : "Codigo no existe en el maestro ni en codigos de barra.");
+        return;
+      }
+
+      const snapshot = await supabase
+        .from("general_inventory_stock_snapshot")
+        .select("cost")
+        .eq("session_id", selectedSessionId)
+        .eq("product_id", product.id)
+        .maybeSingle();
+
+      const cost = Number(snapshot.data?.cost ?? product.cost ?? row.cost_snapshot ?? 0);
+      const { error } = await supabase
+        .from("general_inventory_recount_counts")
+        .upsert({
+          recount_item_id: row.id,
+          session_id: selectedSessionId,
+          operator_id: operator.id,
+          location_id: loc.id,
+          location_code: loc.location_code,
+          product_id: product.id,
+          sku: product.sku,
+          description: product.description,
+          unit: product.unit,
+          quantity: qty,
+          cost_snapshot: cost,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "recount_item_id" });
+      if (error) {
+        setMessage("No se pudo guardar reconteo. Ejecuta el SQL actualizado: " + error.message);
+        return;
+      }
+
+      const statusUpdate = await supabase
+        .from("general_inventory_recount_items")
+        .update({ status: "counted", updated_at: new Date().toISOString() })
+        .eq("id", row.id);
+      if (statusUpdate.error) {
+        setMessage("Reconteo guardado, pero no se pudo cerrar la linea: " + statusUpdate.error.message);
+        return;
+      }
+
+      setRecountDrafts(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setMessage("Reconteo guardado.");
+      await loadOperatorRecountItems(selectedSessionId, operator.id);
+    } finally {
+      setSavingRecountId(null);
     }
   }
 
@@ -1832,7 +1967,9 @@ export default function InventariosPage() {
                 <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
-                {recountItems.map(row => (
+                {recountItems.map(row => {
+                  const draft = recountDraftFor(row);
+                  return (
                   <article key={row.id} className="rounded-2xl border bg-slate-50 p-4">
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -1854,9 +1991,20 @@ export default function InventariosPage() {
                         <MiniMetric label="Contado" value={row.counted_qty} />
                         <MiniMetric label="Dif." value={row.diff_qty} />
                       </div>
+                      <div className="grid gap-2">
+                        <input value={draft.locationCode} onChange={event => updateRecountDraft(row.id, "locationCode", event.target.value.toUpperCase())} placeholder="Ubicacion / ticket final" className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
+                        <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", event.target.value)} placeholder="Codigo final" className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
+                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                          <input value={draft.quantity} onChange={event => updateRecountDraft(row.id, "quantity", event.target.value)} placeholder="Cantidad final" inputMode="decimal" className="min-w-0 rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
+                          <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                            {savingRecountId === row.id ? "Guardando" : "Guardar"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
                 {recountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
                     No tienes códigos asignados para reconteo en este inventario.
@@ -1874,9 +2022,14 @@ export default function InventariosPage() {
                     <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Reconteo</h2>
                     <p className="text-xs text-slate-500">Asigna diferencias por bloques a operadores activos.</p>
                   </div>
-                  <button onClick={assignRecountBlock} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
-                    Asignar bloque
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => assignRecountBlock(20)} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                      Asignar 20 primeros
+                    </button>
+                    <button onClick={() => assignRecountBlock()} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800">
+                      Asignar todos
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr_220px]">
@@ -1904,12 +2057,72 @@ export default function InventariosPage() {
                   </select>
 
                   <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
-                    {selectedRecountCandidates.length} items por asignar
+                    {unassignedRecountCandidates.length} pendientes | {recountItems.length} asignados
                   </div>
                 </div>
               </section>
 
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-black">Lineas pendientes por asignar</h3>
+                  <div className="text-xs font-bold text-slate-500">Ordenado por Dif. val. y ticket</div>
+                </div>
+                <div className="overflow-auto rounded-xl border">
+                  <table className="w-full min-w-[1260px] text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="p-2 text-left">Tipo</th>
+                        <th className="p-2 text-left">Ticket</th>
+                        <th className="p-2 text-left">Ubicacion</th>
+                        <th className="p-2 text-left">Zona</th>
+                        <th className="p-2 text-left">Zona ref</th>
+                        <th className="p-2 text-left">Lineal</th>
+                        <th className="p-2 text-left">Codigo</th>
+                        <th className="p-2 text-left">Descripcion</th>
+                        <th className="p-2 text-center">UM</th>
+                        <th className="p-2 text-center">Sistema</th>
+                        <th className="p-2 text-center">Contado</th>
+                        <th className="p-2 text-center">Dif.</th>
+                        <th className="p-2 text-center">Costo</th>
+                        <th className="p-2 text-center">Dif. val.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {unassignedRecountCandidates.map(row => (
+                        <tr key={recountKey(row)} className="border-t">
+                          <td className="p-2 font-black">
+                            <span className={row.recount_type === "missing" ? "text-red-600" : "text-blue-700"}>
+                              {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
+                            </span>
+                          </td>
+                          <td className="p-2 font-black">{row.ticket || "-"}</td>
+                          <td className="p-2">{row.location_code || "Por codigo"}</td>
+                          <td className="p-2">{row.zone || "-"}</td>
+                          <td className="p-2">{row.zone_ref || "-"}</td>
+                          <td className="p-2">{row.lineal || "-"}</td>
+                          <td className="p-2 font-black text-slate-950">{row.sku}</td>
+                          <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
+                          <td className="p-2 text-center">{row.unit}</td>
+                          <td className="p-2 text-center font-bold">{row.system_stock}</td>
+                          <td className="p-2 text-center font-bold">{row.counted_qty}</td>
+                          <td className="p-2 text-center font-black">{row.diff_qty}</td>
+                          <td className="p-2 text-center">{money(row.cost_snapshot)}</td>
+                          <td className="p-2 text-center font-black">{money(row.value_diff)}</td>
+                        </tr>
+                      ))}
+                      {unassignedRecountCandidates.length === 0 && (
+                        <tr>
+                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
+                            No hay lineas pendientes para asignar con el filtro actual.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="hidden rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Cards de reconteo</h3>
                   <div className="text-xs font-bold text-slate-500">{recountItems.length} asignados</div>
