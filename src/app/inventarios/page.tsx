@@ -200,13 +200,27 @@ function recountKey(row: Pick<RecountCandidate, "product_id" | "location_code" |
   return `${row.product_id}__${row.location_code || "FALTANTE"}__${row.recount_type}`;
 }
 
-function sortRecountLines<T extends Pick<RecountCandidate, "value_diff" | "ticket" | "location_code">>(rows: T[]) {
+function sortRecountAssignmentLines<T extends Pick<RecountCandidate, "value_diff" | "ticket" | "location_code" | "sku">>(rows: T[]) {
   return [...rows].sort((a, b) => {
-    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
-    if (valueCompare !== 0) return valueCompare;
     const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
     if (ticketCompare !== 0) return ticketCompare;
-    return String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
+    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    if (valueCompare !== 0) return valueCompare;
+    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
+    if (locationCompare !== 0) return locationCompare;
+    return String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
+  });
+}
+
+function sortOperatorRecountCards<T extends Pick<RecountCandidate, "location_code" | "ticket" | "sku" | "value_diff">>(rows: T[]) {
+  return [...rows].sort((a, b) => {
+    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
+    if (locationCompare !== 0) return locationCompare;
+    const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
+    if (ticketCompare !== 0) return ticketCompare;
+    const skuCompare = String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
+    if (skuCompare !== 0) return skuCompare;
+    return Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
   });
 }
 
@@ -330,7 +344,7 @@ export default function InventariosPage() {
       const current = surplusGroups.get(key);
       if (current) {
         current.counted_qty += Number(row.quantity || 0);
-        current.value_diff = current.counted_qty * current.cost_snapshot;
+        current.value_diff = summaryRow.valueDiff;
         continue;
       }
       surplusGroups.set(key, {
@@ -350,7 +364,7 @@ export default function InventariosPage() {
         counted_qty: Number(row.quantity || 0),
         diff_qty: summaryRow.diff,
         cost_snapshot: Number(row.cost_snapshot || summaryRow.cost || 0),
-        value_diff: Number(row.quantity || 0) * Number(row.cost_snapshot || summaryRow.cost || 0),
+        value_diff: summaryRow.valueDiff,
       });
     }
 
@@ -376,7 +390,7 @@ export default function InventariosPage() {
         value_diff: row.valueDiff,
       }));
 
-    return sortRecountLines([...surplusGroups.values(), ...missingRows]);
+    return sortRecountAssignmentLines([...surplusGroups.values(), ...missingRows]);
   }, [counts, locations, summary]);
 
   const recountValues = useMemo(() => {
@@ -388,9 +402,9 @@ export default function InventariosPage() {
 
   const selectedRecountCandidates = useMemo(() => {
     if (recountType === "missing") {
-      return sortRecountLines(recountCandidates.filter(row => row.recount_type === "missing"));
+      return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "missing"));
     }
-    return sortRecountLines(recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue));
+    return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue));
   }, [recountCandidates, recountColumn, recountType, recountValue]);
 
   const assignedRecountKeys = useMemo(
@@ -714,7 +728,7 @@ export default function InventariosPage() {
     if (!recountOperatorId && operators[0]?.id) setRecountOperatorId(operators[0].id);
 
     const operatorById = new Map(operators.map(row => [row.id, row.full_name]));
-    const rows = (itemsRes.data || []).map((row: any) => ({
+    const rows = sortRecountAssignmentLines((itemsRes.data || []).map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -736,7 +750,7 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operatorById.get(row.assigned_operator_id) || null,
       status: row.status || "assigned",
-    })) as RecountItem[];
+    })) as RecountItem[]);
     setRecountItems(rows);
   }
 
@@ -762,7 +776,7 @@ export default function InventariosPage() {
       return;
     }
     const openRows = (data || []).filter((row: any) => !["counted", "cancelled"].includes(row.status || ""));
-    setRecountItems(sortRecountLines(openRows.map((row: any) => ({
+    setRecountItems(sortOperatorRecountCards(openRows.map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
