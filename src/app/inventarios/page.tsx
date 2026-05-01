@@ -201,7 +201,7 @@ export default function InventariosPage() {
     [sessions]
   );
 
-  const showSidePanel = !isValidator || validatorTab === "preparacion";
+  const showSidePanel = !isValidator;
 
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
@@ -1048,6 +1048,143 @@ export default function InventariosPage() {
                   Resumen
                 </button>
               </div>
+            </section>
+          )}
+
+          {isValidator && validatorTab === "preparacion" && (
+            <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
+              <div className="space-y-4">
+                <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2">
+                    <ShieldCheck size={18} className="text-orange-600" />
+                    <h2 className="font-black">Panel validador</h2>
+                  </div>
+                  <div className="space-y-2">
+                    <select value={newStoreId} onChange={event => setNewStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm">
+                      {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                    </select>
+                    <input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Nombre de inventario" className="w-full rounded-xl border px-3 py-3 text-sm" />
+                    <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm" />
+                    <button onClick={createSession} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                      <Plus size={16} /> Crear inventario
+                    </button>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <h2 className="mb-3 font-black">Inventario activo</h2>
+                  <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm">
+                    <option value="">Selecciona inventario</option>
+                    {sessions.map(session => (
+                      <option key={session.id} value={session.id}>
+                        {session.name} - {session.store_name || session.store_id} - {statusLabel(session.status)}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSession && (
+                    <div className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                      <div className="font-black text-slate-900">{selectedSession.name}</div>
+                      <div>{selectedSession.store_name}</div>
+                      <div>Estado: {statusLabel(selectedSession.status)}</div>
+                      {selectedSession.stock_frozen_at && <div>Stock congelado: {new Date(selectedSession.stock_frozen_at).toLocaleString("es-PE")}</div>}
+                    </div>
+                  )}
+                </section>
+
+                <section className="space-y-2 rounded-2xl border bg-white p-4 shadow-sm">
+                  <h2 className="font-black">Acciones de sesión</h2>
+                  <button onClick={freezeStock} disabled={loading || !selectedSessionId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    <FileLock2 size={16} /> Congelar stock
+                  </button>
+                  <button onClick={finishSession} disabled={!selectedSessionId} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    Finalizar inventario
+                  </button>
+                  {user?.role === "Administrador" && (
+                    <button onClick={deleteSession} disabled={!selectedSessionId} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700 disabled:opacity-40">
+                      Eliminar sesion
+                    </button>
+                  )}
+                </section>
+              </div>
+
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-black">Preparación</h2>
+                    <p className="text-xs text-slate-500">Carga ubicaciones autorizadas y productos no inventariables para esta sesión.</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">
+                    Ubicaciones: {locations.length} | Pendientes: {pendingLocations.length}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
+                    <input
+                      ref={locationsFileRef}
+                      type="file"
+                      accept=".xlsx,.xls"
+                      className="hidden"
+                      onChange={event => setLocationsFile(event.target.files?.[0] || null)}
+                    />
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
+                        <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
+                      </button>
+                      <button onClick={importLocations} disabled={!locationsFile || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                        Subir ubicaciones
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <label className="text-xs font-bold text-slate-500">No inventariables / no considerar</label>
+                    <input
+                      ref={nonInventoryFileRef}
+                      type="file"
+                      accept=".xlsx,.xls"
+                      className="hidden"
+                      onChange={event => setNonInventoryFile(event.target.files?.[0] || null)}
+                    />
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <button onClick={() => nonInventoryFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
+                        <FolderOpen size={16} /> {nonInventoryFile ? nonInventoryFile.name : "Seleccionar Excel"}
+                      </button>
+                      <button onClick={importNonInventory} disabled={!nonInventoryFile || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                        Subir no inventariables
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border bg-slate-50 p-4 text-sm">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-black text-slate-900">Ubicaciones pendientes</div>
+                      <div className="text-xs text-slate-500">Ubicaciones cargadas que todavía no tienen registros.</div>
+                    </div>
+                    <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes</div>
+                  </div>
+                  <div className="max-h-[420px] overflow-auto rounded-xl border bg-white">
+                    {pendingLocations.length > 0 ? pendingLocations.map(location => (
+                      <div key={location.id} className="grid gap-2 border-b p-3 last:border-b-0 md:grid-cols-[140px_1fr]">
+                        <div className="font-black text-slate-900">{location.location_code}</div>
+                        <div className="min-w-0 text-slate-600">
+                          <div className="truncate">{location.full_location || location.description || "Sin descripción"}</div>
+                          {(location.zone || location.lineal || location.zone_ref) && (
+                            <div className="mt-1 text-xs text-slate-400">
+                              {[location.zone, location.lineal, location.zone_ref].filter(Boolean).join(" | ")}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="p-8 text-center text-sm text-slate-400">Sin ubicaciones pendientes.</div>
+                    )}
+                  </div>
+                </div>
+              </section>
             </section>
           )}
 
