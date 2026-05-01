@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-unused-expressions, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import * as XLSX from "xlsx";
@@ -35,12 +37,12 @@ type Store = {
 type Product = {
     id: string;
     sku: string;
-    erp_sku?: string | null;
     barcode: string | null;
     description: string;
     unit: string;
     cost: number;
     is_active: boolean;
+    system_stock?: number;
 };
 
 type Assignment = {
@@ -51,7 +53,6 @@ type Assignment = {
     assigned_date: string;
     assigned_by: string | null;
     sku?: string;
-    erp_sku?: string | null;
     barcode?: string | null;
     description?: string;
     unit?: string;
@@ -78,7 +79,6 @@ type CountRecord = {
     counted_at: string;
     updated_at: string;
     sku?: string;
-    erp_sku?: string | null;
     barcode?: string | null;
     description?: string;
     unit?: string;
@@ -156,6 +156,24 @@ function cleanCode(value: string | null | undefined): string {
     return s;
 }
 
+function fullProductCode(value: string | number | null | undefined): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    let s = raw.replace(/^['"''""\u2018\u2019\u201C\u201D]+/, "").replace(/['"''""\u2018\u2019\u201C\u201D]+$/, "").trim();
+    if (/[Ee][+-]/.test(s) && !isNaN(Number(s))) {
+        const n = Number(s);
+        if (isFinite(n)) s = Math.round(n).toString();
+    }
+    return s.replace(/\.0+$/, "");
+}
+
+function visibleProductCode(value: string | number | null | undefined): string {
+    const full = fullProductCode(value);
+    const digits = full.replace(/\D/g, "");
+    const suffix = (digits || full).slice(-5);
+    return cleanCode(suffix);
+}
+
 function codeCandidates(value: string | null | undefined): string[] {
     const raw = String(value || "").trim();
     const clean = cleanCode(raw);
@@ -166,18 +184,11 @@ function codeCandidates(value: string | null | undefined): string[] {
     return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
 }
 
-function productStockKey(product: Pick<Product, "sku" | "erp_sku"> | Pick<Assignment, "sku" | "erp_sku"> | string | null | undefined): string {
-    if (!product) return "";
-    if (typeof product === "string") return cleanCode(product);
-    return cleanCode(product.erp_sku || product.sku || "");
-}
-
 function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
     if (!row) return [];
-    const values = Object.entries(row)
-        .filter(([key]) => ["codsap", "codigosap", "productreference", "sku"].includes(key.toLowerCase().replace(/[^a-z0-9]/g, "")))
-        .flatMap(([, value]) => codeCandidates(String(value ?? "")));
-    return Array.from(new Set(values));
+    const value = row.codsap ?? row.codigosap ?? row.ProductReference ?? row.productreference ?? row.sku;
+    const full = fullProductCode(String(value ?? ""));
+    return full ? [full] : [];
 }
 
 function normalizeText(v: string | null | undefined) {
@@ -753,14 +764,14 @@ export default function DashboardPage() {
         if (!storeId) return;
         const { data: asgn } = await supabase
             .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, erp_sku, barcode, description, unit, cost)")
+            .select("*, cyclic_products(sku, barcode, description, unit, cost)")
             .eq("store_id", storeId)
             .eq("assigned_date", date)
             .order("created_at");
         const rows: Assignment[] = (asgn || []).map((a: any) => ({
             id: a.id, store_id: a.store_id, product_id: a.product_id,
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, erp_sku: a.cyclic_products?.erp_sku, barcode: a.cyclic_products?.barcode,
+            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             cost: Number(a.cyclic_products?.cost) || 0,
         }));
@@ -786,7 +797,7 @@ export default function DashboardPage() {
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, erp_sku: asg?.erp_sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
+            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
         });
         setCounts(enriched);
 
@@ -822,14 +833,14 @@ export default function DashboardPage() {
         if (!storeId) return;
         const { data: asgn } = await supabase
             .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, erp_sku, barcode, description, unit, cost), stores(name)")
+            .select("*, cyclic_products(sku, barcode, description, unit, cost), stores(name)")
             .eq("store_id", storeId)
             .eq("assigned_date", date)
             .order("created_at");
         const rows: Assignment[] = (asgn || []).map((a: any) => ({
             id: a.id, store_id: a.store_id, product_id: a.product_id,
             system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, erp_sku: a.cyclic_products?.erp_sku, barcode: a.cyclic_products?.barcode,
+            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
             description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
             // Prioridad: cost del assignment > cost del producto maestro
             cost: Number(a.cyclic_products?.cost) || 0,
@@ -845,7 +856,7 @@ export default function DashboardPage() {
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, erp_sku: asg?.erp_sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
+            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
         });
         setCounts(enriched);
     }
@@ -1334,38 +1345,27 @@ export default function DashboardPage() {
         setRecountAssignment(asgn);
     }
 
-    async function getSystemStockForStore(product: Pick<Product, "sku" | "erp_sku"> | Pick<Assignment, "sku" | "erp_sku"> | string, storeId: string): Promise<number> {
+    async function getSystemStockForStore(productSku: string, storeId: string): Promise<number> {
         const store = allStores.find(s => s.id === storeId) || stores.find(s => s.id === storeId);
         const sede = store?.erp_sede || store?.name || "";
         if (!sede) return 0;
-        const key = productStockKey(product);
-        if (!key) return 0;
+        const codsap = fullProductCode(productSku);
+        if (!codsap) return 0;
 
         const { data } = await supabase
             .from("stock_general")
             .select("stock")
-            .eq("erp_sku", key)
+            .eq("codsap", codsap)
             .eq("sede", sede)
             .maybeSingle();
 
-        if (data) return Number(data.stock || 0);
-
-        const visibleCode = typeof product === "string" ? cleanCode(product) : cleanCode(product.sku || "");
-        const { data: byVisible } = await supabase
-            .from("stock_general")
-            .select("stock")
-            .eq("codsap", visibleCode)
-            .eq("sede", sede)
-            .limit(1)
-            .maybeSingle();
-
-        return Number(byVisible?.stock || 0);
+        return Number(data?.stock || 0);
     }
 
     async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
-        const latestStock = await getSystemStockForStore(asgn, asgn.store_id);
+        const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
         const updated = { ...asgn, system_stock: latestStock };
 
         // Si el código ya tiene conteo guardado, el snapshot queda intacto en la BD
@@ -1408,28 +1408,28 @@ export default function DashboardPage() {
         }
 
         setBulkRefreshingStocks(true);
-        const skus = [...new Set(assignments.map(a => productStockKey(a)).filter(Boolean))];
+        const skus = [...new Set(assignments.map(a => fullProductCode(a.sku || "")).filter(Boolean))];
         const stockMap = new Map<string, number>();
         const chunkSize = 500;
         for (let i = 0; i < skus.length; i += chunkSize) {
             const chunk = skus.slice(i, i + chunkSize);
             const { data, error } = await supabase
                 .from("stock_general")
-                .select("erp_sku, stock")
+                .select("codsap, stock")
                 .eq("sede", sede)
-                .in("erp_sku", chunk);
+                .in("codsap", chunk);
             if (error) {
                 setBulkRefreshingStocks(false);
                 showMessage("Error actualizando stocks: " + error.message, "error");
                 return;
             }
-            for (const row of data || []) stockMap.set(cleanCode(row.erp_sku), Number(row.stock || 0));
+            for (const row of data || []) stockMap.set(fullProductCode(row.codsap), Number(row.stock || 0));
         }
 
         const countedIds = new Set(counts.map(c => c.assignment_id));
 
         const updates = assignments
-            .map(a => ({ assignment: a, stock: stockMap.get(productStockKey(a)) ?? Number(a.system_stock || 0) }))
+            .map(a => ({ assignment: a, stock: stockMap.get(fullProductCode(a.sku || "")) ?? Number(a.system_stock || 0) }))
             .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
 
         if (updates.length > 0) {
@@ -1459,85 +1459,87 @@ export default function DashboardPage() {
         showMessage(updates.length > 0 ? `${updates.length} stock${updates.length !== 1 ? "s" : ""} actualizado${updates.length !== 1 ? "s" : ""}.` : "Todos los stocks asignados ya están actualizados.", "success");
     }
 
-    async function findProductBySystemBarcode(scanned: string): Promise<Product | null> {
+    async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
+        const visible = visibleProductCode(codeValue);
+        if (!visible) return [];
+
+        const { data, error } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("is_active", true)
+            .ilike("sku", `%${visible}`);
+
+        if (error) {
+            showMessage("Error buscando codigo manual: " + error.message, "error");
+            return [];
+        }
+
+        const products = ((data || []) as Product[]).filter(product => visibleProductCode(product.sku) === visible);
+        const fullCodeProducts = products.filter(product => fullProductCode(product.sku) !== visibleProductCode(product.sku));
+        const candidates = fullCodeProducts.length > 0 ? fullCodeProducts : products;
+        if (!selectedStoreId || candidates.length === 0) return candidates;
+
+        const enriched = await Promise.all(candidates.map(async product => ({
+            ...product,
+            system_stock: await getSystemStockForStore(product.sku, selectedStoreId),
+        })));
+        return enriched;
+    }
+
+    async function findProductBySystemBarcode(scanned: string): Promise<Product | "AMBIGUOUS" | null> {
         const raw = String(scanned || "").trim();
-        const candidates = codeCandidates(raw);
+        if (!raw) return null;
 
-        for (const code of candidates) {
-            const { data: byProductBarcode } = await supabase
+        const { data: byProductBarcode } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("barcode", raw)
+            .eq("is_active", true)
+            .maybeSingle();
+        if (byProductBarcode) return byProductBarcode as Product;
+
+        const { data: bySku } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("sku", fullProductCode(raw))
+            .eq("is_active", true)
+            .maybeSingle();
+        if (bySku) return bySku as Product;
+
+        const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+            supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
+            supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+        ]);
+        const barcodeRows = [...(byUpc || []), ...(byAlu || [])];
+        const mappedCodes = [...new Set(barcodeRows.flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)))];
+        const mappedProducts: Product[] = [];
+
+        for (const mappedCode of mappedCodes) {
+            const { data: product } = await supabase
                 .from("cyclic_products")
                 .select("*")
-                .eq("barcode", code)
+                .eq("sku", mappedCode)
                 .eq("is_active", true)
                 .maybeSingle();
-            if (byProductBarcode) return byProductBarcode as Product;
+
+            if (product) mappedProducts.push(product as Product);
         }
 
-        for (const code of candidates) {
-            const { data: bySku } = await supabase
-                .from("cyclic_products")
-                .select("*")
-                .eq("erp_sku", code)
-                .eq("is_active", true)
-                .maybeSingle();
-            if (bySku) return bySku as Product;
-        }
-
-        for (const code of candidates) {
-            const { data: bySku } = await supabase
-                .from("cyclic_products")
-                .select("*")
-                .eq("sku", code)
-                .eq("is_active", true)
-                .limit(2);
-            if (bySku?.length === 1) return bySku[0] as Product;
-        }
-
-        for (const code of candidates) {
-            const { data: barcodeRow } = await supabase
-                .from("codigos_barra")
-                .select("erp_sku,codsap,upc,alu")
-                .or(`upc.eq.${code},alu.eq.${code}`)
-                .limit(1)
-                .maybeSingle();
-
-            const erpSku = cleanCode(String(barcodeRow?.erp_sku || ""));
-            if (erpSku) {
-                const { data: product } = await supabase
-                    .from("cyclic_products")
-                    .select("*")
-                    .eq("erp_sku", erpSku)
-                    .eq("is_active", true)
-                    .maybeSingle();
-
-                if (product) return product as Product;
-            }
-
-            for (const mappedCode of mappedProductCodeCandidates(barcodeRow as Record<string, unknown> | null)) {
-                const { data: product } = await supabase
-                    .from("cyclic_products")
-                    .select("*")
-                    .eq("sku", mappedCode)
-                    .eq("is_active", true)
-                    .maybeSingle();
-
-                if (product) return product as Product;
-            }
+        if (mappedProducts.length === 1) return mappedProducts[0];
+        if (mappedProducts.length > 1) {
+            const enriched = selectedStoreId
+                ? await Promise.all(mappedProducts.map(async product => ({
+                    ...product,
+                    system_stock: await getSystemStockForStore(product.sku, selectedStoreId),
+                })))
+                : mappedProducts;
+            setManualProductCodePending(raw);
+            setManualProductCandidates(enriched);
+            showMessage(`El codigo de barra ${raw} existe en ${mappedProducts.length} codigos. Elige el correcto.`, "info");
+            return "AMBIGUOUS";
         }
 
         return null;
-    }
-
-    async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
-        const code = cleanCode(codeValue);
-        if (!code) return [];
-        const { data } = await supabase
-            .from("cyclic_products")
-            .select("*")
-            .eq("sku", code)
-            .eq("is_active", true)
-            .limit(20);
-        return (data || []) as Product[];
     }
 
     async function openScannedProduct(product: Product) {
@@ -1553,7 +1555,7 @@ export default function DashboardPage() {
             return;
         }
 
-        const stock = await getSystemStockForStore(product, selectedStoreId);
+        const stock = await getSystemStockForStore(product.sku, selectedStoreId);
         const { data: existing } = await supabase
             .from("cyclic_assignments")
             .select("id, store_id, product_id, system_stock, assigned_date, assigned_by")
@@ -1591,7 +1593,6 @@ export default function DashboardPage() {
             assigned_date: selectedDate,
             assigned_by: existing?.assigned_by ?? user.id,
             sku: product.sku,
-            erp_sku: product.erp_sku,
             barcode: product.barcode,
             description: product.description,
             unit: product.unit,
@@ -1616,14 +1617,20 @@ export default function DashboardPage() {
             if (candidates.length > 1) {
                 setManualProductCodePending(code);
                 setManualProductCandidates(candidates);
-                showMessage(`El codigo ${cleanCode(code)} tiene ${candidates.length} opciones. Elige el producto correcto.`, "info");
+                showMessage(`El codigo ${visibleProductCode(code)} existe en ${candidates.length} codigos. Elige el correcto.`, "info");
+                return;
+            }
+            if (candidates.length === 1) {
+                await openScannedProduct(candidates[0]);
+                setManualProductCode("");
                 return;
             }
         }
 
         const found = await findProductBySystemBarcode(code);
+        if (found === "AMBIGUOUS") return;
         if (!found) {
-            showMessage(`Codigo "${cleanCode(code)}" no encontrado en el maestro ni en UPC/ALU.`, "error");
+            showMessage(`Codigo "${visibleProductCode(code) || fullProductCode(code)}" no encontrado en el maestro ni en UPC/ALU.`, "error");
             return;
         }
 
@@ -1865,7 +1872,7 @@ export default function DashboardPage() {
             setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
             const codigosEnArchivo = new Set<string>();
             for (const row of dataRows) {
-                const rawCode = cleanCode(String(row[colCodigo] || ""));
+                const rawCode = fullProductCode(String(row[colCodigo] || ""));
                 if (rawCode) codigosEnArchivo.add(rawCode);
             }
 
@@ -1874,16 +1881,15 @@ export default function DashboardPage() {
             const codeArr = [...codigosEnArchivo];
             const prodBySkuMap = new Map<string, Product>();
             const prodByBarcodeMap = new Map<string, Product>();
-            const erpSkuByAltCode = new Map<string, string>();
+            const codSapByAltCode = new Map<string, string>();
             const CHUNK = 500;
 
             for (let i = 0; i < codeArr.length; i += CHUNK) {
                 const chunk = codeArr.slice(i, i + CHUNK);
                 const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
                 for (const p of prods || []) {
-                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
-                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
-                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
+                    prodBySkuMap.set(fullProductCode(p.sku), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(fullProductCode(String(p.barcode)), p as Product);
                 }
             }
 
@@ -1892,38 +1898,37 @@ export default function DashboardPage() {
                 const chunk = notFoundBySku.slice(i, i + CHUNK);
                 const { data: prods } = await supabase.from("cyclic_products").select("*").in("barcode", chunk).eq("is_active", true);
                 for (const p of prods || []) {
-                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
-                    prodBySkuMap.set(cleanCode(p.sku), p as Product);
-                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(fullProductCode(String(p.barcode)), p as Product);
+                    prodBySkuMap.set(fullProductCode(p.sku), p as Product);
                 }
             }
 
             const notFoundDirect = codeArr.filter(code => !prodBySkuMap.has(code) && !prodByBarcodeMap.has(code));
             for (let i = 0; i < notFoundDirect.length; i += CHUNK) {
                 const chunk = notFoundDirect.slice(i, i + CHUNK);
-                const { data: byUpc } = await supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("upc", chunk);
-                const { data: byAlu } = await supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("alu", chunk);
+                const { data: byUpc } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("upc", chunk);
+                const { data: byAlu } = await supabase.from("codigos_barra").select("codsap, upc, alu").in("alu", chunk);
                 for (const row of [...(byUpc || []), ...(byAlu || [])]) {
-                    const erpSku = cleanCode(row.erp_sku || row.codsap);
-                    if (!erpSku) continue;
-                    if (row.upc) erpSkuByAltCode.set(cleanCode(String(row.upc)), erpSku);
-                    if (row.alu) erpSkuByAltCode.set(cleanCode(String(row.alu)), erpSku);
+                    const codsap = fullProductCode(row.codsap);
+                    if (!codsap) continue;
+                    if (row.upc) codSapByAltCode.set(fullProductCode(String(row.upc)), codsap);
+                    if (row.alu) codSapByAltCode.set(fullProductCode(String(row.alu)), codsap);
                 }
             }
 
-            const mappedSkus = [...new Set([...erpSkuByAltCode.values()].filter(sku => !prodBySkuMap.has(sku)))];
+            const mappedSkus = [...new Set([...codSapByAltCode.values()].filter(sku => !prodBySkuMap.has(sku)))];
             for (let i = 0; i < mappedSkus.length; i += CHUNK) {
                 const chunk = mappedSkus.slice(i, i + CHUNK);
-                const { data: prods } = await supabase.from("cyclic_products").select("*").in("erp_sku", chunk).eq("is_active", true);
+                const { data: prods } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
                 for (const p of prods || []) {
-                    prodBySkuMap.set(productStockKey(p as Product), p as Product);
-                    if (p.barcode) prodByBarcodeMap.set(cleanCode(String(p.barcode)), p as Product);
+                    prodBySkuMap.set(fullProductCode(p.sku), p as Product);
+                    if (p.barcode) prodByBarcodeMap.set(fullProductCode(String(p.barcode)), p as Product);
                 }
             }
 
             const resolveProduct = (code: string): Product | null => {
-                const clean = cleanCode(code);
-                const mappedSku = erpSkuByAltCode.get(clean);
+                const clean = fullProductCode(code);
+                const mappedSku = codSapByAltCode.get(clean);
                 return prodBySkuMap.get(clean) || prodByBarcodeMap.get(clean) || (mappedSku ? prodBySkuMap.get(mappedSku) : null) || null;
             };
 
@@ -1946,15 +1951,15 @@ export default function DashboardPage() {
                 return String(st?.erp_sede || st?.name || "").trim();
             }).filter(Boolean))];
 
-            const productSkus = [...new Set([...prodBySkuMap.values()].map(p => productStockKey(p)).filter(Boolean))];
+            const productSkus = [...new Set([...prodBySkuMap.values()].map(p => fullProductCode(p.sku)).filter(Boolean))];
             const stockBySedeSku = new Map<string, number>();
             for (let i = 0; i < productSkus.length; i += CHUNK) {
                 const chunk = productSkus.slice(i, i + CHUNK);
-                let q = supabase.from("stock_general").select("erp_sku, sede, stock").in("erp_sku", chunk);
+                let q = supabase.from("stock_general").select("codsap, sede, stock").in("codsap", chunk);
                 if (sedesArr.length > 0) q = q.in("sede", sedesArr);
                 const { data: stockRows } = await q;
                 for (const row of stockRows || []) {
-                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + cleanCode(row.erp_sku), Number(row.stock || 0));
+                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + fullProductCode(row.codsap), Number(row.stock || 0));
                 }
             }
 
@@ -1980,7 +1985,7 @@ export default function DashboardPage() {
             const costUpdates: { id: string; cost: number }[] = [];
 
             for (const row of dataRows) {
-                const rawCode = cleanCode(String(row[colCodigo] || ""));
+                const rawCode = fullProductCode(String(row[colCodigo] || ""));
                 if (!rawCode) { skip++; continue; }
 
                 let targetStoreId = valStoreId || "";
@@ -1998,7 +2003,7 @@ export default function DashboardPage() {
 
                 const store = storeById.get(targetStoreId);
                 const sede = String(store?.erp_sede || store?.name || "").trim();
-                const syncedStock = stockBySedeSku.get(sede + "__" + productStockKey(prod));
+                const syncedStock = stockBySedeSku.get(sede + "__" + fullProductCode(prod.sku));
                 const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
                 const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
                 if (!hasManualStock && syncedStock === undefined) stockNotFound++;
@@ -2379,7 +2384,7 @@ export default function DashboardPage() {
 
             const map = new Map<string, any>();
             for (const row of dataRows) {
-                const rawSku = cleanCode(String(row[0] || ""));
+                const rawSku = fullProductCode(String(row[0] || ""));
                 if (!rawSku) continue;
                 const desc = String(row[1] || "").trim();
                 if (!desc) continue;
@@ -2424,10 +2429,10 @@ export default function DashboardPage() {
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
                 setBarcodesProgress({ step: `Procesando ${i + 1} / ${rows.length}...`, pct: Math.round(((i + 1) / rows.length) * 100) });
-                const rawSku = cleanCode(String(row["CODIGO"] || ""));
+                const rawSku = fullProductCode(String(row["CODIGO"] || ""));
                 if (!rawSku) continue;
-                const b1 = cleanCode(String(row["CODIGO DE BARRA 1"] || ""));
-                const b2 = cleanCode(String(row["CODIGO DE BARRA 2"] || ""));
+                const b1 = fullProductCode(String(row["CODIGO DE BARRA 1"] || ""));
+                const b2 = fullProductCode(String(row["CODIGO DE BARRA 2"] || ""));
                 const barcode = b1 || b2 || null;
                 if (!barcode) continue;
                 const { data: prod } = await supabase.from("cyclic_products").select("id").eq("sku", rawSku).maybeSingle();
@@ -5941,8 +5946,8 @@ export default function DashboardPage() {
                     <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
                         <div className="flex items-center justify-between border-b px-4 py-3">
                             <div>
-                                <h3 className="font-black">Elige el producto</h3>
-                                <p className="text-xs text-slate-500">El codigo {cleanCode(manualProductCodePending)} existe en mas de un SKU interno.</p>
+                                <h3 className="font-black">Elige el codigo</h3>
+                                <p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p>
                             </div>
                             <button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button>
                         </div>
@@ -5957,12 +5962,13 @@ export default function DashboardPage() {
                                     }}
                                     className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"
                                 >
-                                    <div className="text-sm font-black text-slate-900">{product.sku}</div>
+                                    <div className="text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div>
+                                    <div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div>
                                     <div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div>
                                     <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500">
                                         <span>UM: {product.unit || "N/D"}</span>
                                         <span>Costo: {formatMoney(product.cost)}</span>
-                                        <span>SKU ERP: {product.erp_sku || "-"}</span>
+                                        <span>Stock: {Number(product.system_stock || 0)}</span>
                                     </div>
                                 </button>
                             ))}

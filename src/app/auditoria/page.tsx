@@ -40,7 +40,6 @@ type Store = {
 type Product = {
   id: string;
   sku: string;
-  erp_sku?: string | null;
   barcode: string | null;
   description: string;
   unit: string;
@@ -70,7 +69,6 @@ type AuditItem = {
   cost_snapshot: number;
   observation?: string | null;
   sku?: string;
-  erp_sku?: string | null;
   barcode?: string | null;
   description?: string;
   unit?: string;
@@ -97,28 +95,24 @@ function cleanCode(value: string | number | null | undefined): string {
   return numeric || raw;
 }
 
-function codeCandidates(value: string | number | null | undefined): string[] {
+function fullProductCode(value: string | number | null | undefined): string {
   const raw = String(value ?? "").trim();
-  const clean = cleanCode(raw);
-  const withoutPrefix = raw.replace(/^[A-Za-z]+/, "");
-  const withoutPrefixClean = cleanCode(withoutPrefix);
-  const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
-  const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
-  return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
+  if (!raw) return "";
+  return raw.replace(/\.0+$/, "");
 }
 
-function productStockKey(product: Pick<Product, "sku" | "erp_sku"> | Pick<AuditItem, "sku" | "erp_sku"> | string | null | undefined): string {
-  if (!product) return "";
-  if (typeof product === "string") return cleanCode(product);
-  return cleanCode(product.erp_sku || product.sku || "");
+function visibleProductCode(value: string | number | null | undefined): string {
+  const full = fullProductCode(value);
+  const digits = full.replace(/\D/g, "");
+  const suffix = (digits || full).slice(-5);
+  return cleanCode(suffix);
 }
 
 function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
   if (!row) return [];
-  const values = Object.entries(row)
-    .filter(([key]) => ["codsap", "codigosap", "productreference", "sku"].includes(key.toLowerCase().replace(/[^a-z0-9]/g, "")))
-    .flatMap(([, value]) => codeCandidates(String(value ?? "")));
-  return Array.from(new Set(values));
+  const value = row.codsap ?? row.codigosap ?? row.ProductReference ?? row.productreference ?? row.sku;
+  const full = fullProductCode(String(value ?? ""));
+  return full ? [full] : [];
 }
 
 function normalizeText(value: string) {
@@ -379,62 +373,18 @@ export default function AuditoriaPage() {
     const sede = String(store.erp_sede || store.name || "").trim();
     const candidateToSku = new Map<string, string>();
     for (const product of products) {
-      const skuKey = productStockKey(product);
+      const skuKey = fullProductCode(product.sku);
       if (!skuKey) continue;
-      for (const candidate of codeCandidates(product.sku)) {
-        candidateToSku.set(candidate, skuKey);
-        candidateToSku.set(cleanCode(candidate), skuKey);
-      }
-      for (const candidate of codeCandidates(product.barcode)) {
-        candidateToSku.set(candidate, skuKey);
-        candidateToSku.set(cleanCode(candidate), skuKey);
-      }
+      candidateToSku.set(skuKey, skuKey);
     }
-    const lookupCodes = [...new Set(candidateToSku.keys())].filter(Boolean);
-    for (let i = 0; i < lookupCodes.length; i += 500) {
-      const chunk = lookupCodes.slice(i, i + 500);
-      const [{ data: byUpc }, { data: byAlu }, { data: byCodsap }] = await Promise.all([
-        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("upc", chunk),
-        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("alu", chunk),
-        supabase.from("codigos_barra").select("erp_sku, codsap, upc, alu").in("codsap", chunk),
-      ]);
-      for (const row of [...(byUpc || []), ...(byAlu || []), ...(byCodsap || [])]) {
-        const skuKey =
-          candidateToSku.get(String(row.upc || "")) ||
-          candidateToSku.get(cleanCode(row.upc)) ||
-          candidateToSku.get(String(row.alu || "")) ||
-          candidateToSku.get(cleanCode(row.alu)) ||
-          candidateToSku.get(String(row.erp_sku || "")) ||
-          candidateToSku.get(cleanCode(row.erp_sku)) ||
-          candidateToSku.get(String(row.codsap || "")) ||
-          candidateToSku.get(cleanCode(row.codsap));
-        if (!skuKey) continue;
-        for (const candidate of codeCandidates(row.codsap)) {
-          candidateToSku.set(candidate, skuKey);
-          candidateToSku.set(cleanCode(candidate), skuKey);
-        }
-      }
-    }
-    const skus = [...new Set(products.map(productStockKey).filter(Boolean))];
+    const skus = [...new Set(candidateToSku.keys())].filter(Boolean);
     const map = new Map<string, number>();
     for (let i = 0; i < skus.length; i += 500) {
       const chunk = skus.slice(i, i + 500);
-      const { data } = await supabase.from("stock_general").select("erp_sku, stock").eq("sede", sede).in("erp_sku", chunk);
-      for (const row of data || []) {
-        const skuKey = cleanCode(row.erp_sku);
-        if (skuKey) map.set(skuKey, Number(row.stock || 0));
-      }
-    }
-    const missingVisibleCodes = products
-      .filter(product => !map.has(productStockKey(product)))
-      .map(product => cleanCode(product.sku))
-      .filter(Boolean);
-    for (let i = 0; i < missingVisibleCodes.length; i += 500) {
-      const chunk = missingVisibleCodes.slice(i, i + 500);
       const { data } = await supabase.from("stock_general").select("codsap, stock").eq("sede", sede).in("codsap", chunk);
       for (const row of data || []) {
-        const product = products.find(item => cleanCode(item.sku) === cleanCode(row.codsap));
-        if (product) map.set(productStockKey(product), Number(row.stock || 0));
+        const skuKey = candidateToSku.get(fullProductCode(row.codsap));
+        if (skuKey) map.set(skuKey, Number(row.stock || 0));
       }
     }
     return map;
@@ -494,7 +444,7 @@ export default function AuditoriaPage() {
     }
 
     const stockMap = await getStockMap(allProducts);
-    const enriched = allProducts.map(p => ({ ...p, system_stock: stockMap.get(productStockKey(p)) || 0 }));
+    const enriched = allProducts.map(p => ({ ...p, system_stock: stockMap.get(fullProductCode(p.sku)) || 0 }));
     setResults(enriched);
     setSelected(new Set(enriched.map(p => p.id)));
     setLoading(false);
@@ -525,13 +475,12 @@ export default function AuditoriaPage() {
   async function loadSessionData(sessionId: string) {
     const { data: itemRows } = await supabase
       .from("audit_session_items")
-      .select("*, cyclic_products(sku, erp_sku, barcode, description, unit)")
+      .select("*, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
     const mappedItems = (itemRows || []).map((r: any) => ({
       ...r,
       sku: r.cyclic_products?.sku,
-      erp_sku: r.cyclic_products?.erp_sku,
       barcode: r.cyclic_products?.barcode,
       description: r.cyclic_products?.description,
       unit: r.cyclic_products?.unit,
@@ -544,59 +493,54 @@ export default function AuditoriaPage() {
     setCounts((countRows || []) as AuditCount[]);
   }
 
-  async function findProductByCode(code: string): Promise<Product | null> {
-    const candidates = codeCandidates(code);
-    if (candidates.length === 0) return null;
+  async function findProductByCode(code: string): Promise<Product | "AMBIGUOUS" | null> {
+    const raw = String(code || "").trim();
+    if (!raw) return null;
 
-    for (const candidate of candidates) {
-      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("erp_sku", candidate).eq("is_active", true).maybeSingle();
-      if (bySku) return bySku as Product;
+    const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", fullProductCode(raw)).eq("is_active", true).maybeSingle();
+    if (bySku) return bySku as Product;
+
+    const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", raw).eq("is_active", true).maybeSingle();
+    if (byBarcode) return byBarcode as Product;
+
+    const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+      supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
+      supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+    ]);
+    const mappedRows = [...(byUpc || []), ...(byAlu || [])];
+    const mappedCandidates = [...new Set(mappedRows.flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)))];
+    const mappedProducts: Product[] = [];
+
+    for (const mappedCandidate of mappedCandidates) {
+      const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
+      if (byMappedSku) mappedProducts.push(byMappedSku as Product);
     }
 
-    for (const candidate of candidates) {
-      const { data: bySku } = await supabase.from("cyclic_products").select("*").eq("sku", candidate).eq("is_active", true).limit(2);
-      if (bySku?.length === 1) return bySku[0] as Product;
-    }
-
-    for (const candidate of candidates) {
-      const { data: byBarcode } = await supabase.from("cyclic_products").select("*").eq("barcode", candidate).eq("is_active", true).maybeSingle();
-      if (byBarcode) return byBarcode as Product;
-    }
-
-    for (const candidate of candidates) {
-      const { data: mapped } = await supabase
-        .from("codigos_barra")
-        .select("erp_sku,codsap,upc,alu")
-        .or(`upc.eq.${candidate},alu.eq.${candidate}`)
-        .not("codsap", "is", null)
-        .limit(1)
-        .maybeSingle();
-
-      const erpSku = cleanCode(String(mapped?.erp_sku || ""));
-      if (erpSku) {
-        const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("erp_sku", erpSku).eq("is_active", true).maybeSingle();
-        if (byMappedSku) return byMappedSku as Product;
-      }
-
-      for (const mappedCandidate of mappedProductCodeCandidates(mapped as Record<string, unknown> | null)) {
-        const { data: byMappedSku } = await supabase.from("cyclic_products").select("*").eq("sku", mappedCandidate).eq("is_active", true).maybeSingle();
-        if (byMappedSku) return byMappedSku as Product;
-      }
+    if (mappedProducts.length === 1) return mappedProducts[0];
+    if (mappedProducts.length > 1) {
+      const stockMap = await getStockMap(mappedProducts);
+      setManualProductCodePending(raw);
+      setManualProductCandidates(mappedProducts.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 })));
+      setMessage(`El codigo de barra ${raw} existe en ${mappedProducts.length} codigos. Elige el correcto.`);
+      return "AMBIGUOUS";
     }
 
     return null;
   }
 
   async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
-    const code = cleanCode(codeValue);
-    if (!code) return [];
+    const visible = visibleProductCode(codeValue);
+    if (!visible) return [];
     const { data } = await supabase
       .from("cyclic_products")
       .select("*")
-      .eq("sku", code)
       .eq("is_active", true)
-      .limit(20);
-    return (data || []) as Product[];
+      .ilike("sku", `%${visible}`);
+    const products = ((data || []) as Product[]).filter(product => visibleProductCode(product.sku) === visible);
+    const fullCodeProducts = products.filter(product => fullProductCode(product.sku) !== visibleProductCode(product.sku));
+    const candidates = fullCodeProducts.length > 0 ? fullCodeProducts : products;
+    const stockMap = await getStockMap(candidates);
+    return candidates.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 }));
   }
 
   async function scanProduct(codeOverride?: string) {
@@ -607,13 +551,23 @@ export default function AuditoriaPage() {
       if (candidates.length > 1) {
         setManualProductCodePending(code);
         setManualProductCandidates(candidates);
-        setMessage(`El cÃ³digo ${cleanCode(code)} tiene ${candidates.length} opciones. Elige el producto correcto.`);
+        setMessage(`El codigo ${visibleProductCode(code)} existe en ${candidates.length} codigos. Elige el correcto.`);
+        return;
+      }
+      if (candidates.length === 1) {
+        await openAuditProduct(candidates[0]);
         return;
       }
     }
     const product = await findProductByCode(code);
+    if (product === "AMBIGUOUS") return;
     if (!product) { setMessage("Código no encontrado en maestro."); return; }
 
+    await openAuditProduct(product);
+  }
+
+  async function openAuditProduct(product: Product) {
+    if (!session) return;
     let item = items.find(i => i.product_id === product.id) || null;
     if (!item) {
       const stockMap = await getStockMap([product]);
@@ -621,14 +575,13 @@ export default function AuditoriaPage() {
         session_id: session.id,
         product_id: product.id,
         source: "extra",
-        system_stock: stockMap.get(productStockKey(product)) || 0,
+        system_stock: stockMap.get(fullProductCode(product.sku)) || 0,
         cost_snapshot: Number(product.cost || 0),
-      }).select("*, cyclic_products(sku, erp_sku, barcode, description, unit)").single();
+      }).select("*, cyclic_products(sku, barcode, description, unit)").single();
       if (error) { setMessage("Error agregando extra: " + error.message); return; }
       item = {
         ...data,
         sku: data.cyclic_products?.sku,
-        erp_sku: data.cyclic_products?.erp_sku,
         barcode: data.cyclic_products?.barcode,
         description: data.cyclic_products?.description,
         unit: data.cyclic_products?.unit,
@@ -643,11 +596,6 @@ export default function AuditoriaPage() {
     setQty("");
     setLocation("");
     setMessage(`Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
-  }
-
-  async function selectManualAuditProduct(product: Product) {
-    setManualProductCandidates([]);
-    await scanProduct(product.erp_sku || product.sku);
   }
 
   async function saveCount() {
@@ -1356,11 +1304,10 @@ export default function AuditoriaPage() {
         )}
       </div>
 
-      {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="font-black">Elige el producto</h3><p className="text-xs text-slate-500">El codigo {cleanCode(manualProductCodePending)} existe en mas de un SKU interno.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={() => selectManualAuditProduct(product)} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="text-sm font-black text-slate-900">{product.sku}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>SKU ERP: {product.erp_sku || "-"}</span></div></button>))}</div></div></div>)}
-
       {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
       {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
       {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="flex max-h-[86vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
+      {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="font-black">Elige el codigo</h3><p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={async () => { setManualProductCandidates([]); await openAuditProduct(product); }} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div><div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>Stock: {Number(product.system_stock || 0)}</span></div></button>))}</div></div></div>)}
     </main>
   );
 }
