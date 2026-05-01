@@ -10,6 +10,10 @@ import { supabase } from "@/lib/supabase/client";
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "resumen";
+type SortDirection = "asc" | "desc";
+type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
+type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
+type SortState<T extends string> = { key: T; direction: SortDirection };
 
 type CyclicUser = {
   id: string;
@@ -146,6 +150,12 @@ function firstColumnValue(row: Record<string, string>) {
   return String(first ?? "").trim();
 }
 
+function compareValues(a: string | number, b: string | number, direction: SortDirection) {
+  const multiplier = direction === "asc" ? 1 : -1;
+  if (typeof a === "number" && typeof b === "number") return (a - b) * multiplier;
+  return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }) * multiplier;
+}
+
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -177,6 +187,8 @@ export default function InventariosPage() {
   const [summaryQuery, setSummaryQuery] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
+  const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
+  const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
 
   const isValidator = user?.role === "Administrador" || user?.role === "Validador";
   const selectedSession = useMemo(
@@ -189,26 +201,49 @@ export default function InventariosPage() {
     [sessions]
   );
 
+  const showSidePanel = !isValidator || validatorTab === "preparacion";
+
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
-    const rows = [...counts].sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime());
-    if (!q) return rows;
-    return rows.filter(row =>
+    const rows = counts.filter(row =>
+      !q ||
       row.sku.toLowerCase().includes(q) ||
       row.description.toLowerCase().includes(q) ||
       row.location_code.toLowerCase().includes(q)
     );
-  }, [counts, recordsQuery]);
+    return rows.sort((a, b) => {
+      const left = recordsSort.key === "value" ? Number(a.quantity || 0) * Number(a.cost_snapshot || 0) :
+        recordsSort.key === "counted_at" ? new Date(a.counted_at).getTime() :
+        a[recordsSort.key];
+      const right = recordsSort.key === "value" ? Number(b.quantity || 0) * Number(b.cost_snapshot || 0) :
+        recordsSort.key === "counted_at" ? new Date(b.counted_at).getTime() :
+        b[recordsSort.key];
+      return compareValues(left, right, recordsSort.direction);
+    });
+  }, [counts, recordsQuery, recordsSort]);
 
   const filteredSummary = useMemo(() => {
     const q = summaryQuery.trim().toLowerCase();
-    if (!q) return summary;
-    return summary.filter(row =>
+    const rows = summary.filter(row =>
+      !q ||
       row.sku.toLowerCase().includes(q) ||
       row.description.toLowerCase().includes(q) ||
       String(row.observation || "").toLowerCase().includes(q)
     );
-  }, [summary, summaryQuery]);
+    return rows.sort((a, b) => {
+      const left = summarySort.key === "observation" ? String(a.observation || "") : a[summarySort.key];
+      const right = summarySort.key === "observation" ? String(b.observation || "") : b[summarySort.key];
+      return compareValues(left, right, summarySort.direction);
+    });
+  }, [summary, summaryQuery, summarySort]);
+
+  function toggleRecordsSort(key: RecordsSortKey) {
+    setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
+  }
+
+  function toggleSummarySort(key: SummarySortKey) {
+    setSummarySort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
+  }
 
   const pendingLocations = useMemo(() => {
     const counted = new Set(counts.map(row => row.location_code));
@@ -871,7 +906,8 @@ export default function InventariosPage() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-4 px-3 py-4 lg:grid-cols-[360px_1fr]">
+      <div className={`mx-auto grid max-w-7xl gap-4 px-3 py-4 ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
+        {showSidePanel && (
         <aside className="space-y-4">
           {isValidator && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -994,6 +1030,7 @@ export default function InventariosPage() {
             </section>
           )}
         </aside>
+        )}
 
         <section className="space-y-4">
           {message && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm">{message}</div>}
@@ -1072,29 +1109,51 @@ export default function InventariosPage() {
                 </div>
               </div>
             </div>
-            <div className="divide-y">
-              {filteredCounts.map(row => (
-                <div key={row.id} className="grid gap-2 p-3 text-sm md:grid-cols-[120px_130px_1fr_90px_90px] md:items-center">
-                  <div className="font-black text-slate-800">{row.location_code}</div>
-                  <div className="font-black text-blue-700">{row.sku}</div>
-                  <div className="min-w-0">
-                    <div className="truncate text-slate-700">{row.description}</div>
-                    <div className="text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} - {row.unit}</div>
-                  </div>
-                  <div className="font-black">{row.quantity}</div>
-                  {(operator?.id === row.operator_id || isValidator) && (
-                    <div className="flex gap-1">
-                      {operator?.id === row.operator_id && (
-                        <button onClick={() => editCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
-                      )}
-                      {isValidator && (
-                        <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button>
-                      )}
-                    </div>
+            <div className="overflow-auto">
+              <table className="w-full min-w-[1100px] text-sm">
+                <thead className="bg-slate-100 text-xs text-slate-600">
+                  <tr>
+                    <SortHeader label="Fecha" active={recordsSort.key === "counted_at"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("counted_at")} />
+                    <SortHeader label="Ubicacion" active={recordsSort.key === "location_code"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("location_code")} />
+                    <SortHeader label="Codigo" active={recordsSort.key === "sku"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("sku")} />
+                    <SortHeader label="Descripcion" active={recordsSort.key === "description"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("description")} align="left" />
+                    <SortHeader label="UM" active={recordsSort.key === "unit"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("unit")} />
+                    <SortHeader label="Cantidad" active={recordsSort.key === "quantity"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("quantity")} />
+                    <SortHeader label="Costo" active={recordsSort.key === "cost_snapshot"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("cost_snapshot")} />
+                    <SortHeader label="Valor" active={recordsSort.key === "value"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("value")} />
+                    <th className="p-2 text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCounts.map(row => (
+                    <tr key={row.id} className="border-b">
+                      <td className="p-2 text-center text-xs text-slate-500">{new Date(row.counted_at).toLocaleString("es-PE")}</td>
+                      <td className="p-2 text-center font-black text-slate-800">{row.location_code}</td>
+                      <td className="p-2 text-center font-black text-blue-700">{row.sku}</td>
+                      <td className="max-w-md truncate p-2 text-slate-700">{row.description}</td>
+                      <td className="p-2 text-center">{row.unit}</td>
+                      <td className="p-2 text-center font-black">{row.quantity}</td>
+                      <td className="p-2 text-center">{money(row.cost_snapshot)}</td>
+                      <td className="p-2 text-center font-black">{money(Number(row.quantity || 0) * Number(row.cost_snapshot || 0))}</td>
+                      <td className="p-2 text-center">
+                        {(operator?.id === row.operator_id || isValidator) && (
+                          <div className="flex justify-center gap-1">
+                            {operator?.id === row.operator_id && (
+                              <button onClick={() => editCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                            )}
+                            {isValidator && (
+                              <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredCounts.length === 0 && (
+                    <tr><td colSpan={9} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
                   )}
-                </div>
-              ))}
-              {filteredCounts.length === 0 && <div className="p-8 text-center text-sm text-slate-400">Sin registros.</div>}
+                </tbody>
+              </table>
             </div>
           </section>
           )}
@@ -1108,17 +1167,18 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className="w-full min-w-[980px] text-sm">
+                <table className="w-full min-w-[1120px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
-                      <th className="p-2 text-left">Código</th>
-                      <th className="p-2 text-left">Descripción</th>
-                      <th className="p-2">UM</th>
-                      <th className="p-2">Sistema</th>
-                      <th className="p-2">Contado</th>
-                      <th className="p-2">Dif.</th>
-                      <th className="p-2">Dif. Val.</th>
-                      <th className="p-2 text-left">Observación</th>
+                      <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
+                      <SortHeader label="Descripción" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => toggleSummarySort("description")} align="left" />
+                      <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
+                      <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
+                      <SortHeader label="Contado" active={summarySort.key === "counted"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted")} />
+                      <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
+                      <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
+                      <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
+                      <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
                       <th className="p-2">Acciones</th>
                     </tr>
                   </thead>
@@ -1131,6 +1191,7 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{row.system_stock}</td>
                         <td className="p-2 text-center font-black">{row.counted}</td>
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{row.diff}</td>
+                        <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
                         <td className="p-2">
                           <input value={observationDrafts[row.product_id] || ""} onChange={event => setObservationDrafts(prev => ({ ...prev, [row.product_id]: event.target.value }))} className="w-full rounded-lg border px-2 py-1 text-xs" />
@@ -1151,6 +1212,21 @@ export default function InventariosPage() {
         </section>
       </div>
     </main>
+  );
+}
+
+function SortHeader({ label, active, direction, onClick, align = "center" }: { label: string; active: boolean; direction: SortDirection; onClick: () => void; align?: "left" | "center" }) {
+  return (
+    <th className={`p-0 ${align === "left" ? "text-left" : "text-center"}`}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={`flex w-full items-center gap-1 px-2 py-2 text-xs font-black ${align === "left" ? "justify-start" : "justify-center"} ${active ? "text-slate-950" : "text-slate-600 hover:text-slate-950"}`}
+      >
+        <span>{label}</span>
+        <span className="text-[10px]">{active ? (direction === "desc" ? "↓" : "↑") : "↕"}</span>
+      </button>
+    </th>
   );
 }
 
