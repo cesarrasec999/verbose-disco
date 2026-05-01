@@ -226,9 +226,14 @@ export default function InventariosPage() {
     const surplusValue = rows.filter(row => row.diff > 0).reduce((sum, row) => sum + row.valueDiff, 0);
     const missingValue = rows.filter(row => row.diff < 0).reduce((sum, row) => sum + row.valueDiff, 0);
     const systemValue = rows.reduce((sum, row) => sum + row.system_stock * row.cost, 0);
+    const totalSystemUnits = rows.reduce((sum, row) => sum + row.system_stock, 0);
+    const productsWithStock = rows.filter(row => row.system_stock > 0).length;
     const countedValue = rows.filter(row => row.counted > 0).reduce((sum, row) => sum + row.system_stock * row.cost, 0);
     return {
       eri: totalCodes > 0 ? Math.round((okCodes / totalCodes) * 100) : 0,
+      systemValue,
+      totalSystemUnits,
+      productsWithStock,
       surplusValue,
       missingValue,
       diffValue: surplusValue + missingValue,
@@ -562,8 +567,15 @@ export default function InventariosPage() {
       setMessage("No se pudo congelar stock: " + error.message);
       return;
     }
-    setMessage(`Stock congelado. Productos en foto: ${data || 0}.`);
+    const { count: productsWithStockCount } = await supabase
+      .from("general_inventory_stock_snapshot")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", selectedSessionId)
+      .gt("system_stock", 0);
+    setMessage(`Stock congelado. Productos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
     await loadInitial(selectedSessionId);
+    await loadSessionData(selectedSessionId);
+    setValidatorTab("resumen");
   }
 
   async function finishSession() {
@@ -1037,6 +1049,9 @@ export default function InventariosPage() {
                 <Kpi label="Faltantes valorizados" value={money(kpis.missingValue)} tone="red" />
                 <Kpi label="Dif. valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
                 <Kpi label="Avance SKU" value={`${kpis.skuProgress}%`} />
+                <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
+                <Kpi label="Stock sistema" value={kpis.totalSystemUnits} />
+                <Kpi label="Productos con stock" value={kpis.productsWithStock} />
                 <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
                 <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
                 <Kpi label="No contados" value={kpis.notCountedCodes} tone="amber" />
