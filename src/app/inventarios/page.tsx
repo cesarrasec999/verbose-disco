@@ -997,7 +997,30 @@ export default function InventariosPage() {
       return;
     }
     const row = inventoryOperators.find(item => item.id === id);
-    if (!row || !confirm(`Eliminar usuario de inventario ${row.full_name}?`)) return;
+    if (!row || !confirm(`Eliminar usuario de inventario ${row.full_name} de esta sesion?`)) return;
+
+    if (selectedSessionId) {
+      const [sessionCountsRes, sessionRecountCountsRes, sessionRecountItemsRes] = await Promise.all([
+        supabase.from("general_inventory_counts").select("id").eq("session_id", selectedSessionId).eq("operator_id", id).limit(1),
+        supabase.from("general_inventory_recount_counts").select("id").eq("session_id", selectedSessionId).eq("operator_id", id).limit(1),
+        supabase.from("general_inventory_recount_items").select("id").eq("session_id", selectedSessionId).eq("assigned_operator_id", id).neq("status", "cancelled").limit(1),
+      ]);
+
+      if ((sessionCountsRes.data || []).length > 0 || (sessionRecountCountsRes.data || []).length > 0 || (sessionRecountItemsRes.data || []).length > 0) {
+        setMessage("No se puede retirar de esta sesion: tiene registros o reconteos asignados. Reasigna o quita sus reconteos primero.");
+        return;
+      }
+
+      const currentSessionCleanup = await supabase
+        .from("general_inventory_session_operators")
+        .delete()
+        .eq("session_id", selectedSessionId)
+        .eq("operator_id", id);
+      if (currentSessionCleanup.error) {
+        setMessage("No se pudo retirar al usuario de esta sesion: " + currentSessionCleanup.error.message);
+        return;
+      }
+    }
 
     const [countsRes, recountCountsRes, recountItemsRes] = await Promise.all([
       supabase.from("general_inventory_counts").select("id").eq("operator_id", id).limit(1),
@@ -1005,24 +1028,28 @@ export default function InventariosPage() {
       supabase.from("general_inventory_recount_items").select("id").eq("assigned_operator_id", id).limit(1),
     ]);
 
-    if ((countsRes.data || []).length > 0 || (recountCountsRes.data || []).length > 0 || (recountItemsRes.data || []).length > 0) {
-      setMessage("No se puede eliminar: este usuario tiene registros o reconteos asignados. Edita sus datos o reasigna primero.");
-      return;
+    const hasHistoricalLinks = (countsRes.data || []).length > 0 || (recountCountsRes.data || []).length > 0 || (recountItemsRes.data || []).length > 0;
+    let deletedGlobalOperator = false;
+    if (!hasHistoricalLinks) {
+      const remainingSessions = await supabase
+        .from("general_inventory_session_operators")
+        .select("id")
+        .eq("operator_id", id)
+        .limit(1);
+
+      if ((remainingSessions.data || []).length === 0) {
+        const { error } = await supabase.from("general_inventory_operators").delete().eq("id", id);
+        if (error) {
+          setMessage("Usuario retirado de esta sesion. No se pudo eliminar de la tabla global: " + error.message);
+          await loadInventoryOperators();
+          if (selectedSessionId) await loadRecountAssignments(selectedSessionId);
+          return;
+        }
+        deletedGlobalOperator = true;
+      }
     }
 
-    const sessionCleanup = await supabase.from("general_inventory_session_operators").delete().eq("operator_id", id);
-    if (sessionCleanup.error) {
-      setMessage("No se pudo limpiar sesiones del usuario: " + sessionCleanup.error.message);
-      return;
-    }
-
-    const { error } = await supabase.from("general_inventory_operators").delete().eq("id", id);
-    if (error) {
-      setMessage("No se pudo eliminar usuario: " + error.message);
-      return;
-    }
-
-    setMessage("Usuario de inventario eliminado.");
+    setMessage(deletedGlobalOperator ? "Usuario de inventario eliminado." : "Usuario retirado de esta sesion. Se conserva su historico si existe.");
     await loadInventoryOperators();
     if (selectedSessionId) await loadRecountAssignments(selectedSessionId);
   }
@@ -1549,11 +1576,26 @@ export default function InventariosPage() {
     const existing = await supabase.from("general_inventory_operators").select("*").eq("phone", phone).maybeSingle();
     if (existing.data) {
       operatorRow = existing.data as InventoryOperator;
-      if (operatorRow.password && operatorRow.password !== operatorPassword.trim()) {
-        setMessage("Celular ya registrado. Ingresa desde el login principal con tu clave.");
+      const currentSessionOperator = await supabase
+        .from("general_inventory_session_operators")
+        .select("id,status")
+        .eq("session_id", selectedSession.id)
+        .eq("operator_id", operatorRow.id)
+        .maybeSingle();
+
+      if (currentSessionOperator.data?.status === "active") {
+        if (operatorRow.password && operatorRow.password !== operatorPassword.trim()) {
+          setMessage("Este celular ya esta registrado en esta sesion. Ingresa con su clave correcta desde el login principal.");
+          return;
+        }
+        setOperator(operatorRow);
+        localStorage.setItem(OPERATOR_KEY, JSON.stringify(operatorRow));
+        localStorage.setItem(SESSION_KEY, selectedSession.id);
+        setMessage(`Bienvenido, ${operatorRow.full_name}.`);
         return;
       }
-      if (operatorRow.full_name !== operatorName.trim()) {
+
+      if (operatorRow.full_name !== operatorName.trim() || operatorRow.password !== operatorPassword.trim()) {
         await supabase.from("general_inventory_operators").update({ full_name: operatorName.trim(), password: operatorPassword.trim() }).eq("id", operatorRow.id);
         operatorRow = { ...operatorRow, full_name: operatorName.trim(), password: operatorPassword.trim() };
       }
