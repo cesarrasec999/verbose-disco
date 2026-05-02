@@ -1078,6 +1078,15 @@ export default function DashboardPage() {
                 }
             }
             // Filtrar flags de sesión y solo los que pertenecen a assignments del período
+            let allSessionFlags: CountRecord[] = [];
+            for (let i = 0; i < asgnIds.length; i += 500) {
+                const { data: flagChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", asgnIds.slice(i, i + 500))
+                    .like("location", "__session_%");
+                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as CountRecord[]);
+            }
             const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
@@ -1119,6 +1128,8 @@ export default function DashboardPage() {
 
             for (const [, g] of dayGroups) {
                 const prodMap = new Map<string, { system_stock: number; total_counted: number }>();
+                const cumplioPorReconteo = allSessionFlags.some((c: any) => c.location === "__recount_done__" && g.asgns.some((a: any) => a.id === c.assignment_id));
+                const terminoConteo = allSessionFlags.some((c: any) => c.location === "__session_finished__" && g.asgns.some((a: any) => a.id === c.assignment_id));
                 for (const a of g.asgns) {
                     if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
                 }
@@ -1158,7 +1169,7 @@ export default function DashboardPage() {
                 const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
                 const horaFin = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
-                const cumplio = g.cnts.some(c => c.status === "Corregido") || noContados === 0;
+                const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0 && sobrantes === 0 && faltantes === 0);
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
@@ -1246,7 +1257,7 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  OPERARIO — CONTEO (múltiples ubicaciones)
     // ════════════════════════════════════════════════════════
-    function openCount(asgn: Assignment) {
+    async function openCount(asgn: Assignment) {
         const existing = counts.filter(c => c.assignment_id === asgn.id);
         if (existing.length > 0) {
             setLocationRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
@@ -1255,6 +1266,8 @@ export default function DashboardPage() {
         }
         setSinStock(false);
         setActiveAssignment(asgn);
+        const updated = await refreshAssignmentStock(asgn, false, true);
+        setActiveAssignment(updated);
         clearMessage();
     }
 
@@ -1369,7 +1382,7 @@ export default function DashboardPage() {
         clearMessage();
     }
 
-    function openRecountItem(asgn: Assignment) {
+    async function openRecountItem(asgn: Assignment) {
         const existing = counts.filter(c => c.assignment_id === asgn.id);
         if (existing.length > 0) {
             setRecountRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
@@ -1378,6 +1391,12 @@ export default function DashboardPage() {
         }
         setSinStockRecount(false);
         setRecountAssignment(asgn);
+        const totalContado = existing.reduce((sum, c) => sum + Number(c.counted_quantity || 0), 0);
+        const tieneDiferencia = existing.length === 0 || r2(totalContado - Number(asgn.system_stock || 0)) !== 0;
+        if (tieneDiferencia) {
+            const updated = await refreshAssignmentStock(asgn, false, true);
+            setRecountAssignment(updated);
+        }
     }
 
     async function getSystemStockForStore(productSku: string, storeId: string): Promise<number> {
@@ -1716,8 +1735,8 @@ export default function DashboardPage() {
 
         const alreadyAssigned = assignments.find(a => a.product_id === product.id);
         if (alreadyAssigned) {
-            if (showRecount) openRecountItem(alreadyAssigned);
-            else openCount(alreadyAssigned);
+            if (showRecount) await openRecountItem(alreadyAssigned);
+            else await openCount(alreadyAssigned);
             return;
         }
 
@@ -1766,8 +1785,8 @@ export default function DashboardPage() {
         };
 
         setAssignments(prev => prev.some(a => a.id === asgn.id) ? prev : [...prev, asgn]);
-        if (showRecount) openRecountItem(asgn);
-        else openCount(asgn);
+        if (showRecount) await openRecountItem(asgn);
+        else await openCount(asgn);
         showMessage(`Producto voluntario agregado: ${product.sku}`, "success");
     }
 
@@ -1896,6 +1915,11 @@ export default function DashboardPage() {
     }
 
     async function finalizeRecount() {
+        const currentDiffs = difAssignments.length;
+        if (currentDiffs > 2 && !confirm(`¿Estás segura de culminar reconteo? Tenemos ${currentDiffs} códigos con diferencia.`)) {
+            return;
+        }
+
         // Marcar todos los conteos reales con diferencia como "Corregido"
         const difCounts = counts.filter(c => c.difference !== 0);
         if (difCounts.length > 0) {
@@ -3554,6 +3578,22 @@ export default function DashboardPage() {
             // Construir mapa de assignment_id → asignación para exportGlobal
             const expAsgnById = new Map<string, any>();
             for (const a of asgnData as any[]) expAsgnById.set(a.id, a);
+            const recountDoneDayKeys = new Set<string>();
+            const sessionFinishedDayKeys = new Set<string>();
+            for (let i = 0; i < asgnIds.length; i += 500) {
+                const { data: flagChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", asgnIds.slice(i, i + 500))
+                    .in("location", ["__recount_done__", "__session_finished__"]);
+                for (const flag of flagChunk || []) {
+                    const asg = expAsgnById.get(flag.assignment_id);
+                    if (!asg) continue;
+                    const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+                    if (flag.location === "__recount_done__") recountDoneDayKeys.add(dayKey);
+                    if (flag.location === "__session_finished__") sessionFinishedDayKeys.add(dayKey);
+                }
+            }
 
             for (const asg of asgnData as any[]) {
                 const dayKey = `${asg.store_id}__${asg.assigned_date}`;
@@ -3616,8 +3656,8 @@ export default function DashboardPage() {
                 }
             }
 
-            for (const ds of daySumMap.values()) {
-                ds.cumplio = ds.faltantes === 0;
+            for (const [dayKey, ds] of daySumMap.entries()) {
+                ds.cumplio = recountDoneDayKeys.has(dayKey) || (sessionFinishedDayKeys.has(dayKey) && ds.faltantes === 0 && ds.sobrantes === 0);
                 if (ds.horaInicio && ds.horaFin) {
                     ds.duracion = Math.round((new Date(ds.horaFin).getTime() - new Date(ds.horaInicio).getTime()) / 60000);
                 }
@@ -4313,7 +4353,7 @@ export default function DashboardPage() {
                                         </div>
                                         <button
                                             className="px-5 py-3 rounded-2xl bg-amber-500 text-white text-sm font-bold whitespace-nowrap shadow active:bg-amber-600 active:scale-95 transition-all"
-                                            onClick={() => openCount(a)}
+                                                                                    onClick={() => { void openCount(a); }}
                                         >
                                             ➕ Contar
                                         </button>
@@ -4357,7 +4397,7 @@ export default function DashboardPage() {
                                                 </div>
                                                 <button
                                                     className="px-4 py-2.5 rounded-2xl border-2 border-slate-300 text-sm font-semibold bg-white active:bg-slate-100 active:scale-95 transition-all"
-                                                    onClick={() => openCount(a)}
+                                                                                onClick={() => { void openCount(a); }}
                                                 >
                                                     ✏️ Editar
                                                 </button>
@@ -4535,7 +4575,7 @@ export default function DashboardPage() {
                                     <div
                                         key={a.id}
                                         className={`border rounded-2xl p-3 cursor-pointer transition-all ${isSelected ? "bg-orange-100 border-orange-400" : isUncounted ? "bg-amber-50 border-amber-300 hover:bg-amber-100" : "bg-red-50 border-red-200 hover:bg-red-100"}`}
-                                        onClick={() => openRecountItem(a)}
+                                        onClick={() => { void openRecountItem(a); }}
                                     >
                                         <div className="flex items-center justify-between gap-3">
                                             <div className="flex-1 min-w-0">
