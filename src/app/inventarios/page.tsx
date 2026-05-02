@@ -794,12 +794,20 @@ export default function InventariosPage() {
   }
 
   async function loadRecountAssignments(sessionId: string) {
-    const [operatorsRes, itemsRes] = await Promise.all([
+    const [operatorsRes, countOperatorsRes, recountCountOperatorsRes, itemsRes] = await Promise.all([
       supabase
         .from("general_inventory_session_operators")
         .select("operator_id,status,general_inventory_operators(id,full_name,phone)")
         .eq("session_id", sessionId)
         .eq("status", "active"),
+      supabase
+        .from("general_inventory_counts")
+        .select("operator_id")
+        .eq("session_id", sessionId),
+      supabase
+        .from("general_inventory_recount_counts")
+        .select("operator_id")
+        .eq("session_id", sessionId),
       supabase
         .from("general_inventory_recount_items")
         .select("*")
@@ -811,29 +819,52 @@ export default function InventariosPage() {
     if (operatorsRes.error) {
       setMessage("Error leyendo operadores activos: " + operatorsRes.error.message);
     }
+    if (countOperatorsRes.error) {
+      setMessage("Error leyendo contadores de la sesion: " + countOperatorsRes.error.message);
+    }
+    if (recountCountOperatorsRes.error) {
+      setMessage("Error leyendo reconteos guardados: " + recountCountOperatorsRes.error.message);
+    }
     if (itemsRes.error) {
       setMessage("Ejecuta primero el SQL de reconteo. Error: " + itemsRes.error.message);
     }
 
-    const operators = (operatorsRes.data || [])
+    const activeOperators = (operatorsRes.data || [])
       .map((row: any) => row.general_inventory_operators)
       .filter(Boolean) as InventoryOperator[];
-    const sessionOperatorsSorted = [...operators].sort((a, b) =>
+    const operatorById = new Map<string, InventoryOperator>();
+    for (const row of activeOperators) operatorById.set(row.id, row);
+
+    const sessionOperatorIds = new Set<string>(activeOperators.map(row => row.id));
+    for (const row of countOperatorsRes.data || []) if (row.operator_id) sessionOperatorIds.add(row.operator_id);
+    for (const row of recountCountOperatorsRes.data || []) if (row.operator_id) sessionOperatorIds.add(row.operator_id);
+    for (const row of itemsRes.data || []) if (row.assigned_operator_id) sessionOperatorIds.add(row.assigned_operator_id);
+
+    const missingSessionOperatorIds = [...sessionOperatorIds].filter(id => !operatorById.has(id));
+    if (missingSessionOperatorIds.length > 0) {
+      const missingOperatorsRes = await supabase
+        .from("general_inventory_operators")
+        .select("id,full_name,phone")
+        .in("id", missingSessionOperatorIds);
+      for (const row of (missingOperatorsRes.data || []) as InventoryOperator[]) operatorById.set(row.id, row);
+    }
+
+    const sessionOperatorsSorted = [...operatorById.values()].sort((a, b) =>
       `${a.full_name} ${a.phone}`.localeCompare(`${b.full_name} ${b.phone}`, "es", { numeric: true, sensitivity: "base" })
     );
     setSessionOperators(sessionOperatorsSorted);
     if (!recountOperatorId && sessionOperatorsSorted[0]?.id) setRecountOperatorId(sessionOperatorsSorted[0].id);
 
-    const operatorById = new Map(sessionOperatorsSorted.map(row => [row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`]));
+    const operatorLabelById = new Map(sessionOperatorsSorted.map(row => [row.id, row.full_name]));
     const assignedOperatorIds = [...new Set((itemsRes.data || []).map((row: any) => row.assigned_operator_id).filter(Boolean))];
-    const missingAssignedIds = assignedOperatorIds.filter((id: string) => !operatorById.has(id));
+    const missingAssignedIds = assignedOperatorIds.filter((id: string) => !operatorLabelById.has(id));
     if (missingAssignedIds.length > 0) {
       const assignedOperatorsRes = await supabase
         .from("general_inventory_operators")
         .select("id,full_name,phone")
         .in("id", missingAssignedIds);
       for (const row of (assignedOperatorsRes.data || []) as InventoryOperator[]) {
-        operatorById.set(row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`);
+        operatorLabelById.set(row.id, row.full_name);
       }
     }
     const rows = sortRecountAssignmentLines((itemsRes.data || []).map((row: any) => ({
@@ -856,26 +887,52 @@ export default function InventariosPage() {
       cost_snapshot: Number(row.cost_snapshot || 0),
       value_diff: Number(row.value_diff || 0),
       assigned_operator_id: row.assigned_operator_id,
-      assigned_operator_name: operatorById.get(row.assigned_operator_id) || null,
+      assigned_operator_name: operatorLabelById.get(row.assigned_operator_id) || null,
       status: row.status || "assigned",
     })) as RecountItem[]);
     setRecountItems(rows);
     setReassignOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, row.assigned_operator_id || ""])));
   }
 
-  async function loadInventoryOperators() {
-    const { data, error } = await supabase
-      .from("general_inventory_operators")
-      .select("id,full_name,phone,password")
-      .order("full_name", { ascending: true })
-      .order("phone", { ascending: true });
-
-    if (error) {
-      setMessage("No se pudo leer usuarios de inventario: " + error.message);
-      return;
+  async function loadInventoryOperators(sessionId = selectedSessionId) {
+    let rows: InventoryOperator[] = [];
+    if (sessionId) {
+      const [sessionOpsRes, countOpsRes, recountItemsRes, recountCountsRes] = await Promise.all([
+        supabase.from("general_inventory_session_operators").select("operator_id").eq("session_id", sessionId).eq("status", "active"),
+        supabase.from("general_inventory_counts").select("operator_id").eq("session_id", sessionId),
+        supabase.from("general_inventory_recount_items").select("assigned_operator_id").eq("session_id", sessionId),
+        supabase.from("general_inventory_recount_counts").select("operator_id").eq("session_id", sessionId),
+      ]);
+      const ids = new Set<string>();
+      for (const row of sessionOpsRes.data || []) if (row.operator_id) ids.add(row.operator_id);
+      for (const row of countOpsRes.data || []) if (row.operator_id) ids.add(row.operator_id);
+      for (const row of recountItemsRes.data || []) if (row.assigned_operator_id) ids.add(row.assigned_operator_id);
+      for (const row of recountCountsRes.data || []) if (row.operator_id) ids.add(row.operator_id);
+      if (ids.size > 0) {
+        const { data, error } = await supabase
+          .from("general_inventory_operators")
+          .select("id,full_name,phone,password")
+          .in("id", [...ids]);
+        if (error) {
+          setMessage("No se pudo leer usuarios de inventario: " + error.message);
+          return;
+        }
+        rows = (data || []) as InventoryOperator[];
+      }
+    } else {
+      const { data, error } = await supabase
+        .from("general_inventory_operators")
+        .select("id,full_name,phone,password")
+        .order("full_name", { ascending: true })
+        .order("phone", { ascending: true });
+      if (error) {
+        setMessage("No se pudo leer usuarios de inventario: " + error.message);
+        return;
+      }
+      rows = (data || []) as InventoryOperator[];
     }
 
-    const rows = (data || []) as InventoryOperator[];
+    rows.sort((a, b) => `${a.full_name} ${a.phone}`.localeCompare(`${b.full_name} ${b.phone}`, "es", { numeric: true, sensitivity: "base" }));
     setInventoryOperators(rows);
     setInventoryOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, {
       full_name: row.full_name || "",
@@ -934,7 +991,7 @@ export default function InventariosPage() {
       return;
     }
     const row = inventoryOperators.find(item => item.id === id);
-    if (!row || !confirm(`Eliminar usuario de inventario ${row.full_name} (${row.phone})?`)) return;
+    if (!row || !confirm(`Eliminar usuario de inventario ${row.full_name}?`)) return;
 
     const [countsRes, recountCountsRes, recountItemsRes] = await Promise.all([
       supabase.from("general_inventory_counts").select("id").eq("operator_id", id).limit(1),
@@ -2454,7 +2511,7 @@ export default function InventariosPage() {
 
                   <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} className="rounded-xl border bg-white px-3 py-3 text-sm">
                     <option value="">Operador</option>
-                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}{row.phone ? ` - ${row.phone}` : ""}</option>)}
+                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}</option>)}
                   </select>
 
                   <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
@@ -2575,12 +2632,12 @@ export default function InventariosPage() {
                               value={reassignOperatorDrafts[row.id] || row.assigned_operator_id || ""}
                               onChange={event => setReassignOperatorDrafts(prev => ({ ...prev, [row.id]: event.target.value }))}
                               disabled={row.status === "counted"}
-                              className="w-full rounded-xl border bg-white px-3 py-2 text-xs disabled:opacity-40"
+                              className="w-full min-w-[220px] rounded-xl border bg-white px-3 py-2 text-xs disabled:opacity-40"
                             >
                               <option value="">Selecciona operador</option>
                               {sessionOperators.map(operatorRow => (
                                 <option key={operatorRow.id} value={operatorRow.id}>
-                                  {operatorRow.full_name}{operatorRow.phone ? ` - ${operatorRow.phone}` : ""}
+                                  {operatorRow.full_name}
                                 </option>
                               ))}
                             </select>
@@ -2671,9 +2728,9 @@ export default function InventariosPage() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Usuarios de inventario</h2>
-                  <p className="text-xs text-slate-500">Edita nombre, celular y clave usados solo en inventarios generales.</p>
+                  <p className="text-xs text-slate-500">Edita nombre y clave usados solo en inventarios generales.</p>
                 </div>
-                <button onClick={loadInventoryOperators} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50">
+                <button onClick={() => loadInventoryOperators()} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50">
                   Actualizar
                 </button>
               </div>
@@ -2682,9 +2739,7 @@ export default function InventariosPage() {
                   <thead className="bg-slate-50 text-xs text-slate-600">
                     <tr>
                       <th className="p-2 text-left">Nombre</th>
-                      <th className="p-2 text-left">Celular</th>
                       <th className="p-2 text-left">Clave</th>
-                      <th className="p-2 text-left">ID usuario</th>
                       <th className="p-2 text-center">Acciones</th>
                     </tr>
                   </thead>
@@ -2702,20 +2757,11 @@ export default function InventariosPage() {
                           </td>
                           <td className="p-2">
                             <input
-                              value={draft.phone}
-                              onChange={event => updateInventoryOperatorDraft(row.id, "phone", event.target.value)}
-                              inputMode="numeric"
-                              className="w-full rounded-xl border px-3 py-2 text-sm"
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
                               value={draft.password}
                               onChange={event => updateInventoryOperatorDraft(row.id, "password", event.target.value)}
                               className="w-full rounded-xl border px-3 py-2 text-sm"
                             />
                           </td>
-                          <td className="p-2 font-mono text-xs text-slate-500">{row.id}</td>
                           <td className="p-2 text-center">
                             <div className="flex justify-center gap-2">
                               <button
@@ -2738,7 +2784,7 @@ export default function InventariosPage() {
                     })}
                     {inventoryOperators.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={3} className="p-8 text-center text-sm text-slate-400">
                           No hay usuarios registrados en inventarios generales.
                         </td>
                       </tr>
