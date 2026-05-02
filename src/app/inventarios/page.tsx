@@ -11,6 +11,7 @@ type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
+type RecountManagerTab = "pendientes" | "asignados";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
@@ -269,6 +270,9 @@ export default function InventariosPage() {
   const [productCode, setProductCode] = useState("");
   const [quantity, setQuantity] = useState("");
   const [editingCountId, setEditingCountId] = useState<string | null>(null);
+  const [editingAdminCount, setEditingAdminCount] = useState<CountRow | null>(null);
+  const [editingAdminLocation, setEditingAdminLocation] = useState("");
+  const [editingAdminQuantity, setEditingAdminQuantity] = useState("");
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
@@ -285,6 +289,8 @@ export default function InventariosPage() {
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
   const [recountAssignedSort, setRecountAssignedSort] = useState<SortState<RecountAssignedSortKey>>({ key: "ticket", direction: "asc" });
   const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
+  const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
+  const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
   const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
   const [inventoryOperators, setInventoryOperators] = useState<InventoryOperator[]>([]);
   const [inventoryOperatorDrafts, setInventoryOperatorDrafts] = useState<Record<string, InventoryOperatorDraft>>({});
@@ -464,6 +470,14 @@ export default function InventariosPage() {
     [assignedRecountKeys, selectedRecountCandidates]
   );
 
+  const selectedPendingRecountRows = useMemo(
+    () => unassignedRecountCandidates.filter(row => selectedPendingRecountKeys.has(recountKey(row))),
+    [selectedPendingRecountKeys, unassignedRecountCandidates]
+  );
+
+  const allPendingRecountRowsSelected = unassignedRecountCandidates.length > 0 &&
+    unassignedRecountCandidates.every(row => selectedPendingRecountKeys.has(recountKey(row)));
+
   const assignedRecountRows = useMemo(() => {
     const q = recountAssignedQuery.trim().toLowerCase();
     const rows = recountItems.filter(row =>
@@ -504,6 +518,27 @@ export default function InventariosPage() {
 
   function toggleRecountAssignedSort(key: RecountAssignedSortKey) {
     setRecountAssignedSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
+  }
+
+  function togglePendingRecountSelection(key: string) {
+    setSelectedPendingRecountKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleAllPendingRecountSelection() {
+    setSelectedPendingRecountKeys(prev => {
+      const next = new Set(prev);
+      if (allPendingRecountRowsSelected) {
+        for (const row of unassignedRecountCandidates) next.delete(recountKey(row));
+      } else {
+        for (const row of unassignedRecountCandidates) next.add(recountKey(row));
+      }
+      return next;
+    });
   }
 
   const pendingLocations = useMemo(() => {
@@ -580,6 +615,14 @@ export default function InventariosPage() {
     if (!selectedSessionId || !operator || isValidator) return;
     void loadOperatorRecountItems(selectedSessionId, operator.id);
   }, [selectedSessionId, operator?.id, isValidator]);
+
+  useEffect(() => {
+    const validKeys = new Set(unassignedRecountCandidates.map(row => recountKey(row)));
+    setSelectedPendingRecountKeys(prev => {
+      const next = new Set([...prev].filter(key => validKeys.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [unassignedRecountCandidates]);
 
   useEffect(() => {
     if (!operator || isValidator) return;
@@ -1262,7 +1305,7 @@ export default function InventariosPage() {
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
   }
 
-  async function assignRecountBlock(limit?: number) {
+  async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
     if (!selectedSessionId || !user || !recountOperatorId) {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
@@ -1272,7 +1315,8 @@ export default function InventariosPage() {
       return;
     }
 
-    const sourceRows = typeof limit === "number" ? unassignedRecountCandidates.slice(0, limit) : unassignedRecountCandidates;
+    const baseRows = explicitRows || unassignedRecountCandidates;
+    const sourceRows = typeof limit === "number" ? baseRows.slice(0, limit) : baseRows;
     const rows = sourceRows.map(row => ({
       session_id: selectedSessionId,
       product_id: row.product_id,
@@ -1311,8 +1355,21 @@ export default function InventariosPage() {
       return;
     }
 
+    setSelectedPendingRecountKeys(prev => {
+      const next = new Set(prev);
+      for (const row of sourceRows) next.delete(recountKey(row));
+      return next;
+    });
     setMessage(`${rows.length} items asignados para reconteo.`);
     await loadRecountAssignments(selectedSessionId);
+  }
+
+  async function assignSelectedRecountRows() {
+    if (selectedPendingRecountRows.length === 0) {
+      setMessage("Marca al menos una linea pendiente para asignar.");
+      return;
+    }
+    await assignRecountBlock(undefined, selectedPendingRecountRows);
   }
 
   async function reassignRecountItem(item: RecountItem) {
@@ -1869,6 +1926,47 @@ export default function InventariosPage() {
     setProductCandidates([]);
     setQuantity(String(row.quantity));
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function openAdminEditCount(row: CountRow) {
+    setEditingAdminCount(row);
+    setEditingAdminLocation(row.location_code || "");
+    setEditingAdminQuantity(String(row.quantity || ""));
+  }
+
+  async function saveAdminEditCount() {
+    if (!editingAdminCount) return;
+    const qty = Number(editingAdminQuantity);
+    const location = editingAdminLocation.trim().toUpperCase();
+    if (!location || !Number.isFinite(qty) || qty < 0) {
+      setMessage("Ingresa ubicacion y cantidad valida.");
+      return;
+    }
+
+    const locationRow = locations.find(row => row.location_code.toUpperCase() === location);
+    if (!locationRow) {
+      setMessage("La ubicacion no esta cargada para esta sesion.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("general_inventory_counts")
+      .update({
+        location_id: locationRow.id,
+        location_code: locationRow.location_code,
+        quantity: qty,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", editingAdminCount.id);
+
+    if (error) {
+      setMessage("No se pudo actualizar registro: " + error.message);
+      return;
+    }
+
+    setEditingAdminCount(null);
+    setMessage("Registro actualizado.");
+    await loadSessionData(editingAdminCount.session_id, "registros");
   }
 
   async function deleteCount(row: CountRow) {
@@ -2539,8 +2637,8 @@ export default function InventariosPage() {
                     <button onClick={() => assignRecountBlock(20)} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
                       Asignar 20 primeros
                     </button>
-                    <button onClick={() => assignRecountBlock()} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800">
-                      Asignar todos
+                    <button onClick={assignSelectedRecountRows} disabled={selectedPendingRecountRows.length === 0} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
+                      Asignar seleccionados
                     </button>
                   </div>
                 </div>
@@ -2570,15 +2668,39 @@ export default function InventariosPage() {
                 <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: ticket primero, luego mayor diferencia valorizada.</p>
               </section>
 
+              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-2">
+                <button
+                  onClick={() => setRecountManagerTab("pendientes")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "pendientes" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >
+                  Pendientes por asignar ({unassignedRecountCandidates.length})
+                </button>
+                <button
+                  onClick={() => setRecountManagerTab("asignados")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >
+                  Reconteos asignados ({assignedRecountRows.length})
+                </button>
+              </div>
+
+              {recountManagerTab === "pendientes" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Lineas pendientes por asignar</h3>
-                  <div className="text-xs font-bold text-slate-500">Ordenado por ticket y luego Dif. val.</div>
+                  <div className="text-xs font-bold text-slate-500">{selectedPendingRecountRows.length} seleccionadas</div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
-                  <table className="w-full min-w-[1100px] text-xs">
+                  <table className="w-full min-w-[1160px] text-xs">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
+                        <th className="p-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={allPendingRecountRowsSelected}
+                            onChange={toggleAllPendingRecountSelection}
+                            aria-label="Seleccionar todos los pendientes visibles"
+                          />
+                        </th>
                         <th className="p-2 text-left">Tipo</th>
                         <th className="p-2 text-left">Ticket</th>
                         <th className="p-2 text-left">Ubicacion</th>
@@ -2596,6 +2718,14 @@ export default function InventariosPage() {
                     <tbody>
                       {unassignedRecountCandidates.map(row => (
                         <tr key={recountKey(row)} className="border-t">
+                          <td className="p-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={selectedPendingRecountKeys.has(recountKey(row))}
+                              onChange={() => togglePendingRecountSelection(recountKey(row))}
+                              aria-label={`Seleccionar ${row.sku}`}
+                            />
+                          </td>
                           <td className="p-2 font-black">
                             <span className={row.recount_type === "missing" ? "text-red-600" : "text-blue-700"}>
                               {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
@@ -2616,7 +2746,7 @@ export default function InventariosPage() {
                       ))}
                       {unassignedRecountCandidates.length === 0 && (
                         <tr>
-                          <td colSpan={12} className="p-8 text-center text-sm text-slate-400">
+                          <td colSpan={13} className="p-8 text-center text-sm text-slate-400">
                             No hay lineas pendientes para asignar con el filtro actual.
                           </td>
                         </tr>
@@ -2625,7 +2755,9 @@ export default function InventariosPage() {
                   </table>
                 </div>
               </section>
+              )}
 
+              {recountManagerTab === "asignados" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Lineas asignadas / reasignar</h3>
@@ -2722,6 +2854,7 @@ export default function InventariosPage() {
                   </table>
                 </div>
               </section>
+              )}
 
               <section className="hidden rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -2922,7 +3055,7 @@ export default function InventariosPage() {
               </div>
             </div>
             <div className="overflow-auto">
-              <table className="w-full min-w-[1100px] text-sm">
+              <table className="w-full min-w-[920px] text-sm">
                 <thead className="bg-slate-100 text-xs text-slate-600">
                   <tr>
                     <SortHeader label="Fecha" active={recordsSort.key === "counted_at"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("counted_at")} />
@@ -2932,8 +3065,6 @@ export default function InventariosPage() {
                     <SortHeader label="Descripcion" active={recordsSort.key === "description"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("description")} align="left" />
                     <SortHeader label="UM" active={recordsSort.key === "unit"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("unit")} />
                     <SortHeader label="Cantidad" active={recordsSort.key === "quantity"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("quantity")} />
-                    <SortHeader label="Costo" active={recordsSort.key === "cost_snapshot"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("cost_snapshot")} />
-                    <SortHeader label="Valor" active={recordsSort.key === "value"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("value")} />
                     <th className="p-2 text-center">Acciones</th>
                   </tr>
                 </thead>
@@ -2947,13 +3078,14 @@ export default function InventariosPage() {
                       <td className="max-w-md truncate p-2 text-slate-700">{row.description}</td>
                       <td className="p-2 text-center">{row.unit}</td>
                       <td className="p-2 text-center font-black">{number2(row.quantity)}</td>
-                      <td className="p-2 text-center">{money(row.cost_snapshot)}</td>
-                      <td className="p-2 text-center font-black">{money(Number(row.quantity || 0) * Number(row.cost_snapshot || 0))}</td>
                       <td className="p-2 text-center">
                         {(operator?.id === row.operator_id || isValidator) && (
                           <div className="flex justify-center gap-1">
-                            {operator?.id === row.operator_id && (
+                            {operator?.id === row.operator_id && !isValidator && (
                               <button onClick={() => editCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                            )}
+                            {isValidator && (
+                              <button onClick={() => openAdminEditCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
                             )}
                             {isValidator && (
                               <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button>
@@ -2964,7 +3096,7 @@ export default function InventariosPage() {
                     </tr>
                   ))}
                   {filteredCounts.length === 0 && (
-                    <tr><td colSpan={10} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
+                    <tr><td colSpan={8} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -3026,6 +3158,38 @@ export default function InventariosPage() {
           )}
         </section>
       </div>
+
+      {editingAdminCount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h3 className="font-black">Editar registro</h3>
+            <p className="mt-1 line-clamp-2 text-sm text-slate-500">{editingAdminCount.sku} - {editingAdminCount.description}</p>
+            <div className="mt-4 space-y-3">
+              <input
+                value={editingAdminLocation}
+                onChange={event => setEditingAdminLocation(event.target.value.toUpperCase())}
+                placeholder="Ubicacion / ticket"
+                className="w-full rounded-xl border px-3 py-3 text-sm font-bold"
+              />
+              <input
+                value={editingAdminQuantity}
+                onChange={event => setEditingAdminQuantity(event.target.value)}
+                placeholder="Cantidad"
+                inputMode="decimal"
+                className="w-full rounded-xl border px-3 py-3 text-sm font-bold"
+              />
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button onClick={saveAdminEditCount} className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                Guardar
+              </button>
+              <button onClick={() => setEditingAdminCount(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {scannerTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
