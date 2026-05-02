@@ -13,6 +13,7 @@ export default function GlobalNetworkIndicator() {
   const [pending, setPending] = useState(0);
   const [visible, setVisible] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState(0);
   const startedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -57,41 +58,68 @@ export default function GlobalNetworkIndicator() {
 
   useEffect(() => {
     if (pending <= 0) {
-      setVisible(false);
-      setElapsed(0);
-      startedAtRef.current = null;
-      return;
+      if (!visible) {
+        setElapsed(0);
+        setProgress(0);
+        startedAtRef.current = null;
+        return;
+      }
+
+      setProgress(100);
+      const hideTimer = window.setTimeout(() => {
+        setVisible(false);
+        setElapsed(0);
+        setProgress(0);
+        startedAtRef.current = null;
+      }, 450);
+      return () => window.clearTimeout(hideTimer);
     }
 
-    const showTimer = window.setTimeout(() => setVisible(true), 250);
-    const elapsedTimer = window.setInterval(() => {
+    if (!startedAtRef.current) {
+      startedAtRef.current = Date.now();
+      setProgress(current => Math.max(current, 8));
+    }
+
+    const updateProgress = () => {
       if (!startedAtRef.current) return;
-      setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000));
-    }, 500);
+      const elapsedMs = Date.now() - startedAtRef.current;
+      const seconds = Math.floor(elapsedMs / 1000);
+      const estimated = Math.round(8 + (1 - Math.exp(-elapsedMs / 18000)) * 86);
+      setElapsed(seconds);
+      setProgress(current => Math.min(94, Math.max(current, estimated)));
+    };
+
+    updateProgress();
+    const showTimer = window.setTimeout(() => setVisible(true), 250);
+    const elapsedTimer = window.setInterval(updateProgress, 350);
 
     return () => {
       window.clearTimeout(showTimer);
       window.clearInterval(elapsedTimer);
     };
-  }, [pending]);
+  }, [pending, visible]);
 
   if (!visible) return null;
 
+  const boundedProgress = Math.max(1, Math.min(100, progress));
+
   return (
     <div className="fixed inset-x-0 top-0 z-[9999] pointer-events-none">
-      <div className="h-1 w-full overflow-hidden bg-slate-200">
-        <div className="h-full w-1/3 animate-[rasecorp-progress_1.1s_ease-in-out_infinite] rounded-full bg-orange-600" />
+      <div className="h-1.5 w-full overflow-hidden bg-slate-200">
+        <div className="h-full rounded-r-full bg-orange-600 transition-all duration-500" style={{ width: `${Math.max(8, boundedProgress)}%` }} />
       </div>
-      <div className="mx-auto mt-2 w-fit rounded-full border bg-white/95 px-4 py-2 text-xs font-black text-slate-800 shadow-lg backdrop-blur">
-        Cargando informacion{elapsed >= 3 ? `... ${elapsed}s` : "..."}
+      <div className="mx-auto mt-3 w-[min(92vw,420px)] rounded-2xl border border-slate-200 bg-white/95 p-3 text-xs font-black text-slate-800 shadow-xl backdrop-blur">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span>{boundedProgress >= 100 ? "Proceso terminado" : "Calculando datos..."}</span>
+          <span className="text-orange-600">{boundedProgress}%</span>
+        </div>
+        <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full rounded-full bg-orange-600 transition-all duration-500" style={{ width: `${Math.max(8, boundedProgress)}%` }} />
+        </div>
+        <div className="mt-2 text-[11px] font-bold text-slate-500">
+          {boundedProgress >= 100 ? "Listo." : `Progreso estimado${elapsed >= 3 ? ` - ${elapsed}s` : ""}`}
+        </div>
       </div>
-      <style jsx global>{`
-        @keyframes rasecorp-progress {
-          0% { transform: translateX(-120%); }
-          55% { transform: translateX(120%); }
-          100% { transform: translateX(320%); }
-        }
-      `}</style>
     </div>
   );
 }

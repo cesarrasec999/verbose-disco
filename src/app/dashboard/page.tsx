@@ -245,6 +245,12 @@ function formatMoney(v: number) {
     return `S/ ${Number(v || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatNumber(v: number | string | null | undefined) {
+    const n = Number(v || 0);
+    if (!Number.isFinite(n)) return "0";
+    return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
+}
+
 /** Redondea a 2 decimales eliminando errores de punto flotante */
 function r2(v: number): number {
     return Math.round((v + Number.EPSILON) * 100) / 100;
@@ -278,8 +284,8 @@ function statusBadge(status: CountRecord["status"]) {
 
 function diffBadge(diff: number) {
     if (diff === 0) return <span className="text-green-700 font-semibold">0</span>;
-    if (diff > 0)   return <span className="text-blue-700 font-semibold">+{diff}</span>;
-    return <span className="text-red-600 font-semibold">{diff}</span>;
+    if (diff > 0)   return <span className="text-blue-700 font-semibold">+{formatNumber(diff)}</span>;
+    return <span className="text-red-600 font-semibold">{formatNumber(diff)}</span>;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1442,7 +1448,7 @@ export default function DashboardPage() {
 
         if (notify) {
             const changed = Number(asgn.system_stock || 0) !== latestStock;
-            showMessage(changed ? `Stock actualizado de ${asgn.system_stock} a ${latestStock}.` : "Stock sistema ya está actualizado.", "success");
+            showMessage(changed ? `Stock actualizado de ${formatNumber(asgn.system_stock)} a ${formatNumber(latestStock)}.` : "Stock sistema ya está actualizado.", "success");
         }
         return updated;
     }
@@ -4200,7 +4206,7 @@ export default function DashboardPage() {
                                         <div className="flex-1 min-w-0">
                                             <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
                                             <div className="text-sm text-slate-600 truncate">{a.description}</div>
-                                            <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} · Stock: <b>{a.system_stock}</b></div>
+                                            <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} · Stock: <b>{formatNumber(a.system_stock)}</b></div>
                                         </div>
                                         <button
                                             className="px-5 py-3 rounded-2xl bg-amber-500 text-white text-sm font-bold whitespace-nowrap shadow active:bg-amber-600 active:scale-95 transition-all"
@@ -4233,12 +4239,12 @@ export default function DashboardPage() {
                                                     <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
                                                     <div className="text-sm text-slate-600 truncate">{a.description}</div>
                                                     <div className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                                                        <span>Stock: <b>{a.system_stock}</b></span>
+                                                        <span>Stock: <b>{formatNumber(a.system_stock)}</b></span>
                                                         <span>·</span>
-                                                        <span>Contado: <b>{totalContado}</b></span>
+                                                        <span>Contado: <b>{formatNumber(totalContado)}</b></span>
                                                         {hasDiff
                                                             ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">
-                                                                ⚠️ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{totalContado - Number(a.system_stock)}
+                                                                ⚠️ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{formatNumber(totalContado - Number(a.system_stock))}
                                                               </span>
                                                             : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-bold text-xs border border-green-200">
                                                                 ✓ OK
@@ -4259,7 +4265,7 @@ export default function DashboardPage() {
                                                         <div key={c.id} className="text-xs text-slate-600 flex gap-2 items-center bg-white rounded-xl px-3 py-2 border border-slate-200">
                                                             <span className="font-bold text-slate-400 w-14 flex-shrink-0">Ubic {i + 1}</span>
                                                             <span className="font-mono text-slate-700 truncate flex-1">{c.location || <em className="text-slate-400">—</em>}</span>
-                                                            <span className="font-bold text-slate-800 flex-shrink-0">{c.counted_quantity} {a.unit}</span>
+                                                            <span className="font-bold text-slate-800 flex-shrink-0">{formatNumber(c.counted_quantity)} {a.unit}</span>
                                                         </div>
                                                     ))}
                                                 </div>
@@ -4331,7 +4337,7 @@ export default function DashboardPage() {
                                     <div>
                                         <p className="font-bold text-slate-900">{recountAssignment.sku}</p>
                                         <p className="text-xs text-slate-600">{recountAssignment.description}</p>
-                                        <p className="text-xs text-slate-400">UM: {recountAssignment.unit} · Stock sistema: <b>{recountAssignment.system_stock}</b></p>
+                                        <p className="text-xs text-slate-400">UM: {recountAssignment.unit} · Stock sistema: <b>{formatNumber(recountAssignment.system_stock)}</b></p>
                                     </div>
                                     <button onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }} className="text-slate-400 text-xl">×</button>
                                 </div>
@@ -4434,8 +4440,8 @@ export default function DashboardPage() {
                                                 <div className="text-xs text-slate-600 truncate">{a.description}</div>
                                                 <div className="text-xs text-slate-400 mt-0.5">
                                                     {isUncounted
-                                                        ? <span className="text-amber-700 font-semibold">⏳ No contado · Stock: <b>{a.system_stock}</b></span>
-                                                        : <>Stock: <b>{a.system_stock}</b> · Contado: <b>{totalContado}</b> · Dif: {diffBadge(diff)}</>
+                                                        ? <span className="text-amber-700 font-semibold">⏳ No contado · Stock: <b>{formatNumber(a.system_stock)}</b></span>
+                                                        : <>Stock: <b>{formatNumber(a.system_stock)}</b> · Contado: <b>{formatNumber(totalContado)}</b> · Dif: {diffBadge(diff)}</>
                                                     }
                                                 </div>
                                             </div>
@@ -4884,7 +4890,7 @@ export default function DashboardPage() {
                                                                 <td className="p-2 border font-medium">{a.sku}</td>
                                                                 <td className="p-2 border text-slate-600">{a.description}</td>
                                                                 <td className="p-2 border text-center">{a.unit}</td>
-                                                                <td className="p-2 border text-center font-semibold">{a.system_stock}</td>
+                                                                <td className="p-2 border text-center font-semibold">{formatNumber(a.system_stock)}</td>
                                                                 <td className="p-2 border text-center">
                                                                     {c ? <span className={statusBadge(c.status)}>{c.status}</span> : <span className="text-xs text-amber-600 font-semibold">Pendiente</span>}
                                                                 </td>
@@ -4967,13 +4973,13 @@ export default function DashboardPage() {
                                                 <tr key={c.id} className={isSinStock ? "bg-red-50" : "hover:bg-slate-50"}>
                                                     <td className="p-2 border font-medium">{c.sku}</td>
                                                     <td className="p-2 border text-slate-600 max-w-[180px] truncate">{c.description}</td>
-                                                    <td className="p-2 border text-center font-semibold">{c.stock_snapshot ?? c.system_stock ?? "—"}</td>
+                                                    <td className="p-2 border text-center font-semibold">{c.stock_snapshot !== null && c.stock_snapshot !== undefined ? formatNumber(c.stock_snapshot) : c.system_stock !== null && c.system_stock !== undefined ? formatNumber(c.system_stock) : "—"}</td>
                                                     <td className="p-2 border text-center font-mono text-xs">
                                                         {isSinStock
                                                             ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">🚫 Sin stock</span>
                                                             : c.location}
                                                     </td>
-                                                    <td className="p-2 border text-center font-semibold">{c.counted_quantity}</td>
+                                                    <td className="p-2 border text-center font-semibold">{formatNumber(c.counted_quantity)}</td>
                                                     <td className="p-2 border text-xs">{c.user_name}</td>
                                                     <td className="p-2 border text-xs text-slate-500 whitespace-nowrap">{formatDateTime(c.counted_at)}</td>
                                                     <td className="p-2 border text-center"><span className={statusBadge(c.status)}>{c.status}</span></td>
@@ -5214,7 +5220,7 @@ export default function DashboardPage() {
                                                                     <td className="p-2 border border-amber-100 text-slate-600 max-w-[180px] truncate">{a.description}</td>
                                                                     <td className="p-2 border border-amber-100 text-center text-xs">{a.unit}</td>
                                                                     <td className="p-2 border border-amber-100 text-center text-xs">{formatMoney(a.cost || 0)}</td>
-                                                                    <td className="p-2 border border-amber-100 text-center font-semibold">{a.system_stock}</td>
+                                                                    <td className="p-2 border border-amber-100 text-center font-semibold">{formatNumber(a.system_stock)}</td>
                                                                     <td className="p-2 border border-amber-100 text-center text-xs text-red-600 font-semibold">
                                                                         {formatMoney(difVal)}
                                                                     </td>
@@ -5493,7 +5499,7 @@ export default function DashboardPage() {
                                 <p className="text-sm text-slate-500">{activeAssignment.description}</p>
                                 <div className="flex flex-wrap items-center gap-2 mt-1.5">
                                     <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
-                                    <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {activeAssignment.system_stock}</span>
+                                    <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {formatNumber(activeAssignment.system_stock)}</span>
                                     <button
                                         onClick={() => refreshAssignmentStock(activeAssignment)}
                                         disabled={refreshingStockId === activeAssignment.id || savingCount}

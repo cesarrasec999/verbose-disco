@@ -143,6 +143,12 @@ function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function number2(value: number | string | null | undefined) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "0";
+  return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
+}
+
 export default function AuditoriaPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -692,7 +698,7 @@ export default function AuditoriaPage() {
       }
       await loadSessionData(session.id);
       setActiveItem(null);
-      setMessage(`Conteo registrado: ${quantity} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${currentItem.system_stock}.`);
+      setMessage(`Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${number2(currentItem.system_stock)}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Error guardando conteo.");
     } finally {
@@ -974,9 +980,9 @@ export default function AuditoriaPage() {
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-weight:800;color:#0f172a;">${escapeHTML(r.item.sku)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#475569;">${escapeHTML(r.item.description)}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#334155;">${escapeHTML(r.item.unit || "N/D")}</td>
-            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;">${escapeHTML(r.item.system_stock)}</td>
-            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(r.total)}</td>
-            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(r.diff)}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;">${escapeHTML(number2(r.item.system_stock))}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(number2(r.total))}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(number2(r.diff))}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(money(r.value))}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
           </tr>`;
@@ -1182,7 +1188,7 @@ export default function AuditoriaPage() {
                         <div className="min-w-0 flex-1">
                           <div className="font-black">{p.sku}</div>
                           <div className="truncate text-slate-600">{p.description}</div>
-                          <div className="text-xs text-slate-400">UM: {p.unit} - Stock: {p.system_stock || 0} - Costo: {money(p.cost)}</div>
+                          <div className="text-xs text-slate-400">UM: {p.unit} - Stock: {number2(p.system_stock || 0)} - Costo: {money(p.cost)}</div>
                         </div>
                       </label>
                     ))}
@@ -1226,7 +1232,7 @@ export default function AuditoriaPage() {
                       <div className="min-w-0">
                         <div className="text-lg font-black">{activeItem.sku}</div>
                         <div className="line-clamp-2 text-sm text-slate-600">{activeItem.description}</div>
-                        <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {activeItem.system_stock} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                        <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {number2(activeItem.system_stock)} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
                       </div>
                       <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={20} /></button>
                     </div>
@@ -1264,7 +1270,7 @@ export default function AuditoriaPage() {
                     <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
                     <tbody>{filteredCounts.map(c => {
                       const item = items.find(i => i.id === c.item_id);
-                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{c.quantity}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
+                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
                     })}</tbody>
                   </table>
                 </div>
@@ -1359,10 +1365,10 @@ export default function AuditoriaPage() {
                                     <Save size={13} />
                                   </button>
                                 </div>
-                              ) : r.item.system_stock}
+                              ) : number2(r.item.system_stock)}
                             </td>
-                            <td className="p-2 text-center font-semibold">{r.total}</td>
-                            <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{r.diff}</td>
+                            <td className="p-2 text-center font-semibold">{number2(r.total)}</td>
+                            <td className={`p-2 text-center font-black ${r.diff < 0 ? "text-red-600" : r.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{r.diff > 0 ? "+" : ""}{number2(r.diff)}</td>
                             <td className="p-2 text-center text-xs">{money(r.value)}</td>
                             <td className="p-2 text-center text-xs font-black">{r.item.source === "extra" ? "Extra - " : ""}{r.status}</td>
                             <td className="p-2">
@@ -1397,7 +1403,7 @@ export default function AuditoriaPage() {
       {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"><div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex items-center justify-between"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
       {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 flex gap-2"><button onClick={saveEdit} className="flex-1 rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
       {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="flex max-h-[86vh] w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
-      {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="font-black">Elige el codigo</h3><p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={async () => { setManualProductCandidates([]); await openAuditProduct(product); }} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div><div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>Stock: {Number(product.system_stock || 0)}</span></div></button>))}</div></div></div>)}
+      {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="font-black">Elige el codigo</h3><p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70vh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={async () => { setManualProductCandidates([]); await openAuditProduct(product); }} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div><div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>Stock: {number2(product.system_stock || 0)}</span></div></button>))}</div></div></div>)}
     </main>
   );
 }

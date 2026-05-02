@@ -164,6 +164,12 @@ function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function number2(value: number | string | null | undefined) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "0";
+  return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
+}
+
 function statusLabel(status: SessionStatus) {
   if (status === "planned") return "Planificado";
   if (status === "open") return "Abierto";
@@ -2370,7 +2376,7 @@ export default function InventariosPage() {
                         <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
                       </div>
                       <div className="text-right">
-                        <div className="text-xl font-black text-slate-950">{row.quantity}</div>
+                        <div className="text-xl font-black text-slate-950">{number2(row.quantity)}</div>
                         {operator.id === row.operator_id && (
                           <button onClick={() => editCount(row)} className="mt-1 rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
                         )}
@@ -2559,9 +2565,9 @@ export default function InventariosPage() {
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
                           <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
                           <td className="p-2 text-center">{row.unit}</td>
-                          <td className="p-2 text-center font-bold">{row.system_stock}</td>
-                          <td className="p-2 text-center font-bold">{row.counted_qty}</td>
-                          <td className="p-2 text-center font-black">{row.diff_qty}</td>
+                          <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
+                          <td className="p-2 text-center font-bold">{number2(row.counted_qty)}</td>
+                          <td className="p-2 text-center font-black">{number2(row.diff_qty)}</td>
                           <td className="p-2 text-center">{money(row.cost_snapshot)}</td>
                           <td className="p-2 text-center font-black">{money(row.value_diff)}</td>
                         </tr>
@@ -2623,9 +2629,9 @@ export default function InventariosPage() {
                           <td className="p-2">{row.location_code || "Por codigo"}</td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
                           <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
-                          <td className="p-2 text-center font-bold">{row.system_stock}</td>
-                          <td className="p-2 text-center font-bold">{row.counted_qty}</td>
-                          <td className="p-2 text-center font-black">{row.diff_qty}</td>
+                          <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
+                          <td className="p-2 text-center font-bold">{number2(row.counted_qty)}</td>
+                          <td className="p-2 text-center font-black">{number2(row.diff_qty)}</td>
                           <td className="p-2 text-center font-black">{money(row.value_diff)}</td>
                           <td className="p-2">{row.assigned_operator_name || "-"}</td>
                           <td className="p-2">
@@ -2889,7 +2895,7 @@ export default function InventariosPage() {
                       <td className="p-2 text-center font-black text-blue-700">{row.sku}</td>
                       <td className="max-w-md truncate p-2 text-slate-700">{row.description}</td>
                       <td className="p-2 text-center">{row.unit}</td>
-                      <td className="p-2 text-center font-black">{row.quantity}</td>
+                      <td className="p-2 text-center font-black">{number2(row.quantity)}</td>
                       <td className="p-2 text-center">{money(row.cost_snapshot)}</td>
                       <td className="p-2 text-center font-black">{money(Number(row.quantity || 0) * Number(row.cost_snapshot || 0))}</td>
                       <td className="p-2 text-center">
@@ -2946,9 +2952,9 @@ export default function InventariosPage() {
                         <td className="p-2 font-black">{row.sku}</td>
                         <td className="max-w-sm truncate p-2">{row.description}</td>
                         <td className="p-2 text-center">{row.unit}</td>
-                        <td className="p-2 text-center">{row.system_stock}</td>
-                        <td className="p-2 text-center font-black">{row.counted}</td>
-                        <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{row.diff}</td>
+                        <td className="p-2 text-center">{number2(row.system_stock)}</td>
+                        <td className="p-2 text-center font-black">{number2(row.counted)}</td>
+                        <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
                         <td className="p-2">
@@ -3011,9 +3017,10 @@ function SortHeader({ label, active, direction, onClick, align = "center" }: { l
 }
 
 function MiniMetric({ label, value }: { label: string; value: string | number }) {
+  const displayValue = typeof value === "number" ? number2(value) : value;
   return (
     <div className="rounded-xl bg-white p-2 text-center">
-      <div className="text-sm font-black text-slate-950">{value}</div>
+      <div className="text-sm font-black text-slate-950">{displayValue}</div>
       <div className="text-[11px] font-bold text-slate-500">{label}</div>
     </div>
   );
@@ -3021,9 +3028,10 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
 
 function Kpi({ label, value, tone = "slate" }: { label: string; value: string | number; tone?: "slate" | "blue" | "red" | "amber" }) {
   const color = tone === "blue" ? "text-blue-700" : tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : "text-slate-900";
+  const displayValue = typeof value === "number" ? number2(value) : value;
   return (
     <div className="rounded-xl border bg-slate-50 p-3 text-center">
-      <div className={`text-xl font-black ${color}`}>{value}</div>
+      <div className={`text-xl font-black ${color}`}>{displayValue}</div>
       <div className="mt-1 text-xs font-bold text-slate-500">{label}</div>
     </div>
   );
