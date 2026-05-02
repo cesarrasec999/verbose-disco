@@ -153,35 +153,61 @@ export default function LoginPage() {
 
             const existing = await supabase
                 .from("general_inventory_operators")
-                .select("id")
+                .select("id,full_name,phone")
                 .eq("phone", phone)
                 .maybeSingle();
 
+            let operatorData: InventoryOperator | null = null;
             if (existing.data) {
-                setError("Este celular ya esta registrado. Usa Iniciar sesion.");
-                setLoading(false);
-                return;
+                const currentSessionOperator = await supabase
+                    .from("general_inventory_session_operators")
+                    .select("id,status")
+                    .eq("session_id", selectedInventorySessionId)
+                    .eq("operator_id", existing.data.id)
+                    .maybeSingle();
+
+                if (currentSessionOperator.data?.status === "active") {
+                    setError("Este celular ya esta registrado en este inventario. Usa Iniciar sesion.");
+                    setLoading(false);
+                    return;
+                }
+
+                const updated = await supabase
+                    .from("general_inventory_operators")
+                    .update({ full_name: inventoryFullName.trim(), password: pass })
+                    .eq("id", existing.data.id)
+                    .select("id,full_name,phone")
+                    .single();
+                if (updated.error || !updated.data) {
+                    setError("No se pudo actualizar el operador existente.");
+                    setLoading(false);
+                    return;
+                }
+                operatorData = updated.data as InventoryOperator;
+            } else {
+                const created = await supabase
+                    .from("general_inventory_operators")
+                    .insert({ full_name: inventoryFullName.trim(), phone, password: pass })
+                    .select("id,full_name,phone")
+                    .single();
+
+                if (created.error || !created.data) {
+                    setError("No se pudo registrar operador. Verifica que ejecutaste el SQL.");
+                    setLoading(false);
+                    return;
+                }
+                operatorData = created.data as InventoryOperator;
             }
 
-            const created = await supabase
-                .from("general_inventory_operators")
-                .insert({ full_name: inventoryFullName.trim(), phone, password: pass })
-                .select("id,full_name,phone")
-                .single();
-
-            setLoading(false);
-            if (created.error || !created.data) {
-                setError("No se pudo registrar operador. Verifica que ejecutaste el SQL.");
-                return;
-            }
             const join = await supabase
                 .from("general_inventory_session_operators")
-                .upsert({ session_id: selectedInventorySessionId, operator_id: created.data.id, status: "active" }, { onConflict: "session_id,operator_id" });
+                .upsert({ session_id: selectedInventorySessionId, operator_id: operatorData.id, status: "active" }, { onConflict: "session_id,operator_id" });
+            setLoading(false);
             if (join.error) {
                 setError("No se pudo asociar el operador al inventario seleccionado.");
                 return;
             }
-            enterInventory(created.data as InventoryOperator, selectedInventorySessionId);
+            enterInventory(operatorData, selectedInventorySessionId);
             return;
         }
 
