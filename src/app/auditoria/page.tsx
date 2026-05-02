@@ -67,6 +67,7 @@ type AuditItem = {
   source: "selected" | "extra";
   system_stock: number;
   cost_snapshot: number;
+  pending_extra?: boolean;
   observation?: string | null;
   sku?: string;
   barcode?: string | null;
@@ -395,6 +396,30 @@ export default function AuditoriaPage() {
     await loadSessionData(row.id);
   }
 
+  function clearSelectedSession(nextStoreId?: string) {
+    setSession(null);
+    setItems([]);
+    setCounts([]);
+    setActiveItem(null);
+    setResults([]);
+    setSelected(new Set());
+    setScanCode("");
+    setLocation("");
+    setQty("");
+    setManualProductCandidates([]);
+    sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+    if (nextStoreId !== undefined) setStoreId(nextStoreId);
+  }
+
+  function changeStoreForNewSession(nextStoreId: string) {
+    if (session && session.store_id !== nextStoreId) {
+      clearSelectedSession(nextStoreId);
+      setMessage("Tienda cambiada. Ahora puedes crear una nueva sesion de auditoria.");
+      return;
+    }
+    setStoreId(nextStoreId);
+  }
+
   async function getStockMap(products: Product[]) {
     const store = selectedStore || stores.find(s => s.id === session?.store_id);
     if (!store || products.length === 0) return new Map<string, number>();
@@ -459,7 +484,7 @@ export default function AuditoriaPage() {
     const latestStock = Number(data?.stock || 0);
     const updatedItem = { ...item, system_stock: latestStock };
 
-    if (Number(item.system_stock || 0) !== latestStock) {
+    if (!item.pending_extra && Number(item.system_stock || 0) !== latestStock) {
       const { error: updateError } = await supabase
         .from("audit_session_items")
         .update({ system_stock: latestStock })
@@ -489,6 +514,8 @@ export default function AuditoriaPage() {
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
+    setResults([]);
+    setSelected(new Set());
     sessionStorage.setItem(AUDIT_SESSION_ID_KEY, data.id);
     await loadSessions();
     setMessage("Sesión de auditoría iniciada.");
@@ -1135,7 +1162,7 @@ export default function AuditoriaPage() {
             <h1 className="truncate text-base font-black leading-tight">Auditoria WMS</h1>
             <p className="truncate text-xs text-slate-500">{user.full_name} - {selectedStore?.name || "Selecciona tienda"}</p>
           </div>
-          <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
+          <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           {user.role === "Administrador" && (
@@ -1164,16 +1191,23 @@ export default function AuditoriaPage() {
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <h2 className="font-black">Crear sesión de auditoría</h2>
                 <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditoría y carga la familia de productos a contar.</p>
-                <select value={storeId} onChange={e => setStoreId(e.target.value)} disabled={!!session && session.status === "in_progress"} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
+                <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
                   {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
+                {session && (
+                  <div className="mt-4 space-y-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm">
+                    <div className="font-black text-blue-900">Sesion seleccionada</div>
+                    <div className="text-blue-800">{session.store_name || selectedStore?.name || "Tienda"} - {session.status === "finished" ? "Finalizada" : "En progreso"}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button onClick={finishSession} disabled={session.status !== "in_progress"} className="rounded-xl bg-green-700 px-4 py-3 font-bold text-white disabled:opacity-40"><CheckCircle2 className="mr-2 inline" size={18} /> Finalizar</button>
+                      <button onClick={() => { clearSelectedSession(); setMainTab("sessions"); setMessage("Sesion liberada. Selecciona tienda y crea otra auditoria."); }} className="rounded-xl border border-blue-200 bg-white px-4 py-3 font-bold text-blue-800">Nueva auditoria</button>
+                    </div>
+                  </div>
+                )}
                 {!session ? (
                   <button onClick={createSession} disabled={!storeId || loading} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"><ClipboardCheck size={18} /> Crear sesión</button>
                 ) : (
-                  <div className="mt-4 space-y-2 text-sm">
-                    <div className="rounded-xl bg-green-50 p-3 font-bold text-green-800">{session.status === "finished" ? "Finalizada" : "En progreso"}</div>
-                    <button onClick={finishSession} disabled={session.status !== "in_progress"} className="w-full rounded-xl bg-green-700 px-4 py-3 font-bold text-white disabled:opacity-40"><CheckCircle2 className="mr-2 inline" size={18} /> Finalizar auditoría</button>
-                  </div>
+                  null
                 )}
               </div>
 
