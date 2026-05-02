@@ -707,23 +707,20 @@ export default function AuditoriaPage() {
     let item = items.find(i => i.product_id === product.id) || null;
     if (!item) {
       const stockMap = await getStockMap([product]);
-      const { data, error } = await supabase.from("audit_session_items").insert({
+      item = {
+        id: `pending-${product.id}`,
         session_id: session.id,
         product_id: product.id,
         source: "extra",
         system_stock: stockMap.get(fullProductCode(product.sku)) || 0,
         cost_snapshot: Number(product.cost || 0),
-      }).select("*, cyclic_products(sku, barcode, description, unit)").single();
-      if (error) { setMessage("Error agregando extra: " + error.message); return; }
-      item = {
-        ...data,
-        sku: data.cyclic_products?.sku,
-        barcode: data.cyclic_products?.barcode,
-        description: data.cyclic_products?.description,
-        unit: data.cyclic_products?.unit,
-      } as AuditItem;
-      setItems(prev => [...prev, item!]);
-      setMessage("Producto extra agregado a la auditoría.");
+        pending_extra: true,
+        sku: product.sku,
+        barcode: product.barcode,
+        description: product.description,
+        unit: product.unit,
+      };
+      setMessage("Producto extra detectado. Se agregara a la auditoria cuando guardes el conteo.");
     }
 
     item = await refreshAuditItemStock(item);
@@ -731,7 +728,64 @@ export default function AuditoriaPage() {
     setScanCode("");
     setQty("");
     setLocation("");
-    setMessage(`Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
+    setMessage(`${item.pending_extra ? "Producto extra detectado. Se agregara al guardar. " : ""}Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
+  }
+
+  async function ensureAuditItemForCount(item: AuditItem): Promise<AuditItem> {
+    if (!session || !item.pending_extra) return item;
+
+    const payload = {
+      session_id: session.id,
+      product_id: item.product_id,
+      source: "extra" as const,
+      system_stock: Number(item.system_stock || 0),
+      cost_snapshot: Number(item.cost_snapshot || 0),
+    };
+
+    const { data, error } = await supabase
+      .from("audit_session_items")
+      .insert(payload)
+      .select("*, cyclic_products(sku, barcode, description, unit)")
+      .single();
+
+    if (error) {
+      if ((error as any).code !== "23505") {
+        throw new Error("No se pudo agregar el producto extra a la auditoria: " + error.message);
+      }
+
+      const { data: existing, error: existingError } = await supabase
+        .from("audit_session_items")
+        .select("*, cyclic_products(sku, barcode, description, unit)")
+        .eq("session_id", session.id)
+        .eq("product_id", item.product_id)
+        .maybeSingle();
+
+      if (existingError || !existing) {
+        throw new Error("El producto ya existia, pero no se pudo recuperarlo para guardar el conteo.");
+      }
+
+      const existingItem = {
+        ...existing,
+        sku: existing.cyclic_products?.sku,
+        barcode: existing.cyclic_products?.barcode,
+        description: existing.cyclic_products?.description,
+        unit: existing.cyclic_products?.unit,
+        pending_extra: false,
+      } as AuditItem;
+      return refreshAuditItemStock(existingItem);
+    }
+
+    const createdItem = {
+      ...data,
+      sku: data.cyclic_products?.sku,
+      barcode: data.cyclic_products?.barcode,
+      description: data.cyclic_products?.description,
+      unit: data.cyclic_products?.unit,
+      pending_extra: false,
+    } as AuditItem;
+
+    setItems(prev => prev.some(row => row.id === createdItem.id) ? prev : [...prev, createdItem]);
+    return createdItem;
   }
 
   async function saveCount() {
@@ -743,7 +797,7 @@ export default function AuditoriaPage() {
     savingCountRef.current = true;
     setSavingCount(true);
     try {
-      const currentItem = await refreshAuditItemStock(activeItem);
+      const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem));
       const { error } = await supabase.from("audit_counts").insert({
         session_id: session.id,
         item_id: currentItem.id,
