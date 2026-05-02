@@ -1473,6 +1473,7 @@ export default function InventariosPage() {
   async function freezeStock() {
     if (!user || !selectedSessionId) return;
     setLoading(true);
+    setMessage("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.");
     const { data, error } = await supabase.rpc("freeze_general_inventory_stock", {
       p_session_id: selectedSessionId,
       p_user_id: user.id,

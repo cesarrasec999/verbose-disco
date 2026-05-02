@@ -86,6 +86,8 @@ create table if not exists general_inventory_non_inventory_products (
 );
 
 create index if not exists idx_gi_noninv_session_sku on general_inventory_non_inventory_products(session_id, sku);
+create index if not exists idx_stock_general_sede_codsap on stock_general(sede, codsap);
+create index if not exists idx_cyclic_products_active_sku on cyclic_products(sku) where is_active = true;
 
 create table if not exists general_inventory_stock_snapshot (
   id uuid primary key default gen_random_uuid(),
@@ -249,6 +251,8 @@ declare
   v_sede text;
   v_inserted integer;
 begin
+  perform set_config('statement_timeout', '5min', true);
+
   select s.store_id, coalesce(nullif(st.erp_sede, ''), st.name)
     into v_store_id, v_sede
   from general_inventory_sessions s
