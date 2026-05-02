@@ -1514,6 +1514,109 @@ export default function DashboardPage() {
         showMessage(updates.length > 0 ? `${updates.length} stock${updates.length !== 1 ? "s" : ""} actualizado${updates.length !== 1 ? "s" : ""}.` : "Todos los stocks asignados ya están actualizados.", "success");
     }
 
+    async function refreshValidatorAssignedStocksForDate() {
+        if (!valDate || bulkRefreshingStocks) return;
+        setBulkRefreshingStocks(true);
+        try {
+            const PAGE = 1000;
+            let rowsRaw: any[] = [];
+            let page = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock, assigned_date, cyclic_products(sku), stores(name, erp_sede)")
+                    .eq("assigned_date", valDate)
+                    .order("id")
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) throw error;
+                if (!data || data.length === 0) break;
+                rowsRaw = rowsRaw.concat(data);
+                if (data.length < PAGE) break;
+                page++;
+            }
+
+            if (rowsRaw.length === 0) {
+                showMessage("No hay asignaciones para actualizar en esta fecha.", "info");
+                return;
+            }
+
+            const assignmentIds = rowsRaw.map(row => row.id as string);
+            const countedIds = new Set<string>();
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", assignmentIds.slice(i, i + 500));
+                if (error) throw error;
+                for (const row of data || []) {
+                    if (!String(row.location || "").startsWith("__session_")) countedIds.add(row.assignment_id);
+                }
+            }
+
+            const pendingRows = rowsRaw.filter(row => !countedIds.has(row.id));
+            const codesBySede = new Map<string, Set<string>>();
+            for (const row of pendingRows) {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const product = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const sede = String(store?.erp_sede || store?.name || "").trim();
+                const codsap = fullProductCode(product?.sku || "");
+                if (!sede || !codsap) continue;
+                if (!codesBySede.has(sede)) codesBySede.set(sede, new Set());
+                codesBySede.get(sede)!.add(codsap);
+            }
+
+            const stockMap = new Map<string, number>();
+            for (const [sede, codes] of codesBySede) {
+                const list = [...codes];
+                for (let i = 0; i < list.length; i += 500) {
+                    const { data, error } = await supabase
+                        .from("stock_general")
+                        .select("codsap, stock")
+                        .eq("sede", sede)
+                        .in("codsap", list.slice(i, i + 500));
+                    if (error) throw error;
+                    for (const row of data || []) stockMap.set(`${sede}::${fullProductCode(row.codsap)}`, Number(row.stock || 0));
+                }
+            }
+
+            const updates: { id: string; system_stock: number }[] = [];
+            for (const row of pendingRows) {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const product = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const sede = String(store?.erp_sede || store?.name || "").trim();
+                const codsap = fullProductCode(product?.sku || "");
+                if (!sede || !codsap) continue;
+                const latestStock = stockMap.get(`${sede}::${codsap}`) ?? 0;
+                if (Number(row.system_stock || 0) !== latestStock) updates.push({ id: row.id, system_stock: latestStock });
+            }
+
+            for (let i = 0; i < updates.length; i += 100) {
+                const batch = updates.slice(i, i + 100);
+                await Promise.all(batch.map(row =>
+                    supabase.from("cyclic_assignments").update({ system_stock: row.system_stock }).eq("id", row.id)
+                ));
+            }
+
+            const updateMap = new Map(updates.map(row => [row.id, row.system_stock]));
+            if (updateMap.size > 0) {
+                setAssignments(prev => prev.map(row => updateMap.has(row.id) ? { ...row, system_stock: updateMap.get(row.id)! } : row));
+            }
+            if (valStoreId) await loadValidadorData(valStoreId, valDate);
+
+            const skipped = rowsRaw.length - pendingRows.length;
+            showMessage(
+                updates.length > 0
+                    ? `Stock actualizado en ${updates.length} asignacion${updates.length !== 1 ? "es" : ""} de ${valDate}.${skipped > 0 ? ` ${skipped} ya tenian conteo y se conservaron.` : ""}`
+                    : `Los stocks asignados de ${valDate} ya estan actualizados.${skipped > 0 ? ` ${skipped} ya tenian conteo y se conservaron.` : ""}`,
+                "success"
+            );
+        } catch (error: any) {
+            showMessage("Error actualizando stock asignado: " + (error?.message || error), "error");
+        } finally {
+            setBulkRefreshingStocks(false);
+        }
+    }
+
     async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
         const code = fullProductCode(codeValue);
         if (!code) return [];
@@ -3998,8 +4101,8 @@ export default function DashboardPage() {
                             />
                             {valStoreId && (
                                 <button
-                                    className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition"
-                                    onClick={() => loadValidadorData(valStoreId, valDate)}
+                                    className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
+                                    onClick={refreshValidatorAssignedStocksForDate}
                                 >🔄</button>
                             )}
                             <button
@@ -4861,6 +4964,13 @@ export default function DashboardPage() {
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
                                         <div className="flex gap-2 flex-wrap">
+                                            <button
+                                                className="px-4 py-2 rounded-2xl border border-blue-200 bg-blue-50 text-blue-700 font-semibold text-xs hover:bg-blue-100 transition disabled:opacity-40"
+                                                onClick={refreshValidatorAssignedStocksForDate}
+                                                disabled={bulkRefreshingStocks}
+                                            >
+                                                <RefreshCw size={14} className={`mr-1 inline ${bulkRefreshingStocks ? "animate-spin" : ""}`} /> Actualizar stock fecha
+                                            </button>
                                             <button
                                                 className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
                                                 onClick={removeAllAssignments}
