@@ -21,8 +21,28 @@ type InventoryOperator = {
     phone: string;
 };
 
+type InventorySession = {
+    id: string;
+    name: string;
+    status: string;
+    store_name?: string;
+};
+
+type InventorySessionRow = {
+    id: string;
+    name: string;
+    status: string;
+    stores?: { name?: string | null } | null;
+};
+
+type OperatorSessionRow = {
+    session_id: string;
+    general_inventory_sessions?: { id?: string; status?: string } | null;
+};
+
 type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios";
 type InventoryAuthMode = "login" | "register";
+const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
 
 export default function LoginPage() {
     const [username, setUsername]         = useState("");
@@ -31,6 +51,8 @@ export default function LoginPage() {
     const [destination, setDestination]    = useState<LoginDestination>("/dashboard");
     const [inventoryMode, setInventoryMode] = useState<InventoryAuthMode>("login");
     const [inventoryFullName, setInventoryFullName] = useState("");
+    const [inventorySessions, setInventorySessions] = useState<InventorySession[]>([]);
+    const [selectedInventorySessionId, setSelectedInventorySessionId] = useState("");
     const [error, setError]               = useState("");
     const [loading, setLoading]           = useState(false);
 
@@ -64,10 +86,45 @@ export default function LoginPage() {
         return value.replace(/\D/g, "");
     }
 
-    function enterInventory(operator: InventoryOperator) {
+    function enterInventory(operator: InventoryOperator, sessionId: string) {
         localStorage.removeItem("cyclic_user");
         localStorage.setItem("general_inventory_operator", JSON.stringify(operator));
+        localStorage.setItem(GENERAL_INVENTORY_SESSION_KEY, sessionId);
         window.location.href = "/inventarios";
+    }
+
+    async function loadInventorySessions() {
+        const { data } = await supabase
+            .from("general_inventory_sessions")
+            .select("id,name,status,stores(name)")
+            .in("status", ["open", "frozen"])
+            .order("created_at", { ascending: false });
+        const rows = ((data || []) as InventorySessionRow[]).map(row => ({
+            id: row.id,
+            name: row.name,
+            status: row.status,
+            store_name: row.stores?.name || "",
+        })) as InventorySession[];
+        setInventorySessions(rows);
+        setSelectedInventorySessionId(prev => prev || rows[0]?.id || "");
+    }
+
+    async function findOperatorInventorySession(operatorId: string) {
+        const preferredSessionId = selectedInventorySessionId || localStorage.getItem(GENERAL_INVENTORY_SESSION_KEY) || "";
+        const { data } = await supabase
+            .from("general_inventory_session_operators")
+            .select("session_id,status,joined_at,general_inventory_sessions(id,status)")
+            .eq("operator_id", operatorId)
+            .eq("status", "active")
+            .order("joined_at", { ascending: false });
+        const rows = ((data || []) as OperatorSessionRow[]).filter(row => ["open", "frozen"].includes(row.general_inventory_sessions?.status || ""));
+        const preferred = rows.find(row => row.session_id === preferredSessionId);
+        return preferred?.session_id || rows[0]?.session_id || "";
+    }
+
+    function changeDestination(value: LoginDestination) {
+        setDestination(value);
+        if (value === "/inventarios") void loadInventorySessions();
     }
 
     async function handleInventoryAuth() {
@@ -85,6 +142,11 @@ export default function LoginPage() {
         if (inventoryMode === "register") {
             if (!inventoryFullName.trim()) {
                 setError("Ingresa tus nombres completos.");
+                setLoading(false);
+                return;
+            }
+            if (!selectedInventorySessionId) {
+                setError("Selecciona el inventario general activo.");
                 setLoading(false);
                 return;
             }
@@ -112,7 +174,14 @@ export default function LoginPage() {
                 setError("No se pudo registrar operador. Verifica que ejecutaste el SQL.");
                 return;
             }
-            enterInventory(created.data as InventoryOperator);
+            const join = await supabase
+                .from("general_inventory_session_operators")
+                .upsert({ session_id: selectedInventorySessionId, operator_id: created.data.id, status: "active" }, { onConflict: "session_id,operator_id" });
+            if (join.error) {
+                setError("No se pudo asociar el operador al inventario seleccionado.");
+                return;
+            }
+            enterInventory(created.data as InventoryOperator, selectedInventorySessionId);
             return;
         }
 
@@ -128,7 +197,12 @@ export default function LoginPage() {
             setError("Celular o clave incorrectos.");
             return;
         }
-        enterInventory(data as InventoryOperator);
+        const sessionId = await findOperatorInventorySession((data as InventoryOperator).id);
+        if (!sessionId) {
+            setError("No tienes un inventario activo asociado. Pide al validador que te registre en la sesion.");
+            return;
+        }
+        enterInventory(data as InventoryOperator, sessionId);
     }
 
     async function handleLogin() {
@@ -384,17 +458,35 @@ export default function LoginPage() {
                     )}
 
                     {destination === "/inventarios" && inventoryMode === "register" && (
-                        <input
-                            className="w-full rounded-2xl p-3 text-sm text-white placeholder-slate-400 outline-none transition-all"
-                            style={{
-                                background: "rgba(255,255,255,0.08)",
-                                border: "1px solid rgba(255,255,255,0.15)",
-                            }}
-                            placeholder="Nombres completos"
-                            value={inventoryFullName}
-                            onChange={e => setInventoryFullName(e.target.value)}
-                            autoComplete="name"
-                        />
+                        <>
+                            <input
+                                className="w-full rounded-2xl p-3 text-sm text-white placeholder-slate-400 outline-none transition-all"
+                                style={{
+                                    background: "rgba(255,255,255,0.08)",
+                                    border: "1px solid rgba(255,255,255,0.15)",
+                                }}
+                                placeholder="Nombres completos"
+                                value={inventoryFullName}
+                                onChange={e => setInventoryFullName(e.target.value)}
+                                autoComplete="name"
+                            />
+                            <select
+                                className="w-full rounded-2xl p-3 text-sm text-white outline-none transition-all"
+                                style={{
+                                    background: "rgba(255,255,255,0.08)",
+                                    border: "1px solid rgba(255,255,255,0.15)",
+                                }}
+                                value={selectedInventorySessionId}
+                                onChange={e => setSelectedInventorySessionId(e.target.value)}
+                            >
+                                <option value="" className="text-slate-900">Selecciona inventario activo</option>
+                                {inventorySessions.map(session => (
+                                    <option key={session.id} value={session.id} className="text-slate-900">
+                                        {session.name} - {session.store_name || "Tienda"} - {session.status === "frozen" ? "Stock congelado" : "Abierto"}
+                                    </option>
+                                ))}
+                            </select>
+                        </>
                     )}
 
                     <input
@@ -441,7 +533,7 @@ export default function LoginPage() {
                             border: "1px solid rgba(255,255,255,0.15)",
                         }}
                         value={destination}
-                        onChange={e => setDestination(e.target.value as LoginDestination)}
+                        onChange={e => changeDestination(e.target.value as LoginDestination)}
                     >
                         <option value="/dashboard" className="text-slate-900">Conteo ciclico</option>
                         <option value="/auditoria" className="text-slate-900">Auditoria</option>

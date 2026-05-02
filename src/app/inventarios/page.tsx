@@ -794,10 +794,24 @@ export default function InventariosPage() {
     const operators = (operatorsRes.data || [])
       .map((row: any) => row.general_inventory_operators)
       .filter(Boolean) as InventoryOperator[];
-    setSessionOperators(operators);
-    if (!recountOperatorId && operators[0]?.id) setRecountOperatorId(operators[0].id);
+    const sessionOperatorsSorted = [...operators].sort((a, b) =>
+      `${a.full_name} ${a.phone}`.localeCompare(`${b.full_name} ${b.phone}`, "es", { numeric: true, sensitivity: "base" })
+    );
+    setSessionOperators(sessionOperatorsSorted);
+    if (!recountOperatorId && sessionOperatorsSorted[0]?.id) setRecountOperatorId(sessionOperatorsSorted[0].id);
 
-    const operatorById = new Map(operators.map(row => [row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`]));
+    const operatorById = new Map(sessionOperatorsSorted.map(row => [row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`]));
+    const assignedOperatorIds = [...new Set((itemsRes.data || []).map((row: any) => row.assigned_operator_id).filter(Boolean))];
+    const missingAssignedIds = assignedOperatorIds.filter((id: string) => !operatorById.has(id));
+    if (missingAssignedIds.length > 0) {
+      const assignedOperatorsRes = await supabase
+        .from("general_inventory_operators")
+        .select("id,full_name,phone")
+        .in("id", missingAssignedIds);
+      for (const row of (assignedOperatorsRes.data || []) as InventoryOperator[]) {
+        operatorById.set(row.id, `${row.full_name}${row.phone ? ` - ${row.phone}` : ""}`);
+      }
+    }
     const rows = sortRecountAssignmentLines((itemsRes.data || []).map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
@@ -934,13 +948,6 @@ export default function InventariosPage() {
         .select("id")
         .eq("phone", operator.phone);
       for (const row of samePhone.data || []) operatorIds.add(row.id);
-    }
-    if (operator?.full_name) {
-      const sameName = await supabase
-        .from("general_inventory_operators")
-        .select("id")
-        .eq("full_name", operator.full_name);
-      for (const row of sameName.data || []) operatorIds.add(row.id);
     }
 
     const { data, error } = await supabase
@@ -1205,6 +1212,10 @@ export default function InventariosPage() {
       setMessage("Selecciona el nuevo operador.");
       return;
     }
+    if (!sessionOperators.some(row => row.id === nextOperatorId)) {
+      setMessage("El operador debe estar asociado a esta sesion para recibir reconteos.");
+      return;
+    }
     const { error } = await supabase
       .from("general_inventory_recount_items")
       .update({
@@ -1218,6 +1229,31 @@ export default function InventariosPage() {
       return;
     }
     setMessage("Reconteo reasignado.");
+    await loadRecountAssignments(selectedSessionId);
+  }
+
+  async function unassignRecountItem(item: RecountItem) {
+    if (!selectedSessionId || !user || !isValidator) {
+      setMessage("Solo el validador o administrador puede quitar asignaciones.");
+      return;
+    }
+    if (item.status === "counted") {
+      setMessage("Este reconteo ya fue contado y no se puede quitar sin anular la validacion.");
+      return;
+    }
+    const { error } = await supabase
+      .from("general_inventory_recount_items")
+      .update({
+        assigned_operator_id: null,
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", item.id);
+    if (error) {
+      setMessage("No se pudo quitar la asignacion: " + error.message);
+      return;
+    }
+    setMessage("Asignacion quitada. La linea volvio a pendientes de reconteo.");
     await loadRecountAssignments(selectedSessionId);
   }
 
@@ -1786,6 +1822,7 @@ export default function InventariosPage() {
     setOperatorMode("conteo");
     localStorage.removeItem(OPERATOR_KEY);
     localStorage.removeItem(OPERATOR_MODE_KEY);
+    localStorage.removeItem(SESSION_KEY);
   }
 
   async function openOperatorRecountMode() {
@@ -2167,12 +2204,15 @@ export default function InventariosPage() {
                 {editingCountId && <button onClick={() => { setEditingCountId(null); setProductCode(""); setQuantity(""); }} className="rounded-xl border px-3 py-2 text-xs font-black">Cancelar edición</button>}
               </div>
               <div className="space-y-2">
-                <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full min-w-0 rounded-xl border bg-white px-3 py-3 text-sm font-bold">
-                  <option value="">Selecciona inventario activo</option>
-                  {activeSessions.map(session => (
-                    <option key={session.id} value={session.id}>{session.name} - {session.store_name || session.store_id}</option>
-                  ))}
-                </select>
+                {selectedSession ? (
+                  <div className="rounded-xl border bg-slate-50 px-3 py-3 text-sm font-black text-slate-800">
+                    {selectedSession.name} - {selectedSession.store_name || selectedSession.store_id}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm font-bold text-amber-700">
+                    No tienes inventario activo seleccionado. Cierra sesion e ingresa nuevamente.
+                  </div>
+                )}
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
                   <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
                   <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicación">
@@ -2391,7 +2431,7 @@ export default function InventariosPage() {
                   </div>
 
                   <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} className="rounded-xl border bg-white px-3 py-3 text-sm">
-                    <option value="">Operador activo</option>
+                    <option value="">Operador</option>
                     {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}{row.phone ? ` - ${row.phone}` : ""}</option>)}
                   </select>
 
@@ -2528,13 +2568,22 @@ export default function InventariosPage() {
                             </select>
                           </td>
                           <td className="p-2 text-center">
-                            <button
-                              onClick={() => reassignRecountItem(row)}
-                              disabled={row.status === "counted"}
-                              className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
-                            >
-                              Reasignar
-                            </button>
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => reassignRecountItem(row)}
+                                disabled={row.status === "counted"}
+                                className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                              >
+                                Reasignar
+                              </button>
+                              <button
+                                onClick={() => unassignRecountItem(row)}
+                                disabled={row.status === "counted"}
+                                className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-40"
+                              >
+                                Quitar
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
