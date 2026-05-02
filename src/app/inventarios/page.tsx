@@ -12,7 +12,7 @@ type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
 type SortDirection = "asc" | "desc";
-type RecordsSortKey = "counted_at" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
+type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
 type RecountAssignedSortKey = "status" | "recount_type" | "ticket" | "location_code" | "sku" | "description" | "system_stock" | "counted_qty" | "diff_qty" | "value_diff" | "assigned_operator_name";
 type SortState<T extends string> = { key: T; direction: SortDirection };
@@ -89,6 +89,7 @@ type CountRow = {
   quantity: number;
   cost_snapshot: number;
   counted_at: string;
+  operator_name?: string | null;
 };
 
 type SummaryRow = {
@@ -105,7 +106,7 @@ type SummaryRow = {
 };
 
 type RecountType = "surplus" | "missing";
-type RecountColumn = "zone" | "zone_ref" | "lineal" | "ticket";
+type RecountColumn = "zone";
 type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
 
 type RecountCandidate = {
@@ -286,7 +287,7 @@ export default function InventariosPage() {
   const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
   const [operatorRecountContextItems, setOperatorRecountContextItems] = useState<RecountItem[]>([]);
   const [recountType, setRecountType] = useState<RecountType>("surplus");
-  const [recountColumn, setRecountColumn] = useState<RecountColumn>("zone");
+  const recountColumn: RecountColumn = "zone";
   const [recountValue, setRecountValue] = useState("");
   const [recountOperatorId, setRecountOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
@@ -320,7 +321,8 @@ export default function InventariosPage() {
       !q ||
       row.sku.toLowerCase().includes(q) ||
       row.description.toLowerCase().includes(q) ||
-      row.location_code.toLowerCase().includes(q)
+      row.location_code.toLowerCase().includes(q) ||
+      String(row.operator_name || "").toLowerCase().includes(q)
     );
     return rows.sort((a, b) => {
       const left = recordsSort.key === "value" ? Number(a.quantity || 0) * Number(a.cost_snapshot || 0) :
@@ -329,9 +331,31 @@ export default function InventariosPage() {
       const right = recordsSort.key === "value" ? Number(b.quantity || 0) * Number(b.cost_snapshot || 0) :
         recordsSort.key === "counted_at" ? new Date(b.counted_at).getTime() :
         b[recordsSort.key];
-      return compareValues(left, right, recordsSort.direction);
+      return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
   }, [counts, recordsQuery, recordsSort]);
+
+  const counterStats = useMemo(() => {
+    const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number }>();
+    for (const row of counts) {
+      const time = new Date(row.counted_at).getTime();
+      const key = row.operator_id;
+      const current = grouped.get(key);
+      if (!current) {
+        grouped.set(key, { id: key, name: row.operator_name || "Sin usuario", count: 1, first: time, last: time });
+        continue;
+      }
+      current.count += 1;
+      current.first = Math.min(current.first, time);
+      current.last = Math.max(current.last, time);
+    }
+    const rows = [...grouped.values()].map(row => {
+      const minutes = Math.max(1, (row.last - row.first) / 60000);
+      return { ...row, minutes, perMinute: row.count / minutes };
+    }).sort((a, b) => b.perMinute - a.perMinute);
+    const maxPerMinute = Math.max(1, ...rows.map(row => row.perMinute));
+    return { rows, maxPerMinute };
+  }, [counts]);
 
   const filteredSummary = useMemo(() => {
     const q = summaryQuery.trim().toLowerCase();
@@ -1031,7 +1055,7 @@ export default function InventariosPage() {
     while (true) {
       const { data, error } = await supabase
         .from("general_inventory_counts")
-        .select("*")
+        .select("*, general_inventory_operators(full_name)")
         .eq("session_id", sessionId)
         .order("counted_at", { ascending: false })
         .range(from, from + pageSize - 1);
@@ -1039,7 +1063,10 @@ export default function InventariosPage() {
         setMessage("Error leyendo registros: " + error.message);
         break;
       }
-      rows.push(...((data || []) as CountRow[]));
+      rows.push(...((data || []).map((row: any) => ({
+        ...row,
+        operator_name: row.general_inventory_operators?.full_name || null,
+      })) as CountRow[]));
       if (!data || data.length < pageSize) break;
       from += pageSize;
     }
@@ -1788,6 +1815,7 @@ export default function InventariosPage() {
   function exportRecords() {
     const rows = counts.map(row => ({
       FECHA: new Date(row.counted_at).toLocaleString("es-PE"),
+      CONTADOR: row.operator_name || "",
       UBICACION: row.location_code,
       CODIGO: row.sku,
       DESCRIPCION: row.description,
@@ -2417,15 +2445,9 @@ export default function InventariosPage() {
                     <button onClick={() => setRecountType("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
                   </div>
 
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <select value={recountColumn} onChange={event => { setRecountColumn(event.target.value as RecountColumn); setRecountValue(""); }} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
-                      <option value="zone">Zona</option>
-                      <option value="zone_ref">Zona ref</option>
-                      <option value="lineal">Lineal</option>
-                      <option value="ticket">Ticket</option>
-                    </select>
+                  <div className="grid gap-2">
                     <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
-                      <option value="">Selecciona bloque</option>
+                      <option value="">Selecciona zona</option>
                       {recountValues.map(value => <option key={value} value={value}>{value}</option>)}
                     </select>
                   </div>
@@ -2448,15 +2470,13 @@ export default function InventariosPage() {
                   <div className="text-xs font-bold text-slate-500">Ordenado por ticket y luego Dif. val.</div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
-                  <table className="w-full min-w-[1260px] text-xs">
+                  <table className="w-full min-w-[1100px] text-xs">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
                         <th className="p-2 text-left">Tipo</th>
                         <th className="p-2 text-left">Ticket</th>
                         <th className="p-2 text-left">Ubicacion</th>
                         <th className="p-2 text-left">Zona</th>
-                        <th className="p-2 text-left">Zona ref</th>
-                        <th className="p-2 text-left">Lineal</th>
                         <th className="p-2 text-left">Codigo</th>
                         <th className="p-2 text-left">Descripcion</th>
                         <th className="p-2 text-center">UM</th>
@@ -2478,8 +2498,6 @@ export default function InventariosPage() {
                           <td className="p-2 font-black">{row.ticket || "-"}</td>
                           <td className="p-2">{row.location_code || "Por codigo"}</td>
                           <td className="p-2">{row.zone || "-"}</td>
-                          <td className="p-2">{row.zone_ref || "-"}</td>
-                          <td className="p-2">{row.lineal || "-"}</td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
                           <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
                           <td className="p-2 text-center">{row.unit}</td>
@@ -2492,7 +2510,7 @@ export default function InventariosPage() {
                       ))}
                       {unassignedRecountCandidates.length === 0 && (
                         <tr>
-                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
+                          <td colSpan={12} className="p-8 text-center text-sm text-slate-400">
                             No hay lineas pendientes para asignar con el filtro actual.
                           </td>
                         </tr>
@@ -2759,6 +2777,36 @@ export default function InventariosPage() {
           )}
 
           {((!isValidator && !operator) || !selectedSessionId || (isValidator && validatorTab === "registros")) && (
+          <div className="space-y-4">
+          {isValidator && selectedSessionId && validatorTab === "registros" && (
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-black">Productividad de contadores</h2>
+                  <p className="text-xs text-slate-500">Registros por minuto calculado desde el primer al ultimo registro de cada contador.</p>
+                </div>
+                <div className="text-xs font-black text-slate-500">{counts.length} registros</div>
+              </div>
+              <div className="space-y-3">
+                {counterStats.rows.map(row => (
+                  <div key={row.id} className="grid gap-2 md:grid-cols-[220px_1fr_160px] md:items-center">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-black text-slate-900">{row.name}</div>
+                      <div className="text-xs text-slate-500">{row.count} registros</div>
+                    </div>
+                    <div className="h-4 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-blue-700"
+                        style={{ width: `${Math.max(4, Math.round((row.perMinute / counterStats.maxPerMinute) * 100))}%` }}
+                      />
+                    </div>
+                    <div className="text-sm font-black text-slate-900">{row.perMinute.toFixed(2)} reg/min</div>
+                  </div>
+                ))}
+                {counterStats.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin registros para graficar.</div>}
+              </div>
+            </section>
+          )}
           <section className="rounded-2xl border bg-white shadow-sm">
             <div className="border-b p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2774,6 +2822,7 @@ export default function InventariosPage() {
                 <thead className="bg-slate-100 text-xs text-slate-600">
                   <tr>
                     <SortHeader label="Fecha" active={recordsSort.key === "counted_at"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("counted_at")} />
+                    <SortHeader label="Contador" active={recordsSort.key === "operator_name"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("operator_name")} align="left" />
                     <SortHeader label="Ubicacion" active={recordsSort.key === "location_code"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("location_code")} />
                     <SortHeader label="Codigo" active={recordsSort.key === "sku"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("sku")} />
                     <SortHeader label="Descripcion" active={recordsSort.key === "description"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("description")} align="left" />
@@ -2788,6 +2837,7 @@ export default function InventariosPage() {
                   {filteredCounts.map(row => (
                     <tr key={row.id} className="border-b">
                       <td className="p-2 text-center text-xs text-slate-500">{new Date(row.counted_at).toLocaleString("es-PE")}</td>
+                      <td className="max-w-[180px] truncate p-2 font-bold text-slate-700">{row.operator_name || "Sin usuario"}</td>
                       <td className="p-2 text-center font-black text-slate-800">{row.location_code}</td>
                       <td className="p-2 text-center font-black text-blue-700">{row.sku}</td>
                       <td className="max-w-md truncate p-2 text-slate-700">{row.description}</td>
@@ -2810,12 +2860,13 @@ export default function InventariosPage() {
                     </tr>
                   ))}
                   {filteredCounts.length === 0 && (
-                    <tr><td colSpan={9} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
+                    <tr><td colSpan={10} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
           </section>
+          </div>
           )}
 
           {isValidator && selectedSessionId && validatorTab === "resumen" && (
