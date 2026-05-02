@@ -2735,17 +2735,18 @@ export default function InventariosPage() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Usuarios de inventario</h2>
-                  <p className="text-xs text-slate-500">Edita nombre y clave usados solo en inventarios generales.</p>
+                  <p className="text-xs text-slate-500">Edita nombre, celular y clave usados solo en inventarios generales.</p>
                 </div>
                 <button onClick={() => loadInventoryOperators()} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50">
                   Actualizar
                 </button>
               </div>
               <div className="overflow-auto rounded-xl border">
-                <table className="w-full min-w-[820px] text-sm">
+                <table className="w-full min-w-[980px] text-sm">
                   <thead className="bg-slate-50 text-xs text-slate-600">
                     <tr>
                       <th className="p-2 text-left">Nombre</th>
+                      <th className="p-2 text-left">Celular</th>
                       <th className="p-2 text-left">Clave</th>
                       <th className="p-2 text-center">Acciones</th>
                     </tr>
@@ -2759,6 +2760,14 @@ export default function InventariosPage() {
                             <input
                               value={draft.full_name}
                               onChange={event => updateInventoryOperatorDraft(row.id, "full_name", event.target.value)}
+                              className="w-full rounded-xl border px-3 py-2 text-sm"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              value={draft.phone}
+                              onChange={event => updateInventoryOperatorDraft(row.id, "phone", event.target.value)}
+                              inputMode="numeric"
                               className="w-full rounded-xl border px-3 py-2 text-sm"
                             />
                           </td>
@@ -2791,7 +2800,7 @@ export default function InventariosPage() {
                     })}
                     {inventoryOperators.length === 0 && (
                       <tr>
-                        <td colSpan={3} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={4} className="p-8 text-center text-sm text-slate-400">
                           No hay usuarios registrados en inventarios generales.
                         </td>
                       </tr>
