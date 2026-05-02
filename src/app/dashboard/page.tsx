@@ -1274,7 +1274,7 @@ export default function DashboardPage() {
         if (!activeAssignment || !user || savingCountRef.current) return;
         savingCountRef.current = true;
         setSavingCount(true);
-        const currentAssignment = await refreshAssignmentStock(activeAssignment, false);
+        const currentAssignment = await refreshAssignmentStock(activeAssignment, false, true);
 
         // ── Modo "Sin stock físico" ──────────────────────────
         if (sinStock) {
@@ -1417,7 +1417,7 @@ export default function DashboardPage() {
         return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
     }
 
-    async function refreshAssignmentStock(asgn: Assignment, notify = true): Promise<Assignment> {
+    async function refreshAssignmentStock(asgn: Assignment, notify = true, forcePersist = false): Promise<Assignment> {
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
         const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
@@ -1429,7 +1429,7 @@ export default function DashboardPage() {
         // Si aún no tiene conteo, sí se actualiza en BD para que el snapshot que
         // se grabe al guardar refleje el stock real de ese momento.
         const yaContado = counts.some(c => c.assignment_id === asgn.id);
-        if (!yaContado && Number(asgn.system_stock || 0) !== latestStock) {
+        if ((forcePersist || !yaContado) && Number(asgn.system_stock || 0) !== latestStock) {
             await supabase
                 .from("cyclic_assignments")
                 .update({ system_stock: latestStock })
@@ -1715,7 +1715,7 @@ export default function DashboardPage() {
         if (!recountAssignment || !user || savingRecountRef.current) return;
         savingRecountRef.current = true;
         setSavingRecount(true);
-        const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false);
+        const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false, true);
 
         // ── Modo "Sin stock físico" en reconteo ──────────────
         if (sinStockRecount) {

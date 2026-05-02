@@ -439,8 +439,41 @@ export default function AuditoriaPage() {
     return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
   }
 
-  async function refreshAuditItemStock(item: AuditItem) {
-    return item;
+  async function refreshAuditItemStock(item: AuditItem): Promise<AuditItem> {
+    const store = selectedStore || stores.find(s => s.id === session?.store_id);
+    const sede = String(store?.erp_sede || store?.name || "").trim();
+    const codsap = fullProductCode(item.sku);
+    if (!sede || !codsap) return item;
+
+    const { data, error } = await supabase
+      .from("stock_general")
+      .select("stock")
+      .eq("sede", sede)
+      .eq("codsap", codsap)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error("No se pudo actualizar stock desde la base sincronizada: " + error.message);
+    }
+
+    const latestStock = Number(data?.stock || 0);
+    const updatedItem = { ...item, system_stock: latestStock };
+
+    if (Number(item.system_stock || 0) !== latestStock) {
+      const { error: updateError } = await supabase
+        .from("audit_session_items")
+        .update({ system_stock: latestStock })
+        .eq("id", item.id);
+
+      if (updateError) {
+        throw new Error("No se pudo guardar stock actualizado en auditoria: " + updateError.message);
+      }
+
+      setItems(prev => prev.map(row => row.id === item.id ? { ...row, system_stock: latestStock } : row));
+      setItemStockDrafts(prev => ({ ...prev, [item.id]: String(latestStock) }));
+    }
+
+    return updatedItem;
   }
 
   async function createSession() {
