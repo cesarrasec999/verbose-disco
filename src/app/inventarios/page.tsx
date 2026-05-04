@@ -652,6 +652,21 @@ export default function InventariosPage() {
   }, [selectedSessionId, isValidator, validatorTab]);
 
   useEffect(() => {
+    if (!selectedSessionId) return;
+
+    const reloadAfterOfflineSync = () => {
+      if (isValidator) {
+        void loadSessionData(selectedSessionId, validatorTab);
+        return;
+      }
+      void loadRecordsData(selectedSessionId);
+    };
+
+    window.addEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
+    return () => window.removeEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
+  }, [selectedSessionId, isValidator, validatorTab]);
+
+  useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
 
     let timer: number | null = null;

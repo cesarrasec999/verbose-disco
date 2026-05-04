@@ -41,6 +41,12 @@ export default function PwaCatalogSync() {
       syncOfflineCatalog(supabase, (nextProgress) => {
         if (!cancelled) setProgress(nextProgress);
       }, { mode, since })
+        .catch((error) => {
+          if (mode !== "delta") throw error;
+          return syncOfflineCatalog(supabase, (nextProgress) => {
+            if (!cancelled) setProgress(nextProgress);
+          }, { mode: "full" });
+        })
         .then(() => {
           localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
           localStorage.setItem(LAST_SYNC_DAY_KEY, today);

@@ -18,7 +18,10 @@ export default function PwaQueueSync() {
       setSyncing(true);
       try {
         const synced = await syncPendingOfflineItems(supabase);
-        if (!cancelled && synced > 0) setLastSynced(synced);
+        if (!cancelled && synced > 0) {
+          setLastSynced(synced);
+          window.dispatchEvent(new CustomEvent("rasecorp-offline-sync-complete", { detail: { synced } }));
+        }
       } finally {
         if (!cancelled) {
           setSyncing(false);

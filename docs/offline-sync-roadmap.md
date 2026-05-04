@@ -24,6 +24,7 @@ Este documento deja ordenada la direccion tecnica sin cambiar la funcionalidad a
 - `src/app/PwaCatalogSync.tsx`: en la app instalada descarga tiendas, productos y codigos de barra a IndexedDB.
 - `src/app/PwaQueueSync.tsx`: sincroniza conteos pendientes cuando vuelve internet.
 - `supabase_offline_catalog_delta.sql`: agrega `updated_at` a tiendas y codigos de barra para descargar solo cambios diarios.
+- `supabase_realtime_publication.sql`: asegura que Realtime publique cambios de ciclicos, auditorias e inventarios.
 
 ## Conectado a la web actual
 
