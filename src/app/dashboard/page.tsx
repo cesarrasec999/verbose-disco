@@ -3602,32 +3602,33 @@ export default function DashboardPage() {
         const { svg: svgCumpl, h: svgCumplH } = makeSingleBarSVG(cumplRows, svgSmallW);
 
         // ── Gráfico Diferencia Valorizada (ancho completo, solo con diferencias) ──
-        const svgFullW  = 560;
+        const svgFullW   = 560;
+        const difLabelW  = 180; // más ancho para nombres largos de tienda
         const storesDif = [...emailFilasQueComplieron]
             .filter(r => (r.dif_valorizada || 0) !== 0)
             .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
         const maxAbsDif = Math.max(...storesDif.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const difBarArea = svgFullW - labelW - 50;
+        const difBarArea = svgFullW - difLabelW - 20;
         const svgDifH   = storesDif.length > 0 ? storesDif.length * (barH + gap) + 30 : 0;
         const difBarsInner = storesDif.map((r, i) => {
             const y    = i * (barH + gap) + 20;
             const val  = r.dif_valorizada || 0;
             const w    = Math.max(3, Math.round((Math.abs(val) / maxAbsDif) * (difBarArea / 2)));
             const col  = difColor(val);
-            const cx   = labelW + Math.round(difBarArea / 2);
+            const cx   = difLabelW + Math.round(difBarArea / 2);
             const x    = val < 0 ? cx - w : cx;
-            const name = r.store_name.length > 16 ? r.store_name.slice(0, 14) + "…" : r.store_name;
+            const name = r.store_name.length > 26 ? r.store_name.slice(0, 24) + "…" : r.store_name;
             const label = `S/${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            return `<text x="0" y="${y + barH / 2 + 4}" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+            return `<text x="0" y="${y + barH / 2 + 4}" font-size="9" fill="#334155" font-family="Arial,sans-serif">${name}</text>
               <rect x="${cx}" y="${y}" width="1" height="${barH}" fill="#cbd5e1"/>
               <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${col}" opacity="0.82"/>
-              <text x="${val < 0 ? cx - w - 3 : cx + w + 3}" y="${y + barH / 2 + 4}" font-size="8" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
+              <text x="${val < 0 ? cx - w - 3 : cx + w + 3}" y="${y + barH / 2 + 4}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
         }).join("\n");
         const svgDif = storesDif.length > 0
             ? `<svg width="${svgFullW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
           <rect width="${svgFullW}" height="${svgDifH}" fill="#f8fafc"/>
-          <text x="${labelW + Math.round(difBarArea / 4)}" y="14" font-size="8" fill="#dc2626" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
-          <text x="${labelW + Math.round(difBarArea * 3 / 4)}" y="14" font-size="8" fill="#2563eb" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
+          <text x="${difLabelW + Math.round(difBarArea / 4)}" y="14" font-size="8" fill="#dc2626" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
+          <text x="${difLabelW + Math.round(difBarArea * 3 / 4)}" y="14" font-size="8" fill="#2563eb" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
           ${difBarsInner}
         </svg>`
             : "";
