@@ -1206,8 +1206,7 @@ export default function DashboardPage() {
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
 
-            // ── Paso 3: traer counts por store_id + rango de fechas ─────────
-            // Usamos store_id y rango de assigned_date para evitar el límite de Supabase con .in() de miles de IDs
+            // ── Paso 3: traer counts por assignment_id del período ─────────
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSet = new Set<string>(asgnIds);
             let cntAll: CountRecord[] = [];
@@ -1218,21 +1217,73 @@ export default function DashboardPage() {
                     .in("assignment_id", asgnIds.slice(i, i + 500));
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
-            // Separar flags de sesión de los conteos reales.
-            // SESSION_FLAG_VALUES cubre TODOS los valores especiales (incluyendo __recount_done__ y
-            // __recount_started__ que NO empiezan con "__session_", por eso no alcanza con startsWith).
+
+            // ── Paso 3b: traer flags de sesión por store_id + rango de fechas ──
+            // Los flags (__session_finished__, __recount_done__, etc.) se guardan con el
+            // assignment_id del "anchor" (primer assignment por ID de la tienda+fecha).
+            // Ese anchor puede ser un ID histórico que NO está en asgnIds del período,
+            // por eso no aparecen en cntAll. Los traemos aparte filtrando por store_id.
             const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-            // cntAll ya contiene todo — extraemos flags y conteos reales de ahí directamente,
-            // evitando una segunda query a Supabase y garantizando que no falte ningún flag.
-            const allSessionFlags: CountRecord[] = cntAll.filter(
-                (c: any) => SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
-            );
+            let allSessionFlags: CountRecord[] = [];
+            for (let i = 0; i < uniqueStoreIds.length; i += 100) {
+                const { data: flagChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("store_id", uniqueStoreIds.slice(i, i + 100))
+                    .in("location", ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
+                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as CountRecord[]);
+            }
+
+            // Para los flags, necesitamos saber a qué tienda+fecha corresponde cada uno.
+            // El anchor es el primer assignment (order by id asc) de esa tienda+fecha.
+            // Construimos un mapa: anchorId → { store_id, date }
+            // usando los assignments que ya tenemos del período + los que apuntan los flags.
+            const anchorToStoreDate = new Map<string, { store_id: string; date: string }>();
+            for (const a of asgnData as any[]) {
+                // El anchor es el primero por ID de cada tienda+día — lo aproximamos usando asgnData
+                const key = `${a.store_id}__${a.assigned_date}`;
+                if (!anchorToStoreDate.has(a.id)) {
+                    anchorToStoreDate.set(a.id, { store_id: a.store_id, date: a.assigned_date });
+                }
+            }
+            // También necesitamos resolver anchors que pueden ser IDs externos al período.
+            // Para eso, traemos el primer assignment de cada tienda+fecha desde los flags recibidos.
+            const externalAnchorIds = allSessionFlags
+                .map((f: any) => f.assignment_id)
+                .filter((id: string) => !anchorToStoreDate.has(id));
+            if (externalAnchorIds.length > 0) {
+                const uniqueExternal = [...new Set<string>(externalAnchorIds)];
+                for (let i = 0; i < uniqueExternal.length; i += 500) {
+                    const { data: extAsgns } = await supabase
+                        .from("cyclic_assignments")
+                        .select("id, store_id, assigned_date")
+                        .in("id", uniqueExternal.slice(i, i + 500));
+                    for (const a of extAsgns || []) {
+                        anchorToStoreDate.set(a.id, { store_id: a.store_id, date: a.assigned_date });
+                    }
+                }
+            }
+
+            // Filtrar flags al período consultado usando el mapa de anchor → tienda+fecha
+            allSessionFlags = allSessionFlags.filter((f: any) => {
+                const sd = anchorToStoreDate.get(f.assignment_id);
+                if (!sd) return false;
+                return sd.date >= dateFilter.from && sd.date <= dateFilter.to;
+            });
+
+            // Construir lookup: store_id+date → flags de sesión
+            const storeDateFlags = new Map<string, Set<string>>();
+            for (const f of allSessionFlags) {
+                const sd = anchorToStoreDate.get(f.assignment_id);
+                if (!sd) continue;
+                const k = `${sd.store_id}__${sd.date}`;
+                if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
+                storeDateFlags.get(k)!.add(f.location);
+            }
+
             const counts = cntAll.filter(
                 (c: any) => !SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
             );
-            // 🔍 DIAGNÓSTICO — quitar cuando esté resuelto
-            console.log(`[DASH] cntAll total=${cntAll.length} | flags=${allSessionFlags.length} | counts reales=${counts.length}`);
-            console.log(`[DASH] flags por tipo:`, allSessionFlags.reduce((acc: any, f: any) => { acc[f.location] = (acc[f.location]||0)+1; return acc; }, {}));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -1271,14 +1322,13 @@ export default function DashboardPage() {
             type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; difVal: number; };
             const dayMetrics: DayMetrics[] = [];
 
-            // Pre-construir Sets de assignment_ids por tipo de flag para lookups O(1) en vez de O(n²)
-            const flagRecountDoneIds = new Set(allSessionFlags.filter((c: any) => c.location === "__recount_done__").map((c: any) => c.assignment_id));
-            const flagSessionFinishedIds = new Set(allSessionFlags.filter((c: any) => c.location === "__session_finished__").map((c: any) => c.assignment_id));
-
             for (const [, g] of dayGroups) {
                 const prodMap = new Map<string, { system_stock: number; total_counted: number }>();
-                const cumplioPorReconteo = g.asgns.some((a: any) => flagRecountDoneIds.has(a.id));
-                const terminoConteo = g.asgns.some((a: any) => flagSessionFinishedIds.has(a.id));
+                // Usar storeDateFlags (store_id+date → set de locations) para lookup O(1)
+                const groupKey = `${g.store_id}__${g.date}`;
+                const flagsForGroup = storeDateFlags.get(groupKey) || new Set<string>();
+                const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
+                const terminoConteo = flagsForGroup.has("__session_finished__");
                 for (const a of g.asgns) {
                     if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
                 }
@@ -1321,13 +1371,6 @@ export default function DashboardPage() {
                 // Cumplió = hizo reconteo completo, O terminó sesión sin productos sin contar.
                 // Sobrantes/Faltantes son diferencias válidas, no impiden el cumplimiento.
                 const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0);
-                // 🔍 DIAGNÓSTICO — quitar cuando esté resuelto
-                if (terminoConteo || cumplioPorReconteo || noContados === 0) {
-                    console.log(`[DASH] ${g.store_name} | ${g.date} | terminoConteo=${terminoConteo} | cumplioPorReconteo=${cumplioPorReconteo} | noContados=${noContados}/${total} | cumplio=${cumplio}`);
-                }
-                if (!cumplio && (terminoConteo || cumplioPorReconteo)) {
-                    console.warn(`[DASH NO CUMPLE] ${g.store_name} | ${g.date} | flags en BD:`, allSessionFlags.filter((f: any) => g.asgns.some((a: any) => a.id === f.assignment_id)).map((f: any) => f.location));
-                }
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
