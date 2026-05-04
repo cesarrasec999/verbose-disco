@@ -370,6 +370,9 @@ export default function DashboardPage() {
     const bulkAssignRef = useRef<HTMLInputElement|null>(null);
     const [nonInventoryProducts, setNonInventoryProducts] = useState<NonInventoryProduct[]>([]);
     const [nonInventoryInput, setNonInventoryInput] = useState("");
+    const nonInventoryExcelRef = useRef<HTMLInputElement|null>(null);
+    const [nonInventoryExcelBusy, setNonInventoryExcelBusy] = useState(false);
+    const [nonInventoryExcelFileName, setNonInventoryExcelFileName] = useState("");
 
     // ─── Validador: editar conteo ────────────────────────────
     const [editingCount, setEditingCount]   = useState<CountRecord|null>(null);
@@ -2247,19 +2250,18 @@ export default function DashboardPage() {
         await assignProductsToStores(selected, "seleccionados");
     }
 
-    async function addNonInventoryCodes() {
-        const codes = nonInventoryInput
-            .split(/[\n,;]+/)
+    async function saveNonInventoryCodes(codesRaw: Array<string | number | null | undefined>, sourceLabel = "manual"): Promise<number | null> {
+        const codes = codesRaw
             .map(code => fullProductCode(code).toUpperCase())
             .filter(Boolean);
         const uniqueCodes = [...new Set(codes)];
-        if (uniqueCodes.length === 0) { showMessage("Ingresa al menos un codigo.", "error"); return; }
+        if (uniqueCodes.length === 0) { showMessage("Ingresa al menos un codigo.", "error"); return null; }
 
         const productsBySku = new Map<string, Product>();
         for (let i = 0; i < uniqueCodes.length; i += 500) {
             const chunk = uniqueCodes.slice(i, i + 500);
             const { data, error } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
-            if (error) { showMessage("Error buscando codigos: " + error.message, "error"); return; }
+            if (error) { showMessage("Error buscando codigos: " + error.message, "error"); return null; }
             for (const product of data || []) productsBySku.set(fullProductCode(product.sku), product as Product);
         }
 
@@ -2275,16 +2277,47 @@ export default function DashboardPage() {
             };
         });
 
-        const { error } = await supabase
-            .from("cyclic_non_inventory_products")
-            .upsert(rows, { onConflict: "sku" });
-        if (error) { showMessage("Error guardando no inventariables: " + error.message, "error"); return; }
+        for (let i = 0; i < rows.length; i += 500) {
+            const { error } = await supabase
+                .from("cyclic_non_inventory_products")
+                .upsert(rows.slice(i, i + 500), { onConflict: "sku" });
+            if (error) { showMessage("Error guardando no inventariables: " + error.message, "error"); return null; }
+        }
 
-        setNonInventoryInput("");
         await loadNonInventoryProducts();
         setAssignResults(prev => prev.filter(product => !uniqueCodes.includes(fullProductCode(product.sku))));
         setAssignSelectedIds(prev => new Set([...prev].filter(id => !assignResults.some(product => product.id === id && uniqueCodes.includes(fullProductCode(product.sku))))));
-        showMessage(`✅ ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable.`, "success");
+        showMessage(`✅ ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable${sourceLabel === "excel" ? " desde Excel" : ""}.`, "success");
+        return rows.length;
+    }
+
+    async function addNonInventoryCodes() {
+        const saved = await saveNonInventoryCodes(nonInventoryInput.split(/[\n,;]+/), "manual");
+        if (saved !== null) setNonInventoryInput("");
+    }
+
+    async function uploadNonInventoryExcel(file: File | null) {
+        if (!file || nonInventoryExcelBusy) return;
+        setNonInventoryExcelBusy(true);
+        setNonInventoryExcelFileName(file.name);
+        try {
+            const data = await file.arrayBuffer();
+            const wb = XLSX.read(data, { type: "array" });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const firstCol = allRows
+                .map(row => String(row?.[0] ?? "").trim())
+                .filter(Boolean);
+            const header = firstCol[0]?.toLowerCase() || "";
+            const hasHeader = ["codigo", "código", "codsap", "cod.sap", "sku", "producto"].some(label => header.includes(label));
+            const codes = hasHeader ? firstCol.slice(1) : firstCol;
+            await saveNonInventoryCodes(codes, "excel");
+        } catch (error: any) {
+            showMessage("Error leyendo Excel de no inventariables: " + (error?.message || error), "error");
+        } finally {
+            setNonInventoryExcelBusy(false);
+            if (nonInventoryExcelRef.current) nonInventoryExcelRef.current.value = "";
+        }
     }
 
     async function removeNonInventoryCode(row: NonInventoryProduct) {
@@ -5333,7 +5366,26 @@ export default function DashboardPage() {
                                         >
                                             Agregar
                                         </button>
+                                        <button
+                                            onClick={() => nonInventoryExcelRef.current?.click()}
+                                            disabled={nonInventoryExcelBusy}
+                                            className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-black text-orange-700 disabled:opacity-50"
+                                        >
+                                            {nonInventoryExcelBusy ? "Subiendo..." : "Subir Excel"}
+                                        </button>
+                                        <input
+                                            ref={nonInventoryExcelRef}
+                                            type="file"
+                                            accept=".xlsx,.xls"
+                                            className="hidden"
+                                            onChange={e => uploadNonInventoryExcel(e.target.files?.[0] || null)}
+                                        />
                                     </div>
+                                    {nonInventoryExcelFileName && (
+                                        <p className="text-xs font-semibold text-orange-700">
+                                            Ultimo Excel: {nonInventoryExcelFileName}
+                                        </p>
+                                    )}
                                     {nonInventoryProducts.length > 0 && (
                                         <div className="flex max-h-28 flex-wrap gap-2 overflow-auto">
                                             {nonInventoryProducts.slice(0, 80).map(row => (
