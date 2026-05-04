@@ -1310,7 +1310,9 @@ export default function DashboardPage() {
                 const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
                 const horaFin = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
-                const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0 && sobrantes === 0 && faltantes === 0);
+                // Cumplió = hizo reconteo completo, O terminó sesión sin productos sin contar.
+                // Sobrantes/Faltantes son diferencias válidas, no impiden el cumplimiento.
+                const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0);
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
@@ -3334,11 +3336,7 @@ export default function DashboardPage() {
 
         // ── Métricas globales ──────────────────────────────
         const emailKpiRows = filteredDashData;
-        const filasConDatos = emailKpiRows.filter(r => r.total_asignados > 0);
-        const okTotal       = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
-        const asigTotal     = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
-        const eriGlobal     = asigTotal > 0 ? Math.round((okTotal / asigTotal) * 100) : 0;
-        const totalDifVal   = emailKpiRows.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        // Cumplimiento: usa TODAS las tiendas
         const cumplidos     = dashPeriod === "dia"
             ? filteredDashData.filter(r => r.cumplio).length
             : filteredDashData.reduce((s, r) => s + r.dias_cumplidos, 0);
@@ -3347,8 +3345,16 @@ export default function DashboardPage() {
             : filteredDashData.reduce((s, r) => s + r.dias_totales, 0);
         const cumplimientoUnidad = dashPeriod === "dia" ? "tiendas" : "tienda-dia";
         const pctCumplimiento = totalCumplimiento > 0 ? Math.round((cumplidos / totalCumplimiento) * 100) : 0;
-        const totalFaltantes = emailKpiRows.reduce((s, r) => s + r.total_faltantes, 0);
-        const totalSobrantes = emailKpiRows.reduce((s, r) => s + r.total_sobrantes, 0);
+        // ERI, DifVal, Sobrantes, Faltantes: SOLO tiendas que cumplieron
+        const emailFilasQueComplieron = dashPeriod === "dia"
+            ? emailKpiRows.filter(r => r.cumplio && r.total_asignados > 0)
+            : emailKpiRows.filter(r => r.dias_cumplidos > 0 && r.total_asignados > 0);
+        const okTotal       = emailFilasQueComplieron.reduce((s, r) => s + r.total_ok, 0);
+        const asigTotal     = emailFilasQueComplieron.reduce((s, r) => s + r.total_asignados, 0);
+        const eriGlobal     = asigTotal > 0 ? Math.round((okTotal / asigTotal) * 100) : 0;
+        const totalDifVal   = emailFilasQueComplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalFaltantes = emailFilasQueComplieron.reduce((s, r) => s + r.total_faltantes, 0);
+        const totalSobrantes = emailFilasQueComplieron.reduce((s, r) => s + r.total_sobrantes, 0);
 
         // ── Top 10 por código: consultar BD con el rango del período ──
         showMessage("⏳ Calculando top por código...", "info");
@@ -4096,7 +4102,10 @@ export default function DashboardPage() {
             }
 
             for (const [dayKey, ds] of daySumMap.entries()) {
-                ds.cumplio = recountDoneDayKeys.has(dayKey) || (sessionFinishedDayKeys.has(dayKey) && ds.faltantes === 0 && ds.sobrantes === 0);
+                // Cumplió = reconteo completo, O terminó sesión sin productos sin contar.
+                const noContadosDia = ds.asignados - ds.ok - ds.sobrantes - ds.faltantes;
+                const noContadosRealDia = Array.from(dayKeySet.get(dayKey) || []).filter(pk => !dayProdMap.get(pk)?.tienConteo).length;
+                ds.cumplio = recountDoneDayKeys.has(dayKey) || (sessionFinishedDayKeys.has(dayKey) && noContadosRealDia === 0);
                 if (ds.horaInicio && ds.horaFin) {
                     ds.duracion = Math.round((new Date(ds.horaFin).getTime() - new Date(ds.horaInicio).getTime()) / 60000);
                 }
@@ -4284,27 +4293,40 @@ export default function DashboardPage() {
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
-        const filasConDatos = kpiDashData.filter(r => r.total_asignados > 0);
-        const okTotal = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
-        const asignadosTotal = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
+
+        // Para CUMPLIMIENTO: usar TODAS las tiendas (no filtrar por cumplio)
         const cumplidos = dashPeriod === "dia"
             ? filteredDashData.filter(r => r.cumplio).length
             : filteredDashData.reduce((s, r) => s + r.dias_cumplidos, 0);
         const total = dashPeriod === "dia"
             ? filteredDashData.length
             : filteredDashData.reduce((s, r) => s + r.dias_totales, 0);
-        // Duración promedio: solo aplica en vista día
-        const filasConDuracion = kpiDashData.filter(r => r.duracion_min !== null);
+
+        // Para ERI, Sobrantes, Faltantes, DifVal: SOLO tiendas que cumplieron
+        const filasQueComplieron = dashPeriod === "dia"
+            ? kpiDashData.filter(r => r.cumplio && r.total_asignados > 0)
+            : kpiDashData.filter(r => r.dias_cumplidos > 0 && r.total_asignados > 0);
+
+        const okTotal = filasQueComplieron.reduce((s, r) => s + r.total_ok, 0);
+        const asignadosTotal = filasQueComplieron.reduce((s, r) => s + r.total_asignados, 0);
+        const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
+
+        // Duración promedio: solo aplica en vista día (de las que cumplieron con duración)
+        const filasConDuracion = dashPeriod === "dia"
+            ? filasQueComplieron.filter(r => r.duracion_min !== null)
+            : [];
         const avgDurMin = dashPeriod === "dia" && filasConDuracion.length > 0
             ? Math.round(filasConDuracion.reduce((s, r) => s + (r.duracion_min || 0), 0) / filasConDuracion.length)
             : null;
-        const totalDifVal = kpiDashData.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+
+        const totalDifVal = filasQueComplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalSobrantes = filasQueComplieron.reduce((s, r) => s + r.total_sobrantes, 0);
+        const totalFaltantes = filasQueComplieron.reduce((s, r) => s + r.total_faltantes, 0);
         const totalAsignacionesPeriodo = filteredDashData.reduce(
             (s, r) => s + (r.total_asignados_periodo ?? r.total_asignados),
             0
         );
-        return { avgEri, cumplidos, total, avgDurMin, totalDifVal, totalAsignacionesPeriodo };
+        return { avgEri, cumplidos, total, avgDurMin, totalDifVal, totalSobrantes, totalFaltantes, totalAsignacionesPeriodo };
     }, [filteredDashData, kpiDashData, dashPeriod]);
 
     // ════════════════════════════════════════════════════════
