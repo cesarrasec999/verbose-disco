@@ -6,11 +6,10 @@ import {
   OFFLINE_BARCODES_STORE,
   OFFLINE_METADATA_STORE,
   OFFLINE_PRODUCTS_STORE,
-  OFFLINE_STOCK_STORE,
   OFFLINE_STORES_STORE,
 } from "./types";
 
-export type OfflineCatalogStage = "stores" | "products" | "barcodes" | "stock" | "done";
+export type OfflineCatalogStage = "stores" | "products" | "barcodes" | "done";
 
 export type OfflineCatalogProgress = {
   stage: OfflineCatalogStage;
@@ -20,6 +19,11 @@ export type OfflineCatalogProgress = {
 };
 
 type ProgressCallback = (progress: OfflineCatalogProgress) => void;
+
+export type OfflineCatalogSyncOptions = {
+  mode?: "full" | "delta";
+  since?: string;
+};
 
 export type CachedProduct = {
   id: string;
@@ -35,6 +39,7 @@ type CachedBarcode = {
   codsap?: string | null;
   upc?: string | null;
   alu?: string | null;
+  is_active?: boolean;
 };
 
 const PAGE_SIZE = 1000;
@@ -87,9 +92,10 @@ async function fetchPaged(
   label: string,
   progress?: ProgressCallback,
   mapRow: (row: Record<string, unknown>) => Record<string, unknown> = (row) => row,
-  applyFilters?: (query: any) => any
+  applyFilters?: (query: any) => any,
+  clearBefore = true
 ): Promise<number> {
-  await clearStore(storeName);
+  if (clearBefore) await clearStore(storeName);
 
   let loaded = 0;
   let from = 0;
@@ -122,27 +128,32 @@ async function fetchPaged(
 
 export async function syncOfflineCatalog(
   supabase: SupabaseClient,
-  progress?: ProgressCallback
+  progress?: ProgressCallback,
+  options: OfflineCatalogSyncOptions = {}
 ): Promise<Record<OfflineCatalogStage, number>> {
+  const isDelta = options.mode === "delta" && !!options.since;
+  const since = options.since || "";
+
   const stores = await fetchPaged(
     supabase,
     "stores",
-    "id,code,name,erp_sede,is_active",
+    isDelta ? "id,code,name,erp_sede,is_active,updated_at" : "id,code,name,erp_sede,is_active",
     OFFLINE_STORES_STORE,
     "stores",
-    "Tiendas",
+    isDelta ? "Tiendas actualizadas" : "Tiendas",
     progress,
     (row) => ({ ...row, cache_key: row.id }),
-    (query) => query.eq("is_active", true)
+    isDelta ? (query) => query.gt("updated_at", since) : (query) => query.eq("is_active", true),
+    !isDelta
   );
 
   const products = await fetchPaged(
     supabase,
     "cyclic_products",
-    "id,sku,description,unit,cost,is_active",
+    isDelta ? "id,sku,description,unit,cost,is_active,updated_at" : "id,sku,description,unit,cost,is_active",
     OFFLINE_PRODUCTS_STORE,
     "products",
-    "Productos",
+    isDelta ? "Productos actualizados" : "Productos",
     progress,
     (row) => ({
       ...row,
@@ -153,44 +164,32 @@ export async function syncOfflineCatalog(
       cost: Number(row.cost || 0),
       is_active: row.is_active === true,
     }),
-    (query) => query.eq("is_active", true)
+    isDelta ? (query) => query.gt("updated_at", since) : (query) => query.eq("is_active", true),
+    !isDelta
   );
 
   const barcodes = await fetchPaged(
     supabase,
     "codigos_barra",
-    "codsap,upc,alu",
+    isDelta ? "codsap,upc,alu,is_active,updated_at" : "codsap,upc,alu,is_active",
     OFFLINE_BARCODES_STORE,
     "barcodes",
-    "Codigos de barra",
+    isDelta ? "Codigos de barra actualizados" : "Codigos de barra",
     progress,
     (row) => ({
       codsap: cleanCode(row.codsap),
       upc: cleanCode(row.upc),
       alu: cleanCode(row.alu),
+      is_active: row.is_active !== false,
       cache_key: `${cleanCode(row.codsap)}|${cleanCode(row.upc)}|${cleanCode(row.alu)}`,
     }),
-    (query) => query.not("codsap", "is", null)
+    isDelta
+      ? (query) => query.not("codsap", "is", null).gt("updated_at", since)
+      : (query) => query.not("codsap", "is", null).eq("is_active", true),
+    !isDelta
   );
 
-  const stock = await fetchPaged(
-    supabase,
-    "stock_general",
-    "sede,codsap,stock,costo",
-    OFFLINE_STOCK_STORE,
-    "stock",
-    "Stock",
-    progress,
-    (row) => ({
-      sede: cleanText(row.sede),
-      codsap: cleanCode(row.codsap),
-      stock: Number(row.stock || 0),
-      costo: Number(row.costo || 0),
-      cache_key: `${cleanText(row.sede)}|${cleanCode(row.codsap)}`,
-    })
-  );
-
-  const result = { stores, products, barcodes, stock, done: stores + products + barcodes + stock };
+  const result = { stores, products, barcodes, done: stores + products + barcodes };
   await saveMetadata(result);
   progress?.({ stage: "done", label: "Catalogo offline listo", loaded: result.done, total: result.done });
   return result;
@@ -234,7 +233,7 @@ export async function findCachedProductsByCode(code: string): Promise<CachedProd
 
   const candidateSkus = new Set<string>([raw]);
   if (exactProduct?.sku) candidateSkus.add(exactProduct.sku);
-  for (const row of [...byUpc, ...byAlu]) {
+  for (const row of [...byUpc, ...byAlu].filter(row => row.is_active !== false)) {
     if (row.codsap) candidateSkus.add(String(row.codsap).toUpperCase());
   }
 

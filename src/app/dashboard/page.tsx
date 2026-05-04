@@ -673,6 +673,13 @@ export default function DashboardPage() {
         if (type === "success") messageTimerRef.current = setTimeout(() => setMessage(""), 4000);
     }
     function clearMessage() { setMessage(""); }
+    function requireOnlineForStockPhoto() {
+        if (typeof navigator !== "undefined" && !navigator.onLine) {
+            showMessage("Verifica tu conexión a internet. No se puede contar sin actualizar la fotografía de stock.", "error");
+            return false;
+        }
+        return true;
+    }
 
     function handleLogout() {
         localStorage.removeItem("cyclic_user");
@@ -1259,6 +1266,7 @@ export default function DashboardPage() {
     //  OPERARIO — CONTEO (múltiples ubicaciones)
     // ════════════════════════════════════════════════════════
     async function openCount(asgn: Assignment) {
+        if (!requireOnlineForStockPhoto()) return;
         const existing = counts.filter(c => c.assignment_id === asgn.id);
         if (existing.length > 0) {
             setLocationRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
@@ -1286,6 +1294,7 @@ export default function DashboardPage() {
 
     async function saveCount() {
         if (!activeAssignment || !user || savingCountRef.current) return;
+        if (!requireOnlineForStockPhoto()) return;
         savingCountRef.current = true;
         setSavingCount(true);
         const currentAssignment = await refreshAssignmentStock(activeAssignment, false, true);
@@ -1390,6 +1399,7 @@ export default function DashboardPage() {
     }
 
     async function openRecountItem(asgn: Assignment) {
+        if (!requireOnlineForStockPhoto()) return;
         const existing = counts.filter(c => c.assignment_id === asgn.id);
         if (existing.length > 0) {
             setRecountRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
@@ -1842,6 +1852,7 @@ export default function DashboardPage() {
 
     async function saveRecount() {
         if (!recountAssignment || !user || savingRecountRef.current) return;
+        if (!requireOnlineForStockPhoto()) return;
         savingRecountRef.current = true;
         setSavingRecount(true);
         const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false, true);

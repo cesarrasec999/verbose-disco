@@ -21,8 +21,9 @@ Este documento deja ordenada la direccion tecnica sin cambiar la funcionalidad a
 - `public/sw.js`: service worker base para cache de la app y pantalla sin conexion.
 - `public/offline.html`: pantalla simple cuando no hay conexion.
 - `src/app/PwaRegister.tsx`: registra el service worker en navegadores compatibles.
-- `src/app/PwaCatalogSync.tsx`: en la app instalada descarga tiendas, productos, codigos de barra y stock a IndexedDB.
+- `src/app/PwaCatalogSync.tsx`: en la app instalada descarga tiendas, productos y codigos de barra a IndexedDB.
 - `src/app/PwaQueueSync.tsx`: sincroniza conteos pendientes cuando vuelve internet.
+- `supabase_offline_catalog_delta.sql`: agrega `updated_at` a tiendas y codigos de barra para descargar solo cambios diarios.
 
 ## Conectado a la web actual
 
@@ -33,6 +34,7 @@ Los nuevos registros online ya guardan `client_uuid`, `client_device_id` y `sync
 - Conteos y reconteos de inventario general.
 - Inventario general escucha cambios de reconteo en tiempo real para que el operario vea asignaciones nuevas sin refrescar.
 - Inventario general puede guardar conteos sin conexion en cola local y subirlos cuando vuelva internet.
+- La app instalada sincroniza catalogo una vez por dia. La primera vez descarga completo; despues descarga solo cambios por `updated_at`.
 
 ## Flujo futuro
 

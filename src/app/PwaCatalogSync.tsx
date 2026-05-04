@@ -5,9 +5,9 @@ import { supabase } from "@/lib/supabase/client";
 import { syncOfflineCatalog, type OfflineCatalogProgress } from "@/lib/offline/catalogCache";
 
 const LAST_SYNC_KEY = "rasecorp.offline.catalog.lastSync";
+const LAST_SYNC_DAY_KEY = "rasecorp.offline.catalog.lastSyncDay";
 const CATALOG_VERSION_KEY = "rasecorp.offline.catalog.version";
-const CATALOG_VERSION = "2026-05-03-normalized-v1";
-const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const CATALOG_VERSION = "2026-05-03-daily-delta-v1";
 
 function isInstalledApp(): boolean {
   if (typeof window === "undefined") return false;
@@ -27,18 +27,23 @@ export default function PwaCatalogSync() {
     const runCatalogSync = () => {
       if (!navigator.onLine || running) return;
       const lastSync = Number(localStorage.getItem(LAST_SYNC_KEY) || 0);
+      const lastSyncDay = localStorage.getItem(LAST_SYNC_DAY_KEY);
       const currentVersion = localStorage.getItem(CATALOG_VERSION_KEY);
-      if (currentVersion === CATALOG_VERSION && lastSync && Date.now() - lastSync < SYNC_INTERVAL_MS) return;
+      const today = new Date().toISOString().slice(0, 10);
+      if (currentVersion === CATALOG_VERSION && lastSyncDay === today) return;
 
       if (cancelled) return;
       running = true;
       setSyncing(true);
+      const mode = currentVersion === CATALOG_VERSION && lastSync ? "delta" : "full";
+      const since = lastSync ? new Date(lastSync).toISOString() : undefined;
 
       syncOfflineCatalog(supabase, (nextProgress) => {
         if (!cancelled) setProgress(nextProgress);
-      })
+      }, { mode, since })
         .then(() => {
           localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+          localStorage.setItem(LAST_SYNC_DAY_KEY, today);
           localStorage.setItem(CATALOG_VERSION_KEY, CATALOG_VERSION);
         })
         .catch(() => {
@@ -72,7 +77,7 @@ export default function PwaCatalogSync() {
   return (
     <div className="fixed inset-x-3 bottom-4 z-[9998] mx-auto max-w-md rounded-2xl border border-slate-900 bg-white p-4 text-slate-900 shadow-2xl">
       <div className="mb-2 flex items-center justify-between gap-3 text-xs font-black">
-        <span>Descargando datos offline: {progress.label}</span>
+        <span>Preparando app offline: {progress.label}</span>
         <span className="text-orange-600">{percent}%</span>
       </div>
       <div className="h-3 overflow-hidden rounded-full bg-slate-100">

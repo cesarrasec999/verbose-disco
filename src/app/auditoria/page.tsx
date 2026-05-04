@@ -18,6 +18,7 @@ type SortDirection = "asc" | "desc";
 const AUDIT_MAIN_TAB_KEY = "audit_main_tab";
 const AUDIT_REGISTER_TAB_KEY = "audit_register_tab";
 const AUDIT_SESSION_ID_KEY = "audit_session_id";
+const ONLINE_STOCK_MESSAGE = "Verifica tu conexión a internet. No se puede contar sin actualizar la fotografía de stock.";
 
 type CyclicUser = {
   id: string;
@@ -704,6 +705,10 @@ export default function AuditoriaPage() {
   }
 
   async function openAuditProduct(product: Product) {
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      setMessage(ONLINE_STOCK_MESSAGE);
+      return;
+    }
     if (!session) return;
     let item = items.find(i => i.product_id === product.id) || null;
     if (!item) {
@@ -792,6 +797,10 @@ export default function AuditoriaPage() {
   async function saveCount() {
     if (savingCountRef.current) return;
     if (!session || !activeItem) return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      setMessage(ONLINE_STOCK_MESSAGE);
+      return;
+    }
     const quantity = Number(qty);
     if (!location.trim()) { setMessage("Ingresa ubicación."); return; }
     if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
@@ -835,6 +844,10 @@ export default function AuditoriaPage() {
 
   async function saveEdit() {
     if (!editingCount || !session) return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      setMessage("Verifica tu conexión a internet antes de editar registros de auditoría.");
+      return;
+    }
     const quantity = Number(editQty);
     if (!editLocation.trim() || !Number.isFinite(quantity) || quantity < 0) { setMessage("Datos de edición inválidos."); return; }
     const { error } = await supabase.from("audit_counts").update({ location: editLocation.trim().toUpperCase(), quantity }).eq("id", editingCount.id);
