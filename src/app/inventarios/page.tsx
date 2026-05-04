@@ -3349,8 +3349,8 @@ export default function InventariosPage() {
       </div>
 
       {editingAdminCount && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
+          <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
             <h3 className="font-black">Editar registro</h3>
             <p className="mt-1 line-clamp-2 text-sm text-slate-500">{editingAdminCount.sku} - {editingAdminCount.description}</p>
             <div className="mt-4 space-y-3">
@@ -3368,8 +3368,8 @@ export default function InventariosPage() {
                 className="w-full rounded-xl border px-3 py-3 text-sm font-bold"
               />
             </div>
-            <div className="mt-4 flex gap-2">
-              <button onClick={saveAdminEditCount} className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <button onClick={saveAdminEditCount} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
                 Guardar
               </button>
               <button onClick={() => setEditingAdminCount(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
@@ -3381,9 +3381,9 @@ export default function InventariosPage() {
       )}
 
       {scannerTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4">
+          <div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3>
                 <p className="text-xs text-slate-500">Apunta al código con la cámara.</p>

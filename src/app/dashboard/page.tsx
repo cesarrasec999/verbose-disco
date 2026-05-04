@@ -46,6 +46,14 @@ type Product = {
     system_stock?: number;
 };
 
+type NonInventoryProduct = {
+    id: string;
+    product_id: string | null;
+    sku: string;
+    description: string | null;
+    is_active: boolean;
+};
+
 type Assignment = {
     id: string;
     store_id: string;
@@ -264,6 +272,8 @@ function formatDateTime(v: string) {
     return d.toLocaleString("es-PE");
 }
 
+const ALL_STORES_VALUE = "__all_stores__";
+
 function formatDuration(minutes: number | null): string {
     if (minutes === null || minutes < 0) return "—";
     const h = Math.floor(minutes / 60);
@@ -352,10 +362,14 @@ export default function DashboardPage() {
     // ─── Validador: asignación ───────────────────────────────
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
+    const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
+    const [assignBusy, setAssignBusy] = useState(false);
     const [bulkAssignFile, setBulkAssignFile] = useState<File|null>(null);
     const [bulkAssignFileName, setBulkAssignFileName] = useState("");
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
     const bulkAssignRef = useRef<HTMLInputElement|null>(null);
+    const [nonInventoryProducts, setNonInventoryProducts] = useState<NonInventoryProduct[]>([]);
+    const [nonInventoryInput, setNonInventoryInput] = useState("");
 
     // ─── Validador: editar conteo ────────────────────────────
     const [editingCount, setEditingCount]   = useState<CountRecord|null>(null);
@@ -461,6 +475,12 @@ export default function DashboardPage() {
     const [resumenDraft,     setResumenDraft]     = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
     const [resumenEditMode, setResumenEditMode] = useState(false);
     const [resumenSort, setResumenSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
+    const nonInventorySkuSet = useMemo(() => new Set(
+        nonInventoryProducts
+            .filter(row => row.is_active !== false)
+            .map(row => fullProductCode(row.sku).toUpperCase())
+            .filter(Boolean)
+    ), [nonInventoryProducts]);
 
     // ════════════════════════════════════════════════════════
     //  INIT
@@ -505,7 +525,7 @@ export default function DashboardPage() {
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
-                if (savedValStoreId) setValStoreId(savedValStoreId);
+                if (savedValStoreId && (savedValStoreId !== ALL_STORES_VALUE || savedValTab === "asignar")) setValStoreId(savedValStoreId);
                 if (savedValDate)    setValDate(savedValDate);
 
                 // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
@@ -524,7 +544,7 @@ export default function DashboardPage() {
     }, []);
 
     useEffect(() => {
-        if (user) { loadStores(); loadProducts(); if (user.role !== "Operario") loadAllUsers(); }
+        if (user) { loadStores(); loadProducts(); loadNonInventoryProducts(); if (user.role !== "Operario") loadAllUsers(); }
     }, [user]);
 
     useEffect(() => {
@@ -567,6 +587,11 @@ export default function DashboardPage() {
 
     useEffect(() => {
         if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
+        if (valTab !== "asignar" && valStoreId === ALL_STORES_VALUE) {
+            const firstStoreId = stores[0]?.id || "";
+            setValStoreId(firstStoreId);
+            if (firstStoreId && (valTab === "registros" || valTab === "resumen")) loadValidadorData(firstStoreId, valDate);
+        }
     }, [valTab]);
 
     useEffect(() => {
@@ -790,6 +815,19 @@ export default function DashboardPage() {
             if (!data || data.length < PAGE) hasMore = false;
         }
         setProducts(all);
+    }
+
+    async function loadNonInventoryProducts() {
+        const { data, error } = await supabase
+            .from("cyclic_non_inventory_products")
+            .select("id, product_id, sku, description, is_active")
+            .eq("is_active", true)
+            .order("sku");
+        if (error) {
+            console.warn("No se pudo cargar no inventariables ciclicos:", error.message);
+            return;
+        }
+        setNonInventoryProducts((data || []) as NonInventoryProduct[]);
     }
 
     async function loadAllUsers() {
@@ -1280,6 +1318,57 @@ export default function DashboardPage() {
         clearMessage();
     }
 
+    function isPendingAssignment(asgn: Assignment | null | undefined): boolean {
+        return !!asgn?.id?.startsWith("__pending_assignment__");
+    }
+
+    async function ensureAssignmentPersisted(asgn: Assignment): Promise<Assignment> {
+        if (!isPendingAssignment(asgn)) return asgn;
+
+        const latestStock = await getSystemStockForStore(asgn.sku || "", asgn.store_id);
+        const { data: existing, error: existingError } = await supabase
+            .from("cyclic_assignments")
+            .select("id, store_id, product_id, system_stock, assigned_date, assigned_by")
+            .eq("store_id", asgn.store_id)
+            .eq("product_id", asgn.product_id)
+            .eq("assigned_date", asgn.assigned_date)
+            .maybeSingle();
+
+        if (existingError) throw existingError;
+
+        let persisted: Assignment;
+        if (existing?.id) {
+            persisted = {
+                ...asgn,
+                id: existing.id,
+                system_stock: Number(existing.system_stock ?? latestStock),
+                assigned_by: existing.assigned_by ?? asgn.assigned_by,
+            };
+        } else {
+            const { data: inserted, error } = await supabase
+                .from("cyclic_assignments")
+                .insert({
+                    store_id: asgn.store_id,
+                    product_id: asgn.product_id,
+                    system_stock: latestStock,
+                    assigned_date: asgn.assigned_date,
+                    assigned_by: user?.id || asgn.assigned_by,
+                })
+                .select("id")
+                .single();
+
+            if (error) throw error;
+            persisted = { ...asgn, id: inserted.id, system_stock: latestStock, assigned_by: user?.id || asgn.assigned_by };
+        }
+
+        setAssignments(prev => {
+            const withoutTemp = prev.filter(item => item.id !== asgn.id && item.id !== persisted.id);
+            return [...withoutTemp, persisted];
+        });
+        setActiveAssignment(prev => prev?.id === asgn.id ? persisted : prev);
+        return persisted;
+    }
+
     function addLocationRow() {
         setLocationRows(prev => [...prev, { location: "", qty: "" }]);
     }
@@ -1297,7 +1386,32 @@ export default function DashboardPage() {
         if (!requireOnlineForStockPhoto()) return;
         savingCountRef.current = true;
         setSavingCount(true);
-        const currentAssignment = await refreshAssignmentStock(activeAssignment, false, true);
+
+        if (!sinStock) {
+            for (let i = 0; i < locationRows.length; i++) {
+                const row = locationRows[i];
+                if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicacion.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+                if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+                const qty = Number(row.qty);
+                if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad invalida.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+                if (qty === 0) {
+                    showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Si no hay stock fisico, usa el boton "Sin stock".`, "error");
+                    savingCountRef.current = false;
+                    setSavingCount(false); return;
+                }
+            }
+        }
+
+        let currentAssignment: Assignment;
+        try {
+            const persistedAssignment = await ensureAssignmentPersisted(activeAssignment);
+            currentAssignment = await refreshAssignmentStock(persistedAssignment, false, true);
+        } catch (error: any) {
+            showMessage("Error al crear asignacion: " + (error?.message || error), "error");
+            savingCountRef.current = false;
+            setSavingCount(false);
+            return;
+        }
 
         // ── Modo "Sin stock físico" ──────────────────────────
         if (sinStock) {
@@ -1637,7 +1751,7 @@ export default function DashboardPage() {
             if (updateMap.size > 0) {
                 setAssignments(prev => prev.map(row => updateMap.has(row.id) ? { ...row, system_stock: updateMap.get(row.id)! } : row));
             }
-            if (valStoreId) await loadValidadorData(valStoreId, valDate);
+            if (valStoreId && valStoreId !== ALL_STORES_VALUE) await loadValidadorData(valStoreId, valDate);
 
             const skipped = rowsRaw.length - pendingRows.length;
             showMessage(
@@ -1766,29 +1880,8 @@ export default function DashboardPage() {
             .eq("assigned_date", selectedDate)
             .maybeSingle();
 
-        let assignmentId = existing?.id;
-        if (!assignmentId) {
-            const { data: inserted, error } = await supabase
-                .from("cyclic_assignments")
-                .insert({
-                    store_id: selectedStoreId,
-                    product_id: product.id,
-                    system_stock: stock,
-                    assigned_date: selectedDate,
-                    assigned_by: user.id,
-                })
-                .select("id")
-                .single();
-
-            if (error) {
-                showMessage("Error al agregar producto voluntario: " + error.message, "error");
-                return;
-            }
-            assignmentId = inserted.id;
-        }
-
         const asgn: Assignment = {
-            id: assignmentId,
+            id: existing?.id || `__pending_assignment__${product.id}`,
             store_id: selectedStoreId,
             product_id: product.id,
             system_stock: Number(existing?.system_stock ?? stock),
@@ -1801,10 +1894,22 @@ export default function DashboardPage() {
             cost: Number(product.cost) || 0,
         };
 
-        setAssignments(prev => prev.some(a => a.id === asgn.id) ? prev : [...prev, asgn]);
-        if (showRecount) await openRecountItem(asgn);
-        else await openCount(asgn);
-        showMessage(`Producto voluntario agregado: ${product.sku}`, "success");
+        if (existing?.id) {
+            setAssignments(prev => prev.some(a => a.id === asgn.id) ? prev : [...prev, asgn]);
+            if (showRecount) await openRecountItem(asgn);
+            else await openCount(asgn);
+            return;
+        }
+
+        if (showRecount) {
+            showMessage("Este codigo no esta asignado para reconteo.", "error");
+            return;
+        }
+
+        setLocationRows([{ location: "", qty: "" }]);
+        setSinStock(false);
+        setActiveAssignment(asgn);
+        clearMessage();
     }
 
     async function addProductByCode(codeValue: string, clearTypedInput = false) {
@@ -1983,6 +2088,39 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  VALIDADOR — ASIGNAR PRODUCTOS
     // ════════════════════════════════════════════════════════
+    function isNonInventoryProduct(product: Product | null | undefined): boolean {
+        if (!product) return false;
+        return nonInventorySkuSet.has(fullProductCode(product.sku).toUpperCase());
+    }
+
+    function filterAssignableProducts(rows: Product[]): Product[] {
+        return rows.filter(product => !isNonInventoryProduct(product));
+    }
+
+    function activeAssignStores(): Store[] {
+        if (valStoreId === ALL_STORES_VALUE) return stores.filter(store => store.is_active);
+        const selected = stores.find(store => store.id === valStoreId);
+        return selected ? [selected] : [];
+    }
+
+    function toggleAssignSelection(productId: string) {
+        setAssignSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(productId)) next.delete(productId);
+            else next.add(productId);
+            return next;
+        });
+    }
+
+    function toggleAllAssignResults() {
+        setAssignSelectedIds(prev => {
+            const visibleIds = assignResults.map(product => product.id);
+            const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
+            if (allSelected) return new Set([...prev].filter(id => !visibleIds.includes(id)));
+            return new Set([...prev, ...visibleIds]);
+        });
+    }
+
     async function searchProductsByTypedCode(text: string, limit = 120): Promise<Product[]> {
         const code = fullProductCode(text);
         if (code.length < 3) return [];
@@ -1994,9 +2132,10 @@ export default function DashboardPage() {
             .ilike("sku", `%${code}%`)
             .limit(limit);
 
-        return valStoreId
-            ? await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]), valStoreId)
-            : preferFullCodsapProducts((data || []) as Product[]);
+        const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]));
+        return valStoreId && valStoreId !== ALL_STORES_VALUE
+            ? await filterProductsInStoreStock(preferred, valStoreId)
+            : preferred;
     }
 
     async function searchProductsForAssign(text: string) {
@@ -2007,16 +2146,158 @@ export default function DashboardPage() {
         let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
         for (const w of words) q = q.ilike("description", `%${w}%`);
         const { data: byDesc } = await q.limit(200);
-        const stockFilteredDesc = valStoreId
-            ? await filterProductsInStoreStock((byDesc || []) as Product[], valStoreId)
-            : ((byDesc || []) as Product[]);
+        const descRows = filterAssignableProducts((byDesc || []) as Product[]);
+        const stockFilteredDesc = valStoreId && valStoreId !== ALL_STORES_VALUE
+            ? await filterProductsInStoreStock(descRows, valStoreId)
+            : descRows;
         const combined = [...byCode, ...stockFilteredDesc];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-        setAssignResults(preferFullCodsapProducts(deduped as Product[]).slice(0, 30));
+        const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
+        setAssignResults(nextResults);
+        setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
+    }
+
+    async function assignProductsToStores(productsToAssign: Product[], modeLabel = "seleccionados") {
+        const cleanProducts = filterAssignableProducts(productsToAssign);
+        if (cleanProducts.length === 0) { showMessage("No hay productos asignables seleccionados.", "error"); return; }
+        if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
+        const targetStores = activeAssignStores();
+        if (targetStores.length === 0) { showMessage("Selecciona tienda o Todas las tiendas.", "error"); return; }
+        if (assignBusy) return;
+
+        setAssignBusy(true);
+        try {
+            const productCodes = [...new Set(cleanProducts.map(product => fullProductCode(product.sku)).filter(Boolean))];
+            const sedes = [...new Set(targetStores.map(store => String(store.erp_sede || store.name || "").trim()).filter(Boolean))];
+            const stockByStoreSku = new Map<string, number>();
+            for (let i = 0; i < productCodes.length; i += 500) {
+                const chunk = productCodes.slice(i, i + 500);
+                let query = supabase.from("stock_general").select("sede,codsap,stock").in("codsap", chunk);
+                if (sedes.length > 0) query = query.in("sede", sedes);
+                const { data, error } = await query;
+                if (error) throw error;
+                for (const row of data || []) stockByStoreSku.set(`${String(row.sede || "").trim()}__${fullProductCode(row.codsap)}`, Number(row.stock || 0));
+            }
+
+            const storeIds = targetStores.map(store => store.id);
+            const productIds = cleanProducts.map(product => product.id);
+            const existingRows: { id: string; store_id: string; product_id: string }[] = [];
+            for (let i = 0; i < storeIds.length; i += 100) {
+                const storeChunk = storeIds.slice(i, i + 100);
+                for (let j = 0; j < productIds.length; j += 500) {
+                    const productChunk = productIds.slice(j, j + 500);
+                    const { data, error } = await supabase
+                        .from("cyclic_assignments")
+                        .select("id,store_id,product_id")
+                        .in("store_id", storeChunk)
+                        .in("product_id", productChunk)
+                        .eq("assigned_date", valDate);
+                    if (error) throw error;
+                    existingRows.push(...((data || []) as { id: string; store_id: string; product_id: string }[]));
+                }
+            }
+
+            const existingKeys = new Set(existingRows.map(row => `${row.store_id}__${row.product_id}`));
+            const toInsert: any[] = [];
+            for (const store of targetStores) {
+                const sede = String(store.erp_sede || store.name || "").trim();
+                for (const product of cleanProducts) {
+                    const key = `${store.id}__${product.id}`;
+                    if (existingKeys.has(key)) continue;
+                    toInsert.push({
+                        store_id: store.id,
+                        product_id: product.id,
+                        system_stock: stockByStoreSku.get(`${sede}__${fullProductCode(product.sku)}`) ?? 0,
+                        assigned_date: valDate,
+                        assigned_by: user?.id,
+                    });
+                }
+            }
+
+            let inserted = 0;
+            for (let i = 0; i < toInsert.length; i += 500) {
+                const batch = toInsert.slice(i, i + 500);
+                const { error } = await supabase.from("cyclic_assignments").insert(batch);
+                if (error) throw error;
+                inserted += batch.length;
+            }
+
+            const skipped = (targetStores.length * cleanProducts.length) - inserted;
+            showMessage(`✅ ${inserted} asignaciones creadas (${modeLabel}). ${skipped > 0 ? `${skipped} ya existian o fueron omitidas.` : ""}`, inserted > 0 ? "success" : "info");
+            if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
+            else { setAssignments([]); setCounts([]); }
+        } catch (error: any) {
+            showMessage("Error al asignar: " + (error?.message || error), "error");
+        } finally {
+            setAssignBusy(false);
+        }
     }
 
     async function assignProduct(product: Product) {
+        await assignProductsToStores([product], product.sku);
+    }
+
+    async function assignFirst30Results() {
+        await assignProductsToStores(assignResults.slice(0, 30), "30 primeros");
+    }
+
+    async function assignSelectedResults() {
+        const selected = assignResults.filter(product => assignSelectedIds.has(product.id));
+        await assignProductsToStores(selected, "seleccionados");
+    }
+
+    async function addNonInventoryCodes() {
+        const codes = nonInventoryInput
+            .split(/[\n,;]+/)
+            .map(code => fullProductCode(code).toUpperCase())
+            .filter(Boolean);
+        const uniqueCodes = [...new Set(codes)];
+        if (uniqueCodes.length === 0) { showMessage("Ingresa al menos un codigo.", "error"); return; }
+
+        const productsBySku = new Map<string, Product>();
+        for (let i = 0; i < uniqueCodes.length; i += 500) {
+            const chunk = uniqueCodes.slice(i, i + 500);
+            const { data, error } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
+            if (error) { showMessage("Error buscando codigos: " + error.message, "error"); return; }
+            for (const product of data || []) productsBySku.set(fullProductCode(product.sku), product as Product);
+        }
+
+        const rows = uniqueCodes.map(code => {
+            const product = productsBySku.get(code);
+            return {
+                product_id: product?.id || null,
+                sku: product?.sku || code,
+                description: product?.description || null,
+                is_active: true,
+                updated_at: new Date().toISOString(),
+                updated_by: user?.id || null,
+            };
+        });
+
+        const { error } = await supabase
+            .from("cyclic_non_inventory_products")
+            .upsert(rows, { onConflict: "sku" });
+        if (error) { showMessage("Error guardando no inventariables: " + error.message, "error"); return; }
+
+        setNonInventoryInput("");
+        await loadNonInventoryProducts();
+        setAssignResults(prev => prev.filter(product => !uniqueCodes.includes(fullProductCode(product.sku))));
+        setAssignSelectedIds(prev => new Set([...prev].filter(id => !assignResults.some(product => product.id === id && uniqueCodes.includes(fullProductCode(product.sku))))));
+        showMessage(`✅ ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable.`, "success");
+    }
+
+    async function removeNonInventoryCode(row: NonInventoryProduct) {
+        const { error } = await supabase
+            .from("cyclic_non_inventory_products")
+            .update({ is_active: false, updated_at: new Date().toISOString(), updated_by: user?.id || null })
+            .eq("id", row.id);
+        if (error) { showMessage("Error quitando no inventariable: " + error.message, "error"); return; }
+        await loadNonInventoryProducts();
+        showMessage("Codigo habilitado para asignacion.", "success");
+    }
+
+    async function assignProductLegacy(product: Product) {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_assignments")
             .select("id").eq("store_id", valStoreId).eq("product_id", product.id).eq("assigned_date", valDate).maybeSingle();
@@ -2173,6 +2454,8 @@ export default function DashboardPage() {
                     const sid = storeNameMap.get(rawStore);
                     if (sid) storeIdsDelArchivo.add(sid);
                 }
+            } else if (valStoreId === ALL_STORES_VALUE) {
+                for (const store of stores.filter(s => s.is_active)) storeIdsDelArchivo.add(store.id);
             } else if (valStoreId) {
                 storeIdsDelArchivo.add(valStoreId);
             }
@@ -2220,36 +2503,41 @@ export default function DashboardPage() {
                 const rawCode = fullProductCode(String(row[colCodigo] || ""));
                 if (!rawCode) { skip++; continue; }
 
-                let targetStoreId = valStoreId || "";
+                const targetStoreIds = valStoreId === ALL_STORES_VALUE && !hasStoreCol
+                    ? stores.filter(s => s.is_active).map(s => s.id)
+                    : [valStoreId || ""];
                 if (hasStoreCol && colTienda >= 0) {
                     const rawStore = normalizeStoreKey(String(row[colTienda] || ""));
                     if (!rawStore) { skip++; continue; }
                     const sid = storeNameMap.get(rawStore);
                     if (!sid) { storeNotFound++; continue; }
-                    targetStoreId = sid;
+                    targetStoreIds.splice(0, targetStoreIds.length, sid);
                 }
-                if (!targetStoreId) { skip++; continue; }
+                if (targetStoreIds.length === 0 || targetStoreIds.every(id => !id)) { skip++; continue; }
 
                 const prod = resolveProduct(rawCode);
                 if (!prod) { notFound++; continue; }
+                if (isNonInventoryProduct(prod)) { skip++; continue; }
 
-                const store = storeById.get(targetStoreId);
-                const sede = String(store?.erp_sede || store?.name || "").trim();
-                const syncedStock = stockBySedeSku.get(sede + "__" + fullProductCode(prod.sku));
-                const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
-                const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
-                if (!hasManualStock && syncedStock === undefined) stockNotFound++;
+                for (const targetStoreId of targetStoreIds) {
+                    const store = storeById.get(targetStoreId);
+                    const sede = String(store?.erp_sede || store?.name || "").trim();
+                    const syncedStock = stockBySedeSku.get(sede + "__" + fullProductCode(prod.sku));
+                    const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
+                    const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
+                    if (!hasManualStock && syncedStock === undefined) stockNotFound++;
 
-                if (colCosto >= 0 && String(row[colCosto] ?? "").trim() !== "") {
-                    const cost = parseCost(row[colCosto]);
-                    if (cost > 0 && cost !== prod.cost) costUpdates.push({ id: prod.id, cost });
+                    if (colCosto >= 0 && String(row[colCosto] ?? "").trim() !== "") {
+                        const cost = parseCost(row[colCosto]);
+                        if (cost > 0 && cost !== prod.cost) costUpdates.push({ id: prod.id, cost });
+                    }
+
+                    assignmentDrafts.set(targetStoreId + "__" + prod.id, {
+                        store_id: targetStoreId,
+                        product_id: prod.id,
+                        system_stock: stock,
+                    });
                 }
-
-                assignmentDrafts.set(targetStoreId + "__" + prod.id, {
-                    store_id: targetStoreId,
-                    product_id: prod.id,
-                    system_stock: stock,
-                });
             }
 
             const toInsert: any[] = [];
@@ -2299,7 +2587,7 @@ export default function DashboardPage() {
             const stockMsg = stockNotFound > 0 ? " " + stockNotFound + " sin stock sincronizado; se asignaron con 0." : "";
             showMessage("✅ " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacíos. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
-            if (valStoreId) loadValidadorData(valStoreId, valDate);
+            if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
 
             // ── PASO 10: Modal WhatsApp masivo ──────────────────────────
             if (insertOk > 0 || toUpdate.length > 0) {
@@ -4011,8 +4299,8 @@ export default function DashboardPage() {
                                             setSidebarOpen(false);
                                             // Reset drill-down state when navigating via sidebar
                                             if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); }
-                                            if (item.key === "registros" && valStoreId) loadValidadorData(valStoreId, valDate);
-                                            if (item.key === "resumen"   && valStoreId) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
+                                            if (item.key === "registros" && valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
+                                            if (item.key === "resumen"   && valStoreId && valStoreId !== ALL_STORES_VALUE) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
                                             if (item.key === "progreso")  loadStoreProgress(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -4139,7 +4427,7 @@ export default function DashboardPage() {
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
                             {activeTab === "validador" && valTab !== "dashboard" && valStoreId
-                                ? `${stores.find(s => s.id === valStoreId)?.name || ""} · ${valDate}`
+                                ? `${valStoreId === ALL_STORES_VALUE ? "Todas las tiendas" : stores.find(s => s.id === valStoreId)?.name || ""} · ${valDate}`
                                 : activeTab === "operario"
                                 ? `${allStores.find(s => s.id === selectedStoreId)?.name || "—"} · ${selectedDate}`
                                 : ""}
@@ -4152,18 +4440,24 @@ export default function DashboardPage() {
                             <select
                                 className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
                                 value={valStoreId}
-                                onChange={e => { setValStoreId(e.target.value); loadValidadorData(e.target.value, valDate); }}
+                                onChange={e => {
+                                    const nextStoreId = e.target.value;
+                                    setValStoreId(nextStoreId);
+                                    if (nextStoreId && nextStoreId !== ALL_STORES_VALUE) loadValidadorData(nextStoreId, valDate);
+                                    else { setAssignments([]); setCounts([]); }
+                                }}
                             >
                                 <option value="">— Tienda —</option>
+                                {valTab === "asignar" && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
                             <input
                                 type="date"
                                 className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
                                 value={valDate}
-                                onChange={e => { setValDate(e.target.value); if (valStoreId) loadValidadorData(valStoreId, e.target.value); }}
+                                onChange={e => { setValDate(e.target.value); if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, e.target.value); }}
                             />
-                            {valStoreId && (
+                            {valStoreId && valStoreId !== ALL_STORES_VALUE && (
                                 <button
                                     className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
                                     onClick={refreshValidatorAssignedStocksForDate}
@@ -4957,17 +5251,49 @@ export default function DashboardPage() {
                                 <div className="space-y-2">
                                     <input
                                         className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
-                                        placeholder="Buscar por codsap completo o descripcion..."
+                                        placeholder="Buscar por codsap completo, codigo o familia/descripcion..."
                                         value={assignSearch}
                                         onChange={e => searchProductsForAssign(e.target.value)}
                                     />
                                     {assignResults.length > 0 && (
                                         <div className="border rounded-2xl overflow-hidden">
+                                            <div className="flex flex-wrap items-center gap-2 border-b bg-slate-50 p-3">
+                                                <button
+                                                    onClick={toggleAllAssignResults}
+                                                    className="rounded-xl border bg-white px-3 py-2 text-xs font-bold text-slate-700"
+                                                >
+                                                    {assignResults.every(product => assignSelectedIds.has(product.id)) ? "Quitar seleccion" : "Seleccionar visibles"}
+                                                </button>
+                                                <button
+                                                    onClick={assignFirst30Results}
+                                                    disabled={assignBusy}
+                                                    className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
+                                                >
+                                                    Asignar 30 primeros
+                                                </button>
+                                                <button
+                                                    onClick={assignSelectedResults}
+                                                    disabled={assignBusy || assignSelectedIds.size === 0}
+                                                    className="rounded-xl bg-blue-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
+                                                >
+                                                    Asignar seleccionados ({assignResults.filter(product => assignSelectedIds.has(product.id)).length})
+                                                </button>
+                                                <span className="text-xs font-semibold text-slate-500">
+                                                    {valStoreId === ALL_STORES_VALUE ? "Destino: todas las tiendas" : "Destino: tienda seleccionada"}
+                                                </span>
+                                            </div>
                                             <div className="max-h-72 overflow-auto">
                                                 {assignResults.map(p => {
-                                                    const alreadyAssigned = assignments.some(a => a.product_id === p.id);
+                                                    const alreadyAssigned = valStoreId !== ALL_STORES_VALUE && assignments.some(a => a.product_id === p.id);
+                                                    const selected = assignSelectedIds.has(p.id);
                                                     return (
                                                         <div key={p.id} className={`flex items-center gap-3 p-3 border-b last:border-b-0 ${alreadyAssigned ? "bg-green-50" : "bg-white hover:bg-slate-50"}`}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selected}
+                                                                onChange={() => toggleAssignSelection(p.id)}
+                                                                className="h-5 w-5 rounded border-slate-300"
+                                                            />
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="font-semibold text-slate-900 text-sm">{p.sku}</div>
                                                                 <div className="text-xs text-slate-600 truncate">{p.description}</div>
@@ -4977,13 +5303,50 @@ export default function DashboardPage() {
                                                                 {alreadyAssigned ? (
                                                                     <span className="text-xs text-green-700 font-semibold px-3 py-2">✓ Asignado</span>
                                                                 ) : (
-                                                                    <button className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold" onClick={() => assignProduct(p)}>+ Asignar</button>
+                                                                    <button className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold disabled:opacity-40" disabled={assignBusy} onClick={() => assignProduct(p)}>+ Asignar</button>
                                                                 )}
                                                             </div>
                                                         </div>
                                                     );
                                                 })}
                                             </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-2xl border border-orange-200 bg-orange-50 p-3 space-y-3">
+                                    <div className="flex flex-col gap-2 md:flex-row md:items-end">
+                                        <div className="flex-1">
+                                            <p className="text-sm font-bold text-slate-800">Codigos no inventariables</p>
+                                            <p className="text-xs font-semibold text-slate-500">Estos codigos no apareceran para asignar en ciclicos ni en la carga masiva.</p>
+                                        </div>
+                                        <input
+                                            className="min-w-0 flex-1 rounded-xl border bg-white px-3 py-2 text-sm text-slate-900"
+                                            placeholder="Codsap exacto, uno o varios"
+                                            value={nonInventoryInput}
+                                            onChange={e => setNonInventoryInput(e.target.value)}
+                                            onKeyDown={e => { if (e.key === "Enter") addNonInventoryCodes(); }}
+                                        />
+                                        <button
+                                            onClick={addNonInventoryCodes}
+                                            className="rounded-xl bg-orange-600 px-4 py-2 text-sm font-black text-white"
+                                        >
+                                            Agregar
+                                        </button>
+                                    </div>
+                                    {nonInventoryProducts.length > 0 && (
+                                        <div className="flex max-h-28 flex-wrap gap-2 overflow-auto">
+                                            {nonInventoryProducts.slice(0, 80).map(row => (
+                                                <button
+                                                    key={row.id}
+                                                    onClick={() => removeNonInventoryCode(row)}
+                                                    className="rounded-full border border-orange-300 bg-white px-3 py-1 text-xs font-bold text-orange-700 hover:bg-orange-100"
+                                                    title="Quitar de no inventariables"
+                                                >
+                                                    {row.sku} x
+                                                </button>
+                                            ))}
+                                            {nonInventoryProducts.length > 80 && <span className="px-2 py-1 text-xs font-bold text-slate-500">+{nonInventoryProducts.length - 80}</span>}
                                         </div>
                                     )}
                                 </div>
@@ -5664,16 +6027,16 @@ export default function DashboardPage() {
                 MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
             ════════════════════════════════════════════════════════ */}
             {activeAssignment && (
-                <div className="fixed inset-0 bg-black/50 flex items-end justify-center p-2 sm:items-center sm:p-4 z-50">
-                    <div className="bg-white rounded-2xl p-4 w-full max-w-md shadow-2xl max-h-[92vh] overflow-y-auto sm:rounded-3xl sm:p-6">
+                <div className="fixed inset-0 bg-black/50 flex items-end justify-center overflow-y-auto p-2 sm:items-center sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-2xl p-4 w-full max-w-md shadow-2xl sm:rounded-3xl sm:p-6">
                         <div className="flex items-start justify-between gap-3 mb-4">
-                            <div>
+                            <div className="min-w-0">
                                 <h3 className="text-lg font-bold text-slate-900 sm:text-xl">Registrar conteo</h3>
-                                <p className="text-slate-700 font-semibold mt-0.5">{activeAssignment.sku}</p>
-                                <p className="text-sm text-slate-500">{activeAssignment.description}</p>
+                                <p className="break-words text-slate-700 font-semibold mt-0.5">{activeAssignment.sku}</p>
+                                <p className="break-words text-sm text-slate-500">{activeAssignment.description}</p>
                                 <div className="flex flex-wrap items-center gap-2 mt-1.5">
                                     <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
-                                    <span className="text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {formatNumber(activeAssignment.system_stock)}</span>
+                                        <span className="max-w-full break-words text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {formatNumber(activeAssignment.system_stock)}</span>
                                     <button
                                         onClick={() => refreshAssignmentStock(activeAssignment)}
                                         disabled={refreshingStockId === activeAssignment.id || savingCount}
@@ -5684,11 +6047,11 @@ export default function DashboardPage() {
                                     </button>
                                 </div>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
+                            <button className="shrink-0 text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
                         </div>
 
                         <div className="space-y-3 mb-4">
-                            <div className="flex items-center justify-between">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label className="block font-bold text-sm text-slate-800">Ubicaciones y cantidades</label>
                                 <button
                                     className="text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold border active:bg-slate-200 active:scale-95 transition-all"
@@ -5727,9 +6090,9 @@ export default function DashboardPage() {
                                         )}
                                     </div>
                                     <div>
-                                        <div className="flex gap-2">
+                                        <div className="flex min-w-0 gap-2">
                                             <input
-                                                className="flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white focus:border-slate-400 focus:outline-none"
+                                                className="min-w-0 flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white focus:border-slate-400 focus:outline-none"
                                                 placeholder="Ej: A-01-03"
                                                 value={row.location}
                                                 onChange={e => updateLocationRow(i, "location", e.target.value)}
@@ -5758,7 +6121,7 @@ export default function DashboardPage() {
                             ))}
                         </div>
 
-                        <div className="flex gap-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
                             <button
                                 className={`flex-1 py-4 rounded-2xl font-bold text-base transition-all active:scale-95 ${savingCount ? "bg-slate-400 text-white cursor-not-allowed" : "bg-slate-900 text-white active:bg-slate-700"}`}
                                 onClick={saveCount}
@@ -5782,8 +6145,8 @@ export default function DashboardPage() {
                 MODAL — EDITAR CONTEO (Validador)
             ════════════════════════════════════════════════════════ */}
             {editingCount && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-4 shadow-2xl sm:p-6">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar registro</h3>
@@ -5826,8 +6189,8 @@ export default function DashboardPage() {
                 MODAL — EDITAR PRODUCTO (Admin)
             ════════════════════════════════════════════════════════ */}
             {editingProduct && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-md space-y-4 shadow-2xl sm:p-6">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar producto</h3>
@@ -5869,8 +6232,8 @@ export default function DashboardPage() {
                 MODAL — EDITAR USUARIO (Admin)
             ════════════════════════════════════════════════════════ */}
             {editingUser && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-md space-y-4 shadow-2xl sm:p-6">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar usuario</h3>
@@ -5928,8 +6291,8 @@ export default function DashboardPage() {
                 MODAL — CONFIRMAR RECONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
             {showRecountConfirmModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-sm space-y-5 shadow-2xl">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-5 shadow-2xl sm:p-6">
                         <div className="text-center space-y-2">
                             <div className="text-5xl">🔄</div>
                             <h3 className="text-xl font-bold text-slate-900">¿Iniciar reconteo?</h3>
@@ -5966,8 +6329,8 @@ export default function DashboardPage() {
                 MODAL — TERMINAR CONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
             {showFinishModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-sm space-y-5 shadow-2xl">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-5 shadow-2xl sm:p-6">
                         <div className="text-center space-y-2">
                             <div className="text-5xl">⚠️</div>
                             <h3 className="text-xl font-bold text-slate-900">¿Terminar conteo?</h3>
@@ -6000,8 +6363,8 @@ export default function DashboardPage() {
                 MODAL — WHATSAPP MASIVO POST-CARGA
             ════════════════════════════════════════════════════════ */}
             {showBulkWspModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto space-y-4">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-lg shadow-2xl space-y-4 sm:p-6">
 
                         {/* ── FASE 1: Selección ── */}
                         {bulkWspSendingIdx < 0 ? (<>
@@ -6143,8 +6506,8 @@ export default function DashboardPage() {
                 OVERLAY — ESCÁNER DE CÁMARA
             ════════════════════════════════════════════════════════ */}
             {scannerTarget && (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-[60]">
-                    <div className="bg-white w-full max-w-lg rounded-3xl p-5 shadow-2xl space-y-4">
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-[60]">
+                    <div className="app-modal-panel bg-white w-full max-w-lg rounded-3xl p-4 shadow-2xl space-y-4 sm:p-5">
                         <div>
                             <h3 className="text-xl font-bold text-slate-900">
                                 {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicación ${(locationRows.length > 1 || recountRows.length > 1) ? scanningRowIndex + 1 : ""}`}
@@ -6171,8 +6534,8 @@ export default function DashboardPage() {
                 MODAL — CORREO GERENCIAL (Preview + Acciones)
             ════════════════════════════════════════════════════════ */}
             {showEmailModal && (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl w-full max-w-4xl flex flex-col shadow-2xl">
 
                         {/* Header del modal */}
                         <div className="flex items-center justify-between gap-4 px-6 py-4 border-b bg-white flex-shrink-0">
@@ -6255,8 +6618,8 @@ export default function DashboardPage() {
             )}
 
             {manualProductCandidates.length > 1 && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-                    <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
+                <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
+                    <div className="app-modal-panel w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
                         <div className="flex items-center justify-between border-b px-4 py-3">
                             <div>
                                 <h3 className="font-black">Elige el codigo</h3>

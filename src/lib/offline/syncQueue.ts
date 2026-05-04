@@ -11,6 +11,12 @@ async function syncItem(supabase: SupabaseClient, item: OfflineQueueItem): Promi
     return false;
   }
 
+  if (item.entity === "general_inventory_recount_counts") {
+    const { error } = await supabase.from("general_inventory_recount_counts").insert(item.payload as Record<string, unknown>);
+    if (!error || error.code === "23505") return true;
+    return false;
+  }
+
   return false;
 }
 

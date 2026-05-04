@@ -33,12 +33,22 @@ export default function PwaQueueSync() {
       }
     };
 
+    const runSyncWhenVisible = () => {
+      if (document.visibilityState === "visible") void runSync();
+    };
+
+    const interval = window.setInterval(runSync, 8000);
     window.addEventListener("online", runSync);
+    window.addEventListener("focus", runSync);
+    document.addEventListener("visibilitychange", runSyncWhenVisible);
     void runSync();
 
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
       window.removeEventListener("online", runSync);
+      window.removeEventListener("focus", runSync);
+      document.removeEventListener("visibilitychange", runSyncWhenVisible);
     };
   }, []);
 
