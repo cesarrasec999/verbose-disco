@@ -1219,13 +1219,16 @@ export default function DashboardPage() {
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
             // Filtrar flags de sesión y solo los que pertenecen a assignments del período
+            // Usamos .in() con los valores exactos para evitar problemas con el wildcard _ en SQL LIKE
+            // y para capturar también __recount_done__ y __recount_started__ que no empiezan con __session_
+            const SESSION_FLAG_VALUES = ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"];
             let allSessionFlags: CountRecord[] = [];
             for (let i = 0; i < asgnIds.length; i += 500) {
                 const { data: flagChunk } = await supabase
                     .from("cyclic_counts")
                     .select("*")
                     .in("assignment_id", asgnIds.slice(i, i + 500))
-                    .like("location", "__session_%");
+                    .in("location", SESSION_FLAG_VALUES);
                 if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as CountRecord[]);
             }
             const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
