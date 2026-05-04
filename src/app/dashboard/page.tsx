@@ -1219,64 +1219,48 @@ export default function DashboardPage() {
             }
 
             // ── Paso 3b: traer flags de sesión por store_id + rango de fechas ──
-            // Los flags (__session_finished__, __recount_done__, etc.) se guardan con el
-            // assignment_id del "anchor" (primer assignment por ID de la tienda+fecha).
-            // Ese anchor puede ser un ID histórico que NO está en asgnIds del período,
-            // por eso no aparecen en cntAll. Los traemos aparte filtrando por store_id.
+            // Los flags se guardan con el assignment_id del "anchor" = primer assignment
+            // (order by id asc) de esa tienda+fecha. Ese anchor puede ser un ID de cualquier
+            // fecha histórica. Estrategia: traer TODOS los flags de las tiendas del período
+            // y luego resolver a qué tienda+fecha pertenece cada uno via cyclic_assignments.
             const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
             let allSessionFlags: CountRecord[] = [];
             for (let i = 0; i < uniqueStoreIds.length; i += 100) {
                 const { data: flagChunk } = await supabase
                     .from("cyclic_counts")
-                    .select("*")
+                    .select("assignment_id, store_id, location")
                     .in("store_id", uniqueStoreIds.slice(i, i + 100))
                     .in("location", ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as CountRecord[]);
+                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as any[]);
             }
 
-            // Para los flags, necesitamos saber a qué tienda+fecha corresponde cada uno.
-            // El anchor es el primer assignment (order by id asc) de esa tienda+fecha.
-            // Construimos un mapa: anchorId → { store_id, date }
-            // usando los assignments que ya tenemos del período + los que apuntan los flags.
-            const anchorToStoreDate = new Map<string, { store_id: string; date: string }>();
+            // Resolver anchorId → assigned_date para cada flag.
+            // Primero usamos los assignments del período (ya en memoria).
+            const anchorToDate = new Map<string, string>(); // anchorId → assigned_date
             for (const a of asgnData as any[]) {
-                // El anchor es el primero por ID de cada tienda+día — lo aproximamos usando asgnData
-                const key = `${a.store_id}__${a.assigned_date}`;
-                if (!anchorToStoreDate.has(a.id)) {
-                    anchorToStoreDate.set(a.id, { store_id: a.store_id, date: a.assigned_date });
-                }
+                anchorToDate.set(a.id, a.assigned_date);
             }
-            // También necesitamos resolver anchors que pueden ser IDs externos al período.
-            // Para eso, traemos el primer assignment de cada tienda+fecha desde los flags recibidos.
-            const externalAnchorIds = allSessionFlags
-                .map((f: any) => f.assignment_id)
-                .filter((id: string) => !anchorToStoreDate.has(id));
+            // Para anchors externos al período, consultamos cyclic_assignments.
+            const externalAnchorIds = [...new Set(
+                allSessionFlags.map((f: any) => f.assignment_id).filter((id: string) => !anchorToDate.has(id))
+            )];
             if (externalAnchorIds.length > 0) {
-                const uniqueExternal = [...new Set<string>(externalAnchorIds)];
-                for (let i = 0; i < uniqueExternal.length; i += 500) {
+                for (let i = 0; i < externalAnchorIds.length; i += 500) {
                     const { data: extAsgns } = await supabase
                         .from("cyclic_assignments")
-                        .select("id, store_id, assigned_date")
-                        .in("id", uniqueExternal.slice(i, i + 500));
-                    for (const a of extAsgns || []) {
-                        anchorToStoreDate.set(a.id, { store_id: a.store_id, date: a.assigned_date });
-                    }
+                        .select("id, assigned_date")
+                        .in("id", externalAnchorIds.slice(i, i + 500));
+                    for (const a of extAsgns || []) anchorToDate.set(a.id, a.assigned_date);
                 }
             }
 
-            // Filtrar flags al período consultado usando el mapa de anchor → tienda+fecha
-            allSessionFlags = allSessionFlags.filter((f: any) => {
-                const sd = anchorToStoreDate.get(f.assignment_id);
-                if (!sd) return false;
-                return sd.date >= dateFilter.from && sd.date <= dateFilter.to;
-            });
-
-            // Construir lookup: store_id+date → flags de sesión
+            // Construir lookup: "store_id__date" → Set<location> — solo para el período consultado
             const storeDateFlags = new Map<string, Set<string>>();
-            for (const f of allSessionFlags) {
-                const sd = anchorToStoreDate.get(f.assignment_id);
-                if (!sd) continue;
-                const k = `${sd.store_id}__${sd.date}`;
+            for (const f of allSessionFlags as any[]) {
+                const date = anchorToDate.get(f.assignment_id);
+                if (!date) continue;
+                if (date < dateFilter.from || date > dateFilter.to) continue; // fuera del período
+                const k = `${f.store_id}__${date}`;
                 if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
                 storeDateFlags.get(k)!.add(f.location);
             }
@@ -5370,8 +5354,7 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">Tienda</th>
-                                                        <th className="p-2 border">{dashPeriod === "dia" ? "Asignados" : "Asign. cumplidos"}</th>
-                                                        {dashPeriod !== "dia" && <th className="p-2 border">Asign. periodo</th>}
+                                                        <th className="p-2 border">Asignados</th>
                                                         <th className="p-2 border text-green-700">OK</th>
                                                         <th className="p-2 border text-blue-700">Sobrantes</th>
                                                         <th className="p-2 border text-red-600">Faltantes</th>
@@ -5408,7 +5391,6 @@ export default function DashboardPage() {
                                                                 ) : r.store_name}
                                                             </td>
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
-                                                            {dashPeriod !== "dia" && <td className="p-2 border text-center font-semibold text-slate-500">{r.total_asignados_periodo ?? r.total_asignados}</td>}
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
                                                             <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
                                                             <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
@@ -5419,11 +5401,17 @@ export default function DashboardPage() {
                                                                 <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
                                                             </td>
                                                             <td className="p-2 border text-center">
-                                                                <span className={`font-bold text-sm ${r.cumplimiento_pct >= 100 ? "text-green-700" : r.cumplimiento_pct >= 50 ? "text-amber-600" : "text-red-600"}`}>
-                                                                    {r.cumplimiento_pct}%
-                                                                </span>
-                                                                {dashPeriod !== "dia" && (
-                                                                    <div className="text-xs text-slate-400">{r.dias_cumplidos}/{r.dias_totales} días</div>
+                                                                {dashPeriod === "dia" ? (
+                                                                    <span className={`font-bold text-sm ${r.cumplio ? "text-green-700" : "text-red-600"}`}>
+                                                                        {r.cumplio ? "✓ Sí" : "✗ No"}
+                                                                    </span>
+                                                                ) : (
+                                                                    <>
+                                                                        <span className={`font-bold text-sm ${r.dias_cumplidos === r.dias_totales ? "text-green-700" : r.dias_cumplidos > 0 ? "text-amber-600" : "text-red-600"}`}>
+                                                                            {r.dias_cumplidos}/{r.dias_totales} días
+                                                                        </span>
+                                                                        <div className="text-xs text-slate-400">{r.cumplimiento_pct}%</div>
+                                                                    </>
                                                                 )}
                                                             </td>
                                                             {dashPeriod === "dia" && <>
