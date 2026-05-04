@@ -140,6 +140,16 @@ type StoreProgress = {
     pct: number;
 };
 
+type AllStoreAssignmentSummary = {
+    product_id: string;
+    sku: string;
+    description: string;
+    unit: string;
+    store_count: number;
+    assignment_count: number;
+    all_store_assignment_ids: string[];
+};
+
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
@@ -364,6 +374,8 @@ export default function DashboardPage() {
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
     const [assignBusy, setAssignBusy] = useState(false);
+    const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
+    const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
     const [bulkAssignFile, setBulkAssignFile] = useState<File|null>(null);
     const [bulkAssignFileName, setBulkAssignFileName] = useState("");
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
@@ -609,6 +621,11 @@ export default function DashboardPage() {
         if (valDate) sessionStorage.setItem("cyclic_val_date", valDate);
     }, [valDate]);
 
+    useEffect(() => {
+        if (activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
+        loadAllStoreAssignmentSummary(valDate);
+    }, [activeTab, valTab, valStoreId, valDate, stores]);
+
     // realtime para operario
     useEffect(() => {
         if (!selectedStoreId || user?.role !== "Operario") return;
@@ -631,6 +648,12 @@ export default function DashboardPage() {
     // realtime para validador: recarga cuando operario registra conteos
     useEffect(() => {
         if (!valStoreId || activeTab !== "validador") return;
+        if (valStoreId === ALL_STORES_VALUE) {
+            const ch = supabase.channel(`cyclic-validador-all-${valDate}`)
+                .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments" }, () => loadAllStoreAssignmentSummary(valDate))
+                .subscribe();
+            return () => { supabase.removeChannel(ch); };
+        }
         const ch = supabase.channel(`cyclic-validador-${valStoreId}-${valDate}`)
             .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
             .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
@@ -795,7 +818,9 @@ export default function DashboardPage() {
         if (user.role === "Administrador" || user.can_access_all_stores) {
             setStores(active);
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
-            if (savedValStore && active.some(s => s.id === savedValStore)) {
+            if (savedValStore === ALL_STORES_VALUE) {
+                setValStoreId(ALL_STORES_VALUE);
+            } else if (savedValStore && active.some(s => s.id === savedValStore)) {
                 setValStoreId(savedValStore);
             } else if (active.length > 0) {
                 setValStoreId(active[0].id);
@@ -909,6 +934,12 @@ export default function DashboardPage() {
 
     async function loadValidadorData(storeId: string, date: string) {
         if (!storeId) return;
+        if (storeId === ALL_STORES_VALUE) {
+            setAssignments([]);
+            setCounts([]);
+            await loadAllStoreAssignmentSummary(date);
+            return;
+        }
         const { data: asgn } = await supabase
             .from("cyclic_assignments")
             .select("*, cyclic_products(sku, barcode, description, unit, cost), stores(name)")
@@ -937,6 +968,80 @@ export default function DashboardPage() {
             return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
         });
         setCounts(enriched);
+    }
+
+    async function loadAllStoreAssignmentSummary(date: string) {
+        if (!date) return;
+        const targetStores = stores.filter(store => store.is_active);
+        const targetStoreIds = new Set(targetStores.map(store => store.id));
+        if (targetStoreIds.size === 0) { setAllStoreAssignmentSummary([]); return; }
+
+        setAllStoreSummaryLoading(true);
+        try {
+            const PAGE = 1000;
+            let rows: { id: string; store_id: string; product_id: string }[] = [];
+            let page = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id,store_id,product_id")
+                    .eq("assigned_date", date)
+                    .in("store_id", [...targetStoreIds])
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) throw error;
+                if (!data || data.length === 0) break;
+                rows = rows.concat(data as { id: string; store_id: string; product_id: string }[]);
+                if (data.length < PAGE) break;
+                page++;
+            }
+
+            if (rows.length === 0) { setAllStoreAssignmentSummary([]); return; }
+
+            const grouped = new Map<string, { storeIds: Set<string>; ids: string[] }>();
+            for (const row of rows) {
+                if (!grouped.has(row.product_id)) grouped.set(row.product_id, { storeIds: new Set(), ids: [] });
+                const entry = grouped.get(row.product_id)!;
+                entry.storeIds.add(row.store_id);
+                entry.ids.push(row.id);
+            }
+
+            const productIdsAssignedToAll = [...grouped.entries()]
+                .filter(([, entry]) => entry.storeIds.size === targetStoreIds.size)
+                .map(([productId]) => productId);
+
+            if (productIdsAssignedToAll.length === 0) { setAllStoreAssignmentSummary([]); return; }
+
+            let productRows: Product[] = [];
+            for (let i = 0; i < productIdsAssignedToAll.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_products")
+                    .select("id, sku, barcode, description, unit, cost, is_active")
+                    .in("id", productIdsAssignedToAll.slice(i, i + 500));
+                if (error) throw error;
+                productRows = productRows.concat((data || []) as Product[]);
+            }
+            const productMap = new Map(productRows.map(product => [product.id, product]));
+
+            const summary = productIdsAssignedToAll.map(productId => {
+                const product = productMap.get(productId);
+                const entry = grouped.get(productId)!;
+                return {
+                    product_id: productId,
+                    sku: product?.sku || productId,
+                    description: product?.description || "",
+                    unit: product?.unit || "",
+                    store_count: entry.storeIds.size,
+                    assignment_count: entry.ids.length,
+                    all_store_assignment_ids: entry.ids,
+                };
+            }).sort((a, b) => a.sku.localeCompare(b.sku));
+
+            setAllStoreAssignmentSummary(summary);
+        } catch (error: any) {
+            showMessage("Error cargando resumen de todas las tiendas: " + (error?.message || error), "error");
+        } finally {
+            setAllStoreSummaryLoading(false);
+        }
     }
 
     // ════════════════════════════════════════════════════════
@@ -1105,26 +1210,13 @@ export default function DashboardPage() {
             // Usamos store_id y rango de assigned_date para evitar el límite de Supabase con .in() de miles de IDs
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSet = new Set<string>(asgnIds);
-            const cntStoreIds = uniqueStoreIds; // ya calculado arriba
             let cntAll: CountRecord[] = [];
-            const CNT_STORE_CHUNK = 50;
-            const CNT_PAGE_SIZE = 1000;
-            for (let i = 0; i < cntStoreIds.length; i += CNT_STORE_CHUNK) {
-                const storeChunk = cntStoreIds.slice(i, i + CNT_STORE_CHUNK);
-                let cntPage = 0;
-                while (true) {
-                    const { data: cChunk } = await supabase
-                        .from("cyclic_counts")
-                        .select("*")
-                        .in("store_id", storeChunk)
-                        .gte("counted_at", dateFilter.from + "T00:00:00.000Z")
-                        .lte("counted_at", (() => { const d = new Date(dateFilter.to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
-                        .range(cntPage * CNT_PAGE_SIZE, (cntPage + 1) * CNT_PAGE_SIZE - 1);
-                    if (!cChunk || cChunk.length === 0) break;
-                    cntAll = cntAll.concat(cChunk as CountRecord[]);
-                    if (cChunk.length < CNT_PAGE_SIZE) break;
-                    cntPage++;
-                }
+            for (let i = 0; i < asgnIds.length; i += 500) {
+                const { data: cChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", asgnIds.slice(i, i + 500));
+                if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
             // Filtrar flags de sesión y solo los que pertenecen a assignments del período
             let allSessionFlags: CountRecord[] = [];
@@ -1227,7 +1319,7 @@ export default function DashboardPage() {
             if (dashPeriod === "dia") {
                 // Vista día: una fila por tienda, con hora inicio/fin/duración
                 for (const d of dayMetrics) {
-                    const eriExacto = d.cumplio && d.total > 0 ? Math.round((d.ok / d.total) * 100) : 0;
+                    const eriExacto = d.total > 0 ? Math.round((d.ok / d.total) * 100) : 0;
                     rows.push({
                         store_id: d.store_id,
                         store_name: d.store_name,
@@ -1261,17 +1353,16 @@ export default function DashboardPage() {
                 for (const [, days] of storeGroups) {
                     const first = days[0];
                     const diasTotales = days.length;
-                    const daysCumplieron = days.filter(d => d.cumplio);
-                    const diasCumplidos = daysCumplieron.length;
+                    const diasCumplidos = days.filter(d => d.cumplio).length;
                     const cumplimientoPct = diasTotales > 0 ? Math.round((diasCumplidos / diasTotales) * 100) : 0;
                     const totalAsignadosPeriodo = days.reduce((s, d) => s + d.total, 0);
-                    const totalAsignados  = daysCumplieron.reduce((s, d) => s + d.total, 0);
-                    const totalOk         = daysCumplieron.reduce((s, d) => s + d.ok, 0);
-                    const totalSobrantes  = daysCumplieron.reduce((s, d) => s + d.sobrantes, 0);
-                    const totalFaltantes  = daysCumplieron.reduce((s, d) => s + d.faltantes, 0);
-                    const totalNoContados = daysCumplieron.reduce((s, d) => s + d.noContados, 0);
-                    const difVal          = daysCumplieron.reduce((s, d) => s + d.difVal, 0);
-                    // ERI = OK / asignados de los días cumplidos.
+                    const totalAsignados  = totalAsignadosPeriodo;
+                    const totalOk         = days.reduce((s, d) => s + d.ok, 0);
+                    const totalSobrantes  = days.reduce((s, d) => s + d.sobrantes, 0);
+                    const totalFaltantes  = days.reduce((s, d) => s + d.faltantes, 0);
+                    const totalNoContados = days.reduce((s, d) => s + d.noContados, 0);
+                    const difVal          = days.reduce((s, d) => s + d.difVal, 0);
+                    // ERI = OK / asignados del periodo. Cumplimiento se calcula aparte.
                     const eriAgrupado = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
                     rows.push({
                         store_id: first.store_id,
@@ -2229,7 +2320,7 @@ export default function DashboardPage() {
             const skipped = (targetStores.length * cleanProducts.length) - inserted;
             showMessage(`✅ ${inserted} asignaciones creadas (${modeLabel}). ${skipped > 0 ? `${skipped} ya existian o fueron omitidas.` : ""}`, inserted > 0 ? "success" : "info");
             if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
-            else { setAssignments([]); setCounts([]); }
+            else { setAssignments([]); setCounts([]); loadAllStoreAssignmentSummary(valDate); }
         } catch (error: any) {
             showMessage("Error al asignar: " + (error?.message || error), "error");
         } finally {
@@ -2365,6 +2456,22 @@ export default function DashboardPage() {
         }
         showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
         loadValidadorData(valStoreId, valDate);
+    }
+
+    async function removeAllStoresProductAssignments(row: AllStoreAssignmentSummary) {
+        const ids = row.all_store_assignment_ids;
+        if (ids.length === 0) return;
+        if (!confirm(`Eliminar "${row.sku}" de todas las tiendas para ${valDate}? Tambien se eliminaran los conteos asociados.`)) return;
+
+        const CHUNK = 400;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+            const chunk = ids.slice(i, i + CHUNK);
+            await supabase.from("cyclic_counts").delete().in("assignment_id", chunk);
+            const { error } = await supabase.from("cyclic_assignments").delete().in("id", chunk);
+            if (error) { showMessage("Error eliminando asignaciones: " + error.message, "error"); return; }
+        }
+        showMessage(`El codigo ${row.sku} fue quitado de ${row.store_count} tiendas.`, "success");
+        loadAllStoreAssignmentSummary(valDate);
     }
 
     async function uploadBulkAssign() {
@@ -2621,6 +2728,7 @@ export default function DashboardPage() {
             showMessage("✅ " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacíos. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
+            if (valStoreId === ALL_STORES_VALUE) loadAllStoreAssignmentSummary(valDate);
 
             // ── PASO 10: Modal WhatsApp masivo ──────────────────────────
             if (insertOk > 0 || toUpdate.length > 0) {
@@ -3225,7 +3333,7 @@ export default function DashboardPage() {
             : `${dashRangeFrom} al ${dashRangeTo}`;
 
         // ── Métricas globales ──────────────────────────────
-        const emailKpiRows = filteredDashData.filter(r => dashPeriod === "dia" ? r.cumplio : r.dias_cumplidos > 0);
+        const emailKpiRows = filteredDashData;
         const filasConDatos = emailKpiRows.filter(r => r.total_asignados > 0);
         const okTotal       = filasConDatos.reduce((s, r) => s + r.total_ok, 0);
         const asigTotal     = filasConDatos.reduce((s, r) => s + r.total_asignados, 0);
@@ -3334,10 +3442,8 @@ export default function DashboardPage() {
                     if (completed) fulfilledDayKeys.add(key);
                 }
 
-                const fulfilledAsgnRows = asgnRows.filter((asgn: any) => fulfilledDayKeys.has(`${asgn.store_id}__${asgn.assigned_date}`));
-
                 const prodAgg = new Map<string, { store_id: string; store_name: string; sku: string; description: string; cost: number; systemStock: number; counted: number }>();
-                for (const asgn of fulfilledAsgnRows) {
+                for (const asgn of asgnRows) {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
                     const aggKey = `${asgn.store_id}__${asgn.product_id}`;
@@ -3820,25 +3926,13 @@ export default function DashboardPage() {
             // Traer counts por store_id + rango de fechas (evita límite de .in() con miles de IDs)
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSetExp = new Set<string>(asgnIds);
-            const EXP_CNT_STORE_CHUNK = 50;
-            const EXP_CNT_PAGE = 1000;
             let allCounts: CountRecord[] = [];
-            for (let i = 0; i < expStoreIds.length; i += EXP_CNT_STORE_CHUNK) {
-                const storeChunk = expStoreIds.slice(i, i + EXP_CNT_STORE_CHUNK);
-                let cntPage = 0;
-                while (true) {
-                    const { data: cData } = await supabase
-                        .from("cyclic_counts")
-                        .select("*")
-                        .in("store_id", storeChunk)
-                        .gte("counted_at", from + "T00:00:00.000Z")
-                        .lte("counted_at", (() => { const d = new Date(to + "T23:59:59.999Z"); d.setDate(d.getDate() + 1); return d.toISOString(); })())
-                        .range(cntPage * EXP_CNT_PAGE, (cntPage + 1) * EXP_CNT_PAGE - 1);
-                    if (!cData || cData.length === 0) break;
-                    allCounts = allCounts.concat(cData as CountRecord[]);
-                    if (cData.length < EXP_CNT_PAGE) break;
-                    cntPage++;
-                }
+            for (let i = 0; i < asgnIds.length; i += 500) {
+                const { data: cData } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", asgnIds.slice(i, i + 500));
+                if (cData) allCounts = allCounts.concat(cData as CountRecord[]);
             }
 
             const countMap = new Map<string, CountRecord[]>();
@@ -4016,7 +4110,7 @@ export default function DashboardPage() {
                 SOBRANTES: ds.sobrantes,
                 FALTANTES: ds.faltantes,
                 DIF_VALORIZADA: ds.difVal,
-                ERI_PCT: ds.asignados > 0 && ds.cumplio ? Math.round((ds.ok / ds.asignados) * 100) : 0,
+                ERI_PCT: ds.asignados > 0 ? Math.round((ds.ok / ds.asignados) * 100) : 0,
                 CUMPLIMIENTO: ds.cumplio ? "SI" : "NO",
                 HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "—",
                 HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "—",
@@ -4185,8 +4279,8 @@ export default function DashboardPage() {
     }, [dashData, dashStoreFilter]);
 
     const kpiDashData = useMemo(() => {
-        return filteredDashData.filter(r => dashPeriod === "dia" ? r.cumplio : r.dias_cumplidos > 0);
-    }, [filteredDashData, dashPeriod]);
+        return filteredDashData;
+    }, [filteredDashData]);
 
     const dashSummary = useMemo(() => {
         if (filteredDashData.length === 0) return null;
@@ -4228,7 +4322,7 @@ export default function DashboardPage() {
     const isValOrAdm = user?.role === "Validador" || isAdmin;
 
     return (
-        <main className="min-h-screen bg-slate-100 text-slate-900 flex">
+        <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
 
             {/* ══════════════════════════════════════════════════════
                 SIDEBAR — NAVEGACIÓN PRINCIPAL (tipo WMS)
@@ -4430,7 +4524,7 @@ export default function DashboardPage() {
             {/* ══════════════════════════════════════════════════════
                 CONTENIDO PRINCIPAL (desplazado por sidebar)
             ══════════════════════════════════════════════════════ */}
-            <div className="flex-1 flex flex-col min-h-screen md:ml-56">
+            <div className="flex-1 flex flex-col h-screen overflow-hidden md:ml-56">
 
                 {/* ── HEADER DE CONTEXTO ──────────────────────────── */}
                 <header className="bg-white border-b sticky top-0 z-30 px-3 md:px-6 py-3 flex items-center justify-between gap-3">
@@ -4542,7 +4636,7 @@ export default function DashboardPage() {
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className="flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6">
+                <div className="flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto">
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -5438,6 +5532,64 @@ export default function DashboardPage() {
                             </section>
 
                             {/* Lista asignados del día */}
+                            {valStoreId === ALL_STORES_VALUE && (
+                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                                        <div>
+                                            <h3 className="font-bold text-slate-900">Codigos asignados a todas las tiendas ({allStoreAssignmentSummary.length})</h3>
+                                            <p className="text-xs text-slate-500">Resumen de codigos que existen en todas las tiendas activas para {valDate}.</p>
+                                        </div>
+                                        <button
+                                            className="px-4 py-2 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition disabled:opacity-40"
+                                            onClick={() => loadAllStoreAssignmentSummary(valDate)}
+                                            disabled={allStoreSummaryLoading}
+                                        >
+                                            <RefreshCw size={14} className={`mr-1 inline ${allStoreSummaryLoading ? "animate-spin" : ""}`} /> Actualizar
+                                        </button>
+                                    </div>
+                                    {allStoreSummaryLoading ? (
+                                        <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resumen...</div>
+                                    ) : allStoreAssignmentSummary.length === 0 ? (
+                                        <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
+                                            No hay codigos asignados a todas las tiendas para esta fecha.
+                                        </div>
+                                    ) : (
+                                        <div className="border rounded-2xl overflow-hidden">
+                                            <div className="max-h-80 overflow-auto">
+                                                <table className="w-full text-sm">
+                                                    <thead className="bg-slate-100 sticky top-0">
+                                                        <tr>
+                                                            <th className="p-2 border text-left">SKU</th>
+                                                            <th className="p-2 border text-left">Descripcion</th>
+                                                            <th className="p-2 border">UM</th>
+                                                            <th className="p-2 border">Tiendas</th>
+                                                            <th className="p-2 border">Asignaciones</th>
+                                                            <th className="p-2 border">Accion</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {allStoreAssignmentSummary.map(row => (
+                                                            <tr key={row.product_id}>
+                                                                <td className="p-2 border font-medium">{row.sku}</td>
+                                                                <td className="p-2 border text-slate-600">{row.description}</td>
+                                                                <td className="p-2 border text-center">{row.unit}</td>
+                                                                <td className="p-2 border text-center font-semibold">{row.store_count}</td>
+                                                                <td className="p-2 border text-center">{row.assignment_count}</td>
+                                                                <td className="p-2 border text-center">
+                                                                    <button className="text-xs text-red-600 underline" onClick={() => removeAllStoresProductAssignments(row)}>
+                                                                        Quitar de todas
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    )}
+                                </section>
+                            )}
+
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
