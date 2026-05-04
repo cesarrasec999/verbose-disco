@@ -3377,12 +3377,14 @@ export default function DashboardPage() {
         const emailFilasQueComplieron = dashPeriod === "dia"
             ? emailKpiRows.filter(r => r.cumplio && r.total_asignados > 0)
             : emailKpiRows.filter(r => r.dias_cumplidos > 0 && r.total_asignados > 0);
-        const okTotal       = emailFilasQueComplieron.reduce((s, r) => s + r.total_ok, 0);
-        const asigTotal     = emailFilasQueComplieron.reduce((s, r) => s + r.total_asignados, 0);
-        const eriGlobal     = asigTotal > 0 ? Math.round((okTotal / asigTotal) * 100) : 0;
-        const totalDifVal   = emailFilasQueComplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
-        const totalFaltantes = emailFilasQueComplieron.reduce((s, r) => s + r.total_faltantes, 0);
-        const totalSobrantes = emailFilasQueComplieron.reduce((s, r) => s + r.total_sobrantes, 0);
+        const okTotal        = emailFilasQueComplieron.reduce((s, r) => s + r.total_ok, 0);
+        const sobTotal       = emailFilasQueComplieron.reduce((s, r) => s + r.total_sobrantes, 0);
+        const faltTotal      = emailFilasQueComplieron.reduce((s, r) => s + r.total_faltantes, 0);
+        const contadosTotal  = okTotal + sobTotal + faltTotal;
+        const eriGlobal      = contadosTotal > 0 ? Math.round((okTotal / contadosTotal) * 100) : 0;
+        const totalDifVal    = emailFilasQueComplieron.reduce((s, r) => s + (r.dif_valorizada || 0), 0);
+        const totalFaltantes = faltTotal;
+        const totalSobrantes = sobTotal;
 
         // ── Top 10 por código: consultar BD con el rango del período ──
         showMessage("⏳ Calculando top por código...", "info");
@@ -3969,8 +3971,9 @@ export default function DashboardPage() {
                 if (cData) allCounts = allCounts.concat(cData as CountRecord[]);
             }
 
+            const SESSION_FLAGS_EXP = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
             const countMap = new Map<string, CountRecord[]>();
-            for (const c of allCounts.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSetExp.has(c.assignment_id))) {
+            for (const c of allCounts.filter((c: any) => !SESSION_FLAGS_EXP.has(c.location) && asgnIdSetExp.has(c.assignment_id))) {
                 if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
                 countMap.get(c.assignment_id)!.push(c);
             }
@@ -4155,9 +4158,7 @@ export default function DashboardPage() {
             }));
 
             const ws = XLSX.utils.json_to_sheet(exportRows);
-            const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
             const wbk = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wbk, wsSummary, "Resumen Dashboard");
             XLSX.utils.book_append_sheet(wbk, ws, "Detalle Códigos");
             const fname = `ciclicos_global_${from}_${to}.xlsx`;
             XLSX.writeFile(wbk, fname);
