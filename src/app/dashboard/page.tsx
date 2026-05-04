@@ -3553,92 +3553,90 @@ export default function DashboardPage() {
             });
         }
 
-        // ── Gráfico ERI por tienda ──
-        const maxBar = 360;
-        const barH   = 24;
-        const gap    = 8;
-        const stores = [...emailFilasQueComplieron].sort((a, b) => a.eri - b.eri);
+        // ── Dimensiones base ──
+        // Los gráficos ERI y Cumplimiento van lado a lado → ancho reducido (260px cada uno)
+        // El gráfico Diferencia Valorizada va a ancho completo (560px)
+        const barH   = 20;
+        const gap    = 6;
+        const labelW = 120; // espacio para nombre de tienda
+
+        // ── SVG helper: barra simple (ERI / Cumplimiento) ──
+        const makeSingleBarSVG = (
+            rows: { name: string; pct: number; color: string }[],
+            svgWidth: number
+        ) => {
+            const barArea = svgWidth - labelW - 40; // espacio para barra + valor
+            const midLine = Math.round(barArea / 2);
+            const h = rows.length * (barH + gap) + 30;
+            const bars = rows.map((r, i) => {
+                const y = i * (barH + gap) + 20;
+                const w = Math.max(3, Math.round((r.pct / 100) * barArea));
+                const name = r.name.length > 16 ? r.name.slice(0, 14) + "…" : r.name;
+                return `<text x="0" y="${y + barH / 2 + 4}" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+              <rect x="${labelW}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${r.color}" opacity="0.85"/>
+              <text x="${labelW + w + 4}" y="${y + barH / 2 + 4}" font-size="9" fill="${r.color}" font-weight="bold" font-family="Arial,sans-serif">${r.pct}%</text>`;
+            }).join("\n");
+            return { svg: `<svg width="${svgWidth}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgWidth}" height="${h}" fill="#f8fafc"/>
+          <line x1="${labelW + midLine}" y1="0" x2="${labelW + midLine}" y2="${h}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3"/>
+          ${bars}
+        </svg>`, h };
+        };
+
+        // ── Gráfico ERI por tienda (solo tiendas que cumplieron) ──
+        const storesERI = [...emailFilasQueComplieron].sort((a, b) => a.eri - b.eri);
+        const eriRows   = storesERI.map(r => ({ name: r.store_name, pct: r.eri, color: eriColor(r.eri) }));
+        const svgSmallW = 260;
+        const { svg: svgERI, h: svgEriH } = makeSingleBarSVG(eriRows, svgSmallW);
+
+        // ── Gráfico Cumplimiento por tienda ──
         const complianceStores = [...filteredDashData].sort((a, b) => {
             const ap = dashPeriod === "dia" ? (a.cumplio ? 100 : 0) : a.cumplimiento_pct;
             const bp = dashPeriod === "dia" ? (b.cumplio ? 100 : 0) : b.cumplimiento_pct;
             return ap - bp;
         });
-        const svgW   = 560;
-        const svgH   = stores.length * (barH + gap) + 40;
-        const svgCumplH = complianceStores.length * (barH + gap) + 40;
-
-        const eriBarsInner = stores.map((r, i) => {
-            const y   = i * (barH + gap) + 24;
-            const w   = Math.max(4, Math.round((r.eri / 100) * maxBar));
-            const col = eriColor(r.eri);
-            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
-            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
-              <rect x="140" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
-              <text x="${140 + w + 5}" y="${y + barH / 2 + 5}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${r.eri}%</text>`;
-        }).join("\n");
-        const svgERI = `<svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
-          <rect width="${svgW}" height="${svgH}" fill="#f8fafc"/>
-          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-          <text x="140" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
-          <text x="320" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
-          <text x="500" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
-          <line x1="320" y1="16" x2="320" y2="${svgH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
-          ${eriBarsInner}
-        </svg>`;
-
-        const cumplBarsInner = complianceStores.map((r, i) => {
-            const y   = i * (barH + gap) + 24;
+        const cumplRows = complianceStores.map(r => {
             const pct = dashPeriod === "dia" ? (r.cumplio ? 100 : 0) : r.cumplimiento_pct;
-            const w   = Math.max(4, Math.round((pct / 100) * maxBar));
-            const col = pctColor(pct);
-            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
-            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
-              <rect x="140" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.85"/>
-              <text x="${140 + w + 5}" y="${y + barH / 2 + 5}" font-size="10" fill="${col}" font-weight="bold" font-family="Arial,sans-serif">${pct}%</text>`;
-        }).join("\n");
-        const svgCumpl = `<svg width="${svgW}" height="${svgCumplH}" xmlns="http://www.w3.org/2000/svg">
-          <rect width="${svgW}" height="${svgCumplH}" fill="#f8fafc"/>
-          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-          <text x="140" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
-          <text x="320" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
-          <text x="500" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
-          <line x1="320" y1="16" x2="320" y2="${svgCumplH}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4"/>
-          ${cumplBarsInner}
-        </svg>`;
+            return { name: r.store_name, pct, color: pctColor(pct) };
+        });
+        const { svg: svgCumpl, h: svgCumplH } = makeSingleBarSVG(cumplRows, svgSmallW);
 
+        // ── Gráfico Diferencia Valorizada (ancho completo, solo con diferencias) ──
+        const svgFullW  = 560;
         const storesDif = [...emailFilasQueComplieron]
             .filter(r => (r.dif_valorizada || 0) !== 0)
             .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
         const maxAbsDif = Math.max(...storesDif.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const svgDifH   = storesDif.length > 0 ? storesDif.length * (barH + gap) + 40 : 60;
+        const difBarArea = svgFullW - labelW - 50;
+        const svgDifH   = storesDif.length > 0 ? storesDif.length * (barH + gap) + 30 : 0;
         const difBarsInner = storesDif.map((r, i) => {
-            const y    = i * (barH + gap) + 24;
+            const y    = i * (barH + gap) + 20;
             const val  = r.dif_valorizada || 0;
-            const w    = Math.max(4, Math.round((Math.abs(val) / maxAbsDif) * (maxBar / 2)));
+            const w    = Math.max(3, Math.round((Math.abs(val) / maxAbsDif) * (difBarArea / 2)));
             const col  = difColor(val);
-            const cx   = 140 + maxBar / 2;
+            const cx   = labelW + Math.round(difBarArea / 2);
             const x    = val < 0 ? cx - w : cx;
-            const name = r.store_name.length > 20 ? r.store_name.slice(0, 18) + "…" : r.store_name;
+            const name = r.store_name.length > 16 ? r.store_name.slice(0, 14) + "…" : r.store_name;
             const label = `S/${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            return `<text x="0" y="${y + barH / 2 + 4}" font-size="10" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
+            return `<text x="0" y="${y + barH / 2 + 4}" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
               <rect x="${cx}" y="${y}" width="1" height="${barH}" fill="#cbd5e1"/>
-              <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.80"/>
-              <text x="${val < 0 ? cx - w - 4 : cx + w + 4}" y="${y + barH / 2 + 5}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
+              <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${col}" opacity="0.82"/>
+              <text x="${val < 0 ? cx - w - 3 : cx + w + 3}" y="${y + barH / 2 + 4}" font-size="8" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
         }).join("\n");
         const svgDif = storesDif.length > 0
-            ? `<svg width="${svgW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
-          <rect width="${svgW}" height="${svgDifH}" fill="#f8fafc"/>
-          <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
-          <text x="300" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">← Faltante · Sobrante →</text>
+            ? `<svg width="${svgFullW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
+          <rect width="${svgFullW}" height="${svgDifH}" fill="#f8fafc"/>
+          <text x="${labelW + Math.round(difBarArea / 4)}" y="14" font-size="8" fill="#dc2626" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
+          <text x="${labelW + Math.round(difBarArea * 3 / 4)}" y="14" font-size="8" fill="#2563eb" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
           ${difBarsInner}
         </svg>`
             : "";
 
-        // Convertir los 3 SVGs a PNG base64
+        // Convertir los SVGs a PNG base64
         const [pngERI, pngCumpl, pngDif] = await Promise.all([
-            svgToPng(svgERI,   svgW, svgH),
-            svgToPng(svgCumpl, svgW, svgCumplH),
-            svgDif ? svgToPng(svgDif, svgW, svgDifH) : Promise.resolve(""),
+            svgToPng(svgERI,  svgSmallW, svgEriH),
+            svgToPng(svgCumpl, svgSmallW, svgCumplH),
+            svgDif ? svgToPng(svgDif, svgFullW, svgDifH) : Promise.resolve(""),
         ]);
 
         // ── Tabla detalle por tienda ──
@@ -3651,14 +3649,14 @@ export default function DashboardPage() {
                 const cumplColor = r.cumplio || r.dias_cumplidos > 0 ? "#16a34a" : "#dc2626";
                 return `
                 <tr style="border-bottom:1px solid #f1f5f9;">
-                  <td style="padding:8px 12px;font-size:13px;font-weight:600;color:#1e293b;">${r.store_name}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#475569;">${r.total_asignados}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#16a34a;font-weight:700;">${r.total_ok}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:600;">${r.total_sobrantes}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:600;">${r.total_faltantes}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:${difColor(r.dif_valorizada)};font-weight:700;">${formatMoney(r.dif_valorizada)}</td>
-                  <td style="padding:8px;text-align:center;"><span style="background:${eriColor(r.eri)}22;color:${eriColor(r.eri)};font-weight:800;font-size:13px;padding:3px 10px;border-radius:20px;">${r.eri}%</span></td>
-                  <td style="padding:8px;text-align:center;font-size:13px;font-weight:700;color:${cumplColor};">${cumpl}</td>
+                  <td style="padding:6px 10px;font-size:11px;font-weight:600;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:6px;text-align:center;font-size:11px;color:#475569;">${r.total_asignados}</td>
+                  <td style="padding:6px;text-align:center;font-size:11px;color:#16a34a;font-weight:700;">${r.total_ok}</td>
+                  <td style="padding:6px;text-align:center;font-size:11px;color:#2563eb;font-weight:600;">${r.total_sobrantes}</td>
+                  <td style="padding:6px;text-align:center;font-size:11px;color:#dc2626;font-weight:600;">${r.total_faltantes}</td>
+                  <td style="padding:6px;text-align:center;font-size:11px;color:${difColor(r.dif_valorizada)};font-weight:700;">${formatMoney(r.dif_valorizada)}</td>
+                  <td style="padding:6px;text-align:center;"><span style="background:${eriColor(r.eri)}22;color:${eriColor(r.eri)};font-weight:800;font-size:11px;padding:2px 7px;border-radius:20px;">${r.eri}%</span></td>
+                  <td style="padding:6px;text-align:center;font-size:11px;font-weight:700;color:${cumplColor};">${cumpl}</td>
                 </tr>`;
             }).join("");
 
@@ -3667,11 +3665,11 @@ export default function DashboardPage() {
             ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el período</td></tr>`
             : topFaltantes.map(r => `
                 <tr style="border-bottom:1px solid #fef2f2;">
-                  <td style="padding:8px 10px;font-size:11px;font-weight:700;color:#1e293b;">${r.store_name}</td>
-                  <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
-                  <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:700;">${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#dc2626;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
+                  <td style="padding:5px 8px;font-size:10px;font-weight:700;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:5px;font-size:10px;font-weight:700;color:#1e293b;">${r.sku}</td>
+                  <td style="padding:5px;font-size:10px;color:#475569;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
+                  <td style="padding:5px;text-align:center;font-size:10px;color:#dc2626;font-weight:700;">${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style="padding:5px;text-align:center;font-size:10px;color:#dc2626;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
                 </tr>`).join("");
 
         // ── Tabla top sobrantes por código ──
@@ -3679,11 +3677,11 @@ export default function DashboardPage() {
             ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el período</td></tr>`
             : topSobrantes.map(r => `
                 <tr style="border-bottom:1px solid #eff6ff;">
-                  <td style="padding:8px 10px;font-size:11px;font-weight:700;color:#1e293b;">${r.store_name}</td>
-                  <td style="padding:8px 12px;font-size:12px;font-weight:700;color:#1e293b;">${r.sku}</td>
-                  <td style="padding:8px;font-size:11px;color:#475569;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:700;">+${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td style="padding:8px;text-align:center;font-size:13px;color:#2563eb;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
+                  <td style="padding:5px 8px;font-size:10px;font-weight:700;color:#1e293b;">${r.store_name}</td>
+                  <td style="padding:5px;font-size:10px;font-weight:700;color:#1e293b;">${r.sku}</td>
+                  <td style="padding:5px;font-size:10px;color:#475569;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.description}</td>
+                  <td style="padding:5px;text-align:center;font-size:10px;color:#2563eb;font-weight:700;">+${Number(r.totalDif).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style="padding:5px;text-align:center;font-size:10px;color:#2563eb;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
                 </tr>`).join("");
 
         const today = new Date().toLocaleDateString("es-PE", { day: "2-digit", month: "long", year: "numeric" });
@@ -3693,75 +3691,75 @@ export default function DashboardPage() {
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Informe Conteo Cíclico — ${periodoLabel}</title></head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
-<div style="max-width:700px;margin:32px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
+<div style="max-width:660px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
 
   <!-- HEADER -->
-  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%);padding:36px 40px 28px;">
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;">
-      <div style="background:linear-gradient(135deg,#1d4ed8,#1e3a5f);border-radius:12px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;">
-        <span style="color:white;font-size:22px;font-weight:900;line-height:1;">📦</span>
+  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%);padding:28px 32px 22px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <div style="background:rgba(255,255,255,0.12);border-radius:10px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <span style="color:white;font-size:20px;line-height:1;">📦</span>
       </div>
       <div>
-        <p style="margin:0;color:#93c5fd;font-weight:900;font-size:15px;letter-spacing:2px;">AUDITORÍA Y CONTROL DE INVENTARIOS</p>
-        <p style="margin:2px 0 0;color:#94a3b8;font-size:11px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
+        <p style="margin:0;color:#93c5fd;font-weight:900;font-size:13px;letter-spacing:1.5px;">AUDITORÍA Y CONTROL DE INVENTARIOS</p>
+        <p style="margin:2px 0 0;color:#64748b;font-size:10px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
       </div>
     </div>
-    <h1 style="margin:0 0 6px;color:#ffffff;font-size:24px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
-    <p style="margin:0;color:#93c5fd;font-size:14px;">Período: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
-    <p style="margin:6px 0 0;color:#64748b;font-size:12px;">Generado el ${today} · Área de Auditoría y Control de Inventarios</p>
+    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
+    <p style="margin:0;color:#93c5fd;font-size:13px;">Período: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
+    <p style="margin:5px 0 0;color:#475569;font-size:11px;">Generado el ${today} · Área de Auditoría y Control de Inventarios</p>
   </div>
 
   <!-- BODY -->
-  <div style="padding:32px 40px;">
+  <div style="padding:24px 32px;">
 
     <!-- Saludo -->
-    <p style="margin:0 0 24px;font-size:15px;color:#334155;line-height:1.6;">
-      Estimado equipo,<br><br>
-      A continuación presentamos el <strong>resumen ejecutivo del conteo cíclico</strong> correspondiente al período <strong>${periodoLabel}</strong>.
-      Les pedimos revisar estos resultados con sus equipos de tienda y tomar las acciones correctivas necesarias ante las diferencias identificadas.
+    <p style="margin:0 0 20px;font-size:13px;color:#334155;line-height:1.6;">
+      Estimado equipo,<br>
+      A continuación el <strong>resumen ejecutivo del conteo cíclico</strong> del período <strong>${periodoLabel}</strong>.
+      Revisar los resultados con los equipos de tienda y tomar acciones correctivas ante las diferencias identificadas.
     </p>
 
     <!-- KPIs globales -->
-    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #1d4ed8;padding-left:12px;">Resumen General de la Compañía</h2>
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+    <h2 style="margin:0 0 10px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #1d4ed8;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Resumen General</h2>
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
       <tr>
-        <td style="padding:4px;">
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:900;color:${eriColor(eriGlobal)};">${eriGlobal}%</div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">ERI GLOBAL</div>
-            <div style="font-size:10px;color:#94a3b8;">Exactitud registro inventario</div>
+        <td style="padding:3px;width:33%;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center;">
+            <div style="font-size:26px;font-weight:900;color:${eriColor(eriGlobal)};line-height:1;">${eriGlobal}%</div>
+            <div style="font-size:10px;color:#64748b;font-weight:700;margin-top:3px;">ERI GLOBAL</div>
+            <div style="font-size:9px;color:#94a3b8;">Exactitud inventario</div>
           </div>
         </td>
-        <td style="padding:4px;">
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
-            <div style="font-size:28px;font-weight:900;color:${pctColor(pctCumplimiento)};">${pctCumplimiento}%</div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">CUMPLIMIENTO</div>
-            <div style="font-size:10px;color:#94a3b8;">${cumplidos} de ${totalCumplimiento} ${cumplimientoUnidad}</div>
+        <td style="padding:3px;width:33%;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center;">
+            <div style="font-size:26px;font-weight:900;color:${pctColor(pctCumplimiento)};line-height:1;">${pctCumplimiento}%</div>
+            <div style="font-size:10px;color:#64748b;font-weight:700;margin-top:3px;">CUMPLIMIENTO</div>
+            <div style="font-size:9px;color:#94a3b8;">${cumplidos} de ${totalCumplimiento} ${cumplimientoUnidad}</div>
           </div>
         </td>
-        <td style="padding:4px;">
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;text-align:center;">
-            <div style="font-size:22px;font-weight:900;color:${difColor(totalDifVal)};">${formatMoney(totalDifVal)}</div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;margin-top:4px;">DIF. VALORIZADA</div>
-            <div style="font-size:10px;color:#94a3b8;">${totalFaltantes} faltantes · ${totalSobrantes} sobrantes</div>
+        <td style="padding:3px;width:34%;">
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center;">
+            <div style="font-size:17px;font-weight:900;color:${difColor(totalDifVal)};line-height:1;">${formatMoney(totalDifVal)}</div>
+            <div style="font-size:10px;color:#64748b;font-weight:700;margin-top:3px;">DIF. VALORIZADA</div>
+            <div style="font-size:9px;color:#94a3b8;">${totalFaltantes} falt. · ${totalSobrantes} sob.</div>
           </div>
         </td>
       </tr>
     </table>
 
     <!-- Gráficos ERI y Cumplimiento lado a lado -->
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
       <tr>
-        <td style="width:50%;padding-right:8px;vertical-align:top;">
-          <h2 style="margin:0 0 10px;font-size:15px;color:#0f172a;font-weight:800;border-left:4px solid #16a34a;padding-left:12px;">ERI por Tienda (%)</h2>
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;">
-            ${pngERI ? `<img src="${pngERI}" width="100%" style="max-width:100%;display:block;" alt="Gráfico ERI"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
+        <td style="width:50%;padding-right:6px;vertical-align:top;">
+          <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #16a34a;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ERI por Tienda (%)</h2>
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;overflow:hidden;">
+            ${pngERI ? `<img src="${pngERI}" width="100%" style="display:block;max-width:100%;" alt="ERI"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
           </div>
         </td>
-        <td style="width:50%;padding-left:8px;vertical-align:top;">
-          <h2 style="margin:0 0 10px;font-size:15px;color:#0f172a;font-weight:800;border-left:4px solid #7c3aed;padding-left:12px;">Cumplimiento por Tienda (%)</h2>
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;">
-            ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="max-width:100%;display:block;" alt="Gráfico Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
+        <td style="width:50%;padding-left:6px;vertical-align:top;">
+          <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #7c3aed;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Cumplimiento (%)</h2>
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;overflow:hidden;">
+            ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="display:block;max-width:100%;" alt="Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
           </div>
         </td>
       </tr>
@@ -3769,25 +3767,25 @@ export default function DashboardPage() {
 
     <!-- Gráfico Dif Valorizada (solo si hay diferencias) -->
     ${pngDif ? `
-    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #dc2626;padding-left:12px;">Diferencia Valorizada por Tienda (S/)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
-      <img src="${pngDif}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Diferencia Valorizada"/>
+    <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #dc2626;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Diferencia Valorizada por Tienda (S/)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;margin-bottom:20px;overflow:hidden;">
+      <img src="${pngDif}" width="100%" style="display:block;max-width:100%;" alt="Dif. Valorizada"/>
     </div>` : ""}
 
     <!-- Tabla resumen por tienda -->
-    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #0f172a;padding-left:12px;">Detalle por Tienda</h2>
-    <div style="border:1.5px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:28px;">
-      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+    <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #0f172a;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Detalle por Tienda</h2>
+    <div style="border:1.5px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:11px;">
         <thead>
           <tr style="background:#f1f5f9;">
-            <th style="padding:10px 12px;text-align:left;color:#475569;font-size:11px;font-weight:700;letter-spacing:.5px;">TIENDA</th>
-            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">ASIG.</th>
-            <th style="padding:10px 8px;text-align:center;color:#16a34a;font-size:11px;font-weight:700;">OK</th>
-            <th style="padding:10px 8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">SOB.</th>
-            <th style="padding:10px 8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">FALT.</th>
-            <th style="padding:10px 8px;text-align:center;color:#7c3aed;font-size:11px;font-weight:700;">DIF. VAL.</th>
-            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">ERI%</th>
-            <th style="padding:10px 8px;text-align:center;color:#475569;font-size:11px;font-weight:700;">CUMPL.</th>
+            <th style="padding:8px 10px;text-align:left;color:#475569;font-size:10px;font-weight:700;letter-spacing:.5px;">TIENDA</th>
+            <th style="padding:8px 6px;text-align:center;color:#475569;font-size:10px;font-weight:700;">ASIG.</th>
+            <th style="padding:8px 6px;text-align:center;color:#16a34a;font-size:10px;font-weight:700;">OK</th>
+            <th style="padding:8px 6px;text-align:center;color:#2563eb;font-size:10px;font-weight:700;">SOB.</th>
+            <th style="padding:8px 6px;text-align:center;color:#dc2626;font-size:10px;font-weight:700;">FALT.</th>
+            <th style="padding:8px 6px;text-align:center;color:#7c3aed;font-size:10px;font-weight:700;">DIF. VAL.</th>
+            <th style="padding:8px 6px;text-align:center;color:#475569;font-size:10px;font-weight:700;">ERI%</th>
+            <th style="padding:8px 6px;text-align:center;color:#475569;font-size:10px;font-weight:700;">CUMPL.</th>
           </tr>
         </thead>
         <tbody>${storeRows}</tbody>
@@ -3795,33 +3793,33 @@ export default function DashboardPage() {
     </div>
 
     <!-- Top faltantes y sobrantes -->
-    <table width="100%" cellpadding="0" cellspacing="8" style="margin-bottom:28px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
       <tr>
-        <td style="padding-right:8px;vertical-align:top;width:50%;">
-          <h2 style="margin:0 0 10px;font-size:15px;color:#dc2626;font-weight:800;border-left:4px solid #dc2626;padding-left:10px;">🔴 Top 10 Faltantes por Código</h2>
-          <div style="border:1.5px solid #fee2e2;border-radius:12px;overflow:hidden;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+        <td style="padding-right:6px;vertical-align:top;width:50%;">
+          <h2 style="margin:0 0 8px;font-size:12px;color:#dc2626;font-weight:800;border-left:3px solid #dc2626;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">🔴 Top 10 Faltantes</h2>
+          <div style="border:1.5px solid #fee2e2;border-radius:10px;overflow:hidden;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:10px;">
               <thead><tr style="background:#fef2f2;">
-                <th style="padding:8px 10px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">TIENDA</th>
-                <th style="padding:8px 12px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">SKU</th>
-                <th style="padding:8px;text-align:left;color:#dc2626;font-size:11px;font-weight:700;">DESCRIPCIÓN</th>
-                <th style="padding:8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">DIF.</th>
-                <th style="padding:8px;text-align:center;color:#dc2626;font-size:11px;font-weight:700;">S/ DIF.</th>
+                <th style="padding:6px 8px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">TIENDA</th>
+                <th style="padding:6px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">SKU</th>
+                <th style="padding:6px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">DESCRIPCIÓN</th>
+                <th style="padding:6px;text-align:center;color:#dc2626;font-size:9px;font-weight:700;">DIF.</th>
+                <th style="padding:6px;text-align:center;color:#dc2626;font-size:9px;font-weight:700;">S/</th>
               </tr></thead>
               <tbody>${faltantesRows}</tbody>
             </table>
           </div>
         </td>
-        <td style="padding-left:8px;vertical-align:top;width:50%;">
-          <h2 style="margin:0 0 10px;font-size:15px;color:#2563eb;font-weight:800;border-left:4px solid #2563eb;padding-left:10px;">🔵 Top 10 Sobrantes por Código</h2>
-          <div style="border:1.5px solid #dbeafe;border-radius:12px;overflow:hidden;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+        <td style="padding-left:6px;vertical-align:top;width:50%;">
+          <h2 style="margin:0 0 8px;font-size:12px;color:#2563eb;font-weight:800;border-left:3px solid #2563eb;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">🔵 Top 10 Sobrantes</h2>
+          <div style="border:1.5px solid #dbeafe;border-radius:10px;overflow:hidden;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:10px;">
               <thead><tr style="background:#eff6ff;">
-                <th style="padding:8px 10px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">TIENDA</th>
-                <th style="padding:8px 12px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">SKU</th>
-                <th style="padding:8px;text-align:left;color:#2563eb;font-size:11px;font-weight:700;">DESCRIPCIÓN</th>
-                <th style="padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">DIF.</th>
-                <th style="padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:700;">S/ DIF.</th>
+                <th style="padding:6px 8px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">TIENDA</th>
+                <th style="padding:6px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">SKU</th>
+                <th style="padding:6px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">DESCRIPCIÓN</th>
+                <th style="padding:6px;text-align:center;color:#2563eb;font-size:9px;font-weight:700;">DIF.</th>
+                <th style="padding:6px;text-align:center;color:#2563eb;font-size:9px;font-weight:700;">S/</th>
               </tr></thead>
               <tbody>${sobrantesRows}</tbody>
             </table>
@@ -3831,33 +3829,30 @@ export default function DashboardPage() {
     </table>
 
     <!-- Mensaje de acción -->
-    <div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:12px;padding:16px 20px;margin-bottom:28px;">
-      <p style="margin:0;font-size:13px;color:#92400e;line-height:1.7;">
+    <div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;padding:12px 16px;margin-bottom:20px;">
+      <p style="margin:0;font-size:11px;color:#92400e;line-height:1.7;">
         <strong>📋 Acciones requeridas:</strong><br>
         • Revisar con los jefes de tienda las diferencias de faltantes más significativas.<br>
-        • Verificar ubicaciones y procesos de conteo en las tiendas con ERI menor al 80%.<br>
-        • Las tiendas que no cumplieron deben reprogramar el conteo a la brevedad.<br>
-        • Para mayor detalle por código, consultar el módulo de <em>Resumen por código</em> en el sistema de Cíclicos.
+        • Verificar ubicaciones en tiendas con ERI menor al 80%.<br>
+        • Tiendas que no cumplieron deben reprogramar el conteo a la brevedad.
       </p>
     </div>
 
     <!-- Firma -->
-    <div style="border-top:1.5px solid #e2e8f0;padding-top:20px;">
-      <p style="margin:0;font-size:13px;color:#475569;line-height:1.8;">
+    <div style="border-top:1.5px solid #e2e8f0;padding-top:16px;">
+      <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;">
         Atentamente,<br>
         <strong style="color:#0f172a;">Analista de Inventarios</strong><br>
-        <span style="color:#475569;font-size:12px;">Área de Auditoría y Control de Inventarios</span><br>
-        <span style="color:#94a3b8;font-size:12px;">${today}</span>
+        <span style="color:#94a3b8;font-size:11px;">Área de Auditoría y Control de Inventarios · ${today}</span>
       </p>
     </div>
 
   </div>
 
   <!-- FOOTER -->
-  <div style="background:#f8fafc;border-top:1.5px solid #e2e8f0;padding:16px 40px;text-align:center;">
-    <p style="margin:0;font-size:11px;color:#94a3b8;">
-      Este correo fue generado automáticamente por el Sistema de Conteo Cíclico.<br>
-      Para consultas, comunicarse con el Área de Auditoría y Control de Inventarios.
+  <div style="background:#f8fafc;border-top:1.5px solid #e2e8f0;padding:12px 32px;text-align:center;">
+    <p style="margin:0;font-size:10px;color:#94a3b8;">
+      Generado automáticamente por el Sistema de Conteo Cíclico · Área de Auditoría y Control de Inventarios
     </p>
   </div>
 
