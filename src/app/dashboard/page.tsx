@@ -3606,9 +3606,11 @@ export default function DashboardPage() {
           ${cumplBarsInner}
         </svg>`;
 
-        const maxAbsDif = Math.max(...emailFilasQueComplieron.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const storesDif = [...emailFilasQueComplieron].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
-        const svgDifH   = storesDif.length * (barH + gap) + 40;
+        const storesDif = [...emailFilasQueComplieron]
+            .filter(r => (r.dif_valorizada || 0) !== 0)
+            .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
+        const maxAbsDif = Math.max(...storesDif.map(r => Math.abs(r.dif_valorizada || 0)), 1);
+        const svgDifH   = storesDif.length > 0 ? storesDif.length * (barH + gap) + 40 : 60;
         const difBarsInner = storesDif.map((r, i) => {
             const y    = i * (barH + gap) + 24;
             const val  = r.dif_valorizada || 0;
@@ -3623,18 +3625,20 @@ export default function DashboardPage() {
               <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${col}" opacity="0.80"/>
               <text x="${val < 0 ? cx - w - 4 : cx + w + 4}" y="${y + barH / 2 + 5}" font-size="9" fill="${col}" font-weight="bold" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
         }).join("\n");
-        const svgDif = `<svg width="${svgW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
+        const svgDif = storesDif.length > 0
+            ? `<svg width="${svgW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
           <rect width="${svgW}" height="${svgDifH}" fill="#f8fafc"/>
           <text x="0" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">TIENDA</text>
           <text x="300" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">← Faltante · Sobrante →</text>
           ${difBarsInner}
-        </svg>`;
+        </svg>`
+            : "";
 
         // Convertir los 3 SVGs a PNG base64
         const [pngERI, pngCumpl, pngDif] = await Promise.all([
             svgToPng(svgERI,   svgW, svgH),
             svgToPng(svgCumpl, svgW, svgCumplH),
-            svgToPng(svgDif,   svgW, svgDifH),
+            svgDif ? svgToPng(svgDif, svgW, svgDifH) : Promise.resolve(""),
         ]);
 
         // ── Tabla detalle por tienda ──
@@ -3745,23 +3749,30 @@ export default function DashboardPage() {
       </tr>
     </table>
 
-    <!-- Gráfico ERI por tienda -->
-    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #16a34a;padding-left:12px;">ERI por Tienda (%)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
-      ${pngERI ? `<img src="${pngERI}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico ERI"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
-    </div>
+    <!-- Gráficos ERI y Cumplimiento lado a lado -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td style="width:50%;padding-right:8px;vertical-align:top;">
+          <h2 style="margin:0 0 10px;font-size:15px;color:#0f172a;font-weight:800;border-left:4px solid #16a34a;padding-left:12px;">ERI por Tienda (%)</h2>
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;">
+            ${pngERI ? `<img src="${pngERI}" width="100%" style="max-width:100%;display:block;" alt="Gráfico ERI"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
+          </div>
+        </td>
+        <td style="width:50%;padding-left:8px;vertical-align:top;">
+          <h2 style="margin:0 0 10px;font-size:15px;color:#0f172a;font-weight:800;border-left:4px solid #7c3aed;padding-left:12px;">Cumplimiento por Tienda (%)</h2>
+          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;">
+            ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="max-width:100%;display:block;" alt="Gráfico Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
+          </div>
+        </td>
+      </tr>
+    </table>
 
-    <!-- Gráfico Cumplimiento por tienda -->
-    <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #7c3aed;padding-left:12px;">Cumplimiento por Tienda (%)</h2>
-    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
-      ${pngCumpl ? `<img src="${pngCumpl}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
-    </div>
-
-    <!-- Gráfico Dif Valorizada -->
+    <!-- Gráfico Dif Valorizada (solo si hay diferencias) -->
+    ${pngDif ? `
     <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #dc2626;padding-left:12px;">Diferencia Valorizada por Tienda (S/)</h2>
     <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:28px;">
-      ${pngDif ? `<img src="${pngDif}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Diferencia Valorizada"/>` : "<p style='color:#94a3b8;font-size:13px;'>Sin datos</p>"}
-    </div>
+      <img src="${pngDif}" width="${svgW}" style="max-width:100%;display:block;" alt="Gráfico Diferencia Valorizada"/>
+    </div>` : ""}
 
     <!-- Tabla resumen por tienda -->
     <h2 style="margin:0 0 14px;font-size:16px;color:#0f172a;font-weight:800;border-left:4px solid #0f172a;padding-left:12px;">Detalle por Tienda</h2>
