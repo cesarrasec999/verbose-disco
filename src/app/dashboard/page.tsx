@@ -763,15 +763,19 @@ export default function DashboardPage() {
     }
 
     async function setSessionFlag(storeId: string, date: string, flag: "__session_counting__" | "__session_finished__" | "__recount_started__" | "__recount_done__", active: boolean) {
-        const anchorId = await getSessionAnchor(storeId, date);
-        if (!anchorId) return;
+        const { data: asgns } = await supabase
+            .from("cyclic_assignments").select("id, product_id")
+            .eq("store_id", storeId).eq("assigned_date", date)
+            .order("id").limit(1);
+        if (!asgns || asgns.length === 0) return;
+        const anchorId = asgns[0].id;
+        const anchorProductId = asgns[0].product_id; // product_id real del assignment anchor
         if (active) {
-            // Upsert seguro: borrar primero y reinsertar para evitar duplicados
             await supabase.from("cyclic_counts").delete().eq("assignment_id", anchorId).eq("location", flag);
             await supabase.from("cyclic_counts").insert({
                 assignment_id: anchorId,
                 store_id: storeId,
-                product_id: anchorId, // dummy
+                product_id: anchorProductId, // usar product_id real para respetar FK
                 counted_quantity: 0,
                 location: flag,
                 status: "Pendiente",
@@ -1218,56 +1222,23 @@ export default function DashboardPage() {
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
 
-            // ── Paso 3b: traer flags de sesión ──────────────────────────────────
-            // Los flags se guardan con el "anchor" = primer assignment_id (order asc por id)
-            // de esa tienda+fecha. Calculamos el anchor consultando cyclic_assignments
-            // agrupado por tienda+fecha para el período.
+            // ── Paso 3b: separar flags de conteos reales y construir storeDateFlags ──
             const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
 
-            // Mapa: anchorId → { store_id, date }
-            const anchorMeta = new Map<string, { store_id: string; date: string }>();
-
-            // Para cada tienda, traer el primer assignment de cada fecha del período.
-            // Agrupamos por tienda para hacer una sola query por tienda (no por tienda+día).
-            for (let i = 0; i < uniqueStoreIds.length; i += 50) {
-                const storesBatch = uniqueStoreIds.slice(i, i + 50);
-                const { data: anchors } = await supabase
-                    .from("cyclic_assignments")
-                    .select("id, store_id, assigned_date")
-                    .in("store_id", storesBatch)
-                    .gte("assigned_date", dateFilter.from)
-                    .lte("assigned_date", dateFilter.to)
-                    .order("store_id")
-                    .order("assigned_date")
-                    .order("id"); // order by id asc = mismo orden que getSessionAnchor
-                if (!anchors) continue;
-                // Tomar solo el primero por store_id+assigned_date (el anchor real)
-                const seen = new Set<string>();
-                for (const a of anchors) {
-                    const k = `${a.store_id}__${a.assigned_date}`;
-                    if (!seen.has(k)) {
-                        seen.add(k);
-                        anchorMeta.set(a.id, { store_id: a.store_id, date: a.assigned_date });
-                    }
-                }
+            // Resolver anchorId → { store_id, date } usando asgnData del período
+            const anchorToMeta = new Map<string, { store_id: string; date: string }>();
+            for (const a of asgnData as any[]) {
+                anchorToMeta.set(a.id, { store_id: a.store_id, date: a.assigned_date });
             }
-
-            // Buscar flags usando los anchor IDs reales del período
+            // Flags que sí están en cntAll (cuando el bug esté corregido, estarán aquí)
             const storeDateFlags = new Map<string, Set<string>>();
-            const uniqueAnchorIds = [...anchorMeta.keys()];
-            for (let i = 0; i < uniqueAnchorIds.length; i += 500) {
-                const { data: flagChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", uniqueAnchorIds.slice(i, i + 500))
-                    .in("location", ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-                for (const f of flagChunk || []) {
-                    const meta = anchorMeta.get(f.assignment_id);
-                    if (!meta) continue;
-                    const k = `${meta.store_id}__${meta.date}`;
-                    if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
-                    storeDateFlags.get(k)!.add(f.location);
-                }
+            for (const c of cntAll as any[]) {
+                if (!SESSION_FLAG_VALUES.has(c.location)) continue;
+                const meta = anchorToMeta.get(c.assignment_id);
+                if (!meta) continue;
+                const k = `${meta.store_id}__${meta.date}`;
+                if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
+                storeDateFlags.get(k)!.add(c.location);
             }
 
             const counts = cntAll.filter(
@@ -1312,14 +1283,22 @@ export default function DashboardPage() {
             const dayMetrics: DayMetrics[] = [];
 
             for (const [, g] of dayGroups) {
-                const prodMap = new Map<string, { system_stock: number; total_counted: number }>();
-                // Usar storeDateFlags (store_id+date → set de locations) para lookup O(1)
                 const groupKey = `${g.store_id}__${g.date}`;
                 const flagsForGroup = storeDateFlags.get(groupKey) || new Set<string>();
-                const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
-                const terminoConteo = flagsForGroup.has("__session_finished__");
+
+                // Para cada assignment del día, ¿tiene al menos un conteo real?
+                const countedAsgIds = new Set(g.cnts.map((c: any) => c.assignment_id));
+
+                // Agrupar por product_id para calcular totales (puede haber >1 assignment por producto)
+                const prodMap = new Map<string, { system_stock: number; total_counted: number; contado: boolean }>();
                 for (const a of g.asgns) {
-                    if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
+                    if (!prodMap.has(a.product_id)) {
+                        prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0, contado: false });
+                    }
+                    // Si cualquier assignment de este producto fue contado, el producto cumplió
+                    if (countedAsgIds.has(a.id)) {
+                        prodMap.get(a.product_id)!.contado = true;
+                    }
                 }
                 for (const c of g.cnts) {
                     const asgn = asgnById.get(c.assignment_id);
@@ -1327,13 +1306,10 @@ export default function DashboardPage() {
                     const entry = prodMap.get(asgn.product_id);
                     if (entry) entry.total_counted += Number(c.counted_quantity);
                 }
-                const countedPids = new Set(g.cnts.map(c => {
-                    const a = asgnById.get(c.assignment_id);
-                    return a?.product_id;
-                }));
+
                 let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
-                for (const [pid, entry] of prodMap) {
-                    if (!countedPids.has(pid)) { noContados++; faltantes++; continue; }
+                for (const [, entry] of prodMap) {
+                    if (!entry.contado) { noContados++; faltantes++; continue; }
                     const diff = entry.total_counted - entry.system_stock;
                     if (diff === 0) ok++;
                     else if (diff > 0) sobrantes++;
@@ -1341,10 +1317,10 @@ export default function DashboardPage() {
                 }
                 const total = prodMap.size;
                 const eri = total > 0 ? Math.round((ok / total) * 100) : 0;
-                // Dif. valorizada: usar costo del assignment o del producto maestro
+
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
-                    if (countedPids.has(pid)) {
+                    if (entry.contado) {
                         const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
                         const costo = parseCost(asgForPid?.cyclic_products?.cost);
                         const diff = r2(entry.total_counted - entry.system_stock);
@@ -1352,14 +1328,16 @@ export default function DashboardPage() {
                     }
                 }
 
-                // Duración: desde el primer hasta el último código registrado (solo counted_at)
-                const timestamps = g.cnts.map(c => new Date(c.counted_at).getTime()).filter(t => !isNaN(t));
+                const timestamps = g.cnts.map((c: any) => new Date(c.counted_at).getTime()).filter((t: number) => !isNaN(t));
                 const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
                 const horaFin = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
-                // Cumplió = hizo reconteo completo, O terminó sesión sin productos sin contar.
-                // Sobrantes/Faltantes son diferencias válidas, no impiden el cumplimiento.
-                const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0);
+
+                // REGLA DE CUMPLIMIENTO:
+                // 1. Principal: presionó "Finalizar Reconteo" (__recount_done__ flag en BD)
+                // 2. Fallback para datos históricos antes del fix del bug: contó todos los productos
+                const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
+                const cumplio = cumplioPorReconteo || (noContados === 0 && total > 0);
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
