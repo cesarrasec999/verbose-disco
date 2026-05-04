@@ -1218,51 +1218,56 @@ export default function DashboardPage() {
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
 
-            // ── Paso 3b: traer flags de sesión por store_id + rango de fechas ──
-            // Los flags se guardan con el assignment_id del "anchor" = primer assignment
-            // (order by id asc) de esa tienda+fecha. Ese anchor puede ser un ID de cualquier
-            // fecha histórica. Estrategia: traer TODOS los flags de las tiendas del período
-            // y luego resolver a qué tienda+fecha pertenece cada uno via cyclic_assignments.
+            // ── Paso 3b: traer flags de sesión ──────────────────────────────────
+            // Los flags se guardan con el "anchor" = primer assignment_id (order asc por id)
+            // de esa tienda+fecha. Calculamos el anchor consultando cyclic_assignments
+            // agrupado por tienda+fecha para el período.
             const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-            let allSessionFlags: CountRecord[] = [];
-            for (let i = 0; i < uniqueStoreIds.length; i += 100) {
-                const { data: flagChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, store_id, location")
-                    .in("store_id", uniqueStoreIds.slice(i, i + 100))
-                    .in("location", ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as any[]);
-            }
 
-            // Resolver anchorId → assigned_date para cada flag.
-            // Primero usamos los assignments del período (ya en memoria).
-            const anchorToDate = new Map<string, string>(); // anchorId → assigned_date
-            for (const a of asgnData as any[]) {
-                anchorToDate.set(a.id, a.assigned_date);
-            }
-            // Para anchors externos al período, consultamos cyclic_assignments.
-            const externalAnchorIds = [...new Set(
-                allSessionFlags.map((f: any) => f.assignment_id).filter((id: string) => !anchorToDate.has(id))
-            )];
-            if (externalAnchorIds.length > 0) {
-                for (let i = 0; i < externalAnchorIds.length; i += 500) {
-                    const { data: extAsgns } = await supabase
-                        .from("cyclic_assignments")
-                        .select("id, assigned_date")
-                        .in("id", externalAnchorIds.slice(i, i + 500));
-                    for (const a of extAsgns || []) anchorToDate.set(a.id, a.assigned_date);
+            // Mapa: anchorId → { store_id, date }
+            const anchorMeta = new Map<string, { store_id: string; date: string }>();
+
+            // Para cada tienda, traer el primer assignment de cada fecha del período.
+            // Agrupamos por tienda para hacer una sola query por tienda (no por tienda+día).
+            for (let i = 0; i < uniqueStoreIds.length; i += 50) {
+                const storesBatch = uniqueStoreIds.slice(i, i + 50);
+                const { data: anchors } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id, assigned_date")
+                    .in("store_id", storesBatch)
+                    .gte("assigned_date", dateFilter.from)
+                    .lte("assigned_date", dateFilter.to)
+                    .order("store_id")
+                    .order("assigned_date")
+                    .order("id"); // order by id asc = mismo orden que getSessionAnchor
+                if (!anchors) continue;
+                // Tomar solo el primero por store_id+assigned_date (el anchor real)
+                const seen = new Set<string>();
+                for (const a of anchors) {
+                    const k = `${a.store_id}__${a.assigned_date}`;
+                    if (!seen.has(k)) {
+                        seen.add(k);
+                        anchorMeta.set(a.id, { store_id: a.store_id, date: a.assigned_date });
+                    }
                 }
             }
 
-            // Construir lookup: "store_id__date" → Set<location> — solo para el período consultado
+            // Buscar flags usando los anchor IDs reales del período
             const storeDateFlags = new Map<string, Set<string>>();
-            for (const f of allSessionFlags as any[]) {
-                const date = anchorToDate.get(f.assignment_id);
-                if (!date) continue;
-                if (date < dateFilter.from || date > dateFilter.to) continue; // fuera del período
-                const k = `${f.store_id}__${date}`;
-                if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
-                storeDateFlags.get(k)!.add(f.location);
+            const uniqueAnchorIds = [...anchorMeta.keys()];
+            for (let i = 0; i < uniqueAnchorIds.length; i += 500) {
+                const { data: flagChunk } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", uniqueAnchorIds.slice(i, i + 500))
+                    .in("location", ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
+                for (const f of flagChunk || []) {
+                    const meta = anchorMeta.get(f.assignment_id);
+                    if (!meta) continue;
+                    const k = `${meta.store_id}__${meta.date}`;
+                    if (!storeDateFlags.has(k)) storeDateFlags.set(k, new Set());
+                    storeDateFlags.get(k)!.add(f.location);
+                }
             }
 
             const counts = cntAll.filter(
