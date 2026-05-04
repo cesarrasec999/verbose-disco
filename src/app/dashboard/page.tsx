@@ -1218,20 +1218,18 @@ export default function DashboardPage() {
                     .in("assignment_id", asgnIds.slice(i, i + 500));
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
-            // Filtrar flags de sesión y solo los que pertenecen a assignments del período
-            // Usamos .in() con los valores exactos para evitar problemas con el wildcard _ en SQL LIKE
-            // y para capturar también __recount_done__ y __recount_started__ que no empiezan con __session_
-            const SESSION_FLAG_VALUES = ["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"];
-            let allSessionFlags: CountRecord[] = [];
-            for (let i = 0; i < asgnIds.length; i += 500) {
-                const { data: flagChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", asgnIds.slice(i, i + 500))
-                    .in("location", SESSION_FLAG_VALUES);
-                if (flagChunk) allSessionFlags = allSessionFlags.concat(flagChunk as CountRecord[]);
-            }
-            const counts = cntAll.filter((c: any) => !c.location?.startsWith("__session_") && asgnIdSet.has(c.assignment_id));
+            // Separar flags de sesión de los conteos reales.
+            // SESSION_FLAG_VALUES cubre TODOS los valores especiales (incluyendo __recount_done__ y
+            // __recount_started__ que NO empiezan con "__session_", por eso no alcanza con startsWith).
+            const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
+            // cntAll ya contiene todo — extraemos flags y conteos reales de ahí directamente,
+            // evitando una segunda query a Supabase y garantizando que no falte ningún flag.
+            const allSessionFlags: CountRecord[] = cntAll.filter(
+                (c: any) => SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
+            );
+            const counts = cntAll.filter(
+                (c: any) => !SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
+            );
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -1270,10 +1268,14 @@ export default function DashboardPage() {
             type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; difVal: number; };
             const dayMetrics: DayMetrics[] = [];
 
+            // Pre-construir Sets de assignment_ids por tipo de flag para lookups O(1) en vez de O(n²)
+            const flagRecountDoneIds = new Set(allSessionFlags.filter((c: any) => c.location === "__recount_done__").map((c: any) => c.assignment_id));
+            const flagSessionFinishedIds = new Set(allSessionFlags.filter((c: any) => c.location === "__session_finished__").map((c: any) => c.assignment_id));
+
             for (const [, g] of dayGroups) {
                 const prodMap = new Map<string, { system_stock: number; total_counted: number }>();
-                const cumplioPorReconteo = allSessionFlags.some((c: any) => c.location === "__recount_done__" && g.asgns.some((a: any) => a.id === c.assignment_id));
-                const terminoConteo = allSessionFlags.some((c: any) => c.location === "__session_finished__" && g.asgns.some((a: any) => a.id === c.assignment_id));
+                const cumplioPorReconteo = g.asgns.some((a: any) => flagRecountDoneIds.has(a.id));
+                const terminoConteo = g.asgns.some((a: any) => flagSessionFinishedIds.has(a.id));
                 for (const a of g.asgns) {
                     if (!prodMap.has(a.product_id)) prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0 });
                 }
