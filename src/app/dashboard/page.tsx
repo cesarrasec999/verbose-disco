@@ -1309,14 +1309,16 @@ export default function DashboardPage() {
 
                 let ok = 0, sobrantes = 0, faltantes = 0, noContados = 0;
                 for (const [, entry] of prodMap) {
-                    if (!entry.contado) { noContados++; faltantes++; continue; }
+                    if (!entry.contado) { noContados++; continue; }
                     const diff = entry.total_counted - entry.system_stock;
                     if (diff === 0) ok++;
                     else if (diff > 0) sobrantes++;
                     else faltantes++;
                 }
                 const total = prodMap.size;
-                const eri = total > 0 ? Math.round((ok / total) * 100) : 0;
+                // ERI se calcula solo sobre los contados (ok + sobrantes + faltantes)
+                const totalContados = ok + sobrantes + faltantes;
+                const eri = totalContados > 0 ? Math.round((ok / totalContados) * 100) : 0;
 
                 let difValDay = 0;
                 for (const [pid, entry] of prodMap) {
@@ -1346,7 +1348,7 @@ export default function DashboardPage() {
             if (dashPeriod === "dia") {
                 // Vista día: una fila por tienda, con hora inicio/fin/duración
                 for (const d of dayMetrics) {
-                    const eriExacto = d.total > 0 ? Math.round((d.ok / d.total) * 100) : 0;
+                    const eriExacto = (d.ok + d.sobrantes + d.faltantes) > 0 ? Math.round((d.ok / (d.ok + d.sobrantes + d.faltantes)) * 100) : 0;
                     rows.push({
                         store_id: d.store_id,
                         store_name: d.store_name,
@@ -1389,8 +1391,9 @@ export default function DashboardPage() {
                     const totalFaltantes  = days.reduce((s, d) => s + d.faltantes, 0);
                     const totalNoContados = days.reduce((s, d) => s + d.noContados, 0);
                     const difVal          = days.reduce((s, d) => s + d.difVal, 0);
-                    // ERI = OK / asignados del periodo. Cumplimiento se calcula aparte.
-                    const eriAgrupado = totalAsignados > 0 ? Math.round((totalOk / totalAsignados) * 100) : 0;
+                    // ERI = OK / contados (ok+sobrantes+faltantes). Cumplimiento se calcula aparte.
+                    const totalContadosPeriodo = totalOk + totalSobrantes + totalFaltantes;
+                    const eriAgrupado = totalContadosPeriodo > 0 ? Math.round((totalOk / totalContadosPeriodo) * 100) : 0;
                     rows.push({
                         store_id: first.store_id,
                         store_name: first.store_name,
@@ -4144,7 +4147,7 @@ export default function DashboardPage() {
                 SOBRANTES: ds.sobrantes,
                 FALTANTES: ds.faltantes,
                 DIF_VALORIZADA: ds.difVal,
-                ERI_PCT: ds.asignados > 0 ? Math.round((ds.ok / ds.asignados) * 100) : 0,
+                ERI_PCT: (ds.ok + ds.sobrantes + ds.faltantes) > 0 ? Math.round((ds.ok / (ds.ok + ds.sobrantes + ds.faltantes)) * 100) : 0,
                 CUMPLIMIENTO: ds.cumplio ? "SI" : "NO",
                 HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "—",
                 HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "—",
@@ -4333,8 +4336,10 @@ export default function DashboardPage() {
             : kpiDashData.filter(r => r.dias_cumplidos > 0 && r.total_asignados > 0);
 
         const okTotal = filasQueComplieron.reduce((s, r) => s + r.total_ok, 0);
-        const asignadosTotal = filasQueComplieron.reduce((s, r) => s + r.total_asignados, 0);
-        const avgEri = asignadosTotal > 0 ? Math.round((okTotal / asignadosTotal) * 100) : 0;
+        const sobrantesTotal = filasQueComplieron.reduce((s, r) => s + r.total_sobrantes, 0);
+        const faltantesTotal2 = filasQueComplieron.reduce((s, r) => s + r.total_faltantes, 0);
+        const totalContadosKpi = okTotal + sobrantesTotal + faltantesTotal2;
+        const avgEri = totalContadosKpi > 0 ? Math.round((okTotal / totalContadosKpi) * 100) : 0;
 
         // Duración promedio: solo aplica en vista día (de las que cumplieron con duración)
         const filasConDuracion = dashPeriod === "dia"
