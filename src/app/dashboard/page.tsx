@@ -1230,6 +1230,9 @@ export default function DashboardPage() {
             const counts = cntAll.filter(
                 (c: any) => !SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
             );
+            // 🔍 DIAGNÓSTICO — quitar cuando esté resuelto
+            console.log(`[DASH] cntAll total=${cntAll.length} | flags=${allSessionFlags.length} | counts reales=${counts.length}`);
+            console.log(`[DASH] flags por tipo:`, allSessionFlags.reduce((acc: any, f: any) => { acc[f.location] = (acc[f.location]||0)+1; return acc; }, {}));
 
             // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
@@ -1318,6 +1321,13 @@ export default function DashboardPage() {
                 // Cumplió = hizo reconteo completo, O terminó sesión sin productos sin contar.
                 // Sobrantes/Faltantes son diferencias válidas, no impiden el cumplimiento.
                 const cumplio = cumplioPorReconteo || (terminoConteo && noContados === 0);
+                // 🔍 DIAGNÓSTICO — quitar cuando esté resuelto
+                if (terminoConteo || cumplioPorReconteo || noContados === 0) {
+                    console.log(`[DASH] ${g.store_name} | ${g.date} | terminoConteo=${terminoConteo} | cumplioPorReconteo=${cumplioPorReconteo} | noContados=${noContados}/${total} | cumplio=${cumplio}`);
+                }
+                if (!cumplio && (terminoConteo || cumplioPorReconteo)) {
+                    console.warn(`[DASH NO CUMPLE] ${g.store_name} | ${g.date} | flags en BD:`, allSessionFlags.filter((f: any) => g.asgns.some((a: any) => a.id === f.assignment_id)).map((f: any) => f.location));
+                }
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
             }
 
