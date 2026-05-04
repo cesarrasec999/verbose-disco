@@ -3554,42 +3554,45 @@ export default function DashboardPage() {
         }
 
         // ── Dimensiones base ──
-        // Los gráficos ERI y Cumplimiento van lado a lado → ancho reducido (260px cada uno)
-        // El gráfico Diferencia Valorizada va a ancho completo (560px)
-        const barH   = 20;
-        const gap    = 6;
-        const labelW = 120; // espacio para nombre de tienda
+        const barH     = 26;
+        const gap      = 8;
+        const svgFullW = 560;
+        const eriLabelW = 180; // igual que dif, para consistencia
 
-        // ── SVG helper: barra simple (ERI / Cumplimiento) ──
+        // ── SVG helper: barra simple (ERI / Cumplimiento / Diferencia) ──
         const makeSingleBarSVG = (
             rows: { name: string; pct: number; color: string }[],
-            svgWidth: number
+            svgWidth: number,
+            lw: number
         ) => {
-            const barArea = svgWidth - labelW - 40; // espacio para barra + valor
-            const midLine = Math.round(barArea / 2);
-            const h = rows.length * (barH + gap) + 30;
+            const barArea = svgWidth - lw - 55; // deja espacio para el valor al final
+            const h = rows.length * (barH + gap) + 34;
             const bars = rows.map((r, i) => {
-                const y = i * (barH + gap) + 20;
-                const w = Math.max(3, Math.round((r.pct / 100) * barArea));
-                const name = r.name.length > 16 ? r.name.slice(0, 14) + "…" : r.name;
-                return `<text x="0" y="${y + barH / 2 + 4}" font-size="9" fill="#64748b" font-family="Arial,sans-serif">${name}</text>
-              <rect x="${labelW}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${r.color}" opacity="0.85"/>
-              <text x="${labelW + w + 4}" y="${y + barH / 2 + 4}" font-size="9" fill="${r.color}" font-weight="bold" font-family="Arial,sans-serif">${r.pct}%</text>`;
+                const y   = i * (barH + gap) + 24;
+                const w   = Math.max(4, Math.round((r.pct / 100) * barArea));
+                const name = r.name.length > 24 ? r.name.slice(0, 22) + "…" : r.name;
+                return `<text x="0" y="${y + barH / 2 + 5}" font-size="11" fill="#1e293b" font-weight="600" font-family="Arial,sans-serif">${name}</text>
+              <rect x="${lw}" y="${y}" width="${barArea}" height="${barH}" rx="4" fill="#e2e8f0"/>
+              <rect x="${lw}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${r.color}" opacity="0.90"/>
+              <text x="${lw + w + 6}" y="${y + barH / 2 + 5}" font-size="11" fill="${r.color}" font-weight="800" font-family="Arial,sans-serif">${r.pct}%</text>`;
             }).join("\n");
             return { svg: `<svg width="${svgWidth}" height="${h}" xmlns="http://www.w3.org/2000/svg">
           <rect width="${svgWidth}" height="${h}" fill="#f8fafc"/>
-          <line x1="${labelW + midLine}" y1="0" x2="${labelW + midLine}" y2="${h}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3"/>
+          <text x="0" y="14" font-size="9" fill="#94a3b8" font-weight="700" font-family="Arial,sans-serif" letter-spacing="1">TIENDA</text>
+          <text x="${lw}" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">0%</text>
+          <text x="${lw + Math.round(barArea / 2) - 8}" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">50%</text>
+          <text x="${lw + barArea - 16}" y="14" font-size="9" fill="#94a3b8" font-family="Arial,sans-serif">100%</text>
+          <line x1="${lw + Math.round(barArea / 2)}" y1="17" x2="${lw + Math.round(barArea / 2)}" y2="${h}" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="3"/>
           ${bars}
         </svg>`, h };
         };
 
-        // ── Gráfico ERI por tienda (solo tiendas que cumplieron) ──
+        // ── Gráfico ERI por tienda (ancho completo) ──
         const storesERI = [...emailFilasQueComplieron].sort((a, b) => a.eri - b.eri);
         const eriRows   = storesERI.map(r => ({ name: r.store_name, pct: r.eri, color: eriColor(r.eri) }));
-        const svgSmallW = 260;
-        const { svg: svgERI, h: svgEriH } = makeSingleBarSVG(eriRows, svgSmallW);
+        const { svg: svgERI, h: svgEriH } = makeSingleBarSVG(eriRows, svgFullW, eriLabelW);
 
-        // ── Gráfico Cumplimiento por tienda ──
+        // ── Gráfico Cumplimiento por tienda (ancho completo) ──
         const complianceStores = [...filteredDashData].sort((a, b) => {
             const ap = dashPeriod === "dia" ? (a.cumplio ? 100 : 0) : a.cumplimiento_pct;
             const bp = dashPeriod === "dia" ? (b.cumplio ? 100 : 0) : b.cumplimiento_pct;
@@ -3599,7 +3602,7 @@ export default function DashboardPage() {
             const pct = dashPeriod === "dia" ? (r.cumplio ? 100 : 0) : r.cumplimiento_pct;
             return { name: r.store_name, pct, color: pctColor(pct) };
         });
-        const { svg: svgCumpl, h: svgCumplH } = makeSingleBarSVG(cumplRows, svgSmallW);
+        const { svg: svgCumpl, h: svgCumplH } = makeSingleBarSVG(cumplRows, svgFullW, eriLabelW);
 
         // ── Gráfico Diferencia Valorizada (ancho completo, solo con diferencias) ──
         const svgFullW   = 560;
@@ -3635,8 +3638,8 @@ export default function DashboardPage() {
 
         // Convertir los SVGs a PNG base64
         const [pngERI, pngCumpl, pngDif] = await Promise.all([
-            svgToPng(svgERI,  svgSmallW, svgEriH),
-            svgToPng(svgCumpl, svgSmallW, svgCumplH),
+            svgToPng(svgERI,   svgFullW, svgEriH),
+            svgToPng(svgCumpl, svgFullW, svgCumplH),
             svgDif ? svgToPng(svgDif, svgFullW, svgDifH) : Promise.resolve(""),
         ]);
 
@@ -3748,23 +3751,17 @@ export default function DashboardPage() {
       </tr>
     </table>
 
-    <!-- Gráficos ERI y Cumplimiento lado a lado -->
-    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-      <tr>
-        <td style="width:50%;padding-right:6px;vertical-align:top;">
-          <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #16a34a;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ERI por Tienda (%)</h2>
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;overflow:hidden;">
-            ${pngERI ? `<img src="${pngERI}" width="100%" style="display:block;max-width:100%;" alt="ERI"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
-          </div>
-        </td>
-        <td style="width:50%;padding-left:6px;vertical-align:top;">
-          <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #7c3aed;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Cumplimiento (%)</h2>
-          <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;overflow:hidden;">
-            ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="display:block;max-width:100%;" alt="Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
-          </div>
-        </td>
-      </tr>
-    </table>
+    <!-- Gráfico ERI por tienda -->
+    <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #16a34a;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ERI por Tienda (%)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:20px;overflow:hidden;">
+      ${pngERI ? `<img src="${pngERI}" width="100%" style="display:block;max-width:100%;" alt="ERI"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
+    </div>
+
+    <!-- Gráfico Cumplimiento por tienda -->
+    <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #7c3aed;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Cumplimiento por Tienda (%)</h2>
+    <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:20px;overflow:hidden;">
+      ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="display:block;max-width:100%;" alt="Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
+    </div>
 
     <!-- Gráfico Dif Valorizada (solo si hay diferencias) -->
     ${pngDif ? `
