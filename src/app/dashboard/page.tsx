@@ -1386,11 +1386,13 @@ export default function DashboardPage() {
                     const cumplimientoPct = diasTotales > 0 ? Math.round((diasCumplidos / diasTotales) * 100) : 0;
                     const totalAsignadosPeriodo = days.reduce((s, d) => s + d.total, 0);
                     const totalAsignados  = totalAsignadosPeriodo;
-                    const totalOk         = days.reduce((s, d) => s + d.ok, 0);
-                    const totalSobrantes  = days.reduce((s, d) => s + d.sobrantes, 0);
-                    const totalFaltantes  = days.reduce((s, d) => s + d.faltantes, 0);
+                    const daysCumplidos   = days.filter(d => d.cumplio);
+                    // OK, sobrantes, faltantes, dif_valorizada: solo días que cumplieron
+                    const totalOk         = daysCumplidos.reduce((s, d) => s + d.ok, 0);
+                    const totalSobrantes  = daysCumplidos.reduce((s, d) => s + d.sobrantes, 0);
+                    const totalFaltantes  = daysCumplidos.reduce((s, d) => s + d.faltantes, 0);
                     const totalNoContados = days.reduce((s, d) => s + d.noContados, 0);
-                    const difVal          = days.reduce((s, d) => s + d.difVal, 0);
+                    const difVal          = daysCumplidos.reduce((s, d) => s + d.difVal, 0);
                     // ERI = OK / contados (ok+sobrantes+faltantes). Cumplimiento se calcula aparte.
                     const totalContadosPeriodo = totalOk + totalSobrantes + totalFaltantes;
                     const eriAgrupado = totalContadosPeriodo > 0 ? Math.round((totalOk / totalContadosPeriodo) * 100) : 0;
