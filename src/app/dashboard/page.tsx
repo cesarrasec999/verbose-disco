@@ -3482,6 +3482,9 @@ export default function DashboardPage() {
                 for (const asgn of asgnRows) {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
+                    // Solo considerar assignments de días que cumplieron
+                    const dayKey = `${asgn.store_id}__${asgn.assigned_date}`;
+                    if (!fulfilledDayKeys.has(dayKey)) continue;
                     const aggKey = `${asgn.store_id}__${asgn.product_id}`;
                     const prev = prodAgg.get(aggKey) ?? {
                         store_id: asgn.store_id,
@@ -3552,7 +3555,7 @@ export default function DashboardPage() {
         const maxBar = 360;
         const barH   = 24;
         const gap    = 8;
-        const stores = [...emailKpiRows].sort((a, b) => a.eri - b.eri);
+        const stores = [...emailFilasQueComplieron].sort((a, b) => a.eri - b.eri);
         const complianceStores = [...filteredDashData].sort((a, b) => {
             const ap = dashPeriod === "dia" ? (a.cumplio ? 100 : 0) : a.cumplimiento_pct;
             const bp = dashPeriod === "dia" ? (b.cumplio ? 100 : 0) : b.cumplimiento_pct;
@@ -3601,8 +3604,8 @@ export default function DashboardPage() {
           ${cumplBarsInner}
         </svg>`;
 
-        const maxAbsDif = Math.max(...emailKpiRows.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const storesDif = [...emailKpiRows].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
+        const maxAbsDif = Math.max(...emailFilasQueComplieron.map(r => Math.abs(r.dif_valorizada || 0)), 1);
+        const storesDif = [...emailFilasQueComplieron].sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
         const svgDifH   = storesDif.length * (barH + gap) + 40;
         const difBarsInner = storesDif.map((r, i) => {
             const y    = i * (barH + gap) + 24;
@@ -3633,7 +3636,7 @@ export default function DashboardPage() {
         ]);
 
         // ── Tabla detalle por tienda ──
-        const storeRows = [...emailKpiRows]
+        const storeRows = [...emailFilasQueComplieron]
             .sort((a, b) => a.eri - b.eri)
             .map(r => {
                 const cumpl = dashPeriod === "dia"
@@ -3978,6 +3981,54 @@ export default function DashboardPage() {
                 countMap.get(c.assignment_id)!.push(c);
             }
 
+            // ── Paso 3b: determinar qué tienda-días cumplieron (flags de sesión) ──
+            // Necesario para marcar CUMPLIO a nivel tienda-día, no producto individual
+            const expAsgnById2 = new Map<string, any>();
+            for (const a of asgnData as any[]) expAsgnById2.set(a.id, a);
+            const recountDoneKeys2 = new Set<string>();
+            const sessionFinishedKeys2 = new Set<string>();
+            for (let i = 0; i < asgnIds.length; i += 500) {
+                const { data: flagChunk2 } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", asgnIds.slice(i, i + 500))
+                    .in("location", ["__recount_done__", "__session_finished__"]);
+                for (const flag of flagChunk2 || []) {
+                    const asg2 = expAsgnById2.get(flag.assignment_id);
+                    if (!asg2) continue;
+                    const dk = `${asg2.store_id}__${asg2.assigned_date}`;
+                    if (flag.location === "__recount_done__") recountDoneKeys2.add(dk);
+                    if (flag.location === "__session_finished__") sessionFinishedKeys2.add(dk);
+                }
+            }
+            // Determinar si cada tienda-día cumplió: contó todos sus productos O tiene flag recount_done
+            // Agrupar products por tienda-día para verificar cobertura
+            const dayProdCounted2 = new Map<string, { total: number; counted: number }>();
+            for (const asg of asgnData as any[]) {
+                const dk = `${asg.store_id}__${asg.assigned_date}`;
+                const pk = `${dk}__${asg.product_id}`;
+                if (!dayProdCounted2.has(dk)) dayProdCounted2.set(dk, { total: 0, counted: 0 });
+                // count unique products per day
+            }
+            // Build unique product sets per day-store
+            const dayProdsSet = new Map<string, Set<string>>();
+            const dayProdsCountedSet = new Map<string, Set<string>>();
+            for (const asg of asgnData as any[]) {
+                const dk = `${asg.store_id}__${asg.assigned_date}`;
+                if (!dayProdsSet.has(dk)) { dayProdsSet.set(dk, new Set()); dayProdsCountedSet.set(dk, new Set()); }
+                dayProdsSet.get(dk)!.add(asg.product_id);
+                const cnts2 = countMap.get(asg.id) || [];
+                if (cnts2.length > 0) dayProdsCountedSet.get(dk)!.add(asg.product_id);
+            }
+            const cumplioByDayKey = new Set<string>();
+            for (const [dk, prods] of dayProdsSet) {
+                const counted = dayProdsCountedSet.get(dk)!;
+                const allCounted = prods.size > 0 && counted.size === prods.size;
+                if (recountDoneKeys2.has(dk) || (sessionFinishedKeys2.has(dk) && allCounted) || allCounted) {
+                    cumplioByDayKey.add(dk);
+                }
+            }
+
             // Agrupar por tienda + fecha + producto (suma múltiples ubicaciones)
             type ExportKey = string;
             const resMap = new Map<ExportKey, {
@@ -3989,15 +4040,15 @@ export default function DashboardPage() {
 
             for (const asg of asgnData as any[]) {
                 const key = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
+                const dayKey2 = `${asg.store_id}__${asg.assigned_date}`;
                 const prod = asg.cyclic_products || {};
                 const tienda = asg.stores?.name || asg.store_id;
                 const costo = parseCost(prod.cost);
                 const stock = Number(asg.system_stock || 0);
                 const cnts = countMap.get(asg.id) || [];
                 const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
-                // Determinar si cumplió: tiene al menos un conteo guardado (counted_at presente)
-                const tienConteo = cnts.length > 0;
-                const cumplioStr = tienConteo ? "SI" : "NO";
+                // CUMPLIO refleja si la TIENDA-DÍA completa cumplió, no el producto individual
+                const cumplioStr = cumplioByDayKey.has(dayKey2) ? "SI" : "NO";
 
                 if (!resMap.has(key)) {
                     resMap.set(key, {
@@ -4014,8 +4065,6 @@ export default function DashboardPage() {
                 const row = resMap.get(key)!;
                 row.total_contado += totalContado;
                 if (costo > 0 && row.costo === 0) row.costo = costo;
-                // Si en cualquier assignment de ese producto hay conteo, marcarlo como cumplió
-                if (tienConteo) row.cumplio = "SI";
             }
 
             // Calcular diferencias finales
