@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -805,6 +806,9 @@ export default function AuditoriaPage() {
         location: location.trim().toUpperCase(),
         quantity,
         counted_by: user?.id,
+        client_uuid: createClientUuid("audit-count"),
+        client_device_id: getOrCreateDeviceId(),
+        sync_origin: "web",
       });
       if (error) {
         setMessage("Error guardando conteo: " + error.message);

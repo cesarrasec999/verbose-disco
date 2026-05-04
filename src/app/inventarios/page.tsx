@@ -6,6 +6,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
+import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
+import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
 
 type Role = "Operario" | "Validador" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
@@ -617,6 +620,69 @@ export default function InventariosPage() {
   }, [selectedSessionId, operator?.id, isValidator]);
 
   useEffect(() => {
+    if (!selectedSessionId) return;
+
+    let timer: number | null = null;
+    const reloadInventoryCounts = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (isValidator) {
+          if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+          if (validatorTab === "resumen") void loadSummary(selectedSessionId);
+          if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+          return;
+        }
+        void loadRecordsData(selectedSessionId);
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel(`gi-counts-${selectedSessionId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_counts", filter: `session_id=eq.${selectedSessionId}` },
+        reloadInventoryCounts
+      )
+      .subscribe();
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [selectedSessionId, isValidator, validatorTab]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !operator || isValidator) return;
+
+    let timer: number | null = null;
+    const reloadAssignedRecounts = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void loadOperatorRecountItems(selectedSessionId, operator.id);
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel(`gi-operator-recounts-${selectedSessionId}-${operator.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `session_id=eq.${selectedSessionId}` },
+        reloadAssignedRecounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
+        reloadAssignedRecounts
+      )
+      .subscribe();
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [selectedSessionId, operator?.id, isValidator]);
+
+  useEffect(() => {
     const validKeys = new Set(unassignedRecountCandidates.map(row => recountKey(row)));
     setSelectedPendingRecountKeys(prev => {
       const next = new Set([...prev].filter(key => validKeys.has(key)));
@@ -829,8 +895,41 @@ export default function InventariosPage() {
 
   async function loadRecordsData(sessionId: string) {
     const countRows = await loadAllCounts(sessionId);
-    setCounts(countRows);
-    setCountedLocationCodes([...new Set(countRows.map(row => row.location_code).filter(Boolean))]);
+    const pendingRows = await loadPendingOfflineCountRows(sessionId);
+    const rows = mergePendingCounts(countRows, pendingRows);
+    setCounts(rows);
+    setCountedLocationCodes([...new Set(rows.map(row => row.location_code).filter(Boolean))]);
+  }
+
+  async function loadPendingOfflineCountRows(sessionId: string): Promise<CountRow[]> {
+    const pending = await listPendingOfflineItems().catch(() => []);
+    return pending
+      .filter(item => item.entity === "general_inventory_counts" && item.operation === "insert")
+      .map(item => {
+        const payload = item.payload as Partial<CountRow> & { counted_at?: string };
+        return {
+          id: item.localId,
+          session_id: String(payload.session_id || sessionId),
+          operator_id: String(payload.operator_id || ""),
+          location_id: String(payload.location_id || ""),
+          location_code: String(payload.location_code || ""),
+          product_id: String(payload.product_id || ""),
+          sku: String(payload.sku || ""),
+          description: String(payload.description || ""),
+          unit: String(payload.unit || ""),
+          quantity: Number(payload.quantity || 0),
+          cost_snapshot: Number(payload.cost_snapshot || 0),
+          counted_at: String(payload.counted_at || item.createdAt),
+          operator_name: operator?.full_name || "Pendiente offline",
+        };
+      })
+      .filter(row => row.session_id === sessionId);
+  }
+
+  function mergePendingCounts(serverRows: CountRow[], pendingRows: CountRow[]) {
+    if (pendingRows.length === 0) return serverRows;
+    const pendingIds = new Set(pendingRows.map(row => row.id));
+    return [...pendingRows, ...serverRows.filter(row => !pendingIds.has(row.id))];
   }
 
   async function loadRecountData(sessionId: string) {
@@ -1687,10 +1786,25 @@ export default function InventariosPage() {
     const raw = normalizeCode(code).toUpperCase();
     if (!raw || !selectedSessionId) return { products: [], message: "" };
 
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      const cachedProducts = await findCachedProductsByCode(raw);
+      if (cachedProducts.length === 0) return { products: [], message: "Codigo no encontrado en el catalogo offline descargado." };
+      return {
+        products: cachedProducts as Product[],
+        message: cachedProducts.length > 1 ? "El codigo coincide con varios productos offline. Elige una tarjeta antes de guardar." : "",
+      };
+    }
+
     const [byUpc, byAlu] = await Promise.all([
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
       supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
-    ]);
+    ]).catch(async () => {
+      const cachedProducts = await findCachedProductsByCode(raw);
+      return [
+        { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
+        { data: [] },
+      ];
+    });
     const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
     const candidateSkus = [...new Set([raw, ...mapped])];
     const productMap = new Map<string, Product>();
@@ -1768,13 +1882,25 @@ export default function InventariosPage() {
         return;
       }
 
-      const snapshot = await supabase
-        .from("general_inventory_stock_snapshot")
-        .select("cost")
-        .eq("session_id", selectedSession.id)
-        .eq("product_id", product.id)
-        .maybeSingle();
+      const snapshot = navigator.onLine
+        ? await supabase
+          .from("general_inventory_stock_snapshot")
+          .select("cost")
+          .eq("session_id", selectedSession.id)
+          .eq("product_id", product.id)
+          .maybeSingle()
+        : { data: null };
 
+      const pendingEdit = editingCountId ? await getOfflineItem(editingCountId) : undefined;
+      if (!navigator.onLine && editingCountId && !pendingEdit) {
+        setMessage("Este registro ya esta sincronizado. Necesitas internet para editarlo.");
+        return;
+      }
+
+      const clientUuid = pendingEdit?.clientUuid || createClientUuid("gi-count");
+      const deviceId = pendingEdit?.deviceId || getOrCreateDeviceId();
+      const now = new Date().toISOString();
+      const countedAt = ((pendingEdit?.payload as { counted_at?: string } | undefined)?.counted_at) || now;
       const row = {
         session_id: selectedSession.id,
         operator_id: operator.id,
@@ -1786,12 +1912,57 @@ export default function InventariosPage() {
         unit: product.unit,
         quantity: qty,
         cost_snapshot: Number(snapshot.data?.cost ?? product.cost ?? 0),
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       };
+      const insertRow = {
+        ...row,
+        counted_at: countedAt,
+        client_uuid: clientUuid,
+        client_device_id: deviceId,
+        sync_origin: navigator.onLine ? "web" : "pwa_offline",
+      };
+
+      if (!navigator.onLine) {
+        await enqueueOfflineItem({
+          localId: clientUuid,
+          clientUuid,
+          deviceId,
+          module: "general_inventory",
+          entity: "general_inventory_counts",
+          operation: "insert",
+          payload: insertRow,
+          status: "pending",
+          attempts: pendingEdit?.attempts || 0,
+          createdAt: pendingEdit?.createdAt || now,
+          updatedAt: now,
+        });
+
+        const localRow: CountRow = {
+          id: clientUuid,
+          ...row,
+          counted_at: countedAt,
+          operator_name: operator.full_name,
+        };
+        setCounts(prev => editingCountId
+          ? prev.map(item => item.id === editingCountId ? localRow : item)
+          : [localRow, ...prev]
+        );
+        setProductCode("");
+        setProductCandidates([]);
+        setSelectedProduct(null);
+        setProductLookupMessage("");
+        setQuantity("");
+        setEditingCountId(null);
+        setMessage(editingCountId
+          ? "Edicion guardada sin conexion. Se subira solo la ultima version."
+          : "Conteo guardado sin conexion. Se sincronizara cuando vuelva internet."
+        );
+        return;
+      }
 
       const request = editingCountId
         ? supabase.from("general_inventory_counts").update(row).eq("id", editingCountId)
-        : supabase.from("general_inventory_counts").insert(row);
+        : supabase.from("general_inventory_counts").insert(insertRow);
       const { error } = await request;
 
       if (error) {
@@ -1882,6 +2053,9 @@ export default function InventariosPage() {
           unit: product.unit,
           quantity: qty,
           cost_snapshot: cost,
+          client_uuid: createClientUuid("gi-recount"),
+          client_device_id: getOrCreateDeviceId(),
+          sync_origin: "web",
           updated_at: new Date().toISOString(),
         }, { onConflict: "recount_item_id" });
       if (error) {

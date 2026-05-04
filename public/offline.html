@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RaseCorp sin conexion</title>
+    <meta name="theme-color" content="#ff4b00" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #f1f5f9;
+        color: #0f172a;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      main {
+        width: min(420px, 100%);
+        border: 1px solid #0f172a;
+        border-radius: 20px;
+        background: white;
+        padding: 28px;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        display: grid;
+        place-items: center;
+        background: #ff4b00;
+        color: white;
+        font-weight: 900;
+        font-size: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+        line-height: 1.1;
+      }
+      p {
+        margin: 0;
+        color: #475569;
+        font-weight: 700;
+        line-height: 1.45;
+      }
+      button {
+        width: 100%;
+        margin-top: 24px;
+        border: 1px solid #0f172a;
+        border-radius: 14px;
+        background: #0f172a;
+        color: white;
+        padding: 14px 18px;
+        font-weight: 900;
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <div class="logo">R</div>
+        <strong>RASECORP</strong>
+      </div>
+      <h1>Sin conexion</h1>
+      <p>Vuelve a intentar cuando el celular tenga internet. La preparacion offline completa se conectara en el siguiente paso.</p>
+      <button type="button" onclick="location.reload()">Reintentar</button>
+    </main>
+  </body>
+</html>

@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Store as StoreIcon, Users } from "lucide-react";
 
@@ -1304,6 +1305,9 @@ export default function DashboardPage() {
                 status: "Diferencia" as CountRecord["status"],
                 note: "Sin stock físico en tienda",
                 stock_snapshot: Number(currentAssignment.system_stock || 0),
+                client_uuid: createClientUuid("cyclic-count"),
+                client_device_id: getOrCreateDeviceId(),
+                sync_origin: "web",
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -1351,6 +1355,9 @@ export default function DashboardPage() {
                 user_name: user.full_name,
                 status,
                 stock_snapshot: Number(currentAssignment.system_stock || 0),
+                client_uuid: createClientUuid("cyclic-count"),
+                client_device_id: getOrCreateDeviceId(),
+                sync_origin: "web",
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -1853,6 +1860,9 @@ export default function DashboardPage() {
                 status: "Diferencia" as CountRecord["status"],
                 note: "Sin stock físico en tienda",
                 stock_snapshot: Number(currentRecountAssignment.system_stock || 0),
+                client_uuid: createClientUuid("cyclic-recount"),
+                client_device_id: getOrCreateDeviceId(),
+                sync_origin: "web",
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
@@ -1899,6 +1909,9 @@ export default function DashboardPage() {
                 user_name: user.full_name,
                 status,
                 stock_snapshot: Number(currentRecountAssignment.system_stock || 0),
+                client_uuid: createClientUuid("cyclic-recount"),
+                client_device_id: getOrCreateDeviceId(),
+                sync_origin: "web",
                 counted_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             });
