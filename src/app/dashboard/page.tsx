@@ -283,6 +283,16 @@ function formatDateTime(v: string) {
 }
 
 const ALL_STORES_VALUE = "__all_stores__";
+const SESSION_FLAG_LOCATIONS = new Set([
+    "__session_counting__",
+    "__session_finished__",
+    "__recount_started__",
+    "__recount_done__",
+]);
+
+function isSessionFlagLocation(location: string | null | undefined): boolean {
+    return SESSION_FLAG_LOCATIONS.has(String(location || ""));
+}
 
 function formatDuration(minutes: number | null): string {
     if (minutes === null || minutes < 0) return "—";
@@ -893,14 +903,14 @@ export default function DashboardPage() {
         // location = '__session_finished__'  → conteo terminado
         // location = '__recount_started__'   → reconteo iniciado
         // location = '__recount_done__'      → reconteo finalizado
-        const sessionFlags = cRows.filter(c => c.location?.startsWith("__session_"));
+        const sessionFlags = cRows.filter(c => isSessionFlagLocation(c.location));
         const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
         const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
         const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
         const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
 
         // Conteos reales (excluir filas de flags)
-        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
+        const realCounts = cRows.filter(c => !isSessionFlagLocation(c.location));
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
@@ -965,7 +975,7 @@ export default function DashboardPage() {
         const assignIds = rows.map(r => r.id);
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
-        const realCounts = cRows.filter(c => !c.location?.startsWith("__session_"));
+        const realCounts = cRows.filter(c => !isSessionFlagLocation(c.location));
         const enriched = realCounts.map(c => {
             const asg = rows.find(a => a.id === c.assignment_id);
             const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
@@ -1825,7 +1835,7 @@ export default function DashboardPage() {
                     .in("assignment_id", assignmentIds.slice(i, i + 500));
                 if (error) throw error;
                 for (const row of data || []) {
-                    if (!String(row.location || "").startsWith("__session_")) countedIds.add(row.assignment_id);
+                    if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
                 }
             }
 
@@ -3449,7 +3459,7 @@ export default function DashboardPage() {
                     if (cc) cntRows = cntRows.concat(cc);
                 }
                 // Filtrar flags internos
-                cntRows = cntRows.filter((c: any) => !c.location?.startsWith("__session_"));
+                cntRows = cntRows.filter((c: any) => !isSessionFlagLocation(c.location));
 
                 // 4. Agrupar contado por assignment
                 const cntByAsgn = new Map<string, number>();
