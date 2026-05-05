@@ -359,6 +359,7 @@ export default function DashboardPage() {
     const [recountAssignment, setRecountAssignment] = useState<Assignment | null>(null);
     const [recountRows, setRecountRows]           = useState<LocationRow[]>([{ location: "", qty: "" }]);
     const [sinStockRecount, setSinStockRecount]   = useState(false);
+    const startingRecountRef = useRef(false);
 
     // ─── Escáner ─────────────────────────────────────────────
     const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|null>(null);
@@ -808,7 +809,7 @@ export default function DashboardPage() {
         await supabase.from("cyclic_counts")
             .delete()
             .in("assignment_id", ids)
-            .like("location", "__session_%");
+            .in("location", Array.from(SESSION_FLAG_LOCATIONS));
     }
 
     async function confirmFinishSession() {
@@ -818,7 +819,16 @@ export default function DashboardPage() {
         // Limpiar flags anteriores y escribir __session_finished__ en BD
         await clearSessionFlags(selectedStoreId, selectedDate);
         await setSessionFlag(selectedStoreId, selectedDate, "__session_finished__", true);
-        showMessage(`✅ Conteo terminado. ${doneAssignments.length} producto${doneAssignments.length !== 1 ? "s" : ""} contado${doneAssignments.length !== 1 ? "s" : ""}. ¡Buen trabajo!`, "success");
+
+        if (difAssignments.length > 0) {
+            await openRecountPanel();
+            showMessage(`Conteo terminado. Pasamos a reconteo con ${difAssignments.length} codigo${difAssignments.length !== 1 ? "s" : ""} con diferencia.`, "info");
+            return;
+        }
+
+        setShowRecount(false);
+        setRecountAssignment(null);
+        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
     }
 
     // ════════════════════════════════════════════════════════
@@ -904,9 +914,10 @@ export default function DashboardPage() {
         // location = '__recount_started__'   → reconteo iniciado
         // location = '__recount_done__'      → reconteo finalizado
         const sessionFlags = cRows.filter(c => isSessionFlagLocation(c.location));
+        const keepRecountOpen = startingRecountRef.current && storeId === selectedStoreId && date === selectedDate;
         const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
         const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
-        const isRecounting  = sessionFlags.some(c => c.location === "__recount_started__");
+        const isRecounting  = keepRecountOpen || sessionFlags.some(c => c.location === "__recount_started__");
         const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
 
         // Conteos reales (excluir filas de flags)
@@ -1638,13 +1649,17 @@ export default function DashboardPage() {
     //  OPERARIO — RECONTEO
     // ════════════════════════════════════════════════════════
     async function openRecountPanel() {
+        startingRecountRef.current = true;
         setShowRecount(true);
         setRecountFinished(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
         // Escribir flag __recount_started__ en BD
-        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
         await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
+        await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
+        await loadOperarioData(selectedStoreId, selectedDate);
+        startingRecountRef.current = false;
+        setShowRecount(true);
         clearMessage();
     }
 
@@ -2193,12 +2208,13 @@ export default function DashboardPage() {
                 .in("id", difCounts.map(c => c.id));
         }
         // Actualizar flags en BD: reconteo terminado
+        startingRecountRef.current = false;
         await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
         await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", true);
         setShowRecount(false);
         setRecountFinished(true);
         setRecountAssignment(null);
-        showMessage("✅ Reconteo finalizado y marcado como cumplido.", "success");
+        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
         loadOperarioData(selectedStoreId, selectedDate);
     }
 
