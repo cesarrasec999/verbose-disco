@@ -3582,8 +3582,8 @@ export default function DashboardPage() {
         // ── Dimensiones base ──
         const barH     = 26;
         const gap      = 8;
-        const svgFullW = 560;
-        const eriLabelW = 180; // igual que dif, para consistencia
+        const svgFullW = 820;
+        const eriLabelW = 260; // espacio suficiente para nombres completos de tienda
 
         // ── SVG helper: barra simple (ERI / Cumplimiento / Diferencia) ──
         const makeSingleBarSVG = (
@@ -3596,7 +3596,7 @@ export default function DashboardPage() {
             const bars = rows.map((r, i) => {
                 const y   = i * (barH + gap) + 24;
                 const w   = Math.max(4, Math.round((r.pct / 100) * barArea));
-                const name = r.name.length > 24 ? r.name.slice(0, 22) + "…" : r.name;
+                const name = r.name;
                 return `<text x="0" y="${y + barH / 2 + 5}" font-size="11" fill="#1e293b" font-weight="600" font-family="Arial,sans-serif">${name}</text>
               <rect x="${lw}" y="${y}" width="${barArea}" height="${barH}" rx="4" fill="#e2e8f0"/>
               <rect x="${lw}" y="${y}" width="${w}" height="${barH}" rx="4" fill="${r.color}" opacity="0.90"/>
@@ -3635,27 +3635,30 @@ export default function DashboardPage() {
             .filter(r => (r.dif_valorizada || 0) !== 0)
             .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
         const maxAbsDif = Math.max(...storesDif.map(r => Math.abs(r.dif_valorizada || 0)), 1);
-        const difBarArea = svgFullW - eriLabelW - 20;
+        const difValueW = 105;
+        const difHalfArea = Math.max(80, Math.floor((svgFullW - eriLabelW - (difValueW * 2)) / 2));
+        const difCenterX = eriLabelW + difValueW + difHalfArea;
         const svgDifH   = storesDif.length > 0 ? storesDif.length * (barH + gap) + 30 : 0;
         const difBarsInner = storesDif.map((r, i) => {
             const y    = i * (barH + gap) + 20;
             const val  = r.dif_valorizada || 0;
-            const w    = Math.max(3, Math.round((Math.abs(val) / maxAbsDif) * (difBarArea / 2)));
+            const w    = Math.max(3, Math.round((Math.abs(val) / maxAbsDif) * difHalfArea));
             const col  = difColor(val);
-            const cx   = eriLabelW + Math.round(difBarArea / 2);
+            const cx   = difCenterX;
             const x    = val < 0 ? cx - w : cx;
-            const name = r.store_name.length > 26 ? r.store_name.slice(0, 24) + "…" : r.store_name;
+            const name = r.store_name;
             const label = `S/${val >= 0 ? "+" : ""}${Number(val).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
             return `<text x="0" y="${y + barH / 2 + 4}" font-size="11" fill="#1e293b" font-weight="600" font-family="Arial,sans-serif">${name}</text>
               <rect x="${cx}" y="${y}" width="1" height="${barH}" fill="#cbd5e1"/>
               <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="3" fill="${col}" opacity="0.82"/>
-              <text x="${val < 0 ? cx - w - 3 : cx + w + 3}" y="${y + barH / 2 + 5}" font-size="11" fill="${col}" font-weight="800" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
+              <text x="${val < 0 ? cx - w - 7 : cx + w + 7}" y="${y + barH / 2 + 5}" font-size="11" fill="${col}" font-weight="800" font-family="Arial,sans-serif" text-anchor="${val < 0 ? "end" : "start"}">${label}</text>`;
         }).join("\n");
         const svgDif = storesDif.length > 0
             ? `<svg width="${svgFullW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
           <rect width="${svgFullW}" height="${svgDifH}" fill="#f8fafc"/>
-          <text x="${eriLabelW + Math.round(difBarArea / 4)}" y="14" font-size="9" fill="#dc2626" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
-          <text x="${eriLabelW + Math.round(difBarArea * 3 / 4)}" y="14" font-size="9" fill="#2563eb" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
+          <text x="${difCenterX}" y="14" font-size="9" fill="#94a3b8" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">0</text>
+          <text x="${eriLabelW + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#dc2626" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
+          <text x="${difCenterX + difHalfArea + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#2563eb" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
           ${difBarsInner}
         </svg>`
             : "";
@@ -3719,7 +3722,7 @@ export default function DashboardPage() {
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Informe Conteo Cíclico — ${periodoLabel}</title></head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
-<div style="max-width:660px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
+<div style="max-width:900px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
 
   <!-- HEADER -->
   <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%);padding:28px 32px 22px;">
