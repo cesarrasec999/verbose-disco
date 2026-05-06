@@ -394,7 +394,7 @@ export default function AuditoriaPage() {
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
-    // Admin va directo al Resumen donde están las observaciones
+    // Restaurar el tab guardado en sessionStorage; si no hay, usar el default por rol
     const savedTab = sessionStorage.getItem(AUDIT_REGISTER_TAB_KEY) as RegisterTab | null;
     if (savedTab === "count" || savedTab === "records" || savedTab === "summary") {
       setRegisterTab(savedTab);
@@ -614,7 +614,7 @@ export default function AuditoriaPage() {
   async function loadSessionData(sessionId: string) {
     const { data: itemRows } = await supabase
       .from("audit_session_items")
-      .select("id, session_id, product_id, source, system_stock, cost_snapshot, pending_extra, observation, created_at, cyclic_products(sku, barcode, description, unit)")
+      .select("id, session_id, product_id, system_stock, source, observation, created_at, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
     const mappedItems = (itemRows || []).map((r: any) => ({
@@ -623,10 +623,9 @@ export default function AuditoriaPage() {
       barcode: r.cyclic_products?.barcode,
       description: r.cyclic_products?.description,
       unit: r.cyclic_products?.unit,
-      observation: r.observation ?? null,
     })) as AuditItem[];
     setItems(mappedItems);
-    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation ?? ""])));
+    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
     setItemStockDrafts(Object.fromEntries(mappedItems.map(item => [item.id, String(Number(item.system_stock || 0))])));
 
     const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at", { ascending: false });
