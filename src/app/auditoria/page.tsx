@@ -950,6 +950,10 @@ export default function AuditoriaPage() {
       ok,
       missing: summaryRows.filter(r => r.diff < 0).length,
       surplus: summaryRows.filter(r => r.diff > 0).length,
+      missingUnits: summaryRows.filter(r => r.diff < 0).reduce((acc, r) => acc + Math.abs(r.diff), 0),
+      surplusUnits: summaryRows.filter(r => r.diff > 0).reduce((acc, r) => acc + r.diff, 0),
+      netUnits: summaryRows.reduce((acc, r) => acc + r.diff, 0),
+      absoluteUnits: summaryRows.reduce((acc, r) => acc + Math.abs(r.diff), 0),
       withStock: summaryRows.filter(r => Number(r.item.system_stock || 0) > 0).length,
       value: summaryRows.reduce((acc, r) => acc + r.value, 0),
     };
@@ -1077,6 +1081,10 @@ export default function AuditoriaPage() {
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   }
 
+  function summaryObservation(row: typeof summaryRows[number]) {
+    return itemObservationDrafts[row.item.id] ?? row.item.observation ?? "";
+  }
+
   function auditBarChart(title: string, data: { label: string; value: number; color: string }[]) {
     const width = 640;
     const height = 260;
@@ -1093,14 +1101,12 @@ export default function AuditoriaPage() {
   function buildAuditReportHTML() {
     if (!session) return "";
     const storeName = selectedStore?.name || session.store_name || "Tienda";
-    const topMissing = [...summaryRows]
+    const missingDifferences = [...summaryRows]
       .filter(r => r.diff < 0)
-      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-      .slice(0, 10);
-    const topSurplus = [...summaryRows]
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+    const surplusDifferences = [...summaryRows]
       .filter(r => r.diff > 0)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 10);
+      .sort((a, b) => b.value - a.value);
     const chart = auditBarChart("Indicadores de auditoría", [
       { label: "Sobrantes", value: totals.surplus, color: "#2563eb" },
       { label: "Faltantes", value: totals.missing, color: "#dc2626" },
@@ -1115,18 +1121,18 @@ export default function AuditoriaPage() {
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(number2(r.total))}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${r.diff < 0 ? "#dc2626" : "#2563eb"};">${r.diff > 0 ? "+" : ""}${escapeHTML(number2(r.diff))}</td>
             <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;">${escapeHTML(money(r.value))}</td>
-            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(r.item.observation || "")}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;color:#334155;">${escapeHTML(summaryObservation(r))}</td>
           </tr>`;
-    const missingRows = topMissing.length === 0
+    const missingRows = missingDifferences.length === 0
       ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin faltantes registrados.</td></tr>`
-      : topMissing.map(diffRow).join("");
-    const surplusRows = topSurplus.length === 0
+      : missingDifferences.map(diffRow).join("");
+    const surplusRows = surplusDifferences.length === 0
       ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
-      : topSurplus.map(diffRow).join("");
+      : surplusDifferences.map(diffRow).join("");
     const today = new Date().toLocaleString("es-PE");
     return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
 <body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
-  <div style="max-width:760px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
+  <div style="max-width:920px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
     <div style="background:#0f172a;padding:28px 32px;color:#ffffff;">
       <div style="font-size:12px;font-weight:900;letter-spacing:1.8px;color:#93c5fd;">WMS AUDITORIA DE EXISTENCIAS</div>
       <h1 style="margin:8px 0 4px;font-size:25px;line-height:1.2;">Informe de auditoría</h1>
@@ -1138,16 +1144,24 @@ export default function AuditoriaPage() {
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#2563eb;">${totals.surplus}</div><div style="font-size:11px;font-weight:800;color:#64748b;">SOBRANTE</div></div></td>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#dc2626;">${totals.missing}</div><div style="font-size:11px;font-weight:800;color:#64748b;">FALTANTE</div></div></td>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:28px;font-weight:900;color:#16a34a;">${totals.ok}</div><div style="font-size:11px;font-weight:800;color:#64748b;">OK</div></div></td>
+        <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:22px;font-weight:900;color:${totals.netUnits < 0 ? "#dc2626" : "#2563eb"};">${totals.netUnits > 0 ? "+" : ""}${escapeHTML(number2(totals.netUnits))}</div><div style="font-size:11px;font-weight:800;color:#64748b;">DIF. UNIDADES</div></div></td>
         <td style="padding:6px;"><div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px;text-align:center;"><div style="font-size:22px;font-weight:900;color:${totals.value < 0 ? "#dc2626" : "#2563eb"};">${escapeHTML(money(totals.value))}</div><div style="font-size:11px;font-weight:800;color:#64748b;">DIF. VALORIZADA</div></div></td>
       </tr></table>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin:-6px 0 22px;border-collapse:collapse;font-size:12px;color:#334155;">
+        <tr>
+          <td style="padding:8px;border:1px solid #e2e8f0;background:#f8fafc;"><strong>Unid. faltantes:</strong> ${escapeHTML(number2(totals.missingUnits))}</td>
+          <td style="padding:8px;border:1px solid #e2e8f0;background:#f8fafc;"><strong>Unid. sobrantes:</strong> ${escapeHTML(number2(totals.surplusUnits))}</td>
+          <td style="padding:8px;border:1px solid #e2e8f0;background:#f8fafc;"><strong>Dif. absoluta:</strong> ${escapeHTML(number2(totals.absoluteUnits))}</td>
+        </tr>
+      </table>
       <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Dashboard compatible</h2>
       <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="Gráfico auditoría"/></div>
-      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Top faltantes</h2>
+      <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Faltantes - todas las diferencias (${missingDifferences.length})</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
         <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
         <tbody>${missingRows}</tbody>
       </table>
-      <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Top sobrantes</h2>
+      <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Sobrantes - todas las diferencias (${surplusDifferences.length})</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
         <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
         <tbody>${surplusRows}</tbody>
@@ -1417,11 +1431,12 @@ export default function AuditoriaPage() {
 
             {registerTab === "summary" && (
               <div className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{totals.eri}%</div></div>
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrante</div><div className="text-2xl font-black text-blue-700">{totals.surplus}</div></div>
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Faltante</div><div className="text-2xl font-black text-red-600">{totals.missing}</div></div>
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">OK</div><div className="text-2xl font-black text-green-700">{totals.ok}</div></div>
+                  <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. unidades</div><div className={`text-lg font-black ${totals.netUnits < 0 ? "text-red-600" : "text-blue-700"}`}>{totals.netUnits > 0 ? "+" : ""}{number2(totals.netUnits)}</div></div>
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className="text-lg font-black">{money(totals.value)}</div></div>
                 </div>
 
