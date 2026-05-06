@@ -394,7 +394,13 @@ export default function AuditoriaPage() {
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
-    setRegisterTab(user?.role === "Administrador" ? "records" : "count");
+    // Restaurar el tab guardado en sessionStorage; si no hay, usar el default por rol
+    const savedTab = sessionStorage.getItem(AUDIT_REGISTER_TAB_KEY) as RegisterTab | null;
+    if (savedTab === "count" || savedTab === "records" || savedTab === "summary") {
+      setRegisterTab(savedTab);
+    } else {
+      setRegisterTab(user?.role === "Administrador" ? "summary" : "count");
+    }
     await loadSessionData(row.id);
   }
 
@@ -608,7 +614,7 @@ export default function AuditoriaPage() {
   async function loadSessionData(sessionId: string) {
     const { data: itemRows } = await supabase
       .from("audit_session_items")
-      .select("*, cyclic_products(sku, barcode, description, unit)")
+      .select("id, session_id, product_id, system_stock, source, observation, created_at, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
     const mappedItems = (itemRows || []).map((r: any) => ({
