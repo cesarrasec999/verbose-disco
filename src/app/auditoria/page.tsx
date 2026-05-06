@@ -608,28 +608,18 @@ export default function AuditoriaPage() {
   async function loadSessionData(sessionId: string) {
     const { data: itemRows } = await supabase
       .from("audit_session_items")
-      .select("*, cyclic_products(sku, barcode, description, unit)")
+      .select("id, session_id, product_id, source, system_stock, cost_snapshot, pending_extra, observation, created_at, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
       .order("created_at");
-
-    // Query separada para traer observaciones — el select(*) con join
-    // puede no incluir columnas agregadas despues del schema cache
-    const { data: obsRows } = await supabase
-      .from("audit_session_items")
-      .select("id, observation")
-      .eq("session_id", sessionId);
-    const obsMap = Object.fromEntries((obsRows || []).map((r: any) => [r.id, r.observation ?? ""]));
-
     const mappedItems = (itemRows || []).map((r: any) => ({
       ...r,
       sku: r.cyclic_products?.sku,
       barcode: r.cyclic_products?.barcode,
       description: r.cyclic_products?.description,
       unit: r.cyclic_products?.unit,
-      observation: obsMap[r.id] ?? r.observation ?? null,
     })) as AuditItem[];
     setItems(mappedItems);
-    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation ?? ""])));
+    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
     setItemStockDrafts(Object.fromEntries(mappedItems.map(item => [item.id, String(Number(item.system_stock || 0))])));
 
     const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at", { ascending: false });
