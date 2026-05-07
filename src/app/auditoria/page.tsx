@@ -10,8 +10,9 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 
 type Role = "Operario" | "Validador" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
-type MainTab = "sessions" | "register";
+type MainTab = "sessions" | "register" | "adminSummary";
 type RegisterTab = "count" | "records" | "summary";
+type AuditSummaryPeriod = "dia" | "mes" | "rango";
 type SummarySortKey = "sku" | "description" | "unit" | "stock" | "counted" | "diff" | "value" | "status" | "observation";
 type SortDirection = "asc" | "desc";
 
@@ -90,6 +91,38 @@ type AuditCount = {
   description?: string;
   unit?: string;
 };
+
+type AuditAdminSummaryRow = AuditSession & {
+  item_count: number;
+  count_records: number;
+  audited_items: number;
+  ok_items: number;
+  missing_items: number;
+  surplus_items: number;
+  not_counted_items: number;
+  diff_units: number;
+  diff_value: number;
+};
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDaysISO(date: string, days: number) {
+  const [year, month, day] = date.split("-").map(Number);
+  const current = new Date(year, month - 1, day);
+  current.setDate(current.getDate() + days);
+  return current.toISOString().slice(0, 10);
+}
+
+function localDateStartISO(date: string) {
+  return new Date(`${date}T00:00:00`).toISOString();
+}
+
+function monthLastDate(monthValue: string) {
+  const [year, month] = monthValue.split("-").map(Number);
+  return new Date(year, month, 0).getDate();
+}
 
 function cleanCode(value: string | number | null | undefined): string {
   const raw = String(value ?? "").trim();
@@ -175,7 +208,7 @@ export default function AuditoriaPage() {
   const [mainTab, setMainTab] = useState<MainTab>(() => {
     if (typeof window === "undefined") return "register";
     const saved = sessionStorage.getItem(AUDIT_MAIN_TAB_KEY);
-    if (saved === "sessions" || saved === "register") return saved;
+    if (saved === "sessions" || saved === "register" || saved === "adminSummary") return saved;
     return window.matchMedia("(max-width: 767px)").matches ? "register" : "sessions";
   });
   const [registerTab, setRegisterTab] = useState<RegisterTab>(() => {
@@ -187,6 +220,13 @@ export default function AuditoriaPage() {
   const [recordsQuery, setRecordsQuery] = useState("");
   const [summaryQuery, setSummaryQuery] = useState("");
   const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: SortDirection }>({ key: "value", direction: "desc" });
+  const [adminSummaryPeriod, setAdminSummaryPeriod] = useState<AuditSummaryPeriod>("dia");
+  const [adminSummaryDate, setAdminSummaryDate] = useState(todayISO());
+  const [adminSummaryMonth, setAdminSummaryMonth] = useState(todayISO().slice(0, 7));
+  const [adminSummaryFrom, setAdminSummaryFrom] = useState(todayISO().slice(0, 7) + "-01");
+  const [adminSummaryTo, setAdminSummaryTo] = useState(todayISO());
+  const [adminSummaryRows, setAdminSummaryRows] = useState<AuditAdminSummaryRow[]>([]);
+  const [adminSummaryLoading, setAdminSummaryLoading] = useState(false);
   const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
   const [manualProductCodePending, setManualProductCodePending] = useState("");
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
@@ -247,6 +287,12 @@ export default function AuditoriaPage() {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
     else sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
   }, [session?.id]);
+
+  useEffect(() => {
+    if (user?.role === "Administrador" && mainTab === "adminSummary") {
+      void loadAuditAdminSummary();
+    }
+  }, [user?.role, mainTab, adminSummaryPeriod, adminSummaryDate, adminSummaryMonth, adminSummaryFrom, adminSummaryTo]);
 
   useEffect(() => {
     if (!user) return;
@@ -364,6 +410,112 @@ export default function AuditoriaPage() {
       .order("started_at", { ascending: false })
       .limit(50);
     setSessions((data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[]);
+  }
+
+  function adminSummaryRange() {
+    if (adminSummaryPeriod === "dia") {
+      const date = adminSummaryDate || todayISO();
+      return { from: date, toExclusive: addDaysISO(date, 1), label: date };
+    }
+    if (adminSummaryPeriod === "mes") {
+      const month = adminSummaryMonth || todayISO().slice(0, 7);
+      const to = `${month}-${String(monthLastDate(month)).padStart(2, "0")}`;
+      return { from: `${month}-01`, toExclusive: addDaysISO(to, 1), label: month };
+    }
+    const rangeFrom = adminSummaryFrom || todayISO();
+    const rangeTo = adminSummaryTo || rangeFrom;
+    const from = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
+    const to = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
+    return { from, toExclusive: addDaysISO(to, 1), label: `${from} al ${to}` };
+  }
+
+  async function loadAuditAdminSummary() {
+    if (user?.role !== "Administrador") return;
+    setAdminSummaryLoading(true);
+    const range = adminSummaryRange();
+    const { data, error } = await supabase
+      .from("audit_sessions")
+      .select("*, stores(name), cyclic_users(full_name)")
+      .gte("started_at", localDateStartISO(range.from))
+      .lt("started_at", localDateStartISO(range.toExclusive))
+      .order("started_at", { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      setAdminSummaryLoading(false);
+      setMessage("Error cargando resumen de auditorias: " + error.message);
+      return;
+    }
+
+    const sessionRows = (data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[];
+    const sessionIds = sessionRows.map(row => row.id);
+    if (sessionIds.length === 0) {
+      setAdminSummaryRows([]);
+      setAdminSummaryLoading(false);
+      return;
+    }
+
+    const [{ data: itemData, error: itemError }, { data: countData, error: countError }] = await Promise.all([
+      supabase.from("audit_session_items").select("id,session_id,system_stock,cost_snapshot").in("session_id", sessionIds).limit(10000),
+      supabase.from("audit_counts").select("id,session_id,item_id,quantity").in("session_id", sessionIds).limit(10000),
+    ]);
+
+    if (itemError || countError) {
+      setAdminSummaryLoading(false);
+      setMessage("Error cargando detalle del resumen: " + (itemError?.message || countError?.message || ""));
+      return;
+    }
+
+    const countsByItem = new Map<string, number>();
+    const countRecordsBySession = new Map<string, number>();
+    for (const count of countData || []) {
+      countsByItem.set(count.item_id, (countsByItem.get(count.item_id) || 0) + Number(count.quantity || 0));
+      countRecordsBySession.set(count.session_id, (countRecordsBySession.get(count.session_id) || 0) + 1);
+    }
+
+    const itemsBySession = new Map<string, any[]>();
+    for (const item of itemData || []) {
+      if (!itemsBySession.has(item.session_id)) itemsBySession.set(item.session_id, []);
+      itemsBySession.get(item.session_id)!.push(item);
+    }
+
+    const rows = sessionRows.map(row => {
+      const rowItems = itemsBySession.get(row.id) || [];
+      let auditedItems = 0;
+      let okItems = 0;
+      let missingItems = 0;
+      let surplusItems = 0;
+      let diffUnits = 0;
+      let diffValue = 0;
+
+      for (const item of rowItems) {
+        const counted = countsByItem.get(item.id) || 0;
+        const stock = Number(item.system_stock || 0);
+        const diff = counted - stock;
+        if (countsByItem.has(item.id)) auditedItems += 1;
+        if (countsByItem.has(item.id) && diff === 0) okItems += 1;
+        if (diff < 0) missingItems += 1;
+        if (diff > 0) surplusItems += 1;
+        diffUnits += diff;
+        diffValue += diff * Number(item.cost_snapshot || 0);
+      }
+
+      return {
+        ...row,
+        item_count: rowItems.length,
+        count_records: countRecordsBySession.get(row.id) || 0,
+        audited_items: auditedItems,
+        ok_items: okItems,
+        missing_items: missingItems,
+        surplus_items: surplusItems,
+        not_counted_items: Math.max(0, rowItems.length - auditedItems),
+        diff_units: diffUnits,
+        diff_value: diffValue,
+      };
+    });
+
+    setAdminSummaryRows(rows);
+    setAdminSummaryLoading(false);
   }
 
   async function loadSavedSession(sessionId: string) {
@@ -1022,6 +1174,28 @@ export default function AuditoriaPage() {
       });
   }, [counts, items, recordsQuery]);
 
+  const adminSummaryTotals = useMemo(() => {
+    const finished = adminSummaryRows.filter(row => row.status === "finished").length;
+    const inProgress = adminSummaryRows.filter(row => row.status === "in_progress").length;
+    const auditedItems = adminSummaryRows.reduce((acc, row) => acc + row.audited_items, 0);
+    const okItems = adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0);
+    return {
+      sessions: adminSummaryRows.length,
+      finished,
+      inProgress,
+      stores: new Set(adminSummaryRows.map(row => row.store_id)).size,
+      items: adminSummaryRows.reduce((acc, row) => acc + row.item_count, 0),
+      auditedItems,
+      countRecords: adminSummaryRows.reduce((acc, row) => acc + row.count_records, 0),
+      missingItems: adminSummaryRows.reduce((acc, row) => acc + row.missing_items, 0),
+      surplusItems: adminSummaryRows.reduce((acc, row) => acc + row.surplus_items, 0),
+      notCountedItems: adminSummaryRows.reduce((acc, row) => acc + row.not_counted_items, 0),
+      diffUnits: adminSummaryRows.reduce((acc, row) => acc + row.diff_units, 0),
+      diffValue: adminSummaryRows.reduce((acc, row) => acc + row.diff_value, 0),
+      eri: auditedItems === 0 ? 0 : Math.round((okItems / auditedItems) * 100),
+    };
+  }, [adminSummaryRows]);
+
   function changeSummarySort(key: SummarySortKey) {
     setSummarySort(prev => ({
       key,
@@ -1066,6 +1240,40 @@ export default function AuditoriaPage() {
     XLSX.utils.book_append_sheet(workbook, worksheet, "Resumen por codigo");
     const storeName = (selectedStore?.name || session?.store_name || "tienda").replace(/[\\/:*?"<>|]+/g, "_");
     XLSX.writeFile(workbook, `resumen_por_codigo_${storeName}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  function downloadAdminSummaryExcel() {
+    if (adminSummaryRows.length === 0) {
+      setMessage("No hay sesiones en el resumen para descargar.");
+      return;
+    }
+    const rows = adminSummaryRows.map(row => ({
+      Tienda: row.store_name || row.store_id,
+      Auditor: row.auditor_name || "",
+      Estado: row.status === "finished" ? "Finalizada" : row.status === "cancelled" ? "Cancelada" : "En progreso",
+      Inicio: new Date(row.started_at).toLocaleString("es-PE"),
+      Fin: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
+      Codigos: row.item_count,
+      "Codigos contados": row.audited_items,
+      "Registros conteo": row.count_records,
+      OK: row.ok_items,
+      Faltantes: row.missing_items,
+      Sobrantes: row.surplus_items,
+      "No contados": row.not_counted_items,
+      "Dif. unidades": row.diff_units,
+      "Dif. valorizada": Number(row.diff_value || 0),
+      Observacion: row.observation || "",
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet["!cols"] = [
+      { wch: 28 }, { wch: 24 }, { wch: 14 }, { wch: 20 }, { wch: 20 },
+      { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 10 },
+      { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Resumen auditorias");
+    const range = adminSummaryRange().label.replace(/[\\/:*?"<>| ]+/g, "_");
+    XLSX.writeFile(workbook, `resumen_auditorias_${range}.xlsx`);
   }
 
   function escapeHTML(value: string | number | null | undefined) {
@@ -1234,6 +1442,7 @@ export default function AuditoriaPage() {
 
   if (!user) return <main className="min-h-screen grid place-items-center text-slate-500">Cargando...</main>;
 
+  const visibleMainTab = user.role === "Administrador" || mainTab !== "adminSummary" ? mainTab : "register";
   const tabClass = (active: boolean) => `flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${active ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"}`;
   const subTabClass = (active: boolean) => `flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition ${active ? "border-blue-700 bg-blue-700 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`;
 
@@ -1263,14 +1472,17 @@ export default function AuditoriaPage() {
       </header>
 
       <div className="mx-auto max-w-7xl px-3 py-4 md:px-5">
-        <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border bg-white p-1.5 shadow-sm">
-          <button onClick={() => setMainTab("sessions")} className={tabClass(mainTab === "sessions")}><Settings2 size={16} /> Sesiones</button>
-          <button onClick={() => setMainTab("register")} className={tabClass(mainTab === "register")}><ClipboardList size={16} /> Registro</button>
+        <div className={`mb-4 grid gap-2 rounded-2xl border bg-white p-1.5 shadow-sm ${user.role === "Administrador" ? "grid-cols-3" : "grid-cols-2"}`}>
+          <button onClick={() => setMainTab("sessions")} className={tabClass(visibleMainTab === "sessions")}><Settings2 size={16} /> Sesiones</button>
+          <button onClick={() => setMainTab("register")} className={tabClass(visibleMainTab === "register")}><ClipboardList size={16} /> Registro</button>
+          {user.role === "Administrador" && (
+            <button onClick={() => setMainTab("adminSummary")} className={tabClass(visibleMainTab === "adminSummary")}><BarChart3 size={16} /> Resumen admin</button>
+          )}
         </div>
 
         {message && <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-3 text-sm font-semibold text-blue-800">{message}</div>}
 
-        {mainTab === "sessions" && (
+        {visibleMainTab === "sessions" && (
           <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
             <section className="space-y-4">
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -1351,7 +1563,113 @@ export default function AuditoriaPage() {
           </div>
         )}
 
-        {mainTab === "register" && (
+        {visibleMainTab === "adminSummary" && user.role === "Administrador" && (
+          <section className="space-y-4">
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 className="font-black">Resumen de sesiones de auditoria</h2>
+                  <p className="text-sm text-slate-500">Consulta todas las sesiones creadas por dia, mes o rango.</p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto] lg:min-w-[680px]">
+                  <div className="grid grid-cols-3 gap-1 rounded-xl border bg-slate-50 p-1">
+                    <button onClick={() => setAdminSummaryPeriod("dia")} className={subTabClass(adminSummaryPeriod === "dia")}>Dia</button>
+                    <button onClick={() => setAdminSummaryPeriod("mes")} className={subTabClass(adminSummaryPeriod === "mes")}>Mes</button>
+                    <button onClick={() => setAdminSummaryPeriod("rango")} className={subTabClass(adminSummaryPeriod === "rango")}>Rango</button>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {adminSummaryPeriod === "dia" && (
+                      <input type="date" value={adminSummaryDate} onChange={e => setAdminSummaryDate(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm" />
+                    )}
+                    {adminSummaryPeriod === "mes" && (
+                      <input type="month" value={adminSummaryMonth} onChange={e => setAdminSummaryMonth(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm" />
+                    )}
+                    {adminSummaryPeriod === "rango" && (
+                      <>
+                        <input type="date" value={adminSummaryFrom} onChange={e => setAdminSummaryFrom(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm" />
+                        <input type="date" value={adminSummaryTo} onChange={e => setAdminSummaryTo(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm" />
+                      </>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={loadAuditAdminSummary} disabled={adminSummaryLoading} className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40">
+                      {adminSummaryLoading ? "Cargando..." : "Consultar"}
+                    </button>
+                    <button onClick={downloadAdminSummaryExcel} disabled={adminSummaryRows.length === 0} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Descargar Excel">
+                      <Download size={17} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sesiones</div><div className="text-2xl font-black">{adminSummaryTotals.sessions}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Tiendas</div><div className="text-2xl font-black">{adminSummaryTotals.stores}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Finalizadas</div><div className="text-2xl font-black text-green-700">{adminSummaryTotals.finished}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">En progreso</div><div className="text-2xl font-black text-blue-700">{adminSummaryTotals.inProgress}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{adminSummaryTotals.eri}%</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className="text-lg font-black">{money(adminSummaryTotals.diffValue)}</div></div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Codigos agregados</div><div className="text-xl font-black">{number2(adminSummaryTotals.items)}</div></div>
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Codigos contados</div><div className="text-xl font-black text-green-700">{number2(adminSummaryTotals.auditedItems)}</div></div>
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Faltantes</div><div className="text-xl font-black text-red-600">{number2(adminSummaryTotals.missingItems)}</div></div>
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes</div><div className="text-xl font-black text-blue-700">{number2(adminSummaryTotals.surplusItems)}</div></div>
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. unidades</div><div className={`text-xl font-black ${adminSummaryTotals.diffUnits < 0 ? "text-red-600" : adminSummaryTotals.diffUnits > 0 ? "text-blue-700" : "text-green-700"}`}>{adminSummaryTotals.diffUnits > 0 ? "+" : ""}{number2(adminSummaryTotals.diffUnits)}</div></div>
+            </div>
+
+            <div className="rounded-2xl border bg-white shadow-sm">
+              <div className="border-b px-4 py-3 font-black">Sesiones del periodo ({adminSummaryRows.length})</div>
+              <div className="max-h-[62vh] overflow-auto">
+                <table className="w-full min-w-[1180px] text-sm">
+                  <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
+                    <tr>
+                      <th className="p-2 text-left">Tienda</th>
+                      <th className="p-2 text-left">Auditor</th>
+                      <th className="p-2">Estado</th>
+                      <th className="p-2">Inicio</th>
+                      <th className="p-2">Codigos</th>
+                      <th className="p-2">Contados</th>
+                      <th className="p-2">Registros</th>
+                      <th className="p-2">OK</th>
+                      <th className="p-2">Falt.</th>
+                      <th className="p-2">Sobr.</th>
+                      <th className="p-2">No cont.</th>
+                      <th className="p-2">Dif. und.</th>
+                      <th className="p-2">Dif. valor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminSummaryRows.map(row => (
+                      <tr key={row.id} className="border-b hover:bg-slate-50">
+                        <td className="p-2 font-black">{row.store_name || row.store_id}</td>
+                        <td className="p-2">{row.auditor_name || "-"}</td>
+                        <td className="p-2 text-center text-xs font-black">{row.status === "finished" ? "Finalizada" : row.status === "cancelled" ? "Cancelada" : "En progreso"}</td>
+                        <td className="p-2 text-center text-xs">{new Date(row.started_at).toLocaleString("es-PE")}</td>
+                        <td className="p-2 text-center font-semibold">{number2(row.item_count)}</td>
+                        <td className="p-2 text-center font-semibold">{number2(row.audited_items)}</td>
+                        <td className="p-2 text-center font-semibold">{number2(row.count_records)}</td>
+                        <td className="p-2 text-center font-black text-green-700">{number2(row.ok_items)}</td>
+                        <td className="p-2 text-center font-black text-red-600">{number2(row.missing_items)}</td>
+                        <td className="p-2 text-center font-black text-blue-700">{number2(row.surplus_items)}</td>
+                        <td className="p-2 text-center font-semibold">{number2(row.not_counted_items)}</td>
+                        <td className={`p-2 text-center font-black ${row.diff_units < 0 ? "text-red-600" : row.diff_units > 0 ? "text-blue-700" : "text-green-700"}`}>{row.diff_units > 0 ? "+" : ""}{number2(row.diff_units)}</td>
+                        <td className="p-2 text-center text-xs font-semibold">{money(row.diff_value)}</td>
+                      </tr>
+                    ))}
+                    {!adminSummaryLoading && adminSummaryRows.length === 0 && (
+                      <tr><td colSpan={13} className="p-6 text-center text-sm font-semibold text-slate-500">No hay sesiones creadas en este periodo.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {visibleMainTab === "register" && (
           <section className="space-y-4">
             <div className="grid grid-cols-3 gap-2">
               <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>
