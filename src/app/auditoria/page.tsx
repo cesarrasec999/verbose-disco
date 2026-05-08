@@ -429,21 +429,54 @@ export default function AuditoriaPage() {
     return { from, toExclusive: addDaysISO(to, 1), label: `${from} al ${to}` };
   }
 
+  async function fetchPagedRows<T>(buildQuery: (from: number, to: number) => any, pageSize = 1000): Promise<T[]> {
+    const rows: T[] = [];
+    for (let page = 0; ; page += 1) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+      const { data, error } = await buildQuery(from, to);
+      if (error) throw error;
+      const pageRows = (data || []) as T[];
+      rows.push(...pageRows);
+      if (pageRows.length < pageSize) break;
+    }
+    return rows;
+  }
+
+  async function fetchAuditAdminDetails(tableName: "audit_session_items" | "audit_counts", selectColumns: string, sessionIds: string[]) {
+    const rows: any[] = [];
+    for (let i = 0; i < sessionIds.length; i += 200) {
+      const chunk = sessionIds.slice(i, i + 200);
+      const chunkRows = await fetchPagedRows<any>((from, to) =>
+        supabase
+          .from(tableName)
+          .select(selectColumns)
+          .in("session_id", chunk)
+          .range(from, to)
+      );
+      rows.push(...chunkRows);
+    }
+    return rows;
+  }
+
   async function loadAuditAdminSummary() {
     if (user?.role !== "Administrador") return;
     setAdminSummaryLoading(true);
     const range = adminSummaryRange();
-    const { data, error } = await supabase
-      .from("audit_sessions")
-      .select("*, stores(name), cyclic_users(full_name)")
-      .gte("started_at", localDateStartISO(range.from))
-      .lt("started_at", localDateStartISO(range.toExclusive))
-      .order("started_at", { ascending: false })
-      .limit(1000);
-
-    if (error) {
+    let data: any[] = [];
+    try {
+      data = await fetchPagedRows<any>((from, to) =>
+        supabase
+          .from("audit_sessions")
+          .select("*, stores(name), cyclic_users(full_name)")
+          .gte("started_at", localDateStartISO(range.from))
+          .lt("started_at", localDateStartISO(range.toExclusive))
+          .order("started_at", { ascending: false })
+          .range(from, to)
+      );
+    } catch (error: any) {
       setAdminSummaryLoading(false);
-      setMessage("Error cargando resumen de auditorias: " + error.message);
+      setMessage("Error cargando resumen de auditorias: " + (error?.message || error));
       return;
     }
 
@@ -455,14 +488,16 @@ export default function AuditoriaPage() {
       return;
     }
 
-    const [{ data: itemData, error: itemError }, { data: countData, error: countError }] = await Promise.all([
-      supabase.from("audit_session_items").select("id,session_id,system_stock,cost_snapshot").in("session_id", sessionIds).limit(10000),
-      supabase.from("audit_counts").select("id,session_id,item_id,quantity").in("session_id", sessionIds).limit(10000),
-    ]);
-
-    if (itemError || countError) {
+    let itemData: any[] = [];
+    let countData: any[] = [];
+    try {
+      [itemData, countData] = await Promise.all([
+        fetchAuditAdminDetails("audit_session_items", "id,session_id,system_stock,cost_snapshot", sessionIds),
+        fetchAuditAdminDetails("audit_counts", "id,session_id,item_id,quantity", sessionIds),
+      ]);
+    } catch (error: any) {
       setAdminSummaryLoading(false);
-      setMessage("Error cargando detalle del resumen: " + (itemError?.message || countError?.message || ""));
+      setMessage("Error cargando detalle del resumen: " + (error?.message || error));
       return;
     }
 
@@ -1092,6 +1127,13 @@ export default function AuditoriaPage() {
     return { item, total, diff, value, status };
   }), [items, counts]);
 
+  const activeItemCountedTotal = useMemo(() => {
+    if (!activeItem) return 0;
+    return counts
+      .filter(count => count.item_id === activeItem.id)
+      .reduce((acc, count) => acc + Number(count.quantity || 0), 0);
+  }, [activeItem, counts]);
+
   const totals = useMemo(() => {
     const audited = summaryRows.filter(r => r.status !== "No contado").length;
     const ok = summaryRows.filter(r => r.status === "OK").length;
@@ -1702,7 +1744,7 @@ export default function AuditoriaPage() {
                       <div className="min-w-0">
                         <div className="text-lg font-black">{activeItem.sku}</div>
                         <div className="line-clamp-2 text-sm text-slate-600">{activeItem.description}</div>
-                        <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {number2(activeItem.system_stock)} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                        <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {number2(activeItem.system_stock)} - Conteo: {number2(activeItemCountedTotal)} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
                       </div>
                       <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={20} /></button>
                     </div>

@@ -153,6 +153,15 @@ type AllStoreAssignmentSummary = {
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
+type ProductLocation = {
+    id: string;
+    store_id: string | null;
+    product_id: string;
+    sku: string;
+    location: string;
+    is_active: boolean;
+};
+
 // ══════════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════════
@@ -352,6 +361,7 @@ export default function DashboardPage() {
     const [refreshingStockId, setRefreshingStockId] = useState<string | null>(null);
     const [bulkRefreshingStocks, setBulkRefreshingStocks] = useState(false);
     const [locationRows, setLocationRows]         = useState<LocationRow[]>([{ location: "", qty: "" }]);
+    const [activeProductLocations, setActiveProductLocations] = useState<ProductLocation[]>([]);
     const [sinStock, setSinStock]                 = useState(false); // marcar "sin stock físico"
 
     // ─── Operario: reconteo ──────────────────────────────────
@@ -405,7 +415,7 @@ export default function DashboardPage() {
     const [editNote, setEditNote]           = useState("");
 
     // ─── Admin: maestro productos ────────────────────────────
-    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
+    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios"|"ubicaciones">("productos");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
     const [masterFileName, setMasterFileName] = useState("");
@@ -468,6 +478,13 @@ export default function DashboardPage() {
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
     const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
+
+    const [locationSearch, setLocationSearch] = useState("");
+    const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
+    const [locationBusy, setLocationBusy] = useState(false);
+    const [locationsFile, setLocationsFile] = useState<File|null>(null);
+    const [locationsFileName, setLocationsFileName] = useState("");
+    const locationsInputRef = useRef<HTMLInputElement|null>(null);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -546,7 +563,7 @@ export default function DashboardPage() {
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"progreso"|"dashboard" | null;
                 if (savedValTab) setValTab(savedValTab);
 
-                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
+                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios"|"ubicaciones" | null;
                 if (savedAdminTab) setAdminTab(savedAdminTab);
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
@@ -828,6 +845,7 @@ export default function DashboardPage() {
 
         setShowRecount(false);
         setRecountAssignment(null);
+        await registerCompletedAssignments(selectedStoreId, selectedDate);
         showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
     }
 
@@ -1030,9 +1048,7 @@ export default function DashboardPage() {
                 entry.ids.push(row.id);
             }
 
-            const productIdsAssignedToAll = [...grouped.entries()]
-                .filter(([, entry]) => entry.storeIds.size === targetStoreIds.size)
-                .map(([productId]) => productId);
+            const productIdsAssignedToAll = [...grouped.keys()];
 
             if (productIdsAssignedToAll.length === 0) { setAllStoreAssignmentSummary([]); return; }
 
@@ -1453,10 +1469,14 @@ export default function DashboardPage() {
     async function openCount(asgn: Assignment) {
         if (!requireOnlineForStockPhoto()) return;
         const existing = counts.filter(c => c.assignment_id === asgn.id);
+        const savedLocations = await loadProductLocations(asgn, asgn.store_id);
+        setActiveProductLocations(savedLocations);
         if (existing.length > 0) {
             setLocationRows(existing.map(c => ({ location: c.location, qty: String(c.counted_quantity) })));
         } else {
-            setLocationRows([{ location: "", qty: "" }]);
+            setLocationRows(savedLocations.length > 0
+                ? savedLocations.map(row => ({ location: row.location, qty: "" }))
+                : [{ location: "", qty: "" }]);
         }
         setSinStock(false);
         setActiveAssignment(asgn);
@@ -1633,6 +1653,7 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); savingCountRef.current = false; setSavingCount(false); return; }
         }
+        await upsertProductLocations(currentAssignment.product_id, currentAssignment.sku, currentAssignment.store_id, locationRows.map(row => row.location));
 
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
         await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
@@ -1711,10 +1732,29 @@ export default function DashboardPage() {
                 .from("stock_general")
                 .select("codsap")
                 .eq("sede", sede)
-                .in("codsap", chunk);
+                .in("codsap", chunk)
+                .gt("stock", 0);
             for (const row of data || []) available.add(fullProductCode(row.codsap));
         }
 
+        return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
+    }
+
+    async function filterProductsInAnyStoreStock(productsToFilter: Product[], targetStores: Store[]): Promise<Product[]> {
+        if (productsToFilter.length === 0 || targetStores.length === 0) return [];
+        const sedes = [...new Set(targetStores.map(store => String(store.erp_sede || store.name || "").trim()).filter(Boolean))];
+        if (sedes.length === 0) return [];
+        const skus = [...new Set(productsToFilter.map(product => fullProductCode(product.sku)).filter(Boolean))];
+        const available = new Set<string>();
+        for (let i = 0; i < skus.length; i += 500) {
+            const { data } = await supabase
+                .from("stock_general")
+                .select("codsap")
+                .in("codsap", skus.slice(i, i + 500))
+                .in("sede", sedes)
+                .gt("stock", 0);
+            for (const row of data || []) available.add(fullProductCode(row.codsap));
+        }
         return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
     }
 
@@ -2211,6 +2251,7 @@ export default function DashboardPage() {
         startingRecountRef.current = false;
         await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", false);
         await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", true);
+        await registerCompletedAssignments(selectedStoreId, selectedDate);
         setShowRecount(false);
         setRecountFinished(true);
         setRecountAssignment(null);
@@ -2285,9 +2326,9 @@ export default function DashboardPage() {
             .limit(limit);
 
         const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]));
-        return valStoreId && valStoreId !== ALL_STORES_VALUE
-            ? await filterProductsInStoreStock(preferred, valStoreId)
-            : preferred;
+        if (valStoreId && valStoreId !== ALL_STORES_VALUE) return filterProductsInStoreStock(preferred, valStoreId);
+        if (valStoreId === ALL_STORES_VALUE) return filterProductsInAnyStoreStock(preferred, activeAssignStores());
+        return preferred;
     }
 
     async function searchProductsForAssign(text: string) {
@@ -2301,7 +2342,9 @@ export default function DashboardPage() {
         const descRows = filterAssignableProducts((byDesc || []) as Product[]);
         const stockFilteredDesc = valStoreId && valStoreId !== ALL_STORES_VALUE
             ? await filterProductsInStoreStock(descRows, valStoreId)
-            : descRows;
+            : valStoreId === ALL_STORES_VALUE
+                ? await filterProductsInAnyStoreStock(descRows, activeAssignStores())
+                : descRows;
         const combined = [...byCode, ...stockFilteredDesc];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
@@ -2351,16 +2394,20 @@ export default function DashboardPage() {
             }
 
             const existingKeys = new Set(existingRows.map(row => `${row.store_id}__${row.product_id}`));
+            const completedKeys = await loadCompletedProductKeys(targetStores.map(store => store.id), cleanProducts.map(product => product.id));
             const toInsert: any[] = [];
             for (const store of targetStores) {
                 const sede = String(store.erp_sede || store.name || "").trim();
                 for (const product of cleanProducts) {
                     const key = `${store.id}__${product.id}`;
                     if (existingKeys.has(key)) continue;
+                    if (completedKeys.has(key)) continue;
+                    const stock = stockByStoreSku.get(`${sede}__${fullProductCode(product.sku)}`) ?? 0;
+                    if (stock <= 0) continue;
                     toInsert.push({
                         store_id: store.id,
                         product_id: product.id,
-                        system_stock: stockByStoreSku.get(`${sede}__${fullProductCode(product.sku)}`) ?? 0,
+                        system_stock: stock,
                         assigned_date: valDate,
                         assigned_by: user?.id,
                     });
@@ -2388,6 +2435,99 @@ export default function DashboardPage() {
 
     async function assignProduct(product: Product) {
         await assignProductsToStores([product], product.sku);
+    }
+
+    async function loadCompletedProductKeys(storeIds: string[], productIds: string[]): Promise<Set<string>> {
+        const keys = new Set<string>();
+        if (storeIds.length === 0 || productIds.length === 0) return keys;
+        try {
+            for (let i = 0; i < storeIds.length; i += 100) {
+                for (let j = 0; j < productIds.length; j += 500) {
+                    const { data, error } = await supabase
+                        .from("cyclic_completed_products")
+                        .select("store_id, product_id")
+                        .in("store_id", storeIds.slice(i, i + 100))
+                        .in("product_id", productIds.slice(j, j + 500));
+                    if (error) {
+                        console.warn("cyclic_completed_products no disponible:", error.message);
+                        return keys;
+                    }
+                    for (const row of data || []) keys.add(`${row.store_id}__${row.product_id}`);
+                }
+            }
+        } catch (error) {
+            console.warn("No se pudo consultar completados:", error);
+        }
+        return keys;
+    }
+
+    async function registerCompletedAssignments(storeId: string, date: string) {
+        if (!storeId || !date) return;
+        const completed = myAssignments.filter(a => a.counted);
+        if (completed.length === 0) return;
+        const rows = completed.map(a => ({
+            store_id: storeId,
+            product_id: a.product_id,
+            sku: fullProductCode(a.sku || ""),
+            completed_date: date,
+            source_assignment_id: a.id,
+            completed_by: user?.id || null,
+        })).filter(row => row.sku);
+        for (let i = 0; i < rows.length; i += 500) {
+            const { error } = await supabase
+                .from("cyclic_completed_products")
+                .upsert(rows.slice(i, i + 500), { onConflict: "store_id,product_id" });
+            if (error) {
+                console.warn("No se pudieron registrar completados:", error.message);
+                return;
+            }
+        }
+    }
+
+    async function loadProductLocations(product: Pick<Product, "id" | "sku"> | Pick<Assignment, "product_id" | "sku">, storeId: string): Promise<ProductLocation[]> {
+        const productId = "id" in product ? product.id : product.product_id;
+        if (!productId) return [];
+        const rows: ProductLocation[] = [];
+        try {
+            const { data, error } = await supabase
+                .from("product_locations")
+                .select("*")
+                .eq("product_id", productId)
+                .eq("is_active", true)
+                .or(`store_id.eq.${storeId},store_id.is.null`)
+                .order("location");
+            if (error) {
+                console.warn("product_locations no disponible:", error.message);
+                return [];
+            }
+            rows.push(...((data || []) as ProductLocation[]));
+        } catch (error) {
+            console.warn("No se pudieron cargar ubicaciones:", error);
+        }
+        return rows;
+    }
+
+    async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
+        const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        if (!productId || !sku || cleanLocations.length === 0) return;
+        const rows = cleanLocations.map(location => ({
+            store_id: storeId || null,
+            product_id: productId,
+            sku: fullProductCode(sku),
+            location,
+            is_active: true,
+            updated_by: user?.id || null,
+            updated_at: new Date().toISOString(),
+        }));
+        for (let i = 0; i < rows.length; i += 500) {
+            const { error } = await supabase
+                .from("product_locations")
+                .upsert(rows.slice(i, i + 500), { onConflict: "store_id,product_id,location" });
+            if (error) {
+                console.warn("No se pudieron guardar ubicaciones:", error.message);
+                return;
+            }
+        }
     }
 
     async function assignFirst30Results() {
@@ -2690,6 +2830,7 @@ export default function DashboardPage() {
             }
             const existingMap = new Map<string, ExistingAssignment>();
             for (const ea of existingAsgns) existingMap.set(ea.store_id + "__" + ea.product_id, ea);
+            const completedKeys = await loadCompletedProductKeys(storeIdsArr, [...new Set([...prodBySkuMap.values()].map(product => product.id))]);
 
             // ── PASO 6: Procesar filas y construir lotes ────────────────
             setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 60 });
@@ -2724,6 +2865,8 @@ export default function DashboardPage() {
                     const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
                     const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
                     if (!hasManualStock && syncedStock === undefined) stockNotFound++;
+                    if (completedKeys.has(targetStoreId + "__" + prod.id)) { skip++; continue; }
+                    if (stock <= 0) { skip++; continue; }
 
                     if (colCosto >= 0 && String(row[colCosto] ?? "").trim() !== "") {
                         const cost = parseCost(row[colCosto]);
@@ -2782,7 +2925,7 @@ export default function DashboardPage() {
 
             setBulkAssignProgress(null);
             const storeMsg = storeNotFound > 0 ? " " + storeNotFound + " tiendas no encontradas." : "";
-            const stockMsg = stockNotFound > 0 ? " " + stockNotFound + " sin stock sincronizado; se asignaron con 0." : "";
+            const stockMsg = stockNotFound > 0 ? " " + stockNotFound + " sin stock sincronizado; se omitieron salvo que el Excel tenga stock manual mayor a 0." : "";
             showMessage("✅ " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacíos. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
@@ -2958,6 +3101,7 @@ export default function DashboardPage() {
             updated_at: new Date().toISOString(),
         }).eq("id", editingCount.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
+        if (asg) await upsertProductLocations(asg.product_id, asg.sku, asg.store_id, [editLocation]);
         showMessage("✅ Registro actualizado.", "success");
         setEditingCount(null);
         loadValidadorData(valStoreId, valDate);
@@ -3286,6 +3430,135 @@ export default function DashboardPage() {
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario eliminado.", "success");
         loadAllUsers();
+    }
+
+    async function searchLocations() {
+        const term = locationSearch.trim();
+        if (!term) { setLocationResults([]); return; }
+        setLocationBusy(true);
+        try {
+            const productMatches = products.filter(product => {
+                const haystack = `${product.sku} ${product.description}`.toLowerCase();
+                return haystack.includes(term.toLowerCase()) || visibleProductCode(product.sku).includes(cleanCode(term));
+            }).slice(0, 80);
+            const productIds = productMatches.map(product => product.id);
+            let rows: ProductLocation[] = [];
+            if (productIds.length > 0) {
+                const { data, error } = await supabase
+                    .from("product_locations")
+                    .select("*")
+                    .in("product_id", productIds)
+                    .eq("is_active", true)
+                    .order("location");
+                if (error) throw error;
+                rows = (data || []) as ProductLocation[];
+            }
+            setLocationResults(rows);
+        } catch (error: any) {
+            showMessage("Error consultando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function saveLocationFromSearch(product: Product, location: string, storeId = valStoreId && valStoreId !== ALL_STORES_VALUE ? valStoreId : selectedStoreId) {
+        if (!location.trim()) return;
+        await upsertProductLocations(product.id, product.sku, storeId || "", [location]);
+        showMessage("Ubicación guardada.", "success");
+        await searchLocations();
+    }
+
+    async function replaceProductLocation(row: ProductLocation, location: string) {
+        const clean = location.trim().toUpperCase();
+        if (!clean) return;
+        setLocationBusy(true);
+        try {
+            const { error } = await supabase
+                .from("product_locations")
+                .update({ location: clean, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+                .eq("id", row.id);
+            if (error) throw error;
+            showMessage("Ubicacion actualizada.", "success");
+            await searchLocations();
+        } catch (error: any) {
+            showMessage("Error actualizando ubicacion: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function deactivateProductLocation(row: ProductLocation) {
+        if (!confirm(`Desactivar la ubicacion "${row.location}"?`)) return;
+        setLocationBusy(true);
+        try {
+            const { error } = await supabase
+                .from("product_locations")
+                .update({ is_active: false, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+                .eq("id", row.id);
+            if (error) throw error;
+            showMessage("Ubicacion desactivada.", "success");
+            await searchLocations();
+        } catch (error: any) {
+            showMessage("Error desactivando ubicacion: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function uploadLocationsExcel() {
+        if (!locationsFile) { showMessage("Selecciona el Excel de ubicaciones.", "error"); return; }
+        setLocationBusy(true);
+        try {
+            const data = await locationsFile.arrayBuffer();
+            const wb = XLSX.read(data, { type: "array" });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const body = rows.filter(row => row.some(value => String(value || "").trim()));
+            const first = body[0]?.map(value => String(value || "").trim().toLowerCase()) || [];
+            const hasHeader = first.some(cell => ["codigo", "código", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
+            const dataRows = hasHeader ? body.slice(1) : body;
+            const codeLocPairs = dataRows.map(row => ({
+                code: fullProductCode(row[0]),
+                location: String(row[1] || "").trim().toUpperCase(),
+            })).filter(row => row.code && row.location);
+
+            const codes = [...new Set(codeLocPairs.map(row => row.code))];
+            const prodMap = new Map<string, Product>();
+            for (let i = 0; i < codes.length; i += 500) {
+                const { data: found } = await supabase.from("cyclic_products").select("*").in("sku", codes.slice(i, i + 500)).eq("is_active", true);
+                for (const product of found || []) prodMap.set(fullProductCode(product.sku), product as Product);
+            }
+
+            const storeId = valStoreId && valStoreId !== ALL_STORES_VALUE ? valStoreId : selectedStoreId || null;
+            const upsertRows = codeLocPairs
+                .map(row => {
+                    const product = prodMap.get(row.code);
+                    if (!product) return null;
+                    return {
+                        store_id: storeId,
+                        product_id: product.id,
+                        sku: product.sku,
+                        location: row.location,
+                        is_active: true,
+                        updated_by: user?.id || null,
+                        updated_at: new Date().toISOString(),
+                    };
+                })
+                .filter(Boolean) as any[];
+
+            for (let i = 0; i < upsertRows.length; i += 500) {
+                const { error } = await supabase.from("product_locations").upsert(upsertRows.slice(i, i + 500), { onConflict: "store_id,product_id,location" });
+                if (error) throw error;
+            }
+            setLocationsFile(null);
+            setLocationsFileName("");
+            showMessage(`${upsertRows.length} ubicaciones cargadas. No encontrados: ${codeLocPairs.length - upsertRows.length}.`, "success");
+            if (locationsInputRef.current) locationsInputRef.current.value = "";
+        } catch (error: any) {
+            showMessage("Error cargando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
     }
 
     // ════════════════════════════════════════════════════════
@@ -4619,6 +4892,7 @@ export default function DashboardPage() {
                                 {([
                                     { key: "productos", icon: Database,  label: "Maestro productos" },
                                     { key: "tiendas",   icon: StoreIcon, label: "Tiendas"           },
+                                    { key: "ubicaciones", icon: Package, label: "Ubicaciones"       },
                                     { key: "usuarios",  icon: Users,     label: "Usuarios"           },
                                 ] as const).map(item => (
                                     (() => {
@@ -4685,6 +4959,7 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
                              activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
+                             activeTab === "admin"     && adminTab === "ubicaciones" ? "Ubicaciones" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
@@ -5675,8 +5950,8 @@ export default function DashboardPage() {
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <div>
-                                            <h3 className="font-bold text-slate-900">Codigos asignados a todas las tiendas ({allStoreAssignmentSummary.length})</h3>
-                                            <p className="text-xs text-slate-500">Resumen de codigos que existen en todas las tiendas activas para {valDate}.</p>
+                                            <h3 className="font-bold text-slate-900">Codigos asignados en tiendas ({allStoreAssignmentSummary.length})</h3>
+                                            <p className="text-xs text-slate-500">Resumen de codigos cargados para las tiendas activas en {valDate}.</p>
                                         </div>
                                         <button
                                             className="px-4 py-2 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition disabled:opacity-40"
@@ -5690,7 +5965,7 @@ export default function DashboardPage() {
                                         <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resumen...</div>
                                     ) : allStoreAssignmentSummary.length === 0 ? (
                                         <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
-                                            No hay codigos asignados a todas las tiendas para esta fecha.
+                                            No hay codigos asignados para esta fecha.
                                         </div>
                                     ) : (
                                         <div className="border rounded-2xl overflow-hidden">
@@ -6274,6 +6549,104 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
+                    {adminTab === "ubicaciones" && (
+                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-900">Ubicaciones de productos</h2>
+                                    <p className="text-sm text-slate-500 mt-1">Consulta, carga por Excel y mantiene ubicaciones por tienda para usarlas durante el conteo.</p>
+                                </div>
+                                <span className="rounded-full border bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
+                                    {valStoreId && valStoreId !== ALL_STORES_VALUE ? (allStores.find(s => s.id === valStoreId)?.name || "Tienda seleccionada") : "Usa la tienda seleccionada arriba"}
+                                </span>
+                            </div>
+
+                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
+                                <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
+                                <p className="text-xs text-slate-500">Formato: columna A = codigo, columna B = ubicacion. Se guarda para la tienda seleccionada arriba.</p>
+                                <div className="flex gap-3 flex-wrap items-center">
+                                    <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => locationsInputRef.current?.click()}>
+                                        {locationsFileName || "Seleccionar Excel"}
+                                    </button>
+                                    <input ref={locationsInputRef} type="file" accept=".xlsx,.xls" className="hidden"
+                                        onChange={e => { const f = e.target.files?.[0] || null; setLocationsFile(f); setLocationsFileName(f?.name || ""); e.target.value = ""; }} />
+                                    {locationsFile && (
+                                        <button className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={uploadLocationsExcel}>
+                                            Cargar ubicaciones
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border p-4 space-y-3">
+                                <p className="text-sm font-semibold text-slate-700">Buscar ubicaciones</p>
+                                <div className="flex gap-3 flex-wrap">
+                                    <input
+                                        className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[220px]"
+                                        placeholder="Codigo, barra o descripcion"
+                                        value={locationSearch}
+                                        onChange={e => setLocationSearch(e.target.value)}
+                                        onKeyDown={e => { if (e.key === "Enter") searchLocations(); }}
+                                    />
+                                    <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={searchLocations}>
+                                        {locationBusy ? "Consultando..." : "Consultar"}
+                                    </button>
+                                    <button
+                                        className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
+                                        disabled={locationBusy || !locationSearch.trim()}
+                                        onClick={() => {
+                                            const term = locationSearch.trim();
+                                            const product = products.find(p => fullProductCode(p.sku) === fullProductCode(term) || p.barcode === term || visibleProductCode(p.sku) === cleanCode(term));
+                                            if (!product) { showMessage("No encontre un producto exacto para agregar ubicacion.", "error"); return; }
+                                            const next = prompt("Nueva ubicacion");
+                                            if (next) void saveLocationFromSearch(product, next);
+                                        }}
+                                    >
+                                        Agregar ubicacion
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="border rounded-2xl overflow-hidden">
+                                <div className="max-h-[460px] overflow-auto">
+                                    <table className="w-full text-sm">
+                                        <thead className="bg-slate-100 sticky top-0">
+                                            <tr>
+                                                <th className="p-2 border text-left">Codigo</th>
+                                                <th className="p-2 border text-left">Descripcion</th>
+                                                <th className="p-2 border">Tienda</th>
+                                                <th className="p-2 border text-left">Ubicacion</th>
+                                                <th className="p-2 border">Accion</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {locationResults.map(row => {
+                                                const product = products.find(p => p.id === row.product_id);
+                                                const store = allStores.find(s => s.id === row.store_id);
+                                                return (
+                                                    <tr key={row.id}>
+                                                        <td className="p-2 border font-mono text-xs">{product?.sku || row.sku}</td>
+                                                        <td className="p-2 border text-slate-600">{product?.description || "-"}</td>
+                                                        <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
+                                                        <td className="p-2 border font-bold text-slate-900">{row.location}</td>
+                                                        <td className="p-2 border text-center whitespace-nowrap">
+                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
+                                                                const next = prompt("Nueva ubicacion", row.location);
+                                                                if (next) void replaceProductLocation(row, next);
+                                                            }}>Editar</button>
+                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Desactivar</button>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                            {locationResults.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-slate-400">Busca un producto o carga un Excel para ver ubicaciones.</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
+                    )}
+
                     {adminTab === "usuarios" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Usuarios</h2>
@@ -6437,9 +6810,13 @@ export default function DashboardPage() {
                                             <input
                                                 className="min-w-0 flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white focus:border-slate-400 focus:outline-none"
                                                 placeholder="Ej: A-01-03"
+                                                list={`product-location-options-${i}`}
                                                 value={row.location}
                                                 onChange={e => updateLocationRow(i, "location", e.target.value)}
                                             />
+                                            <datalist id={`product-location-options-${i}`}>
+                                                {activeProductLocations.map(loc => <option key={loc.id} value={loc.location} />)}
+                                            </datalist>
                                             <button
                                                 className="px-3 py-2 rounded-xl bg-slate-800 text-white text-xs active:bg-slate-600 active:scale-95 transition-all"
                                                 onClick={() => openScanner("location", i)}
