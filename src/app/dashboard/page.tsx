@@ -12,7 +12,7 @@ import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Packag
 //  TIPOS
 // ══════════════════════════════════════════════════════════
 type Role = "Operario" | "Validador" | "Administrador";
-type TabKey = "operario" | "validador" | "admin";
+type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
 
 type CyclicUser = {
     id: string;
@@ -137,6 +137,13 @@ type StoreProgress = {
     store_name: string;
     total_asignados: number;
     total_contados: number;
+    pct: number;
+};
+
+type GlobalStockProgress = {
+    total_stock_codes: number;
+    completed_codes: number;
+    pending_codes: number;
     pct: number;
 };
 
@@ -372,7 +379,7 @@ export default function DashboardPage() {
     const startingRecountRef = useRef(false);
 
     // ─── Escáner ─────────────────────────────────────────────
-    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|null>(null);
+    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|"location_lookup"|null>(null);
     const [scannerRunning, setScannerRunning] = useState(false);
     const [torchAvailable, setTorchAvailable] = useState(false);
     const [torchOn, setTorchOn]               = useState(false);
@@ -415,7 +422,7 @@ export default function DashboardPage() {
     const [editNote, setEditNote]           = useState("");
 
     // ─── Admin: maestro productos ────────────────────────────
-    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios"|"ubicaciones">("productos");
+    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
     const [masterFileName, setMasterFileName] = useState("");
@@ -480,6 +487,7 @@ export default function DashboardPage() {
     const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
 
     const [locationSearch, setLocationSearch] = useState("");
+    const [locationStoreId, setLocationStoreId] = useState("");
     const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
     const [locationBusy, setLocationBusy] = useState(false);
     const [locationsFile, setLocationsFile] = useState<File|null>(null);
@@ -508,6 +516,8 @@ export default function DashboardPage() {
     // ─── Dashboard en validador: progreso por tienda ─────────
     const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
     const [storeProgressLoading, setStoreProgressLoading] = useState(false);
+    const [globalStockProgress, setGlobalStockProgress] = useState<GlobalStockProgress|null>(null);
+    const [globalStockProgressLoading, setGlobalStockProgressLoading] = useState(false);
 
     // ─── Dashboard drill-down: tienda clickeada en vista día ─
     const [dashDrillSource, setDashDrillSource] = useState(false); // true = venimos del dashboard
@@ -547,6 +557,7 @@ export default function DashboardPage() {
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
                         (savedTab === "validador" && (u.role === "Validador" || u.role === "Administrador")) ||
+                        savedTab === "ubicaciones" ||
                         (savedTab === "admin" && u.role === "Administrador");
                     if (isValid) { setActiveTab(savedTab); }
                     else {
@@ -563,12 +574,13 @@ export default function DashboardPage() {
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"progreso"|"dashboard" | null;
                 if (savedValTab) setValTab(savedValTab);
 
-                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios"|"ubicaciones" | null;
-                if (savedAdminTab) setAdminTab(savedAdminTab);
+                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
+                if (savedAdminTab && ["productos","tiendas","usuarios"].includes(savedAdminTab)) setAdminTab(savedAdminTab);
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
                 if (savedValStoreId && (savedValStoreId !== ALL_STORES_VALUE || savedValTab === "asignar")) setValStoreId(savedValStoreId);
+                setLocationStoreId(u.role === "Operario" ? (u.store_id || "") : (savedValStoreId && savedValStoreId !== ALL_STORES_VALUE ? savedValStoreId : ""));
                 if (savedValDate)    setValDate(savedValDate);
 
                 // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
@@ -640,6 +652,12 @@ export default function DashboardPage() {
     useEffect(() => {
         if (adminTab) sessionStorage.setItem("cyclic_admin_tab", adminTab);
     }, [adminTab]);
+
+    useEffect(() => {
+        if (user?.role === "Operario" && user.store_id && locationStoreId !== user.store_id) {
+            setLocationStoreId(user.store_id);
+        }
+    }, [user, locationStoreId]);
 
     useEffect(() => {
         if (valStoreId) sessionStorage.setItem("cyclic_val_store", valStoreId);
@@ -1183,6 +1201,70 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  DASHBOARD — CARGA
     // ════════════════════════════════════════════════════════
+    async function loadGlobalStockProgress() {
+        if (!isAdmin) return;
+        setGlobalStockProgressLoading(true);
+        try {
+            const activeStores = allStores.filter(store => store.is_active);
+            const sedeToStoreId = new Map<string, string>();
+            for (const store of activeStores) {
+                const sede = String(store.erp_sede || store.name || "").trim();
+                if (sede) sedeToStoreId.set(sede, store.id);
+            }
+
+            const productBySku = new Map(products.map(product => [fullProductCode(product.sku), product.id]));
+            const stockPairs = new Set<string>();
+            const PAGE = 1000;
+            let page = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("stock_general")
+                    .select("sede,codsap,stock")
+                    .gt("stock", 0)
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) throw error;
+                for (const row of data || []) {
+                    const storeId = sedeToStoreId.get(String(row.sede || "").trim());
+                    const productId = productBySku.get(fullProductCode(row.codsap));
+                    if (storeId && productId) stockPairs.add(`${storeId}__${productId}`);
+                }
+                if (!data || data.length < PAGE) break;
+                page += 1;
+            }
+
+            const completed = new Set<string>();
+            const stockKeys = [...stockPairs];
+            const storeIds = [...new Set(stockKeys.map(key => key.split("__")[0]))];
+            const productIds = [...new Set(stockKeys.map(key => key.split("__")[1]))];
+            for (let i = 0; i < storeIds.length; i += 100) {
+                for (let j = 0; j < productIds.length; j += 500) {
+                    const { data } = await supabase
+                        .from("cyclic_completed_products")
+                        .select("store_id,product_id")
+                        .in("store_id", storeIds.slice(i, i + 100))
+                        .in("product_id", productIds.slice(j, j + 500));
+                    for (const row of data || []) {
+                        const key = `${row.store_id}__${row.product_id}`;
+                        if (stockPairs.has(key)) completed.add(key);
+                    }
+                }
+            }
+
+            const total = stockPairs.size;
+            const completedCount = completed.size;
+            setGlobalStockProgress({
+                total_stock_codes: total,
+                completed_codes: completedCount,
+                pending_codes: Math.max(0, total - completedCount),
+                pct: total > 0 ? Math.round((completedCount / total) * 100) : 0,
+            });
+        } catch (error: any) {
+            showMessage("Error cargando avance global: " + (error?.message || error), "error");
+        } finally {
+            setGlobalStockProgressLoading(false);
+        }
+    }
+
     async function loadDashboard() {
         setDashLoading(true);
         try {
@@ -2458,7 +2540,60 @@ export default function DashboardPage() {
         } catch (error) {
             console.warn("No se pudo consultar completados:", error);
         }
+        await inferAndPersistCompletedKeys(storeIds, productIds, keys);
         return keys;
+    }
+
+    async function inferAndPersistCompletedKeys(storeIds: string[], productIds: string[], keys: Set<string>) {
+        try {
+            const inferredRows: any[] = [];
+            const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
+            for (let i = 0; i < storeIds.length; i += 50) {
+                for (let j = 0; j < productIds.length; j += 300) {
+                    const { data: asgnRows, error } = await supabase
+                        .from("cyclic_assignments")
+                        .select("id,store_id,product_id,assigned_date,cyclic_products(sku)")
+                        .in("store_id", storeIds.slice(i, i + 50))
+                        .in("product_id", productIds.slice(j, j + 300));
+                    if (error || !asgnRows || asgnRows.length === 0) continue;
+
+                    const countedIds = new Set<string>();
+                    for (let k = 0; k < asgnRows.length; k += 500) {
+                        const { data: countRows } = await supabase
+                            .from("cyclic_counts")
+                            .select("assignment_id,location")
+                            .in("assignment_id", asgnRows.slice(k, k + 500).map((row: any) => row.id));
+                        for (const count of countRows || []) {
+                            if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+                        }
+                    }
+
+                    for (const row of asgnRows as any[]) {
+                        if (!countedIds.has(row.id)) continue;
+                        const key = `${row.store_id}__${row.product_id}`;
+                        if (keys.has(key)) continue;
+                        keys.add(key);
+                        inferredRows.push({
+                            store_id: row.store_id,
+                            product_id: row.product_id,
+                            sku: fullProductCode(row.cyclic_products?.sku || ""),
+                            completed_date: row.assigned_date,
+                            source_assignment_id: row.id,
+                            completed_by: null,
+                        });
+                    }
+                }
+            }
+
+            const rows = inferredRows.filter(row => row.sku);
+            for (let i = 0; i < rows.length; i += 500) {
+                await supabase
+                    .from("cyclic_completed_products")
+                    .upsert(rows.slice(i, i + 500), { onConflict: "store_id,product_id" });
+            }
+        } catch (error) {
+            console.warn("No se pudo inferir historial de completados:", error);
+        }
     }
 
     async function registerCompletedAssignments(storeId: string, date: string) {
@@ -3432,8 +3567,8 @@ export default function DashboardPage() {
         loadAllUsers();
     }
 
-    async function searchLocations() {
-        const term = locationSearch.trim();
+    async function searchLocations(queryText = locationSearch) {
+        const term = queryText.trim();
         if (!term) { setLocationResults([]); return; }
         setLocationBusy(true);
         try {
@@ -3449,6 +3584,7 @@ export default function DashboardPage() {
                     .select("*")
                     .in("product_id", productIds)
                     .eq("is_active", true)
+                    .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
                     .order("location");
                 if (error) throw error;
                 rows = (data || []) as ProductLocation[];
@@ -3461,7 +3597,7 @@ export default function DashboardPage() {
         }
     }
 
-    async function saveLocationFromSearch(product: Product, location: string, storeId = valStoreId && valStoreId !== ALL_STORES_VALUE ? valStoreId : selectedStoreId) {
+    async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
         if (!location.trim()) return;
         await upsertProductLocations(product.id, product.sku, storeId || "", [location]);
         showMessage("Ubicación guardada.", "success");
@@ -3529,7 +3665,7 @@ export default function DashboardPage() {
                 for (const product of found || []) prodMap.set(fullProductCode(product.sku), product as Product);
             }
 
-            const storeId = valStoreId && valStoreId !== ALL_STORES_VALUE ? valStoreId : selectedStoreId || null;
+            const storeId = locationStoreId || null;
             const upsertRows = codeLocPairs
                 .map(row => {
                     const product = prodMap.get(row.code);
@@ -3606,9 +3742,16 @@ export default function DashboardPage() {
             showMessage("Ubicación escaneada.", "success");
             closeScanner();
         }
+
+        if (scannerTarget === "location_lookup") {
+            closeScanner();
+            setLocationSearch(v);
+            await searchLocations(v);
+            return;
+        }
     }
 
-    function openScanner(target: "product"|"location"|"recount_location", rowIndex: number = 0) {
+    function openScanner(target: "product"|"location"|"recount_location"|"location_lookup", rowIndex: number = 0) {
         clearMessage();
         scanHandledRef.current = false;
         setScanningRowIndex(rowIndex);
@@ -4836,7 +4979,7 @@ export default function DashboardPage() {
                                             if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); }
                                             if (item.key === "registros" && valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "resumen"   && valStoreId && valStoreId !== ALL_STORES_VALUE) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
-                                            if (item.key === "progreso")  loadStoreProgress(dashDate);
+                                            if (item.key === "progreso")  { loadStoreProgress(dashDate); if (isAdmin) loadGlobalStockProgress(); }
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                             activeTab === "validador" && valTab === item.key
@@ -4854,8 +4997,38 @@ export default function DashboardPage() {
                         </>
                     )}
 
+                    {!isAdmin && (
+                        <div className="px-3 mt-1">
+                            <button
+                                onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                    activeTab === "ubicaciones"
+                                        ? "bg-emerald-600 text-white shadow-lg"
+                                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                }`}
+                            >
+                                <Package size={16} />
+                                <span className="truncate">Ubicaciones</span>
+                            </button>
+                        </div>
+                    )}
+
                     {isAdmin && (
                         <>
+                    <div className="px-3 mt-1">
+                        <button
+                            onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                activeTab === "ubicaciones"
+                                    ? "bg-emerald-600 text-white shadow-lg"
+                                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                            }`}
+                        >
+                            <Package size={16} />
+                            <span className="truncate">Ubicaciones</span>
+                        </button>
+                    </div>
+
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
                             </div>
@@ -4892,7 +5065,6 @@ export default function DashboardPage() {
                                 {([
                                     { key: "productos", icon: Database,  label: "Maestro productos" },
                                     { key: "tiendas",   icon: StoreIcon, label: "Tiendas"           },
-                                    { key: "ubicaciones", icon: Package, label: "Ubicaciones"       },
                                     { key: "usuarios",  icon: Users,     label: "Usuarios"           },
                                 ] as const).map(item => (
                                     (() => {
@@ -4957,9 +5129,9 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
+                             activeTab === "ubicaciones" ? "Ubicaciones" :
                              activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
                              activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
-                             activeTab === "admin"     && adminTab === "ubicaciones" ? "Ubicaciones" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
@@ -5491,7 +5663,7 @@ export default function DashboardPage() {
                                             <input type="date" className="border rounded-2xl p-2.5 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
                                         </div>
                                         <button
-                                            onClick={() => loadStoreProgress(dashDate)}
+                                            onClick={() => { loadStoreProgress(dashDate); if (isAdmin) loadGlobalStockProgress(); }}
                                             disabled={storeProgressLoading}
                                             className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-50"
                                         >
@@ -5499,6 +5671,40 @@ export default function DashboardPage() {
                                         </button>
                                     </div>
                                 </div>
+
+                                {isAdmin && (
+                                    <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
+                                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                                            <div>
+                                                <h3 className="font-bold text-slate-900">Avance contra maestro con stock</h3>
+                                                <p className="text-xs text-slate-500">Codigos ya contados contra todos los codigos con stock de todas las tiendas activas.</p>
+                                            </div>
+                                            <button className="px-4 py-2 rounded-xl border bg-white text-xs font-bold text-slate-700 disabled:opacity-40" disabled={globalStockProgressLoading} onClick={loadGlobalStockProgress}>
+                                                {globalStockProgressLoading ? "Calculando..." : "Actualizar avance"}
+                                            </button>
+                                        </div>
+                                        {globalStockProgress ? (
+                                            <>
+                                                <div className="flex flex-wrap items-end justify-between gap-3">
+                                                    <div className="text-3xl font-black text-slate-900">{globalStockProgress.pct}%</div>
+                                                    <div className="text-sm font-bold text-slate-600">
+                                                        {formatNumber(globalStockProgress.completed_codes)} / {formatNumber(globalStockProgress.total_stock_codes)} auditados
+                                                    </div>
+                                                </div>
+                                                <div className="h-4 overflow-hidden rounded-full bg-slate-200">
+                                                    <div className="h-full rounded-full bg-emerald-600 transition-all" style={{ width: `${globalStockProgress.pct}%` }} />
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold text-slate-600">
+                                                    <div className="rounded-xl bg-white p-2 border">Con stock: {formatNumber(globalStockProgress.total_stock_codes)}</div>
+                                                    <div className="rounded-xl bg-white p-2 border text-emerald-700">Contados: {formatNumber(globalStockProgress.completed_codes)}</div>
+                                                    <div className="rounded-xl bg-white p-2 border text-amber-700">Pendientes: {formatNumber(globalStockProgress.pending_codes)}</div>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="rounded-xl border border-dashed bg-white p-4 text-center text-sm font-semibold text-slate-500">Presiona actualizar para calcular el avance global.</div>
+                                        )}
+                                    </div>
+                                )}
 
                                 {storeProgressLoading ? (
                                     <div className="text-center text-slate-400 py-8">Cargando progreso...</div>
@@ -6400,11 +6606,11 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB ADMIN
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "admin" && isAdmin && (
+            {((activeTab === "admin" && isAdmin) || activeTab === "ubicaciones") && (
                 <>
 
                     {/* ── ADMIN: MAESTRO PRODUCTOS ──────────────────────── */}
-                    {adminTab === "productos" && (
+                    {activeTab === "admin" && adminTab === "productos" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
@@ -6507,7 +6713,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── ADMIN: TIENDAS ────────────────────────────────── */}
-                    {adminTab === "tiendas" && (
+                    {activeTab === "admin" && adminTab === "tiendas" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Tiendas</h2>
                             <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
@@ -6549,21 +6755,32 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
-                    {adminTab === "ubicaciones" && (
+                    {activeTab === "ubicaciones" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div>
                                     <h2 className="text-xl font-bold text-slate-900">Ubicaciones de productos</h2>
                                     <p className="text-sm text-slate-500 mt-1">Consulta, carga por Excel y mantiene ubicaciones por tienda para usarlas durante el conteo.</p>
                                 </div>
-                                <span className="rounded-full border bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
-                                    {valStoreId && valStoreId !== ALL_STORES_VALUE ? (allStores.find(s => s.id === valStoreId)?.name || "Tienda seleccionada") : "Usa la tienda seleccionada arriba"}
-                                </span>
+                                {user?.role === "Operario" ? (
+                                    <span className="rounded-full border bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">
+                                        {allStores.find(s => s.id === locationStoreId)?.name || "Tienda asignada"}
+                                    </span>
+                                ) : (
+                                    <select
+                                        className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                        value={locationStoreId}
+                                        onChange={e => { setLocationStoreId(e.target.value); setLocationResults([]); }}
+                                    >
+                                        <option value="">Selecciona tienda</option>
+                                        {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                    </select>
+                                )}
                             </div>
 
                             <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                <p className="text-xs text-slate-500">Formato: columna A = codigo, columna B = ubicacion. Se guarda para la tienda seleccionada arriba.</p>
+                                <p className="text-xs text-slate-500">Formato: columna A = codigo, columna B = ubicacion. Se guarda para la tienda seleccionada.</p>
                                 <div className="flex gap-3 flex-wrap items-center">
                                     <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => locationsInputRef.current?.click()}>
                                         {locationsFileName || "Seleccionar Excel"}
@@ -6588,7 +6805,10 @@ export default function DashboardPage() {
                                         onChange={e => setLocationSearch(e.target.value)}
                                         onKeyDown={e => { if (e.key === "Enter") searchLocations(); }}
                                     />
-                                    <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={searchLocations}>
+                                    <button className="px-4 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={() => openScanner("location_lookup")} title="Escanear codigo">
+                                        <QrCode size={16} className="inline mr-1" /> Escanear
+                                    </button>
+                                    <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
                                         {locationBusy ? "Consultando..." : "Consultar"}
                                     </button>
                                     <button
@@ -6647,7 +6867,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {adminTab === "usuarios" && (
+                    {activeTab === "admin" && adminTab === "usuarios" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Usuarios</h2>
                             <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">

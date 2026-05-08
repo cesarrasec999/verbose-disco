@@ -471,6 +471,7 @@ export default function AuditoriaPage() {
           .select("*, stores(name), cyclic_users(full_name)")
           .gte("started_at", localDateStartISO(range.from))
           .lt("started_at", localDateStartISO(range.toExclusive))
+          .eq("status", "finished")
           .order("started_at", { ascending: false })
           .range(from, to)
       );
@@ -1217,16 +1218,11 @@ export default function AuditoriaPage() {
   }, [counts, items, recordsQuery]);
 
   const adminSummaryTotals = useMemo(() => {
-    const finished = adminSummaryRows.filter(row => row.status === "finished").length;
-    const inProgress = adminSummaryRows.filter(row => row.status === "in_progress").length;
     const auditedItems = adminSummaryRows.reduce((acc, row) => acc + row.audited_items, 0);
     const okItems = adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0);
     return {
       sessions: adminSummaryRows.length,
-      finished,
-      inProgress,
       stores: new Set(adminSummaryRows.map(row => row.store_id)).size,
-      items: adminSummaryRows.reduce((acc, row) => acc + row.item_count, 0),
       auditedItems,
       countRecords: adminSummaryRows.reduce((acc, row) => acc + row.count_records, 0),
       missingItems: adminSummaryRows.reduce((acc, row) => acc + row.missing_items, 0),
@@ -1295,13 +1291,11 @@ export default function AuditoriaPage() {
       Estado: row.status === "finished" ? "Finalizada" : row.status === "cancelled" ? "Cancelada" : "En progreso",
       Inicio: new Date(row.started_at).toLocaleString("es-PE"),
       Fin: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
-      Codigos: row.item_count,
-      "Codigos contados": row.audited_items,
+      "Codigos auditados": row.audited_items,
       "Registros conteo": row.count_records,
       OK: row.ok_items,
       Faltantes: row.missing_items,
       Sobrantes: row.surplus_items,
-      "No contados": row.not_counted_items,
       "Dif. unidades": row.diff_units,
       "Dif. valorizada": Number(row.diff_value || 0),
       Observacion: row.observation || "",
@@ -1309,8 +1303,8 @@ export default function AuditoriaPage() {
     const worksheet = XLSX.utils.json_to_sheet(rows);
     worksheet["!cols"] = [
       { wch: 28 }, { wch: 24 }, { wch: 14 }, { wch: 20 }, { wch: 20 },
-      { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 10 },
-      { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
+      { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 10 },
+      { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
     ];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Resumen auditorias");
@@ -1648,22 +1642,21 @@ export default function AuditoriaPage() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sesiones</div><div className="text-2xl font-black">{adminSummaryTotals.sessions}</div></div>
               <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Tiendas</div><div className="text-2xl font-black">{adminSummaryTotals.stores}</div></div>
-              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Finalizadas</div><div className="text-2xl font-black text-green-700">{adminSummaryTotals.finished}</div></div>
-              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">En progreso</div><div className="text-2xl font-black text-blue-700">{adminSummaryTotals.inProgress}</div></div>
               <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{adminSummaryTotals.eri}%</div></div>
-              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className="text-lg font-black">{money(adminSummaryTotals.diffValue)}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. valorizada</div><div className={`text-lg font-black ${adminSummaryTotals.diffValue < 0 ? "text-red-600" : adminSummaryTotals.diffValue > 0 ? "text-blue-700" : "text-green-700"}`}>{money(adminSummaryTotals.diffValue)}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Registros</div><div className="text-2xl font-black">{number2(adminSummaryTotals.countRecords)}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. unidades</div><div className={`text-2xl font-black ${adminSummaryTotals.diffUnits < 0 ? "text-red-600" : adminSummaryTotals.diffUnits > 0 ? "text-blue-700" : "text-green-700"}`}>{adminSummaryTotals.diffUnits > 0 ? "+" : ""}{number2(adminSummaryTotals.diffUnits)}</div></div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Codigos agregados</div><div className="text-xl font-black">{number2(adminSummaryTotals.items)}</div></div>
-              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Codigos contados</div><div className="text-xl font-black text-green-700">{number2(adminSummaryTotals.auditedItems)}</div></div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Codigos auditados</div><div className="text-xl font-black text-green-700">{number2(adminSummaryTotals.auditedItems)}</div></div>
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Faltantes</div><div className="text-xl font-black text-red-600">{number2(adminSummaryTotals.missingItems)}</div></div>
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes</div><div className="text-xl font-black text-blue-700">{number2(adminSummaryTotals.surplusItems)}</div></div>
-              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Dif. unidades</div><div className={`text-xl font-black ${adminSummaryTotals.diffUnits < 0 ? "text-red-600" : adminSummaryTotals.diffUnits > 0 ? "text-blue-700" : "text-green-700"}`}>{adminSummaryTotals.diffUnits > 0 ? "+" : ""}{number2(adminSummaryTotals.diffUnits)}</div></div>
+              <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">OK</div><div className="text-xl font-black text-green-700">{number2(adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0))}</div></div>
             </div>
 
             <div className="rounded-2xl border bg-white shadow-sm">
-              <div className="border-b px-4 py-3 font-black">Sesiones del periodo ({adminSummaryRows.length})</div>
+              <div className="border-b px-4 py-3 font-black">Sesiones finalizadas del periodo ({adminSummaryRows.length})</div>
               <div className="max-h-[62vh] overflow-auto">
                 <table className="w-full min-w-[1180px] text-sm">
                   <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
@@ -1672,13 +1665,11 @@ export default function AuditoriaPage() {
                       <th className="p-2 text-left">Auditor</th>
                       <th className="p-2">Estado</th>
                       <th className="p-2">Inicio</th>
-                      <th className="p-2">Codigos</th>
-                      <th className="p-2">Contados</th>
+                      <th className="p-2">Auditados</th>
                       <th className="p-2">Registros</th>
                       <th className="p-2">OK</th>
                       <th className="p-2">Falt.</th>
                       <th className="p-2">Sobr.</th>
-                      <th className="p-2">No cont.</th>
                       <th className="p-2">Dif. und.</th>
                       <th className="p-2">Dif. valor</th>
                     </tr>
@@ -1690,19 +1681,17 @@ export default function AuditoriaPage() {
                         <td className="p-2">{row.auditor_name || "-"}</td>
                         <td className="p-2 text-center text-xs font-black">{row.status === "finished" ? "Finalizada" : row.status === "cancelled" ? "Cancelada" : "En progreso"}</td>
                         <td className="p-2 text-center text-xs">{new Date(row.started_at).toLocaleString("es-PE")}</td>
-                        <td className="p-2 text-center font-semibold">{number2(row.item_count)}</td>
                         <td className="p-2 text-center font-semibold">{number2(row.audited_items)}</td>
                         <td className="p-2 text-center font-semibold">{number2(row.count_records)}</td>
                         <td className="p-2 text-center font-black text-green-700">{number2(row.ok_items)}</td>
                         <td className="p-2 text-center font-black text-red-600">{number2(row.missing_items)}</td>
                         <td className="p-2 text-center font-black text-blue-700">{number2(row.surplus_items)}</td>
-                        <td className="p-2 text-center font-semibold">{number2(row.not_counted_items)}</td>
                         <td className={`p-2 text-center font-black ${row.diff_units < 0 ? "text-red-600" : row.diff_units > 0 ? "text-blue-700" : "text-green-700"}`}>{row.diff_units > 0 ? "+" : ""}{number2(row.diff_units)}</td>
-                        <td className="p-2 text-center text-xs font-semibold">{money(row.diff_value)}</td>
+                        <td className={`p-2 text-center text-xs font-black ${row.diff_value < 0 ? "text-red-600" : row.diff_value > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.diff_value)}</td>
                       </tr>
                     ))}
                     {!adminSummaryLoading && adminSummaryRows.length === 0 && (
-                      <tr><td colSpan={13} className="p-6 text-center text-sm font-semibold text-slate-500">No hay sesiones creadas en este periodo.</td></tr>
+                      <tr><td colSpan={11} className="p-6 text-center text-sm font-semibold text-slate-500">No hay sesiones finalizadas en este periodo.</td></tr>
                     )}
                   </tbody>
                 </table>
