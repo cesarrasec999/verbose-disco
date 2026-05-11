@@ -4237,6 +4237,7 @@ export default function DashboardPage() {
                 let inventoryValue = 0;
                 let missingCostCodes = 0;
                 for (const [sku, stock] of stockBySku.entries()) {
+                    if (nonInventorySkuSet.has(sku.toUpperCase())) continue;
                     const cost = costBySku.get(sku) || 0;
                     totalUnits = r2(totalUnits + stock);
                     inventoryValue = r2(inventoryValue + r2(stock * cost));
@@ -4272,7 +4273,6 @@ export default function DashboardPage() {
         }
         const ws = XLSX.utils.json_to_sheet(inventoryReportRows.map(row => ({
             Tienda: row.store_name,
-            SedeERP: row.sede,
             CodigosConStock: row.codes_with_stock,
             Unidades: row.total_units,
             Valorizado: row.inventory_value,
@@ -4307,6 +4307,8 @@ export default function DashboardPage() {
             const sede = store?.erp_sede || rawStore;
             const key = store?.id || storeName.toLowerCase();
             const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "codigo", "cod.sap", "codsap", "sku"]) || "").trim();
+            const fullCode = fullProductCode(code).toUpperCase();
+            if (fullCode && nonInventorySkuSet.has(fullCode)) continue;
             const stock = parseCost(cellByHeaders(row, headers, ["unidades", "stock", "cantidad", "cant.disponible", "cant disponible"]));
             const cost = parseCost(cellByHeaders(row, headers, ["costo prom", "costo", "ult costo", "cost"]));
             const valueFromFile = parseCost(cellByHeaders(row, headers, ["valorizado", "valor", "total valor", "importe"]));
@@ -5875,7 +5877,7 @@ export default function DashboardPage() {
                     {isValOrAdm && (
                         <div className="px-3 mt-1">
                             <button
-                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); if (inventoryReportRows.length === 0) void loadInventoryValuationReport(); void loadInventorySnapshots(); }}
+                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); void loadInventorySnapshots(); }}
                                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                     activeTab === "reportes"
                                         ? "bg-cyan-600 text-white shadow-lg"
@@ -7713,7 +7715,6 @@ export default function DashboardPage() {
                                 <thead className="bg-slate-100 sticky top-0">
                                     <tr>
                                         <th className="p-2 border text-left">Tienda</th>
-                                        <th className="p-2 border text-left">Sede ERP</th>
                                         <th className="p-2 border text-right">Codigos</th>
                                         <th className="p-2 border text-right">Unidades</th>
                                         <th className="p-2 border text-right">Valorizado</th>
@@ -7724,7 +7725,6 @@ export default function DashboardPage() {
                                     {inventoryReportRows.map(row => (
                                         <tr key={row.store_id} className="hover:bg-slate-50">
                                             <td className="p-2 border font-bold text-slate-900">{row.store_name}</td>
-                                            <td className="p-2 border text-slate-500">{row.sede}</td>
                                             <td className="p-2 border text-right font-semibold">{formatNumber(row.codes_with_stock)}</td>
                                             <td className="p-2 border text-right font-semibold">{formatNumber(row.total_units)}</td>
                                             <td className="p-2 border text-right font-black text-slate-900">{formatMoney(row.inventory_value)}</td>
@@ -7733,7 +7733,7 @@ export default function DashboardPage() {
                                     ))}
                                     {inventoryReportRows.length === 0 && (
                                         <tr>
-                                            <td colSpan={6} className="p-8 text-center text-slate-400">
+                                            <td colSpan={5} className="p-8 text-center text-slate-400">
                                                 {inventoryReportLoading ? "Generando reporte..." : "Actualiza el reporte para ver el valorizado por tienda."}
                                             </td>
                                         </tr>
