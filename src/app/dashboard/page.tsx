@@ -334,6 +334,16 @@ function formatNumber(v: number | string | null | undefined) {
     return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
 }
 
+function escapeHtml(value: unknown) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+    }[char] || char));
+}
+
 /** Redondea a 2 decimales eliminando errores de punto flotante */
 function r2(v: number): number {
     return Math.round((v + Number.EPSILON) * 100) / 100;
@@ -2501,6 +2511,192 @@ export default function DashboardPage() {
         setRecountAssignment(null);
         showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
         loadOperarioData(selectedStoreId, selectedDate);
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  OPERARIO — REPORTE DE RECONTEO
+    // ════════════════════════════════════════════════════════
+    function generateRecountReport() {
+        if (myAssignments.length === 0) {
+            showMessage("No hay codigos asignados para generar el reporte.", "error");
+            return;
+        }
+
+        const storeName = allStores.find(s => s.id === selectedStoreId)?.name || myAssignments[0]?.store_name || selectedStoreId || "-";
+        const realCounts = counts.filter(c => !isSessionFlagLocation(c.location));
+        const countsByAssignment = new Map<string, CountRecord[]>();
+        for (const count of realCounts) {
+            if (!countsByAssignment.has(count.assignment_id)) countsByAssignment.set(count.assignment_id, []);
+            countsByAssignment.get(count.assignment_id)!.push(count);
+        }
+
+        const rows = myAssignments.map(assignment => {
+            const assignmentCounts = countsByAssignment.get(assignment.id) || [];
+            const countedQty = r2(assignmentCounts.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
+            const systemStock = Number(assignment.system_stock || assignmentCounts[0]?.stock_snapshot || 0);
+            const difference = r2(countedQty - systemStock);
+            const cost = Number(assignment.cost || assignmentCounts[0]?.cost || 0);
+            const locations = assignmentCounts.length > 0
+                ? assignmentCounts.map(count => `${count.location === "__sin_stock__" ? "Sin stock fisico" : count.location || "-"}: ${formatNumber(count.counted_quantity)}`).join(" | ")
+                : "Sin conteo";
+            return {
+                sku: assignment.sku || "",
+                description: assignment.description || "",
+                unit: assignment.unit || "",
+                systemStock,
+                countedQty,
+                difference,
+                cost,
+                valueDifference: r2(difference * cost),
+                locations,
+                status: difference === 0 ? "ERI" : difference < 0 ? "Faltante" : "Sobrante",
+            };
+        }).sort((a, b) => {
+            const statusRank = (status: string) => status === "Faltante" ? 0 : status === "Sobrante" ? 1 : 2;
+            return statusRank(a.status) - statusRank(b.status) || a.sku.localeCompare(b.sku);
+        });
+
+        const totalCodes = rows.length;
+        const eriCodes = rows.filter(row => row.difference === 0).length;
+        const faltanteCodes = rows.filter(row => row.difference < 0).length;
+        const sobranteCodes = rows.filter(row => row.difference > 0).length;
+        const eriPct = totalCodes > 0 ? Math.round((eriCodes / totalCodes) * 100) : 0;
+        const faltanteQty = r2(rows.filter(row => row.difference < 0).reduce((sum, row) => sum + Math.abs(row.difference), 0));
+        const sobranteQty = r2(rows.filter(row => row.difference > 0).reduce((sum, row) => sum + row.difference, 0));
+        const faltanteValue = r2(rows.filter(row => row.difference < 0).reduce((sum, row) => sum + Math.abs(row.valueDifference), 0));
+        const sobranteValue = r2(rows.filter(row => row.difference > 0).reduce((sum, row) => sum + row.valueDifference, 0));
+        const qtyMax = Math.max(faltanteQty, sobranteQty, 1);
+        const valueMax = Math.max(faltanteValue, sobranteValue, 1);
+        const printedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+
+        const tableRows = rows.map(row => `
+            <tr>
+                <td>${escapeHtml(visibleProductCode(row.sku) || row.sku)}</td>
+                <td>${escapeHtml(row.description)}</td>
+                <td>${escapeHtml(row.unit)}</td>
+                <td class="num">${formatNumber(row.systemStock)}</td>
+                <td class="num">${formatNumber(row.countedQty)}</td>
+                <td class="num ${row.difference < 0 ? "bad" : row.difference > 0 ? "warn" : "ok"}">${formatNumber(row.difference)}</td>
+                <td class="num">${formatMoney(row.cost)}</td>
+                <td class="num ${row.valueDifference < 0 ? "bad" : row.valueDifference > 0 ? "warn" : "ok"}">${formatMoney(row.valueDifference)}</td>
+                <td>${escapeHtml(row.status)}</td>
+                <td>${escapeHtml(row.locations)}</td>
+            </tr>
+        `).join("");
+
+        const html = `
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Reporte de reconteo - ${escapeHtml(storeName)} - ${escapeHtml(selectedDate)}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 28px; color: #0f172a; font-family: Arial, sans-serif; font-size: 12px; }
+        h1 { margin: 0; font-size: 22px; }
+        h2 { margin: 22px 0 10px; font-size: 15px; }
+        .muted { color: #64748b; }
+        .header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 14px; }
+        .meta { text-align: right; line-height: 1.5; }
+        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0; }
+        .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+        .label { color: #64748b; font-weight: 700; font-size: 11px; }
+        .value { font-size: 20px; font-weight: 800; margin-top: 4px; }
+        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+        .panel { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; }
+        .barRow { display: grid; grid-template-columns: 90px 1fr 90px; gap: 10px; align-items: center; margin: 10px 0; }
+        .track { height: 18px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+        .bar { height: 100%; border-radius: 999px; }
+        .okBar { background: #16a34a; }
+        .badBar { background: #dc2626; }
+        .warnBar { background: #f97316; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { border: 1px solid #cbd5e1; padding: 6px; vertical-align: top; }
+        th { background: #f1f5f9; text-align: left; font-size: 11px; }
+        .num { text-align: right; white-space: nowrap; }
+        .ok { color: #15803d; font-weight: 700; }
+        .bad { color: #b91c1c; font-weight: 700; }
+        .warn { color: #c2410c; font-weight: 700; }
+        .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; margin-top: 48px; break-inside: avoid; }
+        .signature { text-align: center; padding-top: 42px; border-top: 1px solid #0f172a; font-weight: 700; }
+        @media print {
+            body { padding: 18px; }
+            button { display: none; }
+            .charts, .cards { break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Reporte de reconteo ciclico</h1>
+            <div class="muted">Tienda: <strong>${escapeHtml(storeName)}</strong></div>
+            <div class="muted">Fecha asignada: <strong>${escapeHtml(selectedDate)}</strong></div>
+        </div>
+        <div class="meta">
+            <div>Generado: <strong>${escapeHtml(printedAt)}</strong></div>
+            <div>Asesor: <strong>${escapeHtml(user?.full_name || "-")}</strong></div>
+            <button onclick="window.print()" style="margin-top:8px;padding:8px 12px;border:1px solid #0f172a;border-radius:8px;background:#0f172a;color:white;font-weight:700;">Imprimir / PDF</button>
+        </div>
+    </div>
+
+    <div class="cards">
+        <div class="card"><div class="label">Codigos revisados</div><div class="value">${formatNumber(totalCodes)}</div></div>
+        <div class="card"><div class="label">ERI</div><div class="value ok">${eriPct}%</div></div>
+        <div class="card"><div class="label">Faltantes</div><div class="value bad">${formatNumber(faltanteCodes)}</div></div>
+        <div class="card"><div class="label">Sobrantes</div><div class="value warn">${formatNumber(sobranteCodes)}</div></div>
+    </div>
+
+    <div class="charts">
+        <div class="panel">
+            <h2>ERI por codigos</h2>
+            <div class="barRow"><strong>ERI</strong><div class="track"><div class="bar okBar" style="width:${eriPct}%"></div></div><strong>${eriPct}%</strong></div>
+            <div class="muted">ERI = codigos sin diferencia / total de codigos revisados.</div>
+        </div>
+        <div class="panel">
+            <h2>Diferencias</h2>
+            <div class="barRow"><strong>Faltante</strong><div class="track"><div class="bar badBar" style="width:${Math.round((faltanteQty / qtyMax) * 100)}%"></div></div><span>${formatNumber(faltanteQty)} und</span></div>
+            <div class="barRow"><strong>Sobrante</strong><div class="track"><div class="bar warnBar" style="width:${Math.round((sobranteQty / qtyMax) * 100)}%"></div></div><span>${formatNumber(sobranteQty)} und</span></div>
+            <div class="barRow"><strong>Val. falt.</strong><div class="track"><div class="bar badBar" style="width:${Math.round((faltanteValue / valueMax) * 100)}%"></div></div><span>${formatMoney(faltanteValue)}</span></div>
+            <div class="barRow"><strong>Val. sobr.</strong><div class="track"><div class="bar warnBar" style="width:${Math.round((sobranteValue / valueMax) * 100)}%"></div></div><span>${formatMoney(sobranteValue)}</span></div>
+        </div>
+    </div>
+
+    <h2>Detalle de codigos asignados y/o agregados por el operario</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Codigo</th>
+                <th>Descripcion</th>
+                <th>UM</th>
+                <th>Stock sistema</th>
+                <th>Conteo fisico</th>
+                <th>Diferencia</th>
+                <th>Costo</th>
+                <th>Dif. valorizada</th>
+                <th>Resultado</th>
+                <th>Ubicaciones</th>
+            </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+    </table>
+
+    <div class="signatures">
+        <div class="signature">Firma lider de tienda</div>
+        <div class="signature">Firma asesor de almacen</div>
+    </div>
+</body>
+</html>`;
+
+        const reportWindow = window.open("", "_blank");
+        if (!reportWindow) {
+            showMessage("El navegador bloqueo la ventana del reporte. Permite ventanas emergentes e intenta otra vez.", "error");
+            return;
+        }
+        reportWindow.document.open();
+        reportWindow.document.write(html);
+        reportWindow.document.close();
+        reportWindow.focus();
     }
 
     // ════════════════════════════════════════════════════════
@@ -6240,6 +6436,12 @@ export default function DashboardPage() {
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Sesión finalizada — reconteo completado
                                     </div>
+                                    <button
+                                        onClick={generateRecountReport}
+                                        className="w-full py-3 rounded-2xl font-bold text-sm bg-slate-900 text-white hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        <FileText size={17} /> Generar reporte de reconteo
+                                    </button>
                                     <button
                                         onClick={async () => {
                                             if (confirm("¿Deseas volver a modificar el reconteo?")) {
