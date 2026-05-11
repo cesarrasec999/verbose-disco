@@ -102,3 +102,5 @@
  GET /rotaciones 200 in 374ms (next.js: 227ms, application-code: 147ms)
  GET /rotaciones 200 in 899ms (next.js: 689ms, application-code: 210ms)
  GET /rotaciones 200 in 412ms (next.js: 227ms, application-code: 185ms)
+ GET /rotaciones 200 in 443ms (next.js: 248ms, application-code: 196ms)
+ GET /rotaciones 200 in 602ms (next.js: 222ms, application-code: 380ms)

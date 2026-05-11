@@ -2479,24 +2479,6 @@ export default function DashboardPage() {
         return selected ? [selected] : [];
     }
 
-    async function filterProductsPendingForAssign(productsToFilter: Product[]): Promise<Product[]> {
-        if (productsToFilter.length === 0) return productsToFilter;
-        const targetStores = activeAssignStores();
-        if (targetStores.length === 0) return productsToFilter;
-
-        const productIds = productsToFilter.map(product => product.id);
-        const completedKeys = await loadCompletedProductKeys(targetStores.map(store => store.id), productIds);
-
-        if (valStoreId === ALL_STORES_VALUE) {
-            return productsToFilter.filter(product =>
-                targetStores.some(store => !completedKeys.has(`${store.id}__${product.id}`))
-            );
-        }
-
-        const store = targetStores[0];
-        return productsToFilter.filter(product => !completedKeys.has(`${store.id}__${product.id}`));
-    }
-
     function toggleAssignSelection(productId: string) {
         setAssignSelectedIds(prev => {
             const next = new Set(prev);
@@ -2523,23 +2505,46 @@ export default function DashboardPage() {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .ilike("sku", `%${code}%`)
-            .limit(limit);
+            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%`)
+            .limit(Math.max(limit, 200));
 
-        const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]));
+        const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]))
+            .sort((a, b) => {
+                const aVisible = visibleProductCode(a.sku);
+                const bVisible = visibleProductCode(b.sku);
+                const aFull = fullProductCode(a.sku);
+                const bFull = fullProductCode(b.sku);
+                const score = (product: Product, visible: string, full: string) => {
+                    const barcode = fullProductCode(product.barcode);
+                    if (visible === code || full === code || barcode === code) return 0;
+                    if (visible.startsWith(code) || full.startsWith(code) || barcode.startsWith(code)) return 1;
+                    if (visible.endsWith(code) || full.endsWith(code) || barcode.endsWith(code)) return 2;
+                    return 3;
+                };
+                return score(a, aVisible, aFull) - score(b, bVisible, bFull) || aFull.localeCompare(bFull);
+            });
         const stockFiltered = valStoreId && valStoreId !== ALL_STORES_VALUE
             ? await filterProductsInStoreStock(preferred, valStoreId)
             : valStoreId === ALL_STORES_VALUE
                 ? await filterProductsInAnyStoreStock(preferred, activeAssignStores())
                 : preferred;
-        return stockFiltered;
+        return stockFiltered.slice(0, limit);
     }
 
     async function searchProductsForAssign(text: string) {
         setAssignSearch(text);
         if (!text.trim()) { setAssignResults([]); return; }
-        const words = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const trimmed = text.trim();
+        const isNumericSearch = /^\d+$/.test(trimmed);
+        const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
         const byCode = await searchProductsByTypedCode(text);
+        if (isNumericSearch) {
+            const nextResults = byCode.slice(0, 120);
+            setAssignResults(nextResults);
+            setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
+            return;
+        }
+
         let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
         for (const w of words) q = q.ilike("description", `%${w}%`);
         const { data: byDesc } = await q.limit(200);
@@ -2549,7 +2554,7 @@ export default function DashboardPage() {
             : valStoreId === ALL_STORES_VALUE
                 ? await filterProductsInAnyStoreStock(descRows, activeAssignStores())
                 : descRows;
-        const combined = [...byCode, ...stockFilteredDesc];
+        const combined = [...stockFilteredDesc, ...byCode];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
         const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
@@ -2598,14 +2603,12 @@ export default function DashboardPage() {
             }
 
             const existingKeys = new Set(existingRows.map(row => `${row.store_id}__${row.product_id}`));
-            const completedKeys = await loadCompletedProductKeys(targetStores.map(store => store.id), cleanProducts.map(product => product.id));
             const toInsert: any[] = [];
             for (const store of targetStores) {
                 const sede = String(store.erp_sede || store.name || "").trim();
                 for (const product of cleanProducts) {
                     const key = `${store.id}__${product.id}`;
                     if (existingKeys.has(key)) continue;
-                    if (completedKeys.has(key)) continue;
                     const stock = stockByStoreSku.get(`${sede}__${fullProductCode(product.sku)}`) ?? 0;
                     if (stock <= 0) continue;
                     toInsert.push({
@@ -3319,7 +3322,6 @@ export default function DashboardPage() {
             }
             const existingMap = new Map<string, ExistingAssignment>();
             for (const ea of existingAsgns) existingMap.set(ea.store_id + "__" + ea.product_id, ea);
-            const completedKeys = await loadCompletedProductKeys(storeIdsArr, [...new Set([...prodBySkuMap.values()].map(product => product.id))]);
 
             // ── PASO 6: Procesar filas y construir lotes ────────────────
             setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 60 });
@@ -3354,7 +3356,6 @@ export default function DashboardPage() {
                     const hasManualStock = colStock >= 0 && String(row[colStock] ?? "").trim() !== "";
                     const stock = hasManualStock ? Number(row[colStock] || 0) : Number(syncedStock || 0);
                     if (!hasManualStock && syncedStock === undefined) stockNotFound++;
-                    if (completedKeys.has(targetStoreId + "__" + prod.id)) { skip++; continue; }
                     if (stock <= 0) { skip++; continue; }
 
                     if (colCosto >= 0 && String(row[colCosto] ?? "").trim() !== "") {
