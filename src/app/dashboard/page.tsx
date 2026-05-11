@@ -2572,6 +2572,31 @@ export default function DashboardPage() {
                     if (error || !asgnRows || asgnRows.length === 0) continue;
 
                     const countedIds = new Set<string>();
+                    const dayKeys = [...new Set((asgnRows as any[]).map(row => `${row.store_id}__${row.assigned_date}`))];
+                    const fulfilledDayKeys = new Set<string>();
+                    for (const dayKey of dayKeys) {
+                        const [dayStoreId, dayDate] = dayKey.split("__");
+                        const { data: dayAssignments } = await supabase
+                            .from("cyclic_assignments")
+                            .select("id")
+                            .eq("store_id", dayStoreId)
+                            .eq("assigned_date", dayDate);
+                        const dayAssignmentIds = (dayAssignments || []).map((row: any) => row.id as string);
+                        if (dayAssignmentIds.length === 0) continue;
+
+                        const dayCountedIds = new Set<string>();
+                        for (let m = 0; m < dayAssignmentIds.length; m += 500) {
+                            const { data: dayCounts } = await supabase
+                                .from("cyclic_counts")
+                                .select("assignment_id,location")
+                                .in("assignment_id", dayAssignmentIds.slice(m, m + 500));
+                            for (const count of dayCounts || []) {
+                                if (!FLAGS.includes(count.location)) dayCountedIds.add(count.assignment_id);
+                            }
+                        }
+                        if (dayAssignmentIds.every(id => dayCountedIds.has(id))) fulfilledDayKeys.add(dayKey);
+                    }
+
                     for (let k = 0; k < asgnRows.length; k += 500) {
                         const { data: countRows } = await supabase
                             .from("cyclic_counts")
@@ -2584,6 +2609,7 @@ export default function DashboardPage() {
 
                     for (const row of asgnRows as any[]) {
                         if (!countedIds.has(row.id)) continue;
+                        if (!fulfilledDayKeys.has(`${row.store_id}__${row.assigned_date}`)) continue;
                         const key = `${row.store_id}__${row.product_id}`;
                         if (keys.has(key)) continue;
                         keys.add(key);
@@ -2612,12 +2638,42 @@ export default function DashboardPage() {
 
     async function registerCompletedAssignments(storeId: string, date: string) {
         if (!storeId || !date) return;
-        const completed = myAssignments.filter(a => a.counted);
-        if (completed.length === 0) return;
-        const rows = completed.map(a => ({
+        const { data: dayAssignments, error: assignmentsError } = await supabase
+            .from("cyclic_assignments")
+            .select("id,store_id,product_id,assigned_date,cyclic_products(sku)")
+            .eq("store_id", storeId)
+            .eq("assigned_date", date);
+        if (assignmentsError || !dayAssignments || dayAssignments.length === 0) return;
+
+        const assignmentIds = (dayAssignments as any[]).map(row => row.id as string);
+        const countedIds = new Set<string>();
+        const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
+        for (let i = 0; i < assignmentIds.length; i += 500) {
+            const { data: countRows } = await supabase
+                .from("cyclic_counts")
+                .select("assignment_id,location")
+                .in("assignment_id", assignmentIds.slice(i, i + 500));
+            for (const count of countRows || []) {
+                if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+            }
+        }
+
+        const fulfilled = assignmentIds.every(id => countedIds.has(id));
+        if (!fulfilled) {
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                await supabase
+                    .from("cyclic_completed_products")
+                    .delete()
+                    .in("source_assignment_id", assignmentIds.slice(i, i + 500));
+            }
+            console.info("Tienda-dia no cumplido: no se registran codigos completados.", { storeId, date, assigned: assignmentIds.length, counted: countedIds.size });
+            return;
+        }
+
+        const rows = (dayAssignments as any[]).map(a => ({
             store_id: storeId,
             product_id: a.product_id,
-            sku: fullProductCode(a.sku || ""),
+            sku: fullProductCode(a.cyclic_products?.sku || ""),
             completed_date: date,
             source_assignment_id: a.id,
             completed_by: user?.id || null,

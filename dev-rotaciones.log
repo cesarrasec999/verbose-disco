@@ -73,3 +73,4 @@
  GET /rotaciones 200 in 290ms (next.js: 175ms, application-code: 115ms)
  GET /rotaciones 200 in 1642ms (next.js: 385ms, application-code: 1257ms)
  GET /dashboard 200 in 1816ms (next.js: 477ms, application-code: 1339ms)
+ GET /rotaciones 200 in 242ms (next.js: 140ms, application-code: 102ms)
