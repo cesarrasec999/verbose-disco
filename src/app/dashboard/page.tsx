@@ -185,6 +185,19 @@ type InventoryValuationReportRow = {
     missing_cost_codes: number;
 };
 
+type InventoryValuationSnapshot = {
+    id: string;
+    snapshot_date: string;
+    snapshot_time: string;
+    source_name: string | null;
+    notes: string | null;
+    total_stores: number;
+    total_codes: number;
+    total_units: number;
+    total_value: number;
+    created_at: string;
+};
+
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
@@ -543,6 +556,13 @@ export default function DashboardPage() {
     const [inventoryReportLoading, setInventoryReportLoading] = useState(false);
     const [inventoryReportProgress, setInventoryReportProgress] = useState("");
     const [inventoryReportUpdatedAt, setInventoryReportUpdatedAt] = useState("");
+    const [inventorySnapshotDate, setInventorySnapshotDate] = useState(todayISO());
+    const [inventorySnapshotFile, setInventorySnapshotFile] = useState<File|null>(null);
+    const [inventorySnapshotFileName, setInventorySnapshotFileName] = useState("");
+    const [inventorySnapshots, setInventorySnapshots] = useState<InventoryValuationSnapshot[]>([]);
+    const [selectedInventorySnapshotId, setSelectedInventorySnapshotId] = useState("");
+    const [selectedInventorySnapshotRows, setSelectedInventorySnapshotRows] = useState<InventoryValuationReportRow[]>([]);
+    const inventorySnapshotInputRef = useRef<HTMLInputElement|null>(null);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -4263,6 +4283,161 @@ export default function DashboardPage() {
         XLSX.writeFile(wbk, `valorizado-inventario-${todayISO()}.xlsx`);
     }
 
+    function cellByHeaders(row: any[], headers: string[], names: string[]) {
+        const wanted = names.map(name => name.toLowerCase());
+        const idx = headers.findIndex(header => wanted.some(name => header.includes(name)));
+        return idx >= 0 ? row[idx] : null;
+    }
+
+    function parseInventorySnapshotRows(rows: any[][]): InventoryValuationReportRow[] {
+        if (rows.length < 2) return [];
+        const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
+        const grouped = new Map<string, InventoryValuationReportRow>();
+        const knownStores = new Map<string, Store>();
+        for (const store of allStores) {
+            knownStores.set(String(store.name || "").trim().toLowerCase(), store);
+            if (store.erp_sede) knownStores.set(String(store.erp_sede).trim().toLowerCase(), store);
+        }
+
+        for (const row of rows.slice(1)) {
+            const rawStore = String(cellByHeaders(row, headers, ["tienda", "sede", "store", "almacen", "almacen"]) || "").trim();
+            if (!rawStore) continue;
+            const store = knownStores.get(rawStore.toLowerCase());
+            const storeName = store?.name || rawStore;
+            const sede = store?.erp_sede || rawStore;
+            const key = store?.id || storeName.toLowerCase();
+            const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "codigo", "cod.sap", "codsap", "sku"]) || "").trim();
+            const stock = parseCost(cellByHeaders(row, headers, ["unidades", "stock", "cantidad", "cant.disponible", "cant disponible"]));
+            const cost = parseCost(cellByHeaders(row, headers, ["costo prom", "costo", "ult costo", "cost"]));
+            const valueFromFile = parseCost(cellByHeaders(row, headers, ["valorizado", "valor", "total valor", "importe"]));
+            const isSummary = headers.some(header => header.includes("valorizado")) && headers.some(header => header.includes("codigos"));
+            const rowValue = valueFromFile > 0 ? valueFromFile : r2(stock * cost);
+            const existing = grouped.get(key) || {
+                store_id: store?.id || key,
+                store_name: storeName,
+                sede,
+                codes_with_stock: 0,
+                total_units: 0,
+                inventory_value: 0,
+                missing_cost_codes: 0,
+            };
+
+            existing.total_units = r2(existing.total_units + stock);
+            existing.inventory_value = r2(existing.inventory_value + rowValue);
+            if (isSummary) {
+                existing.codes_with_stock = Math.max(existing.codes_with_stock, Math.round(parseCost(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigos"]))));
+                existing.missing_cost_codes = Math.max(existing.missing_cost_codes, Math.round(parseCost(cellByHeaders(row, headers, ["sin costo", "codigos sin costo"]))));
+            } else {
+                if (code) existing.codes_with_stock += 1;
+                if (code && cost <= 0) existing.missing_cost_codes += 1;
+            }
+            grouped.set(key, existing);
+        }
+
+        return Array.from(grouped.values()).sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
+    }
+
+    async function loadInventorySnapshots() {
+        const { data, error } = await supabase
+            .from("inventory_valuation_snapshots")
+            .select("*")
+            .order("snapshot_date", { ascending: false })
+            .order("snapshot_time", { ascending: false })
+            .limit(60);
+        if (error) {
+            showMessage("Falta crear las tablas de fotografias de valorizado.", "error");
+            return;
+        }
+        setInventorySnapshots((data || []) as InventoryValuationSnapshot[]);
+    }
+
+    async function loadInventorySnapshotRows(snapshotId: string) {
+        setSelectedInventorySnapshotId(snapshotId);
+        if (!snapshotId) { setSelectedInventorySnapshotRows([]); return; }
+        const { data, error } = await supabase
+            .from("inventory_valuation_snapshot_stores")
+            .select("*")
+            .eq("snapshot_id", snapshotId)
+            .order("inventory_value", { ascending: false });
+        if (error) {
+            showMessage("No se pudo cargar la fotografia: " + error.message, "error");
+            return;
+        }
+        setSelectedInventorySnapshotRows((data || []).map((row: any) => ({
+            store_id: row.store_id || row.store_name,
+            store_name: row.store_name,
+            sede: row.sede || row.store_name,
+            codes_with_stock: Number(row.codes_with_stock || 0),
+            total_units: Number(row.total_units || 0),
+            inventory_value: Number(row.inventory_value || 0),
+            missing_cost_codes: Number(row.missing_cost_codes || 0),
+        })));
+    }
+
+    async function uploadInventorySnapshotExcel() {
+        if (!inventorySnapshotFile) { showMessage("Selecciona el Excel de valorizado.", "error"); return; }
+        setInventoryReportLoading(true);
+        setInventoryReportProgress("Leyendo fotografia...");
+        try {
+            const data = await inventorySnapshotFile.arrayBuffer();
+            const wbk = XLSX.read(data);
+            const sheet = wbk.Sheets[wbk.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as any[][];
+            const parsed = parseInventorySnapshotRows(rows);
+            if (parsed.length === 0) { showMessage("No pude leer tiendas/valorizado del Excel.", "error"); return; }
+
+            const totals = parsed.reduce((acc, row) => ({
+                stores: acc.stores + 1,
+                codes: acc.codes + row.codes_with_stock,
+                units: r2(acc.units + row.total_units),
+                value: r2(acc.value + row.inventory_value),
+            }), { stores: 0, codes: 0, units: 0, value: 0 });
+
+            const { data: snapshot, error: snapshotError } = await supabase
+                .from("inventory_valuation_snapshots")
+                .insert({
+                    snapshot_date: inventorySnapshotDate,
+                    snapshot_time: "08:00",
+                    source_name: inventorySnapshotFileName,
+                    total_stores: totals.stores,
+                    total_codes: totals.codes,
+                    total_units: totals.units,
+                    total_value: totals.value,
+                    uploaded_by: user?.id || null,
+                })
+                .select("id")
+                .single();
+            if (snapshotError) throw snapshotError;
+
+            const insertRows = parsed.map(row => ({
+                snapshot_id: snapshot.id,
+                store_id: allStores.find(store => store.id === row.store_id)?.id || null,
+                store_name: row.store_name,
+                sede: row.sede,
+                codes_with_stock: row.codes_with_stock,
+                total_units: row.total_units,
+                inventory_value: row.inventory_value,
+                missing_cost_codes: row.missing_cost_codes,
+            }));
+            for (let i = 0; i < insertRows.length; i += 500) {
+                const { error } = await supabase.from("inventory_valuation_snapshot_stores").insert(insertRows.slice(i, i + 500));
+                if (error) throw error;
+            }
+
+            setInventorySnapshotFile(null);
+            setInventorySnapshotFileName("");
+            if (inventorySnapshotInputRef.current) inventorySnapshotInputRef.current.value = "";
+            showMessage(`Fotografia guardada: ${parsed.length} tiendas.`, "success");
+            await loadInventorySnapshots();
+            await loadInventorySnapshotRows(snapshot.id);
+        } catch (error: any) {
+            showMessage("Error guardando fotografia: " + (error?.message || error), "error");
+        } finally {
+            setInventoryReportLoading(false);
+            setInventoryReportProgress("");
+        }
+    }
+
     async function replaceProductLocation(row: ProductLocation, location: string) {
         const clean = location.trim().toUpperCase();
         if (!clean) return;
@@ -5700,7 +5875,7 @@ export default function DashboardPage() {
                     {isValOrAdm && (
                         <div className="px-3 mt-1">
                             <button
-                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); if (inventoryReportRows.length === 0) void loadInventoryValuationReport(); }}
+                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); if (inventoryReportRows.length === 0) void loadInventoryValuationReport(); void loadInventorySnapshots(); }}
                                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                     activeTab === "reportes"
                                         ? "bg-cyan-600 text-white shadow-lg"
@@ -7426,6 +7601,82 @@ export default function DashboardPage() {
                             <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700 disabled:opacity-40" onClick={exportInventoryValuationReport} disabled={inventoryReportLoading || inventoryReportRows.length === 0}>
                                 Excel
                             </button>
+                        </div>
+                    </div>
+
+                    <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <p className="text-sm font-bold text-slate-800">Fotografias de las 8 am</p>
+                                <p className="text-xs text-slate-500 mt-1">Sube el Excel diario para conservar el historico y consultarlo despues.</p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                    className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                    type="date"
+                                    value={inventorySnapshotDate}
+                                    onChange={e => setInventorySnapshotDate(e.target.value)}
+                                />
+                                <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => inventorySnapshotInputRef.current?.click()}>
+                                    {inventorySnapshotFileName || "Seleccionar Excel"}
+                                </button>
+                                <input
+                                    ref={inventorySnapshotInputRef}
+                                    type="file"
+                                    accept=".xlsx,.xls"
+                                    className="hidden"
+                                    onChange={e => { const f = e.target.files?.[0] || null; setInventorySnapshotFile(f); setInventorySnapshotFileName(f?.name || ""); e.target.value = ""; }}
+                                />
+                                <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40" disabled={inventoryReportLoading || !inventorySnapshotFile} onClick={uploadInventorySnapshotExcel}>
+                                    Guardar fotografia
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[280px_1fr]">
+                            <div className="rounded-2xl border bg-white overflow-hidden">
+                                <div className="max-h-72 overflow-auto">
+                                    {inventorySnapshots.map(snapshot => (
+                                        <button
+                                            key={snapshot.id}
+                                            className={`w-full text-left px-3 py-2 border-b text-sm ${selectedInventorySnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
+                                            onClick={() => loadInventorySnapshotRows(snapshot.id)}
+                                        >
+                                            <span className="block font-bold">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
+                                            <span className="block text-xs text-slate-500">{formatMoney(Number(snapshot.total_value || 0))} · {formatNumber(snapshot.total_stores)} tiendas</span>
+                                        </button>
+                                    ))}
+                                    {inventorySnapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografias guardadas.</div>}
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border bg-white overflow-hidden">
+                                <div className="max-h-72 overflow-auto">
+                                    <table className="w-full text-xs">
+                                        <thead className="bg-slate-100 sticky top-0">
+                                            <tr>
+                                                <th className="p-2 border text-left">Tienda</th>
+                                                <th className="p-2 border text-right">Codigos</th>
+                                                <th className="p-2 border text-right">Unidades</th>
+                                                <th className="p-2 border text-right">Valorizado</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {selectedInventorySnapshotRows.map(row => (
+                                                <tr key={row.store_id}>
+                                                    <td className="p-2 border font-semibold">{row.store_name}</td>
+                                                    <td className="p-2 border text-right">{formatNumber(row.codes_with_stock)}</td>
+                                                    <td className="p-2 border text-right">{formatNumber(row.total_units)}</td>
+                                                    <td className="p-2 border text-right font-bold">{formatMoney(row.inventory_value)}</td>
+                                                </tr>
+                                            ))}
+                                            {selectedInventorySnapshotRows.length === 0 && (
+                                                <tr><td colSpan={4} className="p-6 text-center text-slate-400">Selecciona una fotografia para ver el resumen.</td></tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
