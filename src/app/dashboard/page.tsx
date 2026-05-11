@@ -12,7 +12,7 @@ import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Packag
 //  TIPOS
 // ══════════════════════════════════════════════════════════
 type Role = "Operario" | "Validador" | "Administrador";
-type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
+type TabKey = "operario" | "validador" | "ubicaciones" | "reportes" | "admin";
 type ValTabKey = "asignar"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
 
 type CyclicUser = {
@@ -173,6 +173,16 @@ type ProductCountHistoryRow = {
     faltante: number;
     sobrante: number;
     result: string;
+};
+
+type InventoryValuationReportRow = {
+    store_id: string;
+    store_name: string;
+    sede: string;
+    codes_with_stock: number;
+    total_units: number;
+    inventory_value: number;
+    missing_cost_codes: number;
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -529,6 +539,11 @@ export default function DashboardPage() {
         { code: "", product: null, status: "", message: "" },
     ]);
 
+    const [inventoryReportRows, setInventoryReportRows] = useState<InventoryValuationReportRow[]>([]);
+    const [inventoryReportLoading, setInventoryReportLoading] = useState(false);
+    const [inventoryReportProgress, setInventoryReportProgress] = useState("");
+    const [inventoryReportUpdatedAt, setInventoryReportUpdatedAt] = useState("");
+
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
     const [emailRecipients, setEmailRecipients] = useState("");
@@ -593,6 +608,7 @@ export default function DashboardPage() {
                         (savedTab === "operario" && u.role === "Operario") ||
                         (savedTab === "validador" && (u.role === "Validador" || u.role === "Administrador")) ||
                         savedTab === "ubicaciones" ||
+                        (savedTab === "reportes" && (u.role === "Validador" || u.role === "Administrador")) ||
                         (savedTab === "admin" && u.role === "Administrador");
                     if (isValid) { setActiveTab(savedTab); }
                     else {
@@ -4141,6 +4157,112 @@ export default function DashboardPage() {
         await searchLocations();
     }
 
+    async function loadInventoryValuationReport() {
+        const targetStores = (isAdmin ? allStores : stores).filter(store => store.is_active);
+        if (targetStores.length === 0) {
+            showMessage("No hay tiendas activas para reportar.", "error");
+            return;
+        }
+
+        setInventoryReportLoading(true);
+        setInventoryReportProgress("Preparando costos...");
+        try {
+            const costBySku = new Map<string, number>();
+            if (products.length > 0) {
+                for (const product of products) costBySku.set(fullProductCode(product.sku), parseCost(product.cost));
+            } else {
+                const PAGE = 1000;
+                let page = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_products")
+                        .select("sku,cost")
+                        .eq("is_active", true)
+                        .range(page * PAGE, (page + 1) * PAGE - 1);
+                    if (error) throw error;
+                    for (const product of data || []) costBySku.set(fullProductCode(product.sku), parseCost(product.cost));
+                    if (!data || data.length < PAGE) break;
+                    page++;
+                }
+            }
+
+            const rows: InventoryValuationReportRow[] = [];
+            const PAGE = 1000;
+            for (let storeIndex = 0; storeIndex < targetStores.length; storeIndex++) {
+                const store = targetStores[storeIndex];
+                const sede = String(store.erp_sede || store.name || "").trim();
+                if (!sede) continue;
+                setInventoryReportProgress(`Calculando ${storeIndex + 1}/${targetStores.length}: ${store.name}`);
+
+                const stockBySku = new Map<string, number>();
+                let page = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("stock_general")
+                        .select("codsap,stock")
+                        .eq("sede", sede)
+                        .gt("stock", 0)
+                        .range(page * PAGE, (page + 1) * PAGE - 1);
+                    if (error) throw error;
+                    for (const row of data || []) {
+                        const sku = fullProductCode(row.codsap);
+                        if (!sku) continue;
+                        stockBySku.set(sku, r2((stockBySku.get(sku) || 0) + Number(row.stock || 0)));
+                    }
+                    if (!data || data.length < PAGE) break;
+                    page++;
+                }
+
+                let totalUnits = 0;
+                let inventoryValue = 0;
+                let missingCostCodes = 0;
+                for (const [sku, stock] of stockBySku.entries()) {
+                    const cost = costBySku.get(sku) || 0;
+                    totalUnits = r2(totalUnits + stock);
+                    inventoryValue = r2(inventoryValue + r2(stock * cost));
+                    if (cost <= 0) missingCostCodes++;
+                }
+
+                rows.push({
+                    store_id: store.id,
+                    store_name: store.name,
+                    sede,
+                    codes_with_stock: stockBySku.size,
+                    total_units: totalUnits,
+                    inventory_value: inventoryValue,
+                    missing_cost_codes: missingCostCodes,
+                });
+            }
+
+            rows.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
+            setInventoryReportRows(rows);
+            setInventoryReportUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
+            setInventoryReportProgress("");
+        } catch (error: any) {
+            showMessage("Error generando valorizado: " + (error?.message || error), "error");
+        } finally {
+            setInventoryReportLoading(false);
+        }
+    }
+
+    function exportInventoryValuationReport() {
+        if (inventoryReportRows.length === 0) {
+            showMessage("Primero genera el reporte.", "error");
+            return;
+        }
+        const ws = XLSX.utils.json_to_sheet(inventoryReportRows.map(row => ({
+            Tienda: row.store_name,
+            SedeERP: row.sede,
+            CodigosConStock: row.codes_with_stock,
+            Unidades: row.total_units,
+            Valorizado: row.inventory_value,
+            CodigosSinCosto: row.missing_cost_codes,
+        })));
+        const wbk = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbk, ws, "Valorizado Inventario");
+        XLSX.writeFile(wbk, `valorizado-inventario-${todayISO()}.xlsx`);
+    }
+
     async function replaceProductLocation(row: ProductLocation, location: string) {
         const clean = location.trim().toUpperCase();
         if (!clean) return;
@@ -5412,6 +5534,16 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  RENDER
     // ════════════════════════════════════════════════════════
+    const inventoryReportTotals = useMemo(() => {
+        return inventoryReportRows.reduce((acc, row) => ({
+            stores: acc.stores + 1,
+            codes: acc.codes + row.codes_with_stock,
+            units: r2(acc.units + row.total_units),
+            value: r2(acc.value + row.inventory_value),
+            missingCost: acc.missingCost + row.missing_cost_codes,
+        }), { stores: 0, codes: 0, units: 0, value: 0, missingCost: 0 });
+    }, [inventoryReportRows]);
+
     if (loading) {
         return (
             <main className="min-h-screen bg-slate-100 flex items-center justify-center">
@@ -5565,6 +5697,22 @@ export default function DashboardPage() {
                         </div>
                     )}
 
+                    {isValOrAdm && (
+                        <div className="px-3 mt-1">
+                            <button
+                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); if (inventoryReportRows.length === 0) void loadInventoryValuationReport(); }}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                    activeTab === "reportes"
+                                        ? "bg-cyan-600 text-white shadow-lg"
+                                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                }`}
+                            >
+                                <FileText size={16} />
+                                <span className="truncate">Reportes</span>
+                            </button>
+                        </div>
+                    )}
+
                     {isAdmin && (
                         <>
                     <div className="px-3 mt-1">
@@ -5690,6 +5838,7 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "ubicaciones" ? "Ubicaciones" :
+                             activeTab === "reportes" ? "Reportes" :
                              activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
                              activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
@@ -7262,6 +7411,89 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB ADMIN
             ════════════════════════════════════════════════════════ */}
+            {activeTab === "reportes" && isValOrAdm && (
+                <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-900">Valorizado de inventario actualizado</h2>
+                            <p className="text-sm text-slate-500 mt-1">Resumen por tienda con stock actual y costo del maestro.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" onClick={loadInventoryValuationReport} disabled={inventoryReportLoading}>
+                                <RefreshCw size={16} className={`inline mr-1 ${inventoryReportLoading ? "animate-spin" : ""}`} />
+                                {inventoryReportLoading ? "Actualizando..." : "Actualizar"}
+                            </button>
+                            <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700 disabled:opacity-40" onClick={exportInventoryValuationReport} disabled={inventoryReportLoading || inventoryReportRows.length === 0}>
+                                Excel
+                            </button>
+                        </div>
+                    </div>
+
+                    {inventoryReportProgress && (
+                        <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">
+                            {inventoryReportProgress}
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                        <div className="rounded-2xl bg-slate-900 text-white p-4">
+                            <p className="text-xs font-bold text-slate-300">Valorizado total</p>
+                            <p className="text-2xl font-black mt-1">{formatMoney(inventoryReportTotals.value)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 border p-4">
+                            <p className="text-xs font-bold text-slate-500">Tiendas</p>
+                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.stores)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 border p-4">
+                            <p className="text-xs font-bold text-slate-500">Codigos con stock</p>
+                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.codes)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 border p-4">
+                            <p className="text-xs font-bold text-slate-500">Unidades</p>
+                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.units)}</p>
+                        </div>
+                    </div>
+
+                    {inventoryReportUpdatedAt && <p className="text-xs text-slate-400">Ultima consulta: {inventoryReportUpdatedAt}</p>}
+
+                    <div className="border rounded-2xl overflow-hidden">
+                        <div className="max-h-[560px] overflow-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-slate-100 sticky top-0">
+                                    <tr>
+                                        <th className="p-2 border text-left">Tienda</th>
+                                        <th className="p-2 border text-left">Sede ERP</th>
+                                        <th className="p-2 border text-right">Codigos</th>
+                                        <th className="p-2 border text-right">Unidades</th>
+                                        <th className="p-2 border text-right">Valorizado</th>
+                                        <th className="p-2 border text-right">Sin costo</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {inventoryReportRows.map(row => (
+                                        <tr key={row.store_id} className="hover:bg-slate-50">
+                                            <td className="p-2 border font-bold text-slate-900">{row.store_name}</td>
+                                            <td className="p-2 border text-slate-500">{row.sede}</td>
+                                            <td className="p-2 border text-right font-semibold">{formatNumber(row.codes_with_stock)}</td>
+                                            <td className="p-2 border text-right font-semibold">{formatNumber(row.total_units)}</td>
+                                            <td className="p-2 border text-right font-black text-slate-900">{formatMoney(row.inventory_value)}</td>
+                                            <td className={`p-2 border text-right font-semibold ${row.missing_cost_codes > 0 ? "text-amber-700" : "text-slate-400"}`}>{formatNumber(row.missing_cost_codes)}</td>
+                                        </tr>
+                                    ))}
+                                    {inventoryReportRows.length === 0 && (
+                                        <tr>
+                                            <td colSpan={6} className="p-8 text-center text-slate-400">
+                                                {inventoryReportLoading ? "Generando reporte..." : "Actualiza el reporte para ver el valorizado por tienda."}
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            )}
+
             {((activeTab === "admin" && isAdmin) || activeTab === "ubicaciones") && (
                 <>
 
