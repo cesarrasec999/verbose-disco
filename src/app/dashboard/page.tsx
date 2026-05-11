@@ -4376,6 +4376,29 @@ export default function DashboardPage() {
         })));
     }
 
+    async function deleteInventorySnapshot(snapshot: InventoryValuationSnapshot) {
+        const label = `${snapshot.snapshot_date} ${String(snapshot.snapshot_time || "").slice(0, 5)}`;
+        if (!confirm(`Eliminar la fotografia ${label}? Esta accion quitara tambien el detalle por tienda.`)) return;
+        setInventoryReportLoading(true);
+        try {
+            const { error } = await supabase
+                .from("inventory_valuation_snapshots")
+                .delete()
+                .eq("id", snapshot.id);
+            if (error) throw error;
+            if (selectedInventorySnapshotId === snapshot.id) {
+                setSelectedInventorySnapshotId("");
+                setSelectedInventorySnapshotRows([]);
+            }
+            setInventorySnapshots(prev => prev.filter(row => row.id !== snapshot.id));
+            showMessage("Fotografia eliminada.", "success");
+        } catch (error: any) {
+            showMessage("Error eliminando fotografia: " + (error?.message || error), "error");
+        } finally {
+            setInventoryReportLoading(false);
+        }
+    }
+
     async function uploadInventorySnapshotExcel() {
         if (!inventorySnapshotFile) { showMessage("Selecciona el Excel de valorizado.", "error"); return; }
         setInventoryReportLoading(true);
@@ -7639,14 +7662,23 @@ export default function DashboardPage() {
                             <div className="rounded-2xl border bg-white overflow-hidden">
                                 <div className="max-h-72 overflow-auto">
                                     {inventorySnapshots.map(snapshot => (
-                                        <button
+                                        <div
                                             key={snapshot.id}
-                                            className={`w-full text-left px-3 py-2 border-b text-sm ${selectedInventorySnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
+                                            className={`flex w-full items-center gap-2 px-3 py-2 border-b text-sm ${selectedInventorySnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
                                             onClick={() => loadInventorySnapshotRows(snapshot.id)}
                                         >
-                                            <span className="block font-bold">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
+                                            <div className="min-w-0 flex-1 text-left">
+                                                <span className="block font-bold">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
                                             <span className="block text-xs text-slate-500">{formatMoney(Number(snapshot.total_value || 0))} · {formatNumber(snapshot.total_stores)} tiendas</span>
-                                        </button>
+                                            </div>
+                                            <button
+                                                className="rounded-lg border border-red-200 px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                                disabled={inventoryReportLoading}
+                                                onClick={e => { e.stopPropagation(); deleteInventorySnapshot(snapshot); }}
+                                            >
+                                                Quitar
+                                            </button>
+                                        </div>
                                     ))}
                                     {inventorySnapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografias guardadas.</div>}
                                 </div>
