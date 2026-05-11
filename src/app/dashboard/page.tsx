@@ -2301,7 +2301,11 @@ export default function DashboardPage() {
             return;
         }
 
-        setLocationRows([{ location: "", qty: "" }]);
+        const savedLocations = await loadProductLocations(product, selectedStoreId);
+        setActiveProductLocations(savedLocations);
+        setLocationRows(savedLocations.length > 0
+            ? savedLocations.map(row => ({ location: row.location, qty: "" }))
+            : [{ location: "", qty: "" }]);
         setSinStock(false);
         setActiveAssignment(asgn);
         clearMessage();
@@ -3005,21 +3009,31 @@ export default function DashboardPage() {
 
     async function loadProductLocations(product: Pick<Product, "id" | "sku"> | Pick<Assignment, "product_id" | "sku">, storeId: string): Promise<ProductLocation[]> {
         const productId = "id" in product ? product.id : product.product_id;
-        if (!productId) return [];
+        const sku = fullProductCode(product.sku || "");
+        if (!productId && !sku) return [];
         const rows: ProductLocation[] = [];
         try {
-            const { data, error } = await supabase
+            let query = supabase
                 .from("product_locations")
                 .select("*")
-                .eq("product_id", productId)
-                .eq("is_active", true)
-                .or(`store_id.eq.${storeId},store_id.is.null`)
+                .eq("is_active", true);
+            if (productId && sku) query = query.or(`product_id.eq.${productId},sku.eq.${sku}`);
+            else if (productId) query = query.eq("product_id", productId);
+            else query = query.eq("sku", sku);
+            const { data, error } = await query
+                .or(storeId ? `store_id.eq.${storeId},store_id.is.null` : "store_id.is.null")
                 .order("location");
             if (error) {
                 console.warn("product_locations no disponible:", error.message);
                 return [];
             }
-            rows.push(...((data || []) as ProductLocation[]));
+            const byLocation = new Map<string, ProductLocation>();
+            for (const row of (data || []) as ProductLocation[]) {
+                const key = row.location.trim().toUpperCase();
+                const existing = byLocation.get(key);
+                if (!existing || (!existing.store_id && row.store_id === storeId)) byLocation.set(key, row);
+            }
+            rows.push(...Array.from(byLocation.values()));
         } catch (error) {
             console.warn("No se pudieron cargar ubicaciones:", error);
         }
