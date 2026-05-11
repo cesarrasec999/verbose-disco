@@ -6,13 +6,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Store as StoreIcon, Users } from "lucide-react";
+import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Search, Store as StoreIcon, Users } from "lucide-react";
 
 // ══════════════════════════════════════════════════════════
 //  TIPOS
 // ══════════════════════════════════════════════════════════
 type Role = "Operario" | "Validador" | "Administrador";
 type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
+type ValTabKey = "asignar"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
 
 type CyclicUser = {
     id: string;
@@ -168,7 +169,10 @@ type ProductCountHistoryRow = {
     system_stock: number;
     counted_quantity: number;
     difference: number;
-    status: string;
+    ok: number;
+    faltante: number;
+    sobrante: number;
+    result: string;
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -404,7 +408,7 @@ export default function DashboardPage() {
     const scannerContainerId = "cyclic-scanner";
 
     // ─── Validador: filtros ──────────────────────────────────
-    const [valTab, setValTab]               = useState<"asignar"|"registros"|"resumen"|"progreso"|"dashboard">("asignar");
+    const [valTab, setValTab]               = useState<ValTabKey>("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
     const [valSearchText, setValSearchText] = useState("");
@@ -421,6 +425,7 @@ export default function DashboardPage() {
     const [countHistoryProduct, setCountHistoryProduct] = useState<Product|null>(null);
     const [countHistoryRows, setCountHistoryRows] = useState<ProductCountHistoryRow[]>([]);
     const [countHistoryLoading, setCountHistoryLoading] = useState(false);
+    const [countHistorySearch, setCountHistorySearch] = useState("");
     const [bulkAssignFile, setBulkAssignFile] = useState<File|null>(null);
     const [bulkAssignFileName, setBulkAssignFileName] = useState("");
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
@@ -588,7 +593,7 @@ export default function DashboardPage() {
                     else setActiveTab("operario");
                 }
 
-                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as "asignar"|"registros"|"resumen"|"progreso"|"dashboard" | null;
+                const savedValTab = sessionStorage.getItem("cyclic_val_tab") as ValTabKey | null;
                 if (savedValTab) setValTab(savedValTab);
 
                 const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
@@ -596,7 +601,7 @@ export default function DashboardPage() {
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
-                if (savedValStoreId && (savedValStoreId !== ALL_STORES_VALUE || savedValTab === "asignar")) setValStoreId(savedValStoreId);
+                if (savedValStoreId && (savedValStoreId !== ALL_STORES_VALUE || savedValTab === "asignar" || savedValTab === "resultados")) setValStoreId(savedValStoreId);
                 setLocationStoreId(u.role === "Operario" ? (u.store_id || "") : (savedValStoreId && savedValStoreId !== ALL_STORES_VALUE ? savedValStoreId : ""));
                 if (savedValDate)    setValDate(savedValDate);
 
@@ -659,7 +664,7 @@ export default function DashboardPage() {
 
     useEffect(() => {
         if (valTab) sessionStorage.setItem("cyclic_val_tab", valTab);
-        if (valTab !== "asignar" && valStoreId === ALL_STORES_VALUE) {
+        if (valTab !== "asignar" && valTab !== "resultados" && valStoreId === ALL_STORES_VALUE) {
             const firstStoreId = stores[0]?.id || "";
             setValStoreId(firstStoreId);
             if (firstStoreId && (valTab === "registros" || valTab === "resumen")) loadValidadorData(firstStoreId, valDate);
@@ -2645,12 +2650,13 @@ export default function DashboardPage() {
             let assignmentRows: any[] = [];
             let page = 0;
             while (true) {
-                const { data, error } = await supabase
+                let query = supabase
                     .from("cyclic_assignments")
                     .select("id,store_id,product_id,assigned_date,system_stock,stores(name),cyclic_products(sku,description,unit)")
                     .eq("product_id", product.id)
-                    .order("assigned_date", { ascending: false })
-                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                    .order("assigned_date", { ascending: false });
+                if (valStoreId && valStoreId !== ALL_STORES_VALUE) query = query.eq("store_id", valStoreId);
+                const { data, error } = await query.range(page * PAGE, (page + 1) * PAGE - 1);
                 if (error) throw error;
                 if (!data || data.length === 0) break;
                 assignmentRows = assignmentRows.concat(data);
@@ -2679,7 +2685,10 @@ export default function DashboardPage() {
                 const countRows = countMap.get(row.id) || [];
                 const countedQuantity = r2(countRows.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
                 const systemStock = Number(row.system_stock || 0);
-                const lastCount = countRows[countRows.length - 1];
+                const difference = r2(countedQuantity - systemStock);
+                const ok = countRows.length > 0 && difference === 0 ? countedQuantity : 0;
+                const faltante = countRows.length > 0 && difference < 0 ? Math.abs(difference) : 0;
+                const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
                 return {
                     assignment_id: row.id as string,
                     store_name: store?.name || row.store_id,
@@ -2689,13 +2698,111 @@ export default function DashboardPage() {
                     unit: productRow?.unit || product.unit,
                     system_stock: systemStock,
                     counted_quantity: countedQuantity,
-                    difference: r2(countedQuantity - systemStock),
-                    status: countRows.length > 0 ? (lastCount?.status || "Contado") : "Sin conteo",
+                    difference,
+                    ok,
+                    faltante,
+                    sobrante,
+                    result: countRows.length === 0 ? "Sin conteo" : difference === 0 ? "OK" : difference < 0 ? "Faltante" : "Sobrante",
                 };
             });
             setCountHistoryRows(rows);
         } catch (error: any) {
             showMessage("Error cargando resultado del conteo: " + (error?.message || error), "error");
+        } finally {
+            setCountHistoryLoading(false);
+        }
+    }
+
+    async function searchCyclicCountResultsByCode() {
+        const raw = countHistorySearch.trim();
+        if (raw.length < 3) {
+            showMessage("Ingresa al menos 3 caracteres del codigo.", "error");
+            return;
+        }
+        setCountHistoryProduct(null);
+        setCountHistoryRows([]);
+        setCountHistoryLoading(true);
+        try {
+            const code = fullProductCode(raw);
+            const searchValue = code.length >= 3 ? code : raw;
+            const { data: productRows, error: productError } = await supabase
+                .from("cyclic_products")
+                .select("id, sku, barcode, description, unit, cost, is_active")
+                .eq("is_active", true)
+                .ilike("sku", `%${searchValue}%`)
+                .limit(80);
+            if (productError) throw productError;
+
+            const productsFound = ((productRows || []) as Product[]);
+            const productMap = new Map(productsFound.map(product => [product.id, product]));
+            const productIds = productsFound.map(product => product.id);
+            if (productIds.length === 0) return;
+
+            const PAGE = 1000;
+            let assignmentRows: any[] = [];
+            for (let i = 0; i < productIds.length; i += 200) {
+                let page = 0;
+                while (true) {
+                    let query = supabase
+                        .from("cyclic_assignments")
+                        .select("id,store_id,product_id,assigned_date,system_stock,stores(name),cyclic_products(sku,description,unit)")
+                        .in("product_id", productIds.slice(i, i + 200))
+                        .order("assigned_date", { ascending: false });
+                    if (valStoreId && valStoreId !== ALL_STORES_VALUE) query = query.eq("store_id", valStoreId);
+                    const { data, error } = await query.range(page * PAGE, (page + 1) * PAGE - 1);
+                    if (error) throw error;
+                    if (!data || data.length === 0) break;
+                    assignmentRows = assignmentRows.concat(data);
+                    if (data.length < PAGE) break;
+                    page++;
+                }
+            }
+
+            const assignmentIds = assignmentRows.map(row => row.id as string);
+            const countMap = new Map<string, CountRecord[]>();
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", assignmentIds.slice(i, i + 500));
+                if (error) throw error;
+                for (const count of (data || []) as CountRecord[]) {
+                    if (isSessionFlagLocation(count.location)) continue;
+                    if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
+                    countMap.get(count.assignment_id)!.push(count);
+                }
+            }
+
+            const rows = assignmentRows.map(row => {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const productRow = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const product = productMap.get(row.product_id);
+                const countRows = countMap.get(row.id) || [];
+                const countedQuantity = r2(countRows.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
+                const systemStock = Number(row.system_stock || 0);
+                const difference = r2(countedQuantity - systemStock);
+                const ok = countRows.length > 0 && difference === 0 ? countedQuantity : 0;
+                const faltante = countRows.length > 0 && difference < 0 ? Math.abs(difference) : 0;
+                const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
+                return {
+                    assignment_id: row.id as string,
+                    store_name: store?.name || row.store_id,
+                    assigned_date: row.assigned_date,
+                    sku: productRow?.sku || product?.sku || row.product_id,
+                    description: productRow?.description || product?.description || "",
+                    unit: productRow?.unit || product?.unit || "",
+                    system_stock: systemStock,
+                    counted_quantity: countedQuantity,
+                    difference,
+                    ok,
+                    faltante,
+                    sobrante,
+                    result: countRows.length === 0 ? "Sin conteo" : difference === 0 ? "OK" : difference < 0 ? "Faltante" : "Sobrante",
+                };
+            });
+            setCountHistoryRows(rows);
+        } catch (error: any) {
+            showMessage("Error buscando resultados de conteo: " + (error?.message || error), "error");
         } finally {
             setCountHistoryLoading(false);
         }
@@ -5210,6 +5317,7 @@ export default function DashboardPage() {
                                     { key: "asignar",   icon: Package,       label: "Asignar productos" },
                                     { key: "registros", icon: ClipboardList, label: "Registros"          },
                                     { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo" },
+                                    { key: "resultados",icon: Search,        label: "Resultados"         },
                                     { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas"   },
                                     { key: "dashboard", icon: LineChart,     label: "Dashboard"           },
                                 ] as const).map(item => (
@@ -5381,6 +5489,7 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "asignar"   ? "Asignar productos" :
                              activeTab === "validador" && valTab === "registros" ? "Registros de conteo" :
                              activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
+                             activeTab === "validador" && valTab === "resultados"? "Resultados de conteo" :
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "ubicaciones" ? "Ubicaciones" :
@@ -5406,36 +5515,40 @@ export default function DashboardPage() {
                                 onChange={e => {
                                     const nextStoreId = e.target.value;
                                     setValStoreId(nextStoreId);
-                                    if (nextStoreId && nextStoreId !== ALL_STORES_VALUE) loadValidadorData(nextStoreId, valDate);
+                                    if (valTab !== "resultados" && nextStoreId && nextStoreId !== ALL_STORES_VALUE) loadValidadorData(nextStoreId, valDate);
                                     else { setAssignments([]); setCounts([]); }
                                 }}
                             >
                                 <option value="">— Tienda —</option>
-                                {valTab === "asignar" && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
+                                {(valTab === "asignar" || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
-                            <input
-                                type="date"
-                                className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
-                                value={valDate}
-                                onChange={e => { setValDate(e.target.value); if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, e.target.value); }}
-                            />
-                            {valStoreId && valStoreId !== ALL_STORES_VALUE && (
-                                <button
-                                    className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
-                                    onClick={refreshValidatorAssignedStocksForDate}
-                                >🔄</button>
+                            {valTab !== "resultados" && (
+                                <>
+                                    <input
+                                        type="date"
+                                        className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
+                                        value={valDate}
+                                        onChange={e => { setValDate(e.target.value); if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, e.target.value); }}
+                                    />
+                                    {valStoreId && valStoreId !== ALL_STORES_VALUE && (
+                                        <button
+                                            className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
+                                            onClick={refreshValidatorAssignedStocksForDate}
+                                        >🔄</button>
+                                    )}
+                                    <button
+                                        className="px-3 py-2 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition"
+                                        onClick={() => openBulkWspModal(valDate)}
+                                        title="WhatsApp masivo"
+                                    >📲</button>
+                                </>
                             )}
-                            <button
-                                className="px-3 py-2 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition"
-                                onClick={() => openBulkWspModal(valDate)}
-                                title="WhatsApp masivo"
-                            >📲</button>
                         </div>
                     )}
 
                     {/* Stats de tienda seleccionada en validador */}
-                    {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && valStoreId && resumenStats.total > 0 && (
+                    {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && valTab !== "resultados" && valStoreId && resumenStats.total > 0 && (
                         <div className="hidden md:flex items-center gap-3">
                             <div className="flex gap-2 text-xs font-semibold text-slate-600 bg-slate-50 border rounded-xl px-3 py-2">
                                 <span className="text-slate-500">Asig: <b className="text-slate-800">{resumenStats.total}</b></span>
@@ -6240,6 +6353,86 @@ export default function DashboardPage() {
                         </>
                     )}
 
+                    {/* ── SUB-TAB: RESULTADOS DE CONTEO ───────────────── */}
+                    {valTab === "resultados" && (
+                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <div className="flex flex-wrap gap-3 items-end justify-between">
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-900">Resultados de conteo ciclico</h3>
+                                    <p className="text-slate-500 text-xs mt-0.5">Busca un codigo y revisa en que tiendas fue asignado y como quedo el conteo.</p>
+                                </div>
+                                <div className="flex gap-2 flex-wrap">
+                                    <input
+                                        className="border rounded-2xl p-3 text-sm text-slate-900 bg-white min-w-[220px]"
+                                        placeholder="Codigo producto"
+                                        value={countHistorySearch}
+                                        onChange={e => setCountHistorySearch(e.target.value)}
+                                        onKeyDown={e => { if (e.key === "Enter") searchCyclicCountResultsByCode(); }}
+                                    />
+                                    <button
+                                        className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40"
+                                        onClick={searchCyclicCountResultsByCode}
+                                        disabled={countHistoryLoading}
+                                    >
+                                        <Search size={16} className="mr-1 inline" /> {countHistoryLoading ? "Buscando..." : "Buscar"}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {countHistoryLoading ? (
+                                <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resultados...</div>
+                            ) : countHistoryRows.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
+                                    Ingresa un codigo para consultar resultados de conteo.
+                                </div>
+                            ) : (
+                                <div className="border rounded-2xl overflow-hidden">
+                                    <div className="max-h-[520px] overflow-auto">
+                                        <table className="w-full text-sm">
+                                            <thead className="bg-slate-100 sticky top-0">
+                                                <tr>
+                                                    <th className="p-2 border text-left">Tienda</th>
+                                                    <th className="p-2 border">Fecha asignada</th>
+                                                    <th className="p-2 border text-left">Codigo</th>
+                                                    <th className="p-2 border text-left">Descripcion</th>
+                                                    <th className="p-2 border">Stock</th>
+                                                    <th className="p-2 border">Contado</th>
+                                                    <th className="p-2 border">OK</th>
+                                                    <th className="p-2 border">Faltante</th>
+                                                    <th className="p-2 border">Sobrante</th>
+                                                    <th className="p-2 border">Resultado</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {countHistoryRows.map(row => (
+                                                    <tr key={row.assignment_id}>
+                                                        <td className="p-2 border font-semibold">{row.store_name}</td>
+                                                        <td className="p-2 border text-center">{row.assigned_date}</td>
+                                                        <td className="p-2 border font-mono text-xs">{row.sku}</td>
+                                                        <td className="p-2 border text-slate-600 max-w-[220px] truncate">{row.description}</td>
+                                                        <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
+                                                        <td className="p-2 border text-center font-semibold">{formatNumber(row.counted_quantity)}</td>
+                                                        <td className="p-2 border text-center font-semibold text-green-700">{row.ok > 0 ? formatNumber(row.ok) : "-"}</td>
+                                                        <td className="p-2 border text-center font-semibold text-red-600">{row.faltante > 0 ? formatNumber(row.faltante) : "-"}</td>
+                                                        <td className="p-2 border text-center font-semibold text-blue-700">{row.sobrante > 0 ? formatNumber(row.sobrante) : "-"}</td>
+                                                        <td className="p-2 border text-center">
+                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                                                                row.result === "OK" ? "bg-green-100 text-green-700" :
+                                                                row.result === "Faltante" ? "bg-red-100 text-red-700" :
+                                                                row.result === "Sobrante" ? "bg-blue-100 text-blue-700" :
+                                                                "bg-slate-100 text-slate-500"
+                                                            }`}>{row.result}</span>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </section>
+                    )}
+
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
                     {valTab === "asignar" && (
                         <>
@@ -6301,9 +6494,6 @@ export default function DashboardPage() {
                                                                 <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <button className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50" onClick={() => openProductCountHistory(p)}>
-                                                                    Ver conteo
-                                                                </button>
                                                                 {alreadyAssigned ? (
                                                                     <span className="text-xs text-green-700 font-semibold px-3 py-2">✓ Asignado</span>
                                                                 ) : (
@@ -7227,62 +7417,6 @@ export default function DashboardPage() {
             )}
 
             </div>{/* end content space-y-4 */}
-
-            {countHistoryProduct && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
-                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-4xl space-y-4 shadow-2xl sm:p-6">
-                        <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                                <h3 className="text-lg font-bold text-slate-900">Resultado de conteo</h3>
-                                <p className="text-sm font-semibold text-slate-700">{countHistoryProduct.sku}</p>
-                                <p className="text-xs text-slate-500 truncate">{countHistoryProduct.description}</p>
-                            </div>
-                            <button
-                                className="text-slate-400 hover:text-slate-600 text-2xl leading-none"
-                                onClick={() => { setCountHistoryProduct(null); setCountHistoryRows([]); }}
-                            >
-                                x
-                            </button>
-                        </div>
-                        {countHistoryLoading ? (
-                            <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resultados...</div>
-                        ) : countHistoryRows.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
-                                Este codigo aun no tiene asignaciones registradas.
-                            </div>
-                        ) : (
-                            <div className="border rounded-2xl overflow-hidden">
-                                <div className="max-h-[420px] overflow-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-slate-100 sticky top-0">
-                                            <tr>
-                                                <th className="p-2 border text-left">Tienda</th>
-                                                <th className="p-2 border">Fecha</th>
-                                                <th className="p-2 border">Stock</th>
-                                                <th className="p-2 border">Contado</th>
-                                                <th className="p-2 border">Diferencia</th>
-                                                <th className="p-2 border">Estado</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {countHistoryRows.map(row => (
-                                                <tr key={row.assignment_id}>
-                                                    <td className="p-2 border font-semibold">{row.store_name}</td>
-                                                    <td className="p-2 border text-center">{row.assigned_date}</td>
-                                                    <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
-                                                    <td className="p-2 border text-center font-semibold">{formatNumber(row.counted_quantity)}</td>
-                                                    <td className={`p-2 border text-center font-semibold ${row.difference === 0 ? "text-green-700" : "text-red-600"}`}>{formatNumber(row.difference)}</td>
-                                                    <td className="p-2 border text-center">{row.status}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
 
             {/* ════════════════════════════════════════════════════════
                 MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
