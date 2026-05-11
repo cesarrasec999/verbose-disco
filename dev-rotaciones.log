@@ -108,3 +108,13 @@
  GET /rotaciones 200 in 771ms (next.js: 400ms, application-code: 372ms)
  GET /rotaciones 200 in 1024ms (next.js: 396ms, application-code: 628ms)
  GET /rotaciones 200 in 743ms (next.js: 447ms, application-code: 296ms)
+ GET /rotaciones 200 in 794ms (next.js: 363ms, application-code: 431ms)
+ GET /rotaciones 200 in 587ms (next.js: 308ms, application-code: 279ms)
+ GET /rotaciones 200 in 509ms (next.js: 316ms, application-code: 193ms)
+ GET /rotaciones 200 in 484ms (next.js: 274ms, application-code: 209ms)
+ GET /rotaciones 200 in 473ms (next.js: 269ms, application-code: 204ms)
+ GET /rotaciones 200 in 641ms (next.js: 325ms, application-code: 316ms)
+ GET /rotaciones 200 in 493ms (next.js: 228ms, application-code: 266ms)
+ GET /rotaciones 200 in 588ms (next.js: 349ms, application-code: 240ms)
+✓ Compiled in 1149ms
+ GET /rotaciones 200 in 380ms (next.js: 205ms, application-code: 175ms)

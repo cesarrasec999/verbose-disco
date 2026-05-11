@@ -178,6 +178,13 @@ type ProductCountHistoryRow = {
 // Fila de ubicación + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
+type LocationEntryProductRow = {
+    code: string;
+    product: Product | null;
+    status: "" | "ok" | "error";
+    message: string;
+};
+
 type ProductLocation = {
     id: string;
     store_id: string | null;
@@ -397,7 +404,7 @@ export default function DashboardPage() {
     const startingRecountRef = useRef(false);
 
     // ─── Escáner ─────────────────────────────────────────────
-    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|"location_lookup"|null>(null);
+    const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|"location_lookup"|"location_entry_location"|"location_entry_product"|null>(null);
     const [scannerRunning, setScannerRunning] = useState(false);
     const [torchAvailable, setTorchAvailable] = useState(false);
     const [torchOn, setTorchOn]               = useState(false);
@@ -516,6 +523,11 @@ export default function DashboardPage() {
     const [locationsFile, setLocationsFile] = useState<File|null>(null);
     const [locationsFileName, setLocationsFileName] = useState("");
     const locationsInputRef = useRef<HTMLInputElement|null>(null);
+    const [locationEntryOpen, setLocationEntryOpen] = useState(false);
+    const [locationEntryLocation, setLocationEntryLocation] = useState("");
+    const [locationEntryProducts, setLocationEntryProducts] = useState<LocationEntryProductRow[]>([
+        { code: "", product: null, status: "", message: "" },
+    ]);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -1759,7 +1771,7 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); savingCountRef.current = false; setSavingCount(false); return; }
         }
-        await upsertProductLocations(currentAssignment.product_id, currentAssignment.sku, currentAssignment.store_id, locationRows.map(row => row.location));
+        await replaceProductLocations(currentAssignment.product_id, currentAssignment.sku, currentAssignment.store_id, locationRows.map(row => row.location));
 
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
         await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
@@ -3037,6 +3049,25 @@ export default function DashboardPage() {
         }
     }
 
+    async function replaceProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
+        const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        if (!productId || !sku || !storeId) return;
+
+        const { error: deactivateError } = await supabase
+            .from("product_locations")
+            .update({ is_active: false, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+            .eq("product_id", productId)
+            .eq("store_id", storeId)
+            .eq("is_active", true);
+
+        if (deactivateError) {
+            console.warn("No se pudieron desactivar ubicaciones anteriores:", deactivateError.message);
+            return;
+        }
+
+        await upsertProductLocations(productId, sku, storeId, cleanLocations);
+    }
+
     async function assignFirst30Results() {
         await assignProductsToStores(assignResults.slice(0, 30), "30 primeros");
     }
@@ -3976,6 +4007,119 @@ export default function DashboardPage() {
         }
     }
 
+    async function findProductForLocationEntry(codeValue: string): Promise<Product | null> {
+        const raw = String(codeValue || "").trim();
+        const full = fullProductCode(raw);
+        const visible = cleanCode(raw);
+        if (!raw && !full) return null;
+
+        const local = products.find(p =>
+            fullProductCode(p.sku) === full ||
+            visibleProductCode(p.sku) === visible ||
+            String(p.barcode || "").trim() === raw
+        );
+        if (local) return local;
+
+        const { data: byDirect } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("is_active", true)
+            .or(`sku.eq.${full},barcode.eq.${raw}`)
+            .limit(2);
+        if ((byDirect || []).length === 1) return byDirect![0] as Product;
+
+        const { data: byBarcode } = await supabase
+            .from("codigos_barra")
+            .select("codsap,upc,alu")
+            .or(`upc.eq.${raw},alu.eq.${raw}`)
+            .not("codsap", "is", null)
+            .limit(5);
+        const mappedCodes = [...new Set((byBarcode || []).flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)))];
+        if (mappedCodes.length === 1) {
+            const { data: mapped } = await supabase
+                .from("cyclic_products")
+                .select("*")
+                .eq("is_active", true)
+                .eq("sku", mappedCodes[0])
+                .maybeSingle();
+            if (mapped) return mapped as Product;
+        }
+
+        return null;
+    }
+
+    function openLocationEntryCard() {
+        if (!locationStoreId) {
+            showMessage("Selecciona tienda para registrar ubicaciones.", "error");
+            return;
+        }
+        setLocationEntryLocation("");
+        setLocationEntryProducts([{ code: "", product: null, status: "", message: "" }]);
+        setLocationEntryOpen(true);
+        clearMessage();
+    }
+
+    function addLocationEntryProductRow() {
+        setLocationEntryProducts(prev => [...prev, { code: "", product: null, status: "", message: "" }]);
+    }
+
+    function removeLocationEntryProductRow(index: number) {
+        setLocationEntryProducts(prev => prev.length === 1 ? prev : prev.filter((_, i) => i !== index));
+    }
+
+    function updateLocationEntryProductCode(index: number, code: string) {
+        setLocationEntryProducts(prev => prev.map((row, i) => i === index ? { ...row, code, product: null, status: "", message: "" } : row));
+    }
+
+    async function resolveLocationEntryProduct(index: number, codeOverride?: string) {
+        const code = (codeOverride ?? locationEntryProducts[index]?.code ?? "").trim();
+        if (!code) return;
+        const product = await findProductForLocationEntry(code);
+        setLocationEntryProducts(prev => prev.map((row, i) => i === index
+            ? product
+                ? { ...row, code, product, status: "ok", message: product.description }
+                : { ...row, code, product: null, status: "error", message: "Codigo no encontrado" }
+            : row
+        ));
+    }
+
+    async function saveLocationEntryCard() {
+        const location = locationEntryLocation.trim().toUpperCase();
+        if (!locationStoreId) { showMessage("Selecciona tienda.", "error"); return; }
+        if (!location) { showMessage("Ingresa la ubicacion.", "error"); return; }
+
+        setLocationBusy(true);
+        try {
+            const resolved: Product[] = [];
+            for (let i = 0; i < locationEntryProducts.length; i++) {
+                const code = locationEntryProducts[i].code.trim();
+                if (!code) continue;
+                const product = locationEntryProducts[i].product || await findProductForLocationEntry(code);
+                if (!product) {
+                    setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Codigo no encontrado" } : row));
+                    showMessage(`No encontre el codigo ${code}.`, "error");
+                    return;
+                }
+                resolved.push(product);
+            }
+
+            const uniqueProducts = [...new Map(resolved.map(product => [product.id, product])).values()];
+            if (uniqueProducts.length === 0) { showMessage("Agrega al menos un producto.", "error"); return; }
+
+            for (const product of uniqueProducts) {
+                await upsertProductLocations(product.id, product.sku, locationStoreId, [location]);
+            }
+
+            showMessage(`Ubicacion guardada para ${uniqueProducts.length} producto${uniqueProducts.length !== 1 ? "s" : ""}.`, "success");
+            setLocationEntryOpen(false);
+            setLocationEntryLocation("");
+            setLocationEntryProducts([{ code: "", product: null, status: "", message: "" }]);
+            if (locationSearch.trim()) await searchLocations();
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
     async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
         if (!location.trim()) return;
         await upsertProductLocations(product.id, product.sku, storeId || "", [location]);
@@ -4128,9 +4272,23 @@ export default function DashboardPage() {
             await searchLocations(v);
             return;
         }
+
+        if (scannerTarget === "location_entry_location") {
+            setLocationEntryLocation(v);
+            showMessage("Ubicacion escaneada.", "success");
+            closeScanner();
+            return;
+        }
+
+        if (scannerTarget === "location_entry_product") {
+            closeScanner();
+            updateLocationEntryProductCode(scanningRowIndex, v);
+            await resolveLocationEntryProduct(scanningRowIndex, v);
+            return;
+        }
     }
 
-    function openScanner(target: "product"|"location"|"recount_location"|"location_lookup", rowIndex: number = 0) {
+    function openScanner(target: "product"|"location"|"recount_location"|"location_lookup"|"location_entry_location"|"location_entry_product", rowIndex: number = 0) {
         clearMessage();
         scanHandledRef.current = false;
         setScanningRowIndex(rowIndex);
@@ -7297,14 +7455,8 @@ export default function DashboardPage() {
                                     </button>
                                     <button
                                         className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
-                                        disabled={locationBusy || !locationSearch.trim()}
-                                        onClick={() => {
-                                            const term = locationSearch.trim();
-                                            const product = products.find(p => fullProductCode(p.sku) === fullProductCode(term) || p.barcode === term || visibleProductCode(p.sku) === cleanCode(term));
-                                            if (!product) { showMessage("No encontre un producto exacto para agregar ubicacion.", "error"); return; }
-                                            const next = prompt("Nueva ubicacion");
-                                            if (next) void saveLocationFromSearch(product, next);
-                                        }}
+                                        disabled={locationBusy || !locationStoreId}
+                                        onClick={openLocationEntryCard}
                                     >
                                         Agregar ubicacion
                                     </button>
@@ -7786,6 +7938,82 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 MODAL — WHATSAPP MASIVO POST-CARGA
             ════════════════════════════════════════════════════════ */}
+            {locationEntryOpen && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-xl shadow-2xl space-y-4 sm:p-6">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h3 className="text-xl font-bold text-slate-900">Agregar ubicacion</h3>
+                                <p className="text-sm text-slate-500 mt-1">{allStores.find(s => s.id === locationStoreId)?.name || "Tienda seleccionada"}</p>
+                            </div>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setLocationEntryOpen(false)}>×</button>
+                        </div>
+
+                        <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
+                            <label className="text-xs font-bold text-slate-500 uppercase">Ubicacion</label>
+                            <div className="flex gap-2">
+                                <input
+                                    className="min-w-0 flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white"
+                                    placeholder="Ej: A-01-03"
+                                    value={locationEntryLocation}
+                                    onChange={e => setLocationEntryLocation(e.target.value.toUpperCase())}
+                                />
+                                <button className="px-3 py-2 rounded-xl bg-slate-800 text-white text-xs" onClick={() => openScanner("location_entry_location")} title="Escanear ubicacion">
+                                    <QrCode size={16} />
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <label className="text-sm font-bold text-slate-800">Productos en esta ubicacion</label>
+                                <button className="text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addLocationEntryProductRow}>
+                                    + Agregar productos
+                                </button>
+                            </div>
+                            {locationEntryProducts.map((row, i) => (
+                                <div key={i} className="rounded-2xl border bg-white p-3 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-xs font-bold text-slate-500">Producto {i + 1}</span>
+                                        {locationEntryProducts.length > 1 && (
+                                            <button className="text-xs text-red-500 font-semibold" onClick={() => removeLocationEntryProductRow(i)}>Quitar</button>
+                                        )}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input
+                                            className="min-w-0 flex-1 border-2 rounded-xl p-3 text-sm font-mono text-slate-900 bg-white"
+                                            placeholder="Codigo o barra"
+                                            value={row.code}
+                                            onChange={e => updateLocationEntryProductCode(i, e.target.value)}
+                                            onBlur={() => resolveLocationEntryProduct(i)}
+                                            onKeyDown={e => { if (e.key === "Enter") void resolveLocationEntryProduct(i); }}
+                                        />
+                                        <button className="px-3 py-2 rounded-xl bg-slate-800 text-white text-xs" onClick={() => openScanner("location_entry_product", i)} title="Escanear producto">
+                                            <QrCode size={16} />
+                                        </button>
+                                    </div>
+                                    {row.product && (
+                                        <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-900">
+                                            <b>{row.product.sku}</b> · {row.product.description}
+                                        </div>
+                                    )}
+                                    {row.status === "error" && <p className="text-xs font-semibold text-red-600">{row.message}</p>}
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
+                            <button className="py-4 rounded-2xl bg-slate-900 text-white font-bold text-base disabled:opacity-40" onClick={saveLocationEntryCard} disabled={locationBusy}>
+                                {locationBusy ? "Guardando..." : "Guardar ubicacion"}
+                            </button>
+                            <button className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm text-slate-700" onClick={() => setLocationEntryOpen(false)}>
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showBulkWspModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-lg shadow-2xl space-y-4 sm:p-6">
