@@ -420,6 +420,7 @@ export default function DashboardPage() {
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
     const [assignBusy, setAssignBusy] = useState(false);
+    const assignSearchRequestRef = useRef(0);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
     const [countHistoryProduct, setCountHistoryProduct] = useState<Product|null>(null);
@@ -693,6 +694,14 @@ export default function DashboardPage() {
         if (activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
         loadAllStoreAssignmentSummary(valDate);
     }, [activeTab, valTab, valStoreId, valDate, stores]);
+
+    useEffect(() => {
+        if (activeTab !== "validador" || valTab !== "asignar") return;
+        const timer = setTimeout(() => {
+            void searchProductsForAssign(assignSearch);
+        }, 1000);
+        return () => clearTimeout(timer);
+    }, [assignSearch, activeTab, valTab, valStoreId, stores]);
 
     // realtime para operario
     useEffect(() => {
@@ -2532,12 +2541,17 @@ export default function DashboardPage() {
     }
 
     async function searchProductsForAssign(text: string) {
-        setAssignSearch(text);
-        if (!text.trim()) { setAssignResults([]); return; }
+        const requestId = ++assignSearchRequestRef.current;
+        if (!text.trim()) {
+            setAssignResults([]);
+            setAssignSelectedIds(new Set());
+            return;
+        }
         const trimmed = text.trim();
         const isNumericSearch = /^\d+$/.test(trimmed);
         const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
         const byCode = await searchProductsByTypedCode(text);
+        if (requestId !== assignSearchRequestRef.current) return;
         if (isNumericSearch) {
             const nextResults = byCode.slice(0, 120);
             setAssignResults(nextResults);
@@ -2554,12 +2568,22 @@ export default function DashboardPage() {
             : valStoreId === ALL_STORES_VALUE
                 ? await filterProductsInAnyStoreStock(descRows, activeAssignStores())
                 : descRows;
+        if (requestId !== assignSearchRequestRef.current) return;
         const combined = [...stockFilteredDesc, ...byCode];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
         const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
         setAssignResults(nextResults);
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
+    }
+
+    function handleAssignSearchChange(text: string) {
+        setAssignSearch(text);
+        if (!text.trim()) {
+            assignSearchRequestRef.current += 1;
+            setAssignResults([]);
+            setAssignSelectedIds(new Set());
+        }
     }
 
     async function assignProductsToStores(productsToAssign: Product[], modeLabel = "seleccionados") {
@@ -6448,7 +6472,7 @@ export default function DashboardPage() {
                                         className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
                                         placeholder="Buscar por codsap completo, codigo o familia/descripcion..."
                                         value={assignSearch}
-                                        onChange={e => searchProductsForAssign(e.target.value)}
+                                        onChange={e => handleAssignSearchChange(e.target.value)}
                                     />
                                     {assignResults.length > 0 && (
                                         <div className="border rounded-2xl overflow-hidden">
