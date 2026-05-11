@@ -155,6 +155,20 @@ type AllStoreAssignmentSummary = {
     sku: string;
     description: string;
     unit: string;
+    system_stock: number;
+};
+
+type ProductCountHistoryRow = {
+    assignment_id: string;
+    store_name: string;
+    assigned_date: string;
+    sku: string;
+    description: string;
+    unit: string;
+    system_stock: number;
+    counted_quantity: number;
+    difference: number;
+    status: string;
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -404,6 +418,9 @@ export default function DashboardPage() {
     const [assignBusy, setAssignBusy] = useState(false);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
+    const [countHistoryProduct, setCountHistoryProduct] = useState<Product|null>(null);
+    const [countHistoryRows, setCountHistoryRows] = useState<ProductCountHistoryRow[]>([]);
+    const [countHistoryLoading, setCountHistoryLoading] = useState(false);
     const [bulkAssignFile, setBulkAssignFile] = useState<File|null>(null);
     const [bulkAssignFileName, setBulkAssignFileName] = useState("");
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
@@ -1040,18 +1057,18 @@ export default function DashboardPage() {
         setAllStoreSummaryLoading(true);
         try {
             const PAGE = 1000;
-            let rows: { id: string; store_id: string; product_id: string }[] = [];
+            let rows: { id: string; store_id: string; product_id: string; system_stock: number }[] = [];
             let page = 0;
             while (true) {
                 const { data, error } = await supabase
                     .from("cyclic_assignments")
-                    .select("id,store_id,product_id")
+                    .select("id,store_id,product_id,system_stock")
                     .eq("assigned_date", date)
                     .in("store_id", [...targetStoreIds])
                     .range(page * PAGE, (page + 1) * PAGE - 1);
                 if (error) throw error;
                 if (!data || data.length === 0) break;
-                rows = rows.concat(data as { id: string; store_id: string; product_id: string }[]);
+                rows = rows.concat(data as { id: string; store_id: string; product_id: string; system_stock: number }[]);
                 if (data.length < PAGE) break;
                 page++;
             }
@@ -1084,6 +1101,7 @@ export default function DashboardPage() {
                     sku: product?.sku || row.product_id,
                     description: product?.description || "",
                     unit: product?.unit || "",
+                    system_stock: Number(row.system_stock || 0),
                 };
             }).sort((a, b) => a.store_name.localeCompare(b.store_name) || a.sku.localeCompare(b.sku));
 
@@ -2032,6 +2050,92 @@ export default function DashboardPage() {
         }
     }
 
+    async function refreshAllStoreSummaryStocks() {
+        const assignmentIds = allStoreAssignmentSummary.map(row => row.assignment_id);
+        if (assignmentIds.length === 0 || bulkRefreshingStocks) return;
+        setBulkRefreshingStocks(true);
+        try {
+            let rowsRaw: any[] = [];
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id, product_id, system_stock, cyclic_products(sku), stores(name, erp_sede)")
+                    .in("id", assignmentIds.slice(i, i + 500));
+                if (error) throw error;
+                rowsRaw = rowsRaw.concat(data || []);
+            }
+
+            const countedIds = new Set<string>();
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", assignmentIds.slice(i, i + 500));
+                if (error) throw error;
+                for (const row of data || []) {
+                    if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
+                }
+            }
+
+            const pendingRows = rowsRaw.filter(row => !countedIds.has(row.id));
+            const codesBySede = new Map<string, Set<string>>();
+            for (const row of pendingRows) {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const product = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const sede = String(store?.erp_sede || store?.name || "").trim();
+                const codsap = fullProductCode(product?.sku || "");
+                if (!sede || !codsap) continue;
+                if (!codesBySede.has(sede)) codesBySede.set(sede, new Set());
+                codesBySede.get(sede)!.add(codsap);
+            }
+
+            const stockMap = new Map<string, number>();
+            for (const [sede, codes] of codesBySede) {
+                const list = [...codes];
+                for (let i = 0; i < list.length; i += 500) {
+                    const { data, error } = await supabase
+                        .from("stock_general")
+                        .select("codsap, stock")
+                        .eq("sede", sede)
+                        .in("codsap", list.slice(i, i + 500));
+                    if (error) throw error;
+                    for (const row of data || []) stockMap.set(`${sede}::${fullProductCode(row.codsap)}`, Number(row.stock || 0));
+                }
+            }
+
+            const updates: { id: string; system_stock: number }[] = [];
+            for (const row of pendingRows) {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const product = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const sede = String(store?.erp_sede || store?.name || "").trim();
+                const codsap = fullProductCode(product?.sku || "");
+                if (!sede || !codsap) continue;
+                const latestStock = stockMap.get(`${sede}::${codsap}`) ?? 0;
+                if (Number(row.system_stock || 0) !== latestStock) updates.push({ id: row.id, system_stock: latestStock });
+            }
+
+            for (let i = 0; i < updates.length; i += 100) {
+                const batch = updates.slice(i, i + 100);
+                await Promise.all(batch.map(row =>
+                    supabase.from("cyclic_assignments").update({ system_stock: row.system_stock }).eq("id", row.id)
+                ));
+            }
+
+            await loadAllStoreAssignmentSummary(valDate);
+            const skipped = rowsRaw.length - pendingRows.length;
+            showMessage(
+                updates.length > 0
+                    ? `Stock actualizado en ${updates.length} codigo${updates.length !== 1 ? "s" : ""} del resumen.${skipped > 0 ? ` ${skipped} ya tenian conteo y se conservaron.` : ""}`
+                    : `Los stocks del resumen ya estan actualizados.${skipped > 0 ? ` ${skipped} ya tenian conteo y se conservaron.` : ""}`,
+                "success"
+            );
+        } catch (error: any) {
+            showMessage("Error actualizando stock del resumen: " + (error?.message || error), "error");
+        } finally {
+            setBulkRefreshingStocks(false);
+        }
+    }
+
     async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
         const code = fullProductCode(codeValue);
         if (!code) return [];
@@ -2423,7 +2527,7 @@ export default function DashboardPage() {
             : valStoreId === ALL_STORES_VALUE
                 ? await filterProductsInAnyStoreStock(preferred, activeAssignStores())
                 : preferred;
-        return filterProductsPendingForAssign(stockFiltered);
+        return stockFiltered;
     }
 
     async function searchProductsForAssign(text: string) {
@@ -2443,8 +2547,7 @@ export default function DashboardPage() {
         const combined = [...byCode, ...stockFilteredDesc];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-        const pendingProducts = await filterProductsPendingForAssign(filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])));
-        const nextResults = pendingProducts.slice(0, 120);
+        const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
         setAssignResults(nextResults);
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
     }
@@ -2531,6 +2634,71 @@ export default function DashboardPage() {
 
     async function assignProduct(product: Product) {
         await assignProductsToStores([product], product.sku);
+    }
+
+    async function openProductCountHistory(product: Product) {
+        setCountHistoryProduct(product);
+        setCountHistoryRows([]);
+        setCountHistoryLoading(true);
+        try {
+            const PAGE = 1000;
+            let assignmentRows: any[] = [];
+            let page = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id,store_id,product_id,assigned_date,system_stock,stores(name),cyclic_products(sku,description,unit)")
+                    .eq("product_id", product.id)
+                    .order("assigned_date", { ascending: false })
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) throw error;
+                if (!data || data.length === 0) break;
+                assignmentRows = assignmentRows.concat(data);
+                if (data.length < PAGE) break;
+                page++;
+            }
+
+            const assignmentIds = assignmentRows.map(row => row.id as string);
+            const countMap = new Map<string, CountRecord[]>();
+            for (let i = 0; i < assignmentIds.length; i += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_counts")
+                    .select("*")
+                    .in("assignment_id", assignmentIds.slice(i, i + 500));
+                if (error) throw error;
+                for (const count of (data || []) as CountRecord[]) {
+                    if (isSessionFlagLocation(count.location)) continue;
+                    if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
+                    countMap.get(count.assignment_id)!.push(count);
+                }
+            }
+
+            const rows = assignmentRows.map(row => {
+                const store = Array.isArray(row.stores) ? row.stores[0] : row.stores;
+                const productRow = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const countRows = countMap.get(row.id) || [];
+                const countedQuantity = r2(countRows.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
+                const systemStock = Number(row.system_stock || 0);
+                const lastCount = countRows[countRows.length - 1];
+                return {
+                    assignment_id: row.id as string,
+                    store_name: store?.name || row.store_id,
+                    assigned_date: row.assigned_date,
+                    sku: productRow?.sku || product.sku,
+                    description: productRow?.description || product.description,
+                    unit: productRow?.unit || product.unit,
+                    system_stock: systemStock,
+                    counted_quantity: countedQuantity,
+                    difference: r2(countedQuantity - systemStock),
+                    status: countRows.length > 0 ? (lastCount?.status || "Contado") : "Sin conteo",
+                };
+            });
+            setCountHistoryRows(rows);
+        } catch (error: any) {
+            showMessage("Error cargando resultado del conteo: " + (error?.message || error), "error");
+        } finally {
+            setCountHistoryLoading(false);
+        }
     }
 
     async function loadCompletedProductKeys(storeIds: string[], productIds: string[]): Promise<Set<string>> {
@@ -6133,6 +6301,9 @@ export default function DashboardPage() {
                                                                 <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
+                                                                <button className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50" onClick={() => openProductCountHistory(p)}>
+                                                                    Ver conteo
+                                                                </button>
                                                                 {alreadyAssigned ? (
                                                                     <span className="text-xs text-green-700 font-semibold px-3 py-2">✓ Asignado</span>
                                                                 ) : (
@@ -6254,6 +6425,13 @@ export default function DashboardPage() {
                                                 <RefreshCw size={14} className={`mr-1 inline ${allStoreSummaryLoading ? "animate-spin" : ""}`} /> Actualizar
                                             </button>
                                             <button
+                                                className="px-4 py-2 rounded-2xl border border-blue-200 bg-blue-50 text-blue-700 font-semibold text-xs hover:bg-blue-100 transition disabled:opacity-40"
+                                                onClick={refreshAllStoreSummaryStocks}
+                                                disabled={bulkRefreshingStocks || allStoreSummaryLoading || allStoreAssignmentSummary.length === 0}
+                                            >
+                                                <RefreshCw size={14} className={`mr-1 inline ${bulkRefreshingStocks ? "animate-spin" : ""}`} /> Actualizar stock
+                                            </button>
+                                            <button
                                                 className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition disabled:opacity-40"
                                                 onClick={removeAllStoreAssignmentsForDate}
                                                 disabled={allStoreSummaryLoading || allStoreAssignmentSummary.length === 0}
@@ -6278,6 +6456,7 @@ export default function DashboardPage() {
                                                             <th className="p-2 border text-left">SKU</th>
                                                             <th className="p-2 border text-left">Descripcion</th>
                                                             <th className="p-2 border">UM</th>
+                                                            <th className="p-2 border">Stock</th>
                                                             <th className="p-2 border">Accion</th>
                                                         </tr>
                                                     </thead>
@@ -6288,6 +6467,7 @@ export default function DashboardPage() {
                                                                 <td className="p-2 border font-medium">{row.sku}</td>
                                                                 <td className="p-2 border text-slate-600">{row.description}</td>
                                                                 <td className="p-2 border text-center">{row.unit}</td>
+                                                                <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
                                                                 <td className="p-2 border text-center">
                                                                     <button className="text-xs text-red-600 underline" onClick={() => removeAllStoreAssignment(row)}>
                                                                         Quitar
@@ -7047,6 +7227,62 @@ export default function DashboardPage() {
             )}
 
             </div>{/* end content space-y-4 */}
+
+            {countHistoryProduct && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
+                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-4xl space-y-4 shadow-2xl sm:p-6">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <h3 className="text-lg font-bold text-slate-900">Resultado de conteo</h3>
+                                <p className="text-sm font-semibold text-slate-700">{countHistoryProduct.sku}</p>
+                                <p className="text-xs text-slate-500 truncate">{countHistoryProduct.description}</p>
+                            </div>
+                            <button
+                                className="text-slate-400 hover:text-slate-600 text-2xl leading-none"
+                                onClick={() => { setCountHistoryProduct(null); setCountHistoryRows([]); }}
+                            >
+                                x
+                            </button>
+                        </div>
+                        {countHistoryLoading ? (
+                            <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resultados...</div>
+                        ) : countHistoryRows.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
+                                Este codigo aun no tiene asignaciones registradas.
+                            </div>
+                        ) : (
+                            <div className="border rounded-2xl overflow-hidden">
+                                <div className="max-h-[420px] overflow-auto">
+                                    <table className="w-full text-sm">
+                                        <thead className="bg-slate-100 sticky top-0">
+                                            <tr>
+                                                <th className="p-2 border text-left">Tienda</th>
+                                                <th className="p-2 border">Fecha</th>
+                                                <th className="p-2 border">Stock</th>
+                                                <th className="p-2 border">Contado</th>
+                                                <th className="p-2 border">Diferencia</th>
+                                                <th className="p-2 border">Estado</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {countHistoryRows.map(row => (
+                                                <tr key={row.assignment_id}>
+                                                    <td className="p-2 border font-semibold">{row.store_name}</td>
+                                                    <td className="p-2 border text-center">{row.assigned_date}</td>
+                                                    <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
+                                                    <td className="p-2 border text-center font-semibold">{formatNumber(row.counted_quantity)}</td>
+                                                    <td className={`p-2 border text-center font-semibold ${row.difference === 0 ? "text-green-700" : "text-red-600"}`}>{formatNumber(row.difference)}</td>
+                                                    <td className="p-2 border text-center">{row.status}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* ════════════════════════════════════════════════════════
                 MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
