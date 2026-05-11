@@ -148,13 +148,13 @@ type GlobalStockProgress = {
 };
 
 type AllStoreAssignmentSummary = {
+    assignment_id: string;
+    store_id: string;
+    store_name: string;
     product_id: string;
     sku: string;
     description: string;
     unit: string;
-    store_count: number;
-    assignment_count: number;
-    all_store_assignment_ids: string[];
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -1058,15 +1058,7 @@ export default function DashboardPage() {
 
             if (rows.length === 0) { setAllStoreAssignmentSummary([]); return; }
 
-            const grouped = new Map<string, { storeIds: Set<string>; ids: string[] }>();
-            for (const row of rows) {
-                if (!grouped.has(row.product_id)) grouped.set(row.product_id, { storeIds: new Set(), ids: [] });
-                const entry = grouped.get(row.product_id)!;
-                entry.storeIds.add(row.store_id);
-                entry.ids.push(row.id);
-            }
-
-            const productIdsAssignedToAll = [...grouped.keys()];
+            const productIdsAssignedToAll = [...new Set(rows.map(row => row.product_id))];
 
             if (productIdsAssignedToAll.length === 0) { setAllStoreAssignmentSummary([]); return; }
 
@@ -1080,20 +1072,20 @@ export default function DashboardPage() {
                 productRows = productRows.concat((data || []) as Product[]);
             }
             const productMap = new Map(productRows.map(product => [product.id, product]));
+            const storeMap = new Map(targetStores.map(store => [store.id, store.name]));
 
-            const summary = productIdsAssignedToAll.map(productId => {
-                const product = productMap.get(productId);
-                const entry = grouped.get(productId)!;
+            const summary = rows.map(row => {
+                const product = productMap.get(row.product_id);
                 return {
-                    product_id: productId,
-                    sku: product?.sku || productId,
+                    assignment_id: row.id,
+                    store_id: row.store_id,
+                    store_name: storeMap.get(row.store_id) || row.store_id,
+                    product_id: row.product_id,
+                    sku: product?.sku || row.product_id,
                     description: product?.description || "",
                     unit: product?.unit || "",
-                    store_count: entry.storeIds.size,
-                    assignment_count: entry.ids.length,
-                    all_store_assignment_ids: entry.ids,
                 };
-            }).sort((a, b) => a.sku.localeCompare(b.sku));
+            }).sort((a, b) => a.store_name.localeCompare(b.store_name) || a.sku.localeCompare(b.sku));
 
             setAllStoreAssignmentSummary(summary);
         } catch (error: any) {
@@ -2378,6 +2370,24 @@ export default function DashboardPage() {
         return selected ? [selected] : [];
     }
 
+    async function filterProductsPendingForAssign(productsToFilter: Product[]): Promise<Product[]> {
+        if (productsToFilter.length === 0) return productsToFilter;
+        const targetStores = activeAssignStores();
+        if (targetStores.length === 0) return productsToFilter;
+
+        const productIds = productsToFilter.map(product => product.id);
+        const completedKeys = await loadCompletedProductKeys(targetStores.map(store => store.id), productIds);
+
+        if (valStoreId === ALL_STORES_VALUE) {
+            return productsToFilter.filter(product =>
+                targetStores.some(store => !completedKeys.has(`${store.id}__${product.id}`))
+            );
+        }
+
+        const store = targetStores[0];
+        return productsToFilter.filter(product => !completedKeys.has(`${store.id}__${product.id}`));
+    }
+
     function toggleAssignSelection(productId: string) {
         setAssignSelectedIds(prev => {
             const next = new Set(prev);
@@ -2408,9 +2418,12 @@ export default function DashboardPage() {
             .limit(limit);
 
         const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]));
-        if (valStoreId && valStoreId !== ALL_STORES_VALUE) return filterProductsInStoreStock(preferred, valStoreId);
-        if (valStoreId === ALL_STORES_VALUE) return filterProductsInAnyStoreStock(preferred, activeAssignStores());
-        return preferred;
+        const stockFiltered = valStoreId && valStoreId !== ALL_STORES_VALUE
+            ? await filterProductsInStoreStock(preferred, valStoreId)
+            : valStoreId === ALL_STORES_VALUE
+                ? await filterProductsInAnyStoreStock(preferred, activeAssignStores())
+                : preferred;
+        return filterProductsPendingForAssign(stockFiltered);
     }
 
     async function searchProductsForAssign(text: string) {
@@ -2430,7 +2443,8 @@ export default function DashboardPage() {
         const combined = [...byCode, ...stockFilteredDesc];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-        const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
+        const pendingProducts = await filterProductsPendingForAssign(filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])));
+        const nextResults = pendingProducts.slice(0, 120);
         setAssignResults(nextResults);
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
     }
@@ -2791,10 +2805,19 @@ export default function DashboardPage() {
         loadValidadorData(valStoreId, valDate);
     }
 
-    async function removeAllStoresProductAssignments(row: AllStoreAssignmentSummary) {
-        const ids = row.all_store_assignment_ids;
+    async function removeAllStoreAssignment(row: AllStoreAssignmentSummary) {
+        if (!confirm(`Eliminar "${row.sku}" de ${row.store_name} para ${valDate}? Tambien se eliminaran los conteos asociados.`)) return;
+        await supabase.from("cyclic_counts").delete().eq("assignment_id", row.assignment_id);
+        const { error } = await supabase.from("cyclic_assignments").delete().eq("id", row.assignment_id);
+        if (error) { showMessage("Error eliminando asignacion: " + error.message, "error"); return; }
+        showMessage(`El codigo ${row.sku} fue quitado de ${row.store_name}.`, "success");
+        loadAllStoreAssignmentSummary(valDate);
+    }
+
+    async function removeAllStoreAssignmentsForDate() {
+        const ids = allStoreAssignmentSummary.map(row => row.assignment_id);
         if (ids.length === 0) return;
-        if (!confirm(`Eliminar "${row.sku}" de todas las tiendas para ${valDate}? Tambien se eliminaran los conteos asociados.`)) return;
+        if (!confirm(`Eliminar TODAS las ${ids.length} asignaciones de todas las tiendas para ${valDate}? Tambien se eliminaran los conteos asociados.`)) return;
 
         const CHUNK = 400;
         for (let i = 0; i < ids.length; i += CHUNK) {
@@ -2803,7 +2826,7 @@ export default function DashboardPage() {
             const { error } = await supabase.from("cyclic_assignments").delete().in("id", chunk);
             if (error) { showMessage("Error eliminando asignaciones: " + error.message, "error"); return; }
         }
-        showMessage(`El codigo ${row.sku} fue quitado de ${row.store_count} tiendas.`, "success");
+        showMessage(`${ids.length} asignaciones eliminadas de todas las tiendas.`, "success");
         loadAllStoreAssignmentSummary(valDate);
     }
 
@@ -5051,6 +5074,13 @@ export default function DashboardPage() {
                                     <Package size={16} />
                                     <span className="truncate">Inventarios</span>
                                 </button>
+                                <button
+                                    onClick={() => { window.location.href = "/rotaciones"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <LineChart size={16} />
+                                    <span className="truncate">Rotaciones</span>
+                                </button>
                             </div>
                         </>
                     )}
@@ -6156,16 +6186,25 @@ export default function DashboardPage() {
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <div>
-                                            <h3 className="font-bold text-slate-900">Codigos asignados en tiendas ({allStoreAssignmentSummary.length})</h3>
-                                            <p className="text-xs text-slate-500">Resumen de codigos cargados para las tiendas activas en {valDate}.</p>
+                                            <h3 className="font-bold text-slate-900">Tienda - codigos asignados ({allStoreAssignmentSummary.length})</h3>
+                                            <p className="text-xs text-slate-500">Codigos pendientes asignados por tienda activa en {valDate}.</p>
                                         </div>
-                                        <button
-                                            className="px-4 py-2 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition disabled:opacity-40"
-                                            onClick={() => loadAllStoreAssignmentSummary(valDate)}
-                                            disabled={allStoreSummaryLoading}
-                                        >
-                                            <RefreshCw size={14} className={`mr-1 inline ${allStoreSummaryLoading ? "animate-spin" : ""}`} /> Actualizar
-                                        </button>
+                                        <div className="flex gap-2 flex-wrap">
+                                            <button
+                                                className="px-4 py-2 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition disabled:opacity-40"
+                                                onClick={() => loadAllStoreAssignmentSummary(valDate)}
+                                                disabled={allStoreSummaryLoading}
+                                            >
+                                                <RefreshCw size={14} className={`mr-1 inline ${allStoreSummaryLoading ? "animate-spin" : ""}`} /> Actualizar
+                                            </button>
+                                            <button
+                                                className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition disabled:opacity-40"
+                                                onClick={removeAllStoreAssignmentsForDate}
+                                                disabled={allStoreSummaryLoading || allStoreAssignmentSummary.length === 0}
+                                            >
+                                                Quitar todos
+                                            </button>
+                                        </div>
                                     </div>
                                     {allStoreSummaryLoading ? (
                                         <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resumen...</div>
@@ -6179,25 +6218,23 @@ export default function DashboardPage() {
                                                 <table className="w-full text-sm">
                                                     <thead className="bg-slate-100 sticky top-0">
                                                         <tr>
+                                                            <th className="p-2 border text-left">Tienda</th>
                                                             <th className="p-2 border text-left">SKU</th>
                                                             <th className="p-2 border text-left">Descripcion</th>
                                                             <th className="p-2 border">UM</th>
-                                                            <th className="p-2 border">Tiendas</th>
-                                                            <th className="p-2 border">Asignaciones</th>
                                                             <th className="p-2 border">Accion</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
                                                         {allStoreAssignmentSummary.map(row => (
-                                                            <tr key={row.product_id}>
+                                                            <tr key={row.assignment_id}>
+                                                                <td className="p-2 border font-semibold">{row.store_name}</td>
                                                                 <td className="p-2 border font-medium">{row.sku}</td>
                                                                 <td className="p-2 border text-slate-600">{row.description}</td>
                                                                 <td className="p-2 border text-center">{row.unit}</td>
-                                                                <td className="p-2 border text-center font-semibold">{row.store_count}</td>
-                                                                <td className="p-2 border text-center">{row.assignment_count}</td>
                                                                 <td className="p-2 border text-center">
-                                                                    <button className="text-xs text-red-600 underline" onClick={() => removeAllStoresProductAssignments(row)}>
-                                                                        Quitar de todas
+                                                                    <button className="text-xs text-red-600 underline" onClick={() => removeAllStoreAssignment(row)}>
+                                                                        Quitar
                                                                     </button>
                                                                 </td>
                                                             </tr>
@@ -6239,7 +6276,6 @@ export default function DashboardPage() {
                                                         <th className="p-2 border text-left">Descripción</th>
                                                         <th className="p-2 border">UM</th>
                                                         <th className="p-2 border">Stock Sis.</th>
-                                                        <th className="p-2 border">Estado</th>
                                                         <th className="p-2 border">Acción</th>
                                                     </tr>
                                                 </thead>
@@ -6252,9 +6288,6 @@ export default function DashboardPage() {
                                                                 <td className="p-2 border text-slate-600">{a.description}</td>
                                                                 <td className="p-2 border text-center">{a.unit}</td>
                                                                 <td className="p-2 border text-center font-semibold">{formatNumber(a.system_stock)}</td>
-                                                                <td className="p-2 border text-center">
-                                                                    {c ? <span className={statusBadge(c.status)}>{c.status}</span> : <span className="text-xs text-amber-600 font-semibold">Pendiente</span>}
-                                                                </td>
                                                                 <td className="p-2 border text-center">
                                                                     <button className="text-xs text-red-600 underline" onClick={() => removeAssignment(a)}>Quitar</button>
                                                                 </td>

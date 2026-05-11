@@ -1,0 +1,75 @@
+
+> ciclicos@0.1.0 dev
+> next dev -p 3000
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.212.134.201:3000
+- Environments: .env.local
+✓ Ready in 1654ms
+
+ GET /rotaciones 200 in 1608ms (next.js: 1257ms, application-code: 352ms)
+ GET / 200 in 363ms (next.js: 108ms, application-code: 255ms)
+ GET / 200 in 169ms (next.js: 14ms, application-code: 154ms)
+ GET /dashboard 200 in 391ms (next.js: 96ms, application-code: 295ms)
+ GET /rotaciones 200 in 135ms (next.js: 7ms, application-code: 129ms)
+✓ Compiled in 202ms
+ GET /rotaciones 200 in 529ms (next.js: 154ms, application-code: 374ms)
+ GET /rotaciones 200 in 275ms (next.js: 7ms, application-code: 268ms)
+ GET /dashboard 200 in 177ms (next.js: 17ms, application-code: 160ms)
+ GET /rotaciones 200 in 78ms (next.js: 7ms, application-code: 70ms)
+ GET /rotaciones 200 in 102ms (next.js: 10ms, application-code: 92ms)
+ GET /dashboard 200 in 91ms (next.js: 8ms, application-code: 83ms)
+ GET /rotaciones 200 in 88ms (next.js: 7ms, application-code: 81ms)
+ GET /rotaciones 200 in 67ms (next.js: 8ms, application-code: 59ms)
+ GET /rotaciones 200 in 148ms (next.js: 10ms, application-code: 138ms)
+✓ Compiled in 141ms
+ GET /rotaciones 200 in 412ms (next.js: 198ms, application-code: 214ms)
+ GET /rotaciones 200 in 420ms (next.js: 11ms, application-code: 409ms)
+ GET /rotaciones 200 in 133ms (next.js: 12ms, application-code: 121ms)
+ GET /rotaciones 200 in 99ms (next.js: 8ms, application-code: 91ms)
+ GET /rotaciones 200 in 123ms (next.js: 9ms, application-code: 113ms)
+✓ Compiled in 69ms
+ GET /rotaciones 200 in 331ms (next.js: 171ms, application-code: 160ms)
+ GET /rotaciones 200 in 438ms (next.js: 7ms, application-code: 431ms)
+ GET /rotaciones?refresh=1778361305252 200 in 63ms (next.js: 7ms, application-code: 57ms)
+✓ Compiled in 95ms
+ GET /rotaciones?refresh=1778361305252 200 in 250ms (next.js: 126ms, application-code: 123ms)
+ GET /rotaciones?refresh=1778361446745 200 in 256ms (next.js: 5ms, application-code: 251ms)
+ GET /rotaciones?refresh=1778361446745 200 in 64ms (next.js: 10ms, application-code: 55ms)
+✓ Compiled in 102ms
+ GET /rotaciones?refresh=1778361446745 200 in 1143ms (next.js: 219ms, application-code: 924ms)
+ GET /rotaciones-local.json?ts=1778364813370 404 in 3.0s (next.js: 911ms, application-code: 2.1s)
+ GET /rotaciones-local.json?ts=1778364813372 404 in 2.9s (next.js: 2.5s, application-code: 418ms)
+ GET /rotaciones?local=1778364885129 200 in 157ms (next.js: 5ms, application-code: 152ms)
+✓ Compiled in 124ms
+ GET /rotaciones?local=1778364885129 200 in 183ms (next.js: 95ms, application-code: 88ms)
+ GET /rotaciones?refresh=1778367659450 200 in 206ms (next.js: 5ms, application-code: 201ms)
+✓ Compiled in 70ms
+ GET /rotaciones?refresh=1778367659450 200 in 612ms (next.js: 195ms, application-code: 417ms)
+ GET /rotaciones?refresh=1778367659450 200 in 319ms (next.js: 8ms, application-code: 311ms)
+ GET /dashboard 200 in 282ms (next.js: 67ms, application-code: 215ms)
+ GET / 200 in 205ms (next.js: 39ms, application-code: 166ms)
+ GET / 200 in 74ms (next.js: 10ms, application-code: 65ms)
+ GET /dashboard 200 in 114ms (next.js: 11ms, application-code: 102ms)
+ GET /rotaciones 200 in 136ms (next.js: 15ms, application-code: 120ms)
+ GET / 200 in 137ms (next.js: 17ms, application-code: 121ms)
+ GET / 200 in 288ms (next.js: 8ms, application-code: 280ms)
+✓ Compiled in 179ms
+ GET /rotaciones 200 in 704ms (next.js: 418ms, application-code: 286ms)
+✓ Compiled in 123ms
+ GET /rotaciones 200 in 382ms (next.js: 183ms, application-code: 199ms)
+✓ Compiled in 82ms
+ GET /rotaciones 200 in 238ms (next.js: 111ms, application-code: 127ms)
+ GET /rotaciones 200 in 446ms (next.js: 20ms, application-code: 426ms)
+✓ Compiled in 66ms
+ GET /rotaciones 200 in 700ms (next.js: 233ms, application-code: 466ms)
+✓ Compiled in 109ms
+ GET /rotaciones 200 in 275ms (next.js: 145ms, application-code: 130ms)
+✓ Compiled in 78ms
+ GET /rotaciones 200 in 326ms (next.js: 135ms, application-code: 191ms)
+ GET /rotaciones 200 in 201ms (next.js: 136ms, application-code: 65ms)
+ GET /rotaciones 200 in 408ms (next.js: 231ms, application-code: 176ms)
+ GET /rotaciones 200 in 290ms (next.js: 175ms, application-code: 115ms)
+ GET /rotaciones 200 in 1642ms (next.js: 385ms, application-code: 1257ms)
+ GET /dashboard 200 in 1816ms (next.js: 477ms, application-code: 1339ms)
