@@ -4289,6 +4289,18 @@ export default function DashboardPage() {
         return idx >= 0 ? row[idx] : null;
     }
 
+    function storeNameFromSnapshotRow(row: any[], headers: string[]) {
+        const normalized = headers.map(header => header.trim().toLowerCase());
+        const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacén", "local", "sede"].includes(header));
+        if (exactStoreIdx >= 0) return String(row[exactStoreIdx] || "").trim();
+        const nameIdx = normalized.findIndex(header =>
+            ["tienda", "store", "almacen", "almacén", "local", "sede"].some(name => header.includes(name)) &&
+            !["codigo", "código", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
+        );
+        if (nameIdx >= 0) return String(row[nameIdx] || "").trim();
+        return "";
+    }
+
     function parseInventorySnapshotRows(rows: any[][]): InventoryValuationReportRow[] {
         if (rows.length < 2) return [];
         const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
@@ -4296,14 +4308,16 @@ export default function DashboardPage() {
         const knownStores = new Map<string, Store>();
         for (const store of allStores) {
             knownStores.set(String(store.name || "").trim().toLowerCase(), store);
+            knownStores.set(String(store.code || "").trim().toLowerCase(), store);
             if (store.erp_sede) knownStores.set(String(store.erp_sede).trim().toLowerCase(), store);
         }
 
         for (const row of rows.slice(1)) {
-            const rawStore = String(cellByHeaders(row, headers, ["tienda", "sede", "store", "almacen", "almacen"]) || "").trim();
+            const rawStore = storeNameFromSnapshotRow(row, headers);
             if (!rawStore) continue;
             const store = knownStores.get(rawStore.toLowerCase());
             const storeName = store?.name || rawStore;
+            if (/^\d+$/.test(storeName)) continue;
             const sede = store?.erp_sede || rawStore;
             const key = store?.id || storeName.toLowerCase();
             const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "codigo", "cod.sap", "codsap", "sku"]) || "").trim();
@@ -6131,7 +6145,7 @@ export default function DashboardPage() {
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className="flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto">
+                <div className={`flex-1 w-full ${activeTab === "reportes" ? "max-w-7xl" : "max-w-5xl"} mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -7612,11 +7626,11 @@ export default function DashboardPage() {
                 TAB ADMIN
             ════════════════════════════════════════════════════════ */}
             {activeTab === "reportes" && isValOrAdm && (
-                <section className="bg-white rounded-3xl p-5 shadow space-y-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
+                <section className="bg-white rounded-2xl p-4 shadow space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                            <h2 className="text-xl font-bold text-slate-900">Valorizado de inventario actualizado</h2>
-                            <p className="text-sm text-slate-500 mt-1">Resumen por tienda con stock actual y costo del maestro.</p>
+                            <h2 className="text-lg font-bold text-slate-900">Valorizado de inventario actualizado</h2>
+                            <p className="text-xs text-slate-500 mt-0.5">Resumen por tienda con stock actual y costo del maestro.</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" onClick={loadInventoryValuationReport} disabled={inventoryReportLoading}>
@@ -7629,7 +7643,7 @@ export default function DashboardPage() {
                         </div>
                     </div>
 
-                    <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
+                    <div className="rounded-2xl border bg-slate-50 p-3 space-y-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <p className="text-sm font-bold text-slate-800">Fotografias de las 8 am</p>
@@ -7658,7 +7672,7 @@ export default function DashboardPage() {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[280px_1fr]">
+                        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[310px_1fr]">
                             <div className="rounded-2xl border bg-white overflow-hidden">
                                 <div className="max-h-72 overflow-auto">
                                     {inventorySnapshots.map(snapshot => (
@@ -7720,22 +7734,22 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                        <div className="rounded-2xl bg-slate-900 text-white p-4">
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                        <div className="rounded-2xl bg-slate-900 text-white p-3">
                             <p className="text-xs font-bold text-slate-300">Valorizado total</p>
-                            <p className="text-2xl font-black mt-1">{formatMoney(inventoryReportTotals.value)}</p>
+                            <p className="text-xl font-black mt-1">{formatMoney(inventoryReportTotals.value)}</p>
                         </div>
-                        <div className="rounded-2xl bg-slate-50 border p-4">
+                        <div className="rounded-2xl bg-slate-50 border p-3">
                             <p className="text-xs font-bold text-slate-500">Tiendas</p>
-                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.stores)}</p>
+                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.stores)}</p>
                         </div>
-                        <div className="rounded-2xl bg-slate-50 border p-4">
+                        <div className="rounded-2xl bg-slate-50 border p-3">
                             <p className="text-xs font-bold text-slate-500">Codigos con stock</p>
-                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.codes)}</p>
+                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.codes)}</p>
                         </div>
-                        <div className="rounded-2xl bg-slate-50 border p-4">
+                        <div className="rounded-2xl bg-slate-50 border p-3">
                             <p className="text-xs font-bold text-slate-500">Unidades</p>
-                            <p className="text-2xl font-black mt-1">{formatNumber(inventoryReportTotals.units)}</p>
+                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.units)}</p>
                         </div>
                     </div>
 
