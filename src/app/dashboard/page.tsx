@@ -11,7 +11,7 @@ import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Packag
 // ══════════════════════════════════════════════════════════
 //  TIPOS
 // ══════════════════════════════════════════════════════════
-type Role = "Operario" | "Validador" | "Administrador";
+type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type TabKey = "operario" | "validador" | "ubicaciones" | "reportes" | "admin";
 type ValTabKey = "asignar"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
 
@@ -459,6 +459,7 @@ export default function DashboardPage() {
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
+    const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
     const assignSearchRequestRef = useRef(0);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
@@ -520,6 +521,7 @@ export default function DashboardPage() {
     const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
     const [newUserAuditAccess, setNewUserAuditAccess] = useState(false);
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
+    const [editUserFullName, setEditUserFullName] = useState("");
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
     const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
 
@@ -636,24 +638,24 @@ export default function DashboardPage() {
                 if (savedTab) {
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
-                        (savedTab === "validador" && (u.role === "Validador" || u.role === "Administrador")) ||
+                        (savedTab === "validador" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
                         savedTab === "ubicaciones" ||
-                        (savedTab === "reportes" && (u.role === "Validador" || u.role === "Administrador")) ||
+                        (savedTab === "reportes" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
                         (savedTab === "admin" && u.role === "Administrador");
                     if (isValid) { setActiveTab(savedTab); }
                     else {
                         if (u.role === "Administrador") setActiveTab("admin");
-                        else if (u.role === "Validador") setActiveTab("validador");
+                        else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
                         else setActiveTab("operario");
                     }
                 } else {
                     if (u.role === "Administrador") setActiveTab("admin");
-                    else if (u.role === "Validador") setActiveTab("validador");
+                    else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
                     else setActiveTab("operario");
                 }
 
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as ValTabKey | null;
-                if (savedValTab) setValTab(savedValTab);
+                if (savedValTab) setValTab(u.role === "Supervisor" && savedValTab === "asignar" ? "registros" : savedValTab);
 
                 const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
                 if (savedAdminTab && ["productos","tiendas","usuarios"].includes(savedAdminTab)) setAdminTab(savedAdminTab);
@@ -673,7 +675,7 @@ export default function DashboardPage() {
             } catch {
                 setUser(parsed);
                 if (parsed.role === "Administrador") setActiveTab("admin");
-                else if (parsed.role === "Validador") setActiveTab("validador");
+                else if (parsed.role === "Validador" || parsed.role === "Supervisor") setActiveTab("validador");
                 else setActiveTab("operario");
             }
         })();
@@ -689,7 +691,7 @@ export default function DashboardPage() {
             const sid = user.store_id || "";
             setSelectedStoreId(sid);
             if (sid) loadOperarioData(sid, selectedDate);
-        } else if (user.role === "Administrador" || user.role === "Validador") {
+        } else if (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor") {
             // Restaurar datos del validador si estaba en ese tab
             const savedTab      = sessionStorage.getItem("cyclic_active_tab");
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
@@ -1922,6 +1924,56 @@ export default function DashboardPage() {
         return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
     }
 
+    async function loadPositiveStockCodesForStores(targetStores: Store[], maxRows = 20000): Promise<string[]> {
+        const sedes = [...new Set(targetStores.map(store => String(store.erp_sede || store.name || "").trim()).filter(Boolean))];
+        if (sedes.length === 0) return [];
+        const codes = new Set<string>();
+        const pageSize = 1000;
+        for (let from = 0; from < maxRows; from += pageSize) {
+            const to = from + pageSize - 1;
+            const { data, error } = await supabase
+                .from("stock_general")
+                .select("codsap")
+                .in("sede", sedes)
+                .gt("stock", 0)
+                .range(from, to);
+            if (error || !data || data.length === 0) break;
+            for (const row of data) {
+                const code = fullProductCode(row.codsap);
+                if (code) codes.add(code);
+            }
+            if (data.length < pageSize) break;
+        }
+        return [...codes];
+    }
+
+    async function searchProductsByDescriptionInStock(words: string[], targetStores: Store[], limit = 500): Promise<Product[]> {
+        if (words.length === 0 || targetStores.length === 0) return [];
+        const stockCodes = await loadPositiveStockCodesForStores(targetStores);
+        if (stockCodes.length === 0) return [];
+
+        const rows: Product[] = [];
+        const seen = new Set<string>();
+        for (let i = 0; i < stockCodes.length; i += 500) {
+            let query = supabase
+                .from("cyclic_products")
+                .select("*")
+                .eq("is_active", true)
+                .in("sku", stockCodes.slice(i, i + 500));
+            for (const word of words) query = query.ilike("description", `%${word}%`);
+            const { data } = await query.limit(1000);
+            for (const product of filterAssignableProducts((data || []) as Product[])) {
+                if (seen.has(product.id)) continue;
+                seen.add(product.id);
+                rows.push(product);
+            }
+        }
+
+        return preferFullCodsapProducts(rows)
+            .sort((a, b) => String(a.description || "").localeCompare(String(b.description || "")) || fullProductCode(a.sku).localeCompare(fullProductCode(b.sku)))
+            .slice(0, limit);
+    }
+
     async function refreshAssignmentStock(asgn: Assignment, notify = true, forcePersist = false): Promise<Assignment> {
         if (!asgn.sku) return asgn;
         setRefreshingStockId(asgn.id);
@@ -2216,14 +2268,14 @@ export default function DashboardPage() {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .ilike("sku", `%${code}%`);
+            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%`);
 
         if (error) {
             showMessage("Error buscando codigo manual: " + error.message, "error");
             return [];
         }
 
-        const candidates = await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]), selectedStoreId);
+        const candidates = preferFullCodsapProducts((data || []) as Product[]);
         if (!selectedStoreId || candidates.length === 0) return candidates;
 
         const enriched = await Promise.all(candidates.map(async product => ({
@@ -2256,9 +2308,7 @@ export default function DashboardPage() {
             if (product) mappedProducts.push(product as Product);
         }
 
-        const stockMappedProducts = selectedStoreId
-            ? await filterProductsInStoreStock(mappedProducts, selectedStoreId)
-            : mappedProducts;
+        const stockMappedProducts = mappedProducts;
 
         if (stockMappedProducts.length === 1) return stockMappedProducts[0];
         if (stockMappedProducts.length > 1) {
@@ -2281,8 +2331,7 @@ export default function DashboardPage() {
             .eq("is_active", true)
             .maybeSingle();
         if (bySku) {
-            const productsInStore = selectedStoreId ? await filterProductsInStoreStock([bySku as Product], selectedStoreId) : [bySku as Product];
-            if (productsInStore.length === 1) return productsInStore[0];
+            return bySku as Product;
         }
 
         const { data: byProductBarcode } = await supabase
@@ -2292,8 +2341,7 @@ export default function DashboardPage() {
             .eq("is_active", true)
             .maybeSingle();
         if (byProductBarcode) {
-            const productsInStore = selectedStoreId ? await filterProductsInStoreStock([byProductBarcode as Product], selectedStoreId) : [byProductBarcode as Product];
-            if (productsInStore.length === 1) return productsInStore[0];
+            return byProductBarcode as Product;
         }
 
         return null;
@@ -2339,11 +2387,6 @@ export default function DashboardPage() {
             setAssignments(prev => prev.some(a => a.id === asgn.id) ? prev : [...prev, asgn]);
             if (showRecount) await openRecountItem(asgn);
             else await openCount(asgn);
-            return;
-        }
-
-        if (showRecount) {
-            showMessage("Este codigo no esta asignado para reconteo.", "error");
             return;
         }
 
@@ -2568,6 +2611,14 @@ export default function DashboardPage() {
         const qtyMax = Math.max(faltanteQty, sobranteQty, 1);
         const valueMax = Math.max(faltanteValue, sobranteValue, 1);
         const printedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+        const inlineBar = (pct: number, color: string) => {
+            const safePct = Math.max(0, Math.min(100, Math.round(pct)));
+            const fillWidth = Math.max(1, Math.round((safePct / 100) * 190));
+            return `<svg class="barSvg" viewBox="0 0 200 14" width="100%" height="14" xmlns="http://www.w3.org/2000/svg" aria-label="${safePct}%">
+                <rect x="0.5" y="0.5" width="199" height="13" rx="6.5" fill="#ffffff" stroke="#94a3b8" stroke-width="1"/>
+                <rect x="5" y="4" width="${fillWidth}" height="6" rx="3" fill="${color}"/>
+            </svg>`;
+        };
 
         const tableRows = rows.map(row => `
             <tr>
@@ -2579,7 +2630,6 @@ export default function DashboardPage() {
                 <td class="num ${row.difference < 0 ? "bad" : row.difference > 0 ? "warn" : "ok"}">${formatNumber(row.difference)}</td>
                 <td class="num">${formatMoney(row.cost)}</td>
                 <td class="num ${row.valueDifference < 0 ? "bad" : row.valueDifference > 0 ? "warn" : "ok"}">${formatMoney(row.valueDifference)}</td>
-                <td>${escapeHtml(row.status)}</td>
                 <td>${escapeHtml(row.locations)}</td>
             </tr>
         `).join("");
@@ -2591,37 +2641,41 @@ export default function DashboardPage() {
     <meta charset="utf-8" />
     <title>Reporte de reconteo - ${escapeHtml(storeName)} - ${escapeHtml(selectedDate)}</title>
     <style>
+        @page { size: A4 portrait; margin: 8mm; }
         * { box-sizing: border-box; }
-        body { margin: 0; padding: 28px; color: #0f172a; font-family: Arial, sans-serif; font-size: 12px; }
-        h1 { margin: 0; font-size: 22px; }
-        h2 { margin: 22px 0 10px; font-size: 15px; }
+        body { margin: 0; padding: 10px; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
+        h1 { margin: 0; font-size: 17px; }
+        h2 { margin: 10px 0 5px; font-size: 12px; }
         .muted { color: #64748b; }
-        .header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #0f172a; padding-bottom: 14px; }
-        .meta { text-align: right; line-height: 1.5; }
-        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0; }
-        .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
-        .label { color: #64748b; font-weight: 700; font-size: 11px; }
-        .value { font-size: 20px; font-weight: 800; margin-top: 4px; }
-        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
-        .panel { border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; }
-        .barRow { display: grid; grid-template-columns: 90px 1fr 90px; gap: 10px; align-items: center; margin: 10px 0; }
-        .track { height: 18px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
-        .bar { height: 100%; border-radius: 999px; }
-        .okBar { background: #16a34a; }
-        .badBar { background: #dc2626; }
-        .warnBar { background: #f97316; }
-        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-        th, td { border: 1px solid #cbd5e1; padding: 6px; vertical-align: top; }
-        th { background: #f1f5f9; text-align: left; font-size: 11px; }
+        .header { display: flex; justify-content: space-between; gap: 14px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
+        .meta { text-align: right; line-height: 1.35; }
+        .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 9px 0; }
+        .card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; }
+        .label { color: #64748b; font-weight: 700; font-size: 9px; }
+        .value { font-size: 15px; font-weight: 800; margin-top: 2px; }
+        .charts { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 8px; margin-bottom: 9px; }
+        .panel { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px; }
+        .barRow { display: grid; grid-template-columns: 62px 1fr 72px; gap: 6px; align-items: center; margin: 5px 0; }
+        .barSvg { display: block; height: 14px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; table-layout: fixed; }
+        th, td { border: 1px solid #cbd5e1; padding: 3px 4px; vertical-align: top; line-height: 1.2; }
+        th { background: #f1f5f9; text-align: left; font-size: 9px; }
+        th:nth-child(1), td:nth-child(1) { width: 58px; }
+        th:nth-child(2), td:nth-child(2) { width: auto; }
+        th:nth-child(3), td:nth-child(3) { width: 28px; }
+        th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5), th:nth-child(6), td:nth-child(6) { width: 48px; }
+        th:nth-child(7), td:nth-child(7), th:nth-child(8), td:nth-child(8) { width: 56px; }
+        th:nth-child(9), td:nth-child(9) { width: 118px; }
         .num { text-align: right; white-space: nowrap; }
         .ok { color: #15803d; font-weight: 700; }
         .bad { color: #b91c1c; font-weight: 700; }
         .warn { color: #c2410c; font-weight: 700; }
-        .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; margin-top: 48px; break-inside: avoid; }
-        .signature { text-align: center; padding-top: 42px; border-top: 1px solid #0f172a; font-weight: 700; }
+        .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; margin-top: 24px; break-inside: avoid; }
+        .signature { text-align: center; padding-top: 24px; border-top: 1px solid #0f172a; font-weight: 700; }
         @media print {
-            body { padding: 18px; }
+            body { padding: 0; font-size: 9px; }
             button { display: none; }
+            h2 { margin-top: 8px; }
             .charts, .cards { break-inside: avoid; }
         }
     </style>
@@ -2629,14 +2683,14 @@ export default function DashboardPage() {
 <body>
     <div class="header">
         <div>
-            <h1>Reporte de reconteo ciclico</h1>
+            <h1>Reporte de conteo ciclico</h1>
             <div class="muted">Tienda: <strong>${escapeHtml(storeName)}</strong></div>
             <div class="muted">Fecha asignada: <strong>${escapeHtml(selectedDate)}</strong></div>
         </div>
         <div class="meta">
             <div>Generado: <strong>${escapeHtml(printedAt)}</strong></div>
             <div>Asesor: <strong>${escapeHtml(user?.full_name || "-")}</strong></div>
-            <button onclick="window.print()" style="margin-top:8px;padding:8px 12px;border:1px solid #0f172a;border-radius:8px;background:#0f172a;color:white;font-weight:700;">Imprimir / PDF</button>
+            <button onclick="window.print()" style="margin-top:8px;padding:8px 12px;border:1px solid #0f172a;border-radius:8px;background:#0f172a;color:white;font-weight:700;">Imprimir / guardar PDF</button>
         </div>
     </div>
 
@@ -2650,15 +2704,15 @@ export default function DashboardPage() {
     <div class="charts">
         <div class="panel">
             <h2>ERI por codigos</h2>
-            <div class="barRow"><strong>ERI</strong><div class="track"><div class="bar okBar" style="width:${eriPct}%"></div></div><strong>${eriPct}%</strong></div>
+            <div class="barRow"><strong>ERI</strong>${inlineBar(eriPct, "#16a34a")}<strong>${eriPct}%</strong></div>
             <div class="muted">ERI = codigos sin diferencia / total de codigos revisados.</div>
         </div>
         <div class="panel">
             <h2>Diferencias</h2>
-            <div class="barRow"><strong>Faltante</strong><div class="track"><div class="bar badBar" style="width:${Math.round((faltanteQty / qtyMax) * 100)}%"></div></div><span>${formatNumber(faltanteQty)} und</span></div>
-            <div class="barRow"><strong>Sobrante</strong><div class="track"><div class="bar warnBar" style="width:${Math.round((sobranteQty / qtyMax) * 100)}%"></div></div><span>${formatNumber(sobranteQty)} und</span></div>
-            <div class="barRow"><strong>Val. falt.</strong><div class="track"><div class="bar badBar" style="width:${Math.round((faltanteValue / valueMax) * 100)}%"></div></div><span>${formatMoney(faltanteValue)}</span></div>
-            <div class="barRow"><strong>Val. sobr.</strong><div class="track"><div class="bar warnBar" style="width:${Math.round((sobranteValue / valueMax) * 100)}%"></div></div><span>${formatMoney(sobranteValue)}</span></div>
+            <div class="barRow"><strong>Faltante</strong>${inlineBar((faltanteQty / qtyMax) * 100, "#dc2626")}<span>${formatNumber(faltanteQty)} und</span></div>
+            <div class="barRow"><strong>Sobrante</strong>${inlineBar((sobranteQty / qtyMax) * 100, "#f97316")}<span>${formatNumber(sobranteQty)} und</span></div>
+            <div class="barRow"><strong>Val. falt.</strong>${inlineBar((faltanteValue / valueMax) * 100, "#dc2626")}<span>${formatMoney(faltanteValue)}</span></div>
+            <div class="barRow"><strong>Val. sobr.</strong>${inlineBar((sobranteValue / valueMax) * 100, "#f97316")}<span>${formatMoney(sobranteValue)}</span></div>
         </div>
     </div>
 
@@ -2674,7 +2728,6 @@ export default function DashboardPage() {
                 <th>Diferencia</th>
                 <th>Costo</th>
                 <th>Dif. valorizada</th>
-                <th>Resultado</th>
                 <th>Ubicaciones</th>
             </tr>
         </thead>
@@ -2697,6 +2750,7 @@ export default function DashboardPage() {
         reportWindow.document.write(html);
         reportWindow.document.close();
         reportWindow.focus();
+        setTimeout(() => reportWindow.print(), 500);
     }
 
     // ════════════════════════════════════════════════════════
@@ -2765,7 +2819,8 @@ export default function DashboardPage() {
             .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%`)
             .limit(Math.max(limit, 200));
 
-        const preferred = filterAssignableProducts(preferFullCodsapProducts((data || []) as Product[]))
+        const rawMatches = preferFullCodsapProducts((data || []) as Product[]);
+        const preferred = filterAssignableProducts(rawMatches)
             .sort((a, b) => {
                 const aVisible = visibleProductCode(a.sku);
                 const bVisible = visibleProductCode(b.sku);
@@ -2785,6 +2840,19 @@ export default function DashboardPage() {
             : valStoreId === ALL_STORES_VALUE
                 ? await filterProductsInAnyStoreStock(preferred, activeAssignStores())
                 : preferred;
+        if (stockFiltered.length === 0 && rawMatches.length > 0 && preferred.length === 0) {
+            setAssignSearchNotice("El codigo existe en el maestro, pero esta marcado como no inventariable y no se puede asignar en ciclicos.");
+        } else if (stockFiltered.length === 0 && preferred.length > 0 && valStoreId && valStoreId !== ALL_STORES_VALUE) {
+            const exact = preferred.find(product => {
+                const barcode = fullProductCode(product.barcode);
+                return fullProductCode(product.sku) === code || visibleProductCode(product.sku) === code || barcode === code;
+            }) || preferred[0];
+            const stock = await getSystemStockForStore(exact.sku, valStoreId);
+            const storeName = stores.find(store => store.id === valStoreId)?.name || allStores.find(store => store.id === valStoreId)?.name || "la tienda seleccionada";
+            setAssignSearchNotice(`El codigo ${exact.sku} existe en el maestro, pero en ${storeName} tiene stock ${formatNumber(stock)}. Por eso no aparece para asignar.`);
+        } else if (stockFiltered.length > 0) {
+            setAssignSearchNotice("");
+        }
         return stockFiltered.slice(0, limit);
     }
 
@@ -2793,8 +2861,10 @@ export default function DashboardPage() {
         if (!text.trim()) {
             setAssignResults([]);
             setAssignSelectedIds(new Set());
+            setAssignSearchNotice("");
             return;
         }
+        setAssignSearchNotice("");
         const trimmed = text.trim();
         const isNumericSearch = /^\d+$/.test(trimmed);
         const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
@@ -2807,20 +2877,24 @@ export default function DashboardPage() {
             return;
         }
 
-        let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
-        for (const w of words) q = q.ilike("description", `%${w}%`);
-        const { data: byDesc } = await q.limit(200);
-        const descRows = filterAssignableProducts((byDesc || []) as Product[]);
-        const stockFilteredDesc = valStoreId && valStoreId !== ALL_STORES_VALUE
-            ? await filterProductsInStoreStock(descRows, valStoreId)
+        const targetStores = valStoreId && valStoreId !== ALL_STORES_VALUE
+            ? activeAssignStores()
             : valStoreId === ALL_STORES_VALUE
-                ? await filterProductsInAnyStoreStock(descRows, activeAssignStores())
-                : descRows;
+                ? activeAssignStores()
+                : [];
+        const stockFilteredDesc = targetStores.length > 0
+            ? await searchProductsByDescriptionInStock(words, targetStores, 500)
+            : await (async () => {
+                let q = supabase.from("cyclic_products").select("*").eq("is_active", true);
+                for (const w of words) q = q.ilike("description", `%${w}%`);
+                const { data } = await q.limit(500);
+                return filterAssignableProducts((data || []) as Product[]);
+            })();
         if (requestId !== assignSearchRequestRef.current) return;
         const combined = [...stockFilteredDesc, ...byCode];
         const seen = new Set<string>();
         const deduped = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
-        const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 120);
+        const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 500);
         setAssignResults(nextResults);
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
     }
@@ -2831,10 +2905,12 @@ export default function DashboardPage() {
             assignSearchRequestRef.current += 1;
             setAssignResults([]);
             setAssignSelectedIds(new Set());
+            setAssignSearchNotice("");
         }
     }
 
     async function assignProductsToStores(productsToAssign: Product[], modeLabel = "seleccionados") {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         const cleanProducts = filterAssignableProducts(productsToAssign);
         if (cleanProducts.length === 0) { showMessage("No hay productos asignables seleccionados.", "error"); return; }
         if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
@@ -3319,6 +3395,7 @@ export default function DashboardPage() {
     }
 
     async function assignSelectedResults() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         const selected = assignResults.filter(product => assignSelectedIds.has(product.id));
         await assignProductsToStores(selected, "seleccionados");
     }
@@ -3419,6 +3496,7 @@ export default function DashboardPage() {
     }
 
     async function removeAssignment(asgn: Assignment) {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!confirm(`¿Eliminar asignación de "${asgn.sku}"? Si ya fue contado, el conteo también se eliminará.`)) return;
         await supabase.from("cyclic_counts").delete().eq("assignment_id", asgn.id);
         const { error } = await supabase.from("cyclic_assignments").delete().eq("id", asgn.id);
@@ -3428,6 +3506,7 @@ export default function DashboardPage() {
     }
 
     async function removeAllAssignments() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (assignments.length === 0) return;
         if (!confirm(`¿Eliminar TODAS las ${assignments.length} asignaciones de este día? También se eliminarán todos los conteos asociados.`)) return;
         const ids = assignments.map(a => a.id);
@@ -3880,6 +3959,7 @@ export default function DashboardPage() {
     }
 
     async function saveEditCount() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!editingCount || !user) return;
         const qty = Number(editQty);
         if (isNaN(qty) || qty < 0) { showMessage("Cantidad inválida.", "error"); return; }
@@ -3980,6 +4060,7 @@ export default function DashboardPage() {
     }
 
     async function deleteCount(c: CountRecord) {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!confirm(`¿Eliminar conteo de "${c.sku}"?`)) return;
         const { error } = await supabase.from("cyclic_counts").delete().eq("id", c.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
@@ -4175,7 +4256,7 @@ export default function DashboardPage() {
             full_name: newFullName.trim(), role: newRole,
             store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
             can_access_all_stores: newRole !== "Operario",
-            can_access_audit: newRole === "Administrador" ? true : newUserAuditAccess,
+            can_access_audit: newRole === "Administrador" || newRole === "Supervisor" ? true : newUserAuditAccess,
             is_active: true,
             whatsapp: wsp || null,
         });
@@ -4187,23 +4268,26 @@ export default function DashboardPage() {
 
     function openEditUser(u: CyclicUser) {
         setEditingUser(u);
+        setEditUserFullName(u.full_name || "");
         setEditUserRole(u.role);
         setEditUserStoreId(u.store_id || "");
         setEditUserAllStores(u.can_access_all_stores);
         setEditUserActive(u.is_active);
         setEditUserPassword("");
         setEditUserWhatsapp(u.whatsapp || "");
-        setEditUserAuditAccess(u.role === "Administrador" ? true : !!u.can_access_audit);
+        setEditUserAuditAccess(u.role === "Administrador" || u.role === "Supervisor" ? true : !!u.can_access_audit);
     }
 
     async function saveEditUser() {
         if (!editingUser) return;
+        if (!editUserFullName.trim()) { showMessage("El nombre completo es obligatorio.", "error"); return; }
         const wsp = editUserWhatsapp.trim().replace(/\D/g, "");
         const updates: any = {
+            full_name: editUserFullName.trim(),
             role: editUserRole,
             store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
             can_access_all_stores: editUserRole !== "Operario",
-            can_access_audit: editUserRole === "Administrador" ? true : editUserAuditAccess,
+            can_access_audit: editUserRole === "Administrador" || editUserRole === "Supervisor" ? true : editUserAuditAccess,
             is_active: editUserActive,
             whatsapp: wsp || null,
         };
@@ -5963,7 +6047,9 @@ export default function DashboardPage() {
     }
 
     const isAdmin    = user?.role === "Administrador";
-    const isValOrAdm = user?.role === "Validador" || isAdmin;
+    const isSupervisor = user?.role === "Supervisor";
+    const canValidateCyclic = user?.role === "Validador" || isAdmin;
+    const isValOrAdm = canValidateCyclic || isSupervisor;
 
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
@@ -6059,7 +6145,7 @@ export default function DashboardPage() {
                                     { key: "resultados",icon: Search,        label: "Resultados"         },
                                     { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas"   },
                                     { key: "dashboard", icon: LineChart,     label: "Dashboard"           },
-                                ] as const).map(item => (
+                                ] as const).filter(item => canValidateCyclic || item.key !== "asignar").map(item => (
                                     (() => {
                                         const Icon = item.icon;
                                         return (
@@ -6123,9 +6209,9 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {isAdmin && (
+                    {(isAdmin || isSupervisor) && (
                         <>
-                    <div className="px-3 mt-1">
+                    {isAdmin && <div className="px-3 mt-1">
                         <button
                             onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -6137,7 +6223,7 @@ export default function DashboardPage() {
                             <Package size={16} />
                             <span className="truncate">Ubicaciones</span>
                         </button>
-                    </div>
+                    </div>}
 
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
@@ -6161,13 +6247,13 @@ export default function DashboardPage() {
                                     <Package size={16} />
                                     <span className="truncate">Inventarios</span>
                                 </button>
-                                <button
+                                {isAdmin && <button
                                     onClick={() => { window.location.href = "/rotaciones"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
                                     <LineChart size={16} />
                                     <span className="truncate">Rotaciones</span>
-                                </button>
+                                </button>}
                             </div>
                         </>
                     )}
@@ -6276,7 +6362,7 @@ export default function DashboardPage() {
                                 }}
                             >
                                 <option value="">— Tienda —</option>
-                                {(valTab === "asignar" || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
+                                {((canValidateCyclic && valTab === "asignar") || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
                             {valTab !== "resultados" && (
@@ -6287,7 +6373,7 @@ export default function DashboardPage() {
                                         value={valDate}
                                         onChange={e => { setValDate(e.target.value); if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, e.target.value); }}
                                     />
-                                    {valStoreId && valStoreId !== ALL_STORES_VALUE && (
+                                    {canValidateCyclic && valStoreId && valStoreId !== ALL_STORES_VALUE && (
                                         <button
                                             className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
                                             onClick={refreshValidatorAssignedStocksForDate}
@@ -6440,7 +6526,7 @@ export default function DashboardPage() {
                                         onClick={generateRecountReport}
                                         className="w-full py-3 rounded-2xl font-bold text-sm bg-slate-900 text-white hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
                                     >
-                                        <FileText size={17} /> Generar reporte de reconteo
+                                        <FileText size={17} /> Generar PDF para imprimir
                                     </button>
                                     <button
                                         onClick={async () => {
@@ -6464,6 +6550,12 @@ export default function DashboardPage() {
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
                                         <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
                                     </div>
+                                    <button
+                                        onClick={generateRecountReport}
+                                        className="w-full py-3 rounded-2xl font-bold text-sm bg-slate-900 text-white hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        <FileText size={17} /> Generar PDF para imprimir
+                                    </button>
                                     {difAssignments.length > 0 ? (
                                         <button
                                             onClick={() => setShowRecountConfirmModal(true)}
@@ -7196,7 +7288,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
-                    {valTab === "asignar" && (
+                    {canValidateCyclic && valTab === "asignar" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
@@ -7211,6 +7303,11 @@ export default function DashboardPage() {
                                         value={assignSearch}
                                         onChange={e => handleAssignSearchChange(e.target.value)}
                                     />
+                                    {assignSearchNotice && (
+                                        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                                            {assignSearchNotice}
+                                        </div>
+                                    )}
                                     {assignResults.length > 0 && (
                                         <div className="border rounded-2xl overflow-hidden">
                                             <div className="flex flex-wrap items-center gap-2 border-b bg-slate-50 p-3">
@@ -7502,7 +7599,7 @@ export default function DashboardPage() {
                                 <div className="flex gap-2 flex-wrap">
                                     <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>↓ Excel registros</button>
                                     {/* Reversar cumplimiento — solo admin y validador */}
-                                    {isValOrAdm && counts.length > 0 && (
+                                    {canValidateCyclic && counts.length > 0 && (
                                         <button
                                             className="px-4 py-2 rounded-2xl border-2 border-orange-400 text-orange-700 bg-orange-50 hover:bg-orange-100 text-sm font-bold transition-colors"
                                             onClick={reversarCumplimiento}
@@ -7566,8 +7663,12 @@ export default function DashboardPage() {
                                                     <td className="p-2 border text-xs text-slate-500 whitespace-nowrap">{formatDateTime(c.counted_at)}</td>
                                                     <td className="p-2 border text-center"><span className={statusBadge(c.status)}>{c.status}</span></td>
                                                     <td className="p-2 border text-center">
+                                                        {canValidateCyclic ? (
+                                                        <>
                                                         <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditCount(c)}>Editar</button>
                                                         <button className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 border border-red-200" onClick={() => deleteCount(c)}>✕</button>
+                                                        </>
+                                                        ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                     </td>
                                                 </tr>
                                                 );
@@ -7612,7 +7713,7 @@ export default function DashboardPage() {
                                 </div>
                                 <div className="flex gap-2 flex-wrap">
                                     {/* Botón modo edición — solo en drill-down desde dashboard */}
-                                    {dashDrillSource && (
+                                    {canValidateCyclic && dashDrillSource && (
                                         <button
                                             className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition-all ${resumenEditMode ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-400 hover:bg-amber-50"}`}
                                             onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) { setResumenOverrides({}); setResumenDraft({}); setResumenSort(null); } }}
@@ -8198,13 +8299,13 @@ export default function DashboardPage() {
                                     <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
                                         {locationBusy ? "Consultando..." : "Consultar"}
                                     </button>
-                                    <button
+                                    {canValidateCyclic && <button
                                         className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
                                         disabled={locationBusy || !locationStoreId}
                                         onClick={openLocationEntryCard}
                                     >
                                         Agregar ubicacion
-                                    </button>
+                                    </button>}
                                 </div>
                             </div>
 
@@ -8231,11 +8332,15 @@ export default function DashboardPage() {
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                         <td className="p-2 border font-bold text-slate-900">{row.location}</td>
                                                         <td className="p-2 border text-center whitespace-nowrap">
+                                                            {canValidateCyclic ? (
+                                                            <>
                                                             <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
                                                                 const next = prompt("Nueva ubicacion", row.location);
                                                                 if (next) void replaceProductLocation(row, next);
                                                             }}>Editar</button>
                                                             <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Desactivar</button>
+                                                            </>
+                                                            ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                         </td>
                                                     </tr>
                                                 );
@@ -8263,6 +8368,7 @@ export default function DashboardPage() {
                                         <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
                                             <option value="Operario">Operario</option>
                                             <option value="Validador">Validador</option>
+                                            <option value="Supervisor">Supervisor lectura</option>
                                             <option value="Administrador">Administrador</option>
                                         </select>
                                     </div>
@@ -8276,7 +8382,7 @@ export default function DashboardPage() {
                                         </div>
                                     )}
                                     <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700 md:col-span-2">
-                                        <input type="checkbox" checked={newRole === "Administrador" || newUserAuditAccess} disabled={newRole === "Administrador"} onChange={e => setNewUserAuditAccess(e.target.checked)} />
+                                        <input type="checkbox" checked={newRole === "Administrador" || newRole === "Supervisor" || newUserAuditAccess} disabled={newRole === "Administrador" || newRole === "Supervisor"} onChange={e => setNewUserAuditAccess(e.target.checked)} />
                                         Puede acceder a auditorías
                                     </label>
                                 </div>
@@ -8306,7 +8412,7 @@ export default function DashboardPage() {
                                                         <td className="p-2 border font-mono text-xs">{u.username}</td>
                                                         <td className="p-2 border font-medium">{u.full_name}</td>
                                                         <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
+                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Supervisor" ? "bg-emerald-100 text-emerald-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
                                                         </td>
                                                         <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "—")}</td>
                                                         <td className="p-2 border text-center text-xs">
@@ -8315,7 +8421,7 @@ export default function DashboardPage() {
                                                                 : <span className="text-slate-400">—</span>}
                                                         </td>
                                                         <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${(u.role === "Administrador" || u.can_access_audit) ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{(u.role === "Administrador" || u.can_access_audit) ? "Si" : "No"}</span>
+                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "Si" : "No"}</span>
                                                         </td>
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
@@ -8564,10 +8670,15 @@ export default function DashboardPage() {
                         </div>
                         <div className="space-y-3">
                             <div>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nombre completo</label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserFullName} onChange={e => setEditUserFullName(e.target.value)} />
+                            </div>
+                            <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
                                 <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={e => { setEditUserRole(e.target.value as Role); if (e.target.value !== "Operario") setEditUserAllStores(true); }}>
                                     <option value="Operario">Operario</option>
                                     <option value="Validador">Validador</option>
+                                    <option value="Supervisor">Supervisor lectura</option>
                                     <option value="Administrador">Administrador</option>
                                 </select>
                             </div>
@@ -8589,7 +8700,7 @@ export default function DashboardPage() {
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
                             </div>
                             <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
-                                <input type="checkbox" checked={editUserRole === "Administrador" || editUserAuditAccess} disabled={editUserRole === "Administrador"} onChange={e => setEditUserAuditAccess(e.target.checked)} />
+                                <input type="checkbox" checked={editUserRole === "Administrador" || editUserRole === "Supervisor" || editUserAuditAccess} disabled={editUserRole === "Administrador" || editUserRole === "Supervisor"} onChange={e => setEditUserAuditAccess(e.target.checked)} />
                                 Puede acceder a auditorías
                             </label>
                             <div>

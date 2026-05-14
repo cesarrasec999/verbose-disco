@@ -10,7 +10,7 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
 
-type Role = "Operario" | "Validador" | "Administrador";
+type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
@@ -174,6 +174,16 @@ function number2(value: number | string | null | undefined) {
   return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char] || char));
+}
+
 function statusLabel(status: SessionStatus) {
   if (status === "planned") return "Planificado";
   if (status === "open") return "Abierto";
@@ -285,7 +295,10 @@ export default function InventariosPage() {
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
+  const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
+  const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
   const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
@@ -316,11 +329,17 @@ export default function InventariosPage() {
   const scannerHistoryRef = useRef(false);
   const scannerContainerId = "inventory-scanner";
 
-  const isValidator = user?.role === "Administrador" || user?.role === "Validador";
+  const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
+  const isReadOnlySupervisor = user?.role === "Supervisor";
+  const isValidator = canManageInventory || isReadOnlySupervisor;
   const selectedSession = useMemo(
     () => sessions.find(session => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
   );
+
+  useEffect(() => {
+    setInventoryNotesDraft(selectedSession?.notes || "");
+  }, [selectedSession?.id, selectedSession?.notes]);
 
   const activeSessions = useMemo(
     () => sessions.filter(session => canOperatorEnter(session.status)),
@@ -560,14 +579,12 @@ export default function InventariosPage() {
     const surplusValue = rows.filter(row => row.diff > 0).reduce((sum, row) => sum + row.valueDiff, 0);
     const missingValue = rows.filter(row => row.diff < 0).reduce((sum, row) => sum + row.valueDiff, 0);
     const systemValue = rows.reduce((sum, row) => sum + row.system_stock * row.cost, 0);
-    const totalSystemUnits = rows.reduce((sum, row) => sum + row.system_stock, 0);
-    const productsWithStock = rows.filter(row => row.system_stock > 0).length;
+    const codesWithDifference = surplusCodes + missingCodes;
     const countedValue = rows.filter(row => row.counted > 0).reduce((sum, row) => sum + row.system_stock * row.cost, 0);
     return {
       eri: totalCodes > 0 ? Math.round((okCodes / totalCodes) * 100) : 0,
       systemValue,
-      totalSystemUnits,
-      productsWithStock,
+      codesWithDifference,
       surplusValue,
       missingValue,
       diffValue: surplusValue + missingValue,
@@ -615,6 +632,12 @@ export default function InventariosPage() {
   }, [selectedSessionId, validatorTab]);
 
   useEffect(() => {
+    if (isReadOnlySupervisor && (validatorTab === "preparacion" || validatorTab === "reconteo" || validatorTab === "usuarios")) {
+      setValidatorTab("registros");
+    }
+  }, [isReadOnlySupervisor, validatorTab]);
+
+  useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
     void loadOperatorRecountItems(selectedSessionId, operator.id);
   }, [selectedSessionId, operator?.id, isValidator]);
@@ -628,12 +651,12 @@ export default function InventariosPage() {
       timer = window.setTimeout(() => {
         if (isValidator) {
           if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-          if (validatorTab === "resumen") void loadSummary(selectedSessionId);
+          if (validatorTab === "resumen") void loadSummary(selectedSessionId, true);
           if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
           return;
         }
         void loadRecordsData(selectedSessionId);
-      }, 250);
+      }, 1500);
     };
 
     const channel = supabase
@@ -875,7 +898,7 @@ export default function InventariosPage() {
 
   async function loadSessionData(sessionId: string, tab: ValidatorTab = validatorTab) {
     if (isValidator) {
-      if (tab === "preparacion") {
+      if (tab === "preparacion" && canManageInventory) {
         await loadPreparationData(sessionId);
         return;
       }
@@ -883,11 +906,11 @@ export default function InventariosPage() {
         await loadRecordsData(sessionId);
         return;
       }
-      if (tab === "reconteo") {
+      if (tab === "reconteo" && canManageInventory) {
         await loadRecountData(sessionId);
         return;
       }
-      if (tab === "usuarios") {
+      if (tab === "usuarios" && user?.role === "Administrador") {
         await loadInventoryOperators();
         return;
       }
@@ -1342,25 +1365,59 @@ export default function InventariosPage() {
     return rows;
   }
 
-  async function loadSummary(sessionId: string) {
+  async function loadInventoryNonInventoryRows(sessionId: string): Promise<Array<{ sku: string }>> {
+    const [sessionRows, globalRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_non_inventory_products", "sku", sessionId, "sku"),
+      supabase.from("cyclic_non_inventory_products").select("sku").eq("is_active", true).order("sku"),
+    ]);
+    const skus = new Set<string>();
+    for (const row of sessionRows) {
+      const sku = normalizeCode(row.sku).toUpperCase();
+      if (sku) skus.add(sku);
+    }
+    for (const row of globalRows.data || []) {
+      const sku = normalizeCode(row.sku).toUpperCase();
+      if (sku) skus.add(sku);
+    }
+    return [...skus].map(sku => ({ sku }));
+  }
+
+  async function loadNonInventorySkuSetForProducts(sessionId: string, skus: string[]): Promise<Set<string>> {
+    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+    if (cleanSkus.length === 0) return new Set();
+    const rows: Array<{ sku: string }> = [];
+    for (let i = 0; i < cleanSkus.length; i += 500) {
+      const chunk = cleanSkus.slice(i, i + 500);
+      const [sessionRows, globalRows] = await Promise.all([
+        supabase.from("general_inventory_non_inventory_products").select("sku").eq("session_id", sessionId).in("sku", chunk),
+        supabase.from("cyclic_non_inventory_products").select("sku").eq("is_active", true).in("sku", chunk),
+      ]);
+      rows.push(...(sessionRows.data || []), ...(globalRows.data || []));
+    }
+    return new Set(rows.map(row => normalizeCode(row.sku).toUpperCase()).filter(Boolean));
+  }
+
+  async function loadSummary(sessionId: string, force = false) {
+    if (!force && summaryLoadedSessionId === sessionId) return;
+    setSummaryLoading(true);
     const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
-      loadPagedSessionRows("general_inventory_non_inventory_products", "sku", sessionId, "sku"),
+      loadInventoryNonInventoryRows(sessionId),
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,counted_qty", sessionId, "product_id"),
     ]);
 
-    const nonInventorySkus = new Set(nonInventoryRows.map(row => row.sku));
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
     const countedByProduct = new Map<string, number>();
     for (const row of countRows) {
-      if (nonInventorySkus.has(row.sku)) continue;
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
     for (const row of recountCountRows) {
-      if (nonInventorySkus.has(row.sku)) continue;
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const original = recountItemById.get(row.recount_item_id);
       if (original?.product_id) {
         countedByProduct.set(original.product_id, (countedByProduct.get(original.product_id) || 0) - Number(original.counted_qty || 0));
@@ -1374,10 +1431,11 @@ export default function InventariosPage() {
     const productIdsInSnapshot = new Set<string>();
     const rows: SummaryRow[] = [];
     for (const snap of snapshotRows) {
-      if (nonInventorySkus.has(snap.sku)) continue;
-      productIdsInSnapshot.add(snap.product_id);
+      if (nonInventorySkus.has(normalizeCode(snap.sku).toUpperCase())) continue;
       const counted = countedByProduct.get(snap.product_id) || 0;
       const systemStock = Number(snap.system_stock || 0);
+      if (systemStock <= 0 && counted <= 0) continue;
+      productIdsInSnapshot.add(snap.product_id);
       const cost = Number(snap.cost || 0);
       const diff = counted - systemStock;
       rows.push({
@@ -1395,7 +1453,7 @@ export default function InventariosPage() {
     }
 
     for (const row of countRows) {
-      if (nonInventorySkus.has(row.sku)) continue;
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       if (productIdsInSnapshot.has(row.product_id)) continue;
       const counted = countedByProduct.get(row.product_id) || 0;
       const cost = Number(row.cost_snapshot || 0);
@@ -1417,6 +1475,8 @@ export default function InventariosPage() {
     rows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
     setSummary(rows);
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
+    setSummaryLoadedSessionId(sessionId);
+    setSummaryLoading(false);
   }
 
   async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
@@ -1546,6 +1606,7 @@ export default function InventariosPage() {
   }
 
   async function createSession() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !newStoreId || !newName.trim()) {
       setMessage("Completa tienda y nombre de inventario.");
       return;
@@ -1576,6 +1637,7 @@ export default function InventariosPage() {
   }
 
   async function importLocations() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId || !locationsFile) {
       setMessage("Selecciona el Excel de ubicaciones.");
       return;
@@ -1671,10 +1733,11 @@ export default function InventariosPage() {
     setNonInventoryFile(null);
     if (nonInventoryFileRef.current) nonInventoryFileRef.current.value = "";
     setMessage(`${rows.length} codigos no inventariables cargados. Omitidos por no coincidir: ${skus.length - rows.length}.`);
-    if (validatorTab === "resumen") await loadSummary(selectedSessionId);
+    if (validatorTab === "resumen") await loadSummary(selectedSessionId, true);
   }
 
   async function freezeStock() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
     setLoading(true);
     setMessage("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.");
@@ -1692,13 +1755,14 @@ export default function InventariosPage() {
       .select("id", { count: "exact", head: true })
       .eq("session_id", selectedSessionId)
       .gt("system_stock", 0);
-    setMessage(`Stock congelado. Productos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
+    setMessage(`Stock congelado. Codigos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
     await loadInitial(selectedSessionId);
     setValidatorTab("resumen");
-    await loadSummary(selectedSessionId);
+    await loadSummary(selectedSessionId, true);
   }
 
   async function finishSession() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId) return;
     const { error } = await supabase
       .from("general_inventory_sessions")
@@ -1847,13 +1911,8 @@ export default function InventariosPage() {
     const products = [...productMap.values()];
     if (products.length === 0) return { products: [], message: "Codigo no existe en el maestro ni en codigos de barra." };
 
-    const { data: nonInvRows } = await supabase
-      .from("general_inventory_non_inventory_products")
-      .select("sku")
-      .eq("session_id", selectedSessionId)
-      .in("sku", products.map(product => product.sku));
-    const nonInvSkus = new Set((nonInvRows || []).map(row => row.sku));
-    const allowed = products.filter(product => !nonInvSkus.has(product.sku));
+    const nonInvSkus = await loadNonInventorySkuSetForProducts(selectedSessionId, products.map(product => product.sku));
+    const allowed = products.filter(product => !nonInvSkus.has(normalizeCode(product.sku).toUpperCase()));
 
     if (allowed.length === 0) {
       return { products: [], message: "Este codigo esta en la lista de no inventariables y no puede registrarse." };
@@ -2159,6 +2218,7 @@ export default function InventariosPage() {
   }
 
   async function deleteCount(row: CountRow) {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     const { error } = await supabase.from("general_inventory_counts").delete().eq("id", row.id);
     if (error) {
       setMessage("No se pudo eliminar: " + error.message);
@@ -2168,6 +2228,7 @@ export default function InventariosPage() {
   }
 
   async function saveObservation(row: SummaryRow) {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
     const { error } = await supabase
       .from("general_inventory_item_observations")
@@ -2183,7 +2244,7 @@ export default function InventariosPage() {
       return;
     }
     setMessage("Observacion guardada.");
-    await loadSummary(selectedSessionId);
+    await loadSummary(selectedSessionId, true);
   }
 
   async function markSummaryAsNonInventory(row: SummaryRow) {
@@ -2202,7 +2263,7 @@ export default function InventariosPage() {
       return;
     }
     setMessage(`${row.sku} marcado como no inventariable. Ya no se considerara en KPIs ni resumen.`);
-    await loadSummary(selectedSessionId);
+    await loadSummary(selectedSessionId, true);
   }
 
   function exportRecords() {
@@ -2236,6 +2297,202 @@ export default function InventariosPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Resumen");
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
+  }
+
+  async function saveInventoryNotes() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    if (!selectedSessionId) return;
+    const notes = inventoryNotesDraft.trim();
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({ notes: notes || null, updated_at: new Date().toISOString() })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudieron guardar las notas: " + error.message);
+      return;
+    }
+    setSessions(prev => prev.map(session => session.id === selectedSessionId ? { ...session, notes: notes || null } : session));
+    setMessage("Notas del inventario guardadas.");
+  }
+
+  function generateGeneralInventoryReport() {
+    if (!selectedSession) {
+      setMessage("Selecciona un inventario para generar el informe.");
+      return;
+    }
+    if (summary.length === 0) {
+      setMessage("Carga o actualiza el resumen antes de generar el informe.");
+      return;
+    }
+
+    const sortedByValue = [...summary].sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+    const diffRows = sortedByValue.filter(row => row.diff !== 0);
+    const okRows = summary.filter(row => row.diff === 0 && row.counted > 0);
+    const surplusRows = summary.filter(row => row.diff > 0);
+    const missingRows = summary.filter(row => row.diff < 0);
+    const notCountedRows = summary.filter(row => row.counted <= 0);
+    const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+    const frozenAt = selectedSession.stock_frozen_at ? new Date(selectedSession.stock_frozen_at).toLocaleString("es-PE") : "-";
+    const reportNotes = inventoryNotesDraft.trim() || selectedSession.notes || "";
+
+    const diffTable = diffRows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.sku)}</td>
+        <td>${escapeHtml(row.description)}</td>
+        <td>${escapeHtml(row.unit)}</td>
+        <td class="num">${number2(row.system_stock)}</td>
+        <td class="num">${number2(row.counted)}</td>
+        <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
+        <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
+        <td>${escapeHtml(row.observation || "")}</td>
+      </tr>
+    `).join("");
+
+    const donut = (label: string, value: number, color: string, detail: string) => `
+      <div class="donutCard">
+        <svg class="donutSvg" viewBox="0 0 64 64" width="48" height="48" xmlns="http://www.w3.org/2000/svg" aria-label="${Math.round(value)}%">
+          <circle cx="32" cy="32" r="24" fill="#ffffff" stroke="#cbd5e1" stroke-width="8"/>
+          <circle cx="32" cy="32" r="24" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="${Math.max(0, Math.min(100, value)) * 1.508} 150.8" transform="rotate(-90 32 32)"/>
+          <circle cx="32" cy="32" r="17" fill="#ffffff" stroke="#ffffff" stroke-width="1"/>
+          <text x="32" y="36" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="900" fill="#0f172a">${Math.round(value)}%</text>
+        </svg>
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(detail)}</span>
+        </div>
+      </div>
+    `;
+
+    const html = `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Informe inventario general - ${escapeHtml(selectedSession.name)}</title>
+  <style>
+    @page { size: A4 portrait; margin: 9mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 9px; }
+    h1 { margin: 0; font-size: 17px; }
+    h2 { margin: 8px 0 4px; font-size: 11px; }
+    .muted { color: #64748b; }
+    .header { display: flex; justify-content: space-between; gap: 14px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
+    .meta { text-align: right; line-height: 1.4; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 7px 0; }
+    .card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; background: #f8fafc; }
+    .label { color: #64748b; font-size: 9px; font-weight: 700; }
+    .value { margin-top: 1px; font-size: 13px; font-weight: 800; }
+    .donuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 7px 0; }
+    .donutCard { display: flex; align-items: center; gap: 7px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px; }
+    .donutSvg { display: block; flex: 0 0 auto; }
+    .donutCard strong { display: block; font-size: 10px; }
+    .donutCard span { display: block; color: #64748b; margin-top: 2px; }
+    .summaryGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .notesBox { min-height: 62px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #cbd5e1; padding: 2px 3px; line-height: 1.12; vertical-align: top; }
+    th { background: #f1f5f9; font-size: 9px; text-align: left; }
+    .num { text-align: right; white-space: nowrap; }
+    .ok { color: #15803d; font-weight: 800; }
+    .bad { color: #b91c1c; font-weight: 800; }
+    .warn { color: #1d4ed8; font-weight: 800; }
+    .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 24px; break-inside: avoid; }
+    .signature { border-top: 1px solid #0f172a; padding-top: 20px; text-align: center; font-weight: 800; }
+    button { margin-top: 8px; padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
+    @media print {
+      button { display: none; }
+      .cards, .donuts, .summaryGrid { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Informe de inventario general</h1>
+      <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
+      <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
+      <div class="muted">Fecha programada: <strong>${escapeHtml(selectedSession.scheduled_date || "-")}</strong></div>
+    </div>
+    <div class="meta">
+      <div>Estado: <strong>${escapeHtml(statusLabel(selectedSession.status))}</strong></div>
+      <div>Stock congelado: <strong>${escapeHtml(frozenAt)}</strong></div>
+      <div>Generado: <strong>${escapeHtml(generatedAt)}</strong></div>
+      <button onclick="window.print()">Imprimir / guardar PDF</button>
+    </div>
+  </div>
+
+  <div class="donuts">
+    ${donut("AVANCE POR SKU", kpis.skuProgress, "#0f172a", `${kpis.countedCodes} / ${kpis.totalCodes} codigos`)}
+    ${donut("AVANCE POR VALORIZADO", kpis.valueProgress, "#1d4ed8", `${money(kpis.systemValue)} base`)}
+    ${donut("ERI", kpis.eri, "#16a34a", `${okRows.length} codigos OK`)}
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Codigos totales</div><div class="value">${number2(kpis.totalCodes)}</div></div>
+    <div class="card"><div class="label">Codigos OK</div><div class="value ok">${number2(okRows.length)}</div></div>
+    <div class="card"><div class="label">No contados</div><div class="value">${number2(notCountedRows.length)}</div></div>
+    <div class="card"><div class="label">Faltantes valorizados</div><div class="value bad">${money(kpis.missingValue)}</div></div>
+    <div class="card"><div class="label">Sobrantes valorizados</div><div class="value warn">${money(kpis.surplusValue)}</div></div>
+    <div class="card"><div class="label">Diferencia valorizada</div><div class="value ${kpis.diffValue < 0 ? "bad" : "warn"}">${money(kpis.diffValue)}</div></div>
+  </div>
+
+  <div class="summaryGrid">
+    <div>
+      <h2>Resumen por resultado</h2>
+      <table>
+        <thead><tr><th>Resultado</th><th class="num">Codigos</th><th class="num">Valor</th></tr></thead>
+        <tbody>
+          <tr><td class="ok">OK</td><td class="num">${number2(okRows.length)}</td><td class="num">-</td></tr>
+          <tr><td class="bad">Faltantes</td><td class="num">${number2(missingRows.length)}</td><td class="num bad">${money(kpis.missingValue)}</td></tr>
+          <tr><td class="warn">Sobrantes</td><td class="num">${number2(surplusRows.length)}</td><td class="num warn">${money(kpis.surplusValue)}</td></tr>
+          <tr><td>No contados</td><td class="num">${number2(notCountedRows.length)}</td><td class="num">-</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h2>Notas del validador</h2>
+      <div class="notesBox">${reportNotes ? escapeHtml(reportNotes) : "Sin notas registradas."}</div>
+    </div>
+  </div>
+
+  <h2>Todas las diferencias sobrantes y faltantes (${number2(diffRows.length)})</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:64px">Codigo</th>
+        <th>Descripcion</th>
+        <th style="width:28px">UM</th>
+        <th style="width:50px" class="num">Sistema</th>
+        <th style="width:50px" class="num">Contado</th>
+        <th style="width:45px" class="num">Dif.</th>
+        <th style="width:66px" class="num">Valorizado</th>
+        <th style="width:88px">Obs.</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${diffTable || `<tr><td colspan="8" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
+    </tbody>
+  </table>
+
+  <div class="signatures">
+    <div class="signature">Firma asesor de almacen</div>
+    <div class="signature">Firma lider de tienda</div>
+    <div class="signature">Firma validador de inventario</div>
+  </div>
+</body>
+</html>`;
+
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo la ventana del informe. Permite ventanas emergentes e intenta otra vez.");
+      return;
+    }
+    reportWindow.document.open();
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    setTimeout(() => reportWindow.print(), 500);
   }
 
   function logoutOperator() {
@@ -2291,7 +2548,7 @@ export default function InventariosPage() {
           <button onClick={refreshCurrentView} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
-          {user?.role === "Administrador" && (
+          {(user?.role === "Administrador" || user?.role === "Supervisor") && (
             <select
               value="/inventarios"
               onChange={event => goModule(event.target.value)}
@@ -2327,7 +2584,7 @@ export default function InventariosPage() {
       <div className={`mx-auto grid w-full min-w-0 ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
         {showSidePanel && (
         <aside className="space-y-4">
-          {isValidator && (
+          {canManageInventory && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-center gap-2">
                 <ShieldCheck size={18} className="text-orange-600" />
@@ -2381,7 +2638,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {isValidator && selectedSessionId && (
+          {canManageInventory && selectedSessionId && (
             <section className="space-y-3 rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Preparación</h2>
               <div>
@@ -2402,23 +2659,8 @@ export default function InventariosPage() {
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500">No inventariables / no considerar</label>
-                <input
-                  ref={nonInventoryFileRef}
-                  type="file"
-                  accept=".xlsx,.xls"
-                  className="hidden"
-                  onChange={event => setNonInventoryFile(event.target.files?.[0] || null)}
-                />
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <button onClick={() => nonInventoryFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
-                    <FolderOpen size={16} /> {nonInventoryFile ? nonInventoryFile.name : "Seleccionar Excel"}
-                  </button>
-                  <button onClick={importNonInventory} disabled={!nonInventoryFile} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                    Subir no inventariables
-                  </button>
-                </div>
+              <div className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                Los no inventariables se toman automaticamente desde la base de datos global.
               </div>
               <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
                 <div className="font-black text-slate-900">Ubicaciones</div>
@@ -2457,15 +2699,15 @@ export default function InventariosPage() {
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
               <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
-                <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                {canManageInventory && <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Preparacion
-                </button>
+                </button>}
                 <button onClick={() => setValidatorTab("registros")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Registros
                 </button>
-                <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                {canManageInventory && <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Reconteo
-                </button>
+                </button>}
                 <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Resumen
                 </button>
@@ -2478,7 +2720,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {isValidator && validatorTab === "preparacion" && (
+          {canManageInventory && validatorTab === "preparacion" && (
             <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
               <div className="space-y-4">
                 <section className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -2545,7 +2787,7 @@ export default function InventariosPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-2">
+                <div className="grid gap-4">
                   <div className="rounded-2xl border bg-slate-50 p-4">
                     <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
                     <input
@@ -2565,23 +2807,8 @@ export default function InventariosPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border bg-slate-50 p-4">
-                    <label className="text-xs font-bold text-slate-500">No inventariables / no considerar</label>
-                    <input
-                      ref={nonInventoryFileRef}
-                      type="file"
-                      accept=".xlsx,.xls"
-                      className="hidden"
-                      onChange={event => setNonInventoryFile(event.target.files?.[0] || null)}
-                    />
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      <button onClick={() => nonInventoryFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
-                        <FolderOpen size={16} /> {nonInventoryFile ? nonInventoryFile.name : "Seleccionar Excel"}
-                      </button>
-                      <button onClick={importNonInventory} disabled={!nonInventoryFile || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                        Subir no inventariables
-                      </button>
-                    </div>
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-800">
+                    No inventariables: se excluyen automaticamente usando la base global de codigos no inventariables.
                   </div>
                 </div>
 
@@ -2814,7 +3041,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {isValidator && selectedSessionId && validatorTab === "reconteo" && (
+          {canManageInventory && selectedSessionId && validatorTab === "reconteo" && (
             <section className="space-y-4">
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -3179,25 +3406,35 @@ export default function InventariosPage() {
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-black">Dashboard de inventario</h2>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40">
+                    {summaryLoading ? "Actualizando..." : "Actualizar KPIs"}
+                  </button>
+                  <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
                   <button onClick={exportRecords} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black"><Download size={15} /> Registros</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                <Kpi label="ERI" value={`${kpis.eri}%`} />
+              <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <DonutKpi label="AVANCE POR SKU" value={kpis.skuProgress} detail={`${kpis.countedCodes} / ${kpis.totalCodes} codigos`} />
+                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.systemValue)} base`} tone="blue" />
+                  <DonutKpi label="ERI" value={kpis.eri} detail={`${kpis.totalCodes} codigos totales`} tone="green" />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Kpi label="Codigos totales" value={kpis.totalCodes} />
+                  <Kpi label="Codigos OK" value={summary.filter(row => row.diff === 0 && row.counted > 0).length} />
+                  <Kpi label="No contados" value={kpis.notCountedCodes} tone="amber" />
+                  <Kpi label="Codigos con diferencia" value={kpis.codesWithDifference} tone={kpis.codesWithDifference > 0 ? "amber" : "slate"} />
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <Kpi label="Sobrantes valorizados" value={money(kpis.surplusValue)} tone="blue" />
                 <Kpi label="Faltantes valorizados" value={money(kpis.missingValue)} tone="red" />
-                <Kpi label="Dif. valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
-                <Kpi label="Avance SKU" value={`${kpis.skuProgress}%`} />
                 <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
-                <Kpi label="Stock sistema" value={kpis.totalSystemUnits} />
-                <Kpi label="Productos con stock" value={kpis.productsWithStock} />
                 <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
                 <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
-                <Kpi label="No contados" value={kpis.notCountedCodes} tone="amber" />
-                <Kpi label="Contados / total" value={`${kpis.countedCodes} / ${kpis.totalCodes}`} />
-                <Kpi label="Avance valorizado" value={`${kpis.valueProgress}%`} />
+                <Kpi label="Diferencia valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
               </div>
             </section>
           )}
@@ -3276,7 +3513,7 @@ export default function InventariosPage() {
                             {isValidator && (
                               <button onClick={() => openAdminEditCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
                             )}
-                            {isValidator && (
+                            {canManageInventory && (
                               <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button>
                             )}
                           </div>
@@ -3300,6 +3537,22 @@ export default function InventariosPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por código</h2>
                   <input value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} placeholder="Buscar código, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
+                </div>
+              </div>
+              <div className="border-b px-4 pb-4">
+                <div className="rounded-2xl border bg-slate-50 p-3">
+                  <label className="text-xs font-black text-slate-500">Notas del validador para el informe</label>
+                  <textarea
+                    value={inventoryNotesDraft}
+                    onChange={event => setInventoryNotesDraft(event.target.value)}
+                    className="mt-2 min-h-20 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    placeholder="Escribe observaciones generales del inventario, incidencias, criterios aplicados o acuerdos con tienda."
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <button onClick={saveInventoryNotes} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white">
+                      Guardar notas
+                    </button>
+                  </div>
                 </div>
               </div>
               <div className="overflow-auto">
@@ -3426,6 +3679,29 @@ function MiniMetric({ label, value }: { label: string; value: string | number })
     <div className="rounded-xl bg-white p-2 text-center">
       <div className="text-sm font-black text-slate-950">{displayValue}</div>
       <div className="text-[11px] font-bold text-slate-500">{label}</div>
+    </div>
+  );
+}
+
+function DonutKpi({ label, value, detail, tone = "slate" }: { label: string; value: number; detail: string; tone?: "slate" | "blue" | "green" }) {
+  const pct = Math.max(0, Math.min(100, Math.round(Number(value || 0))));
+  const color = tone === "blue" ? "#1d4ed8" : tone === "green" ? "#16a34a" : "#0f172a";
+  return (
+    <div className="rounded-xl border bg-slate-50 p-3">
+      <div className="flex items-center gap-3">
+        <div
+          className="grid h-20 w-20 shrink-0 place-items-center rounded-full"
+          style={{ background: `conic-gradient(${color} ${pct * 3.6}deg, #e2e8f0 0deg)` }}
+        >
+          <div className="grid h-14 w-14 place-items-center rounded-full bg-white text-sm font-black text-slate-950">
+            {pct}%
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs font-black text-slate-500">{label}</div>
+          <div className="mt-1 text-sm font-black text-slate-900">{detail}</div>
+        </div>
+      </div>
     </div>
   );
 }

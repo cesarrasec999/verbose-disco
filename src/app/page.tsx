@@ -69,7 +69,9 @@ export default function LoginPage() {
     const [modalLoading, setModalLoading]         = useState(false);
 
     function canEnterDestination(user: CyclicUser) {
-        return destination !== "/auditoria" || user.role === "Administrador" || user.can_access_audit;
+        if (destination === "/auditoria") return user.role === "Administrador" || user.role === "Supervisor" || user.can_access_audit;
+        if (destination === "/inventarios") return user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor";
+        return true;
     }
 
     function enterSelectedDestination(user: CyclicUser) {
@@ -233,6 +235,22 @@ export default function LoginPage() {
 
     async function handleLogin() {
         if (destination === "/inventarios") {
+            const cyclic = await supabase
+                .from("cyclic_users")
+                .select("*")
+                .eq("username", username.trim().toLowerCase())
+                .eq("password", password)
+                .eq("is_active", true)
+                .maybeSingle();
+            if (cyclic.data) {
+                const user = cyclic.data as CyclicUser;
+                if (!canEnterDestination(user)) {
+                    setError("Tu usuario no tiene acceso de supervisor a Inventario general.");
+                    return;
+                }
+                enterSelectedDestination(user);
+                return;
+            }
             await handleInventoryAuth();
             return;
         }

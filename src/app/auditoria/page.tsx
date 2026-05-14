@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 
-type Role = "Operario" | "Validador" | "Administrador";
+type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
 type MainTab = "sessions" | "register" | "adminSummary";
 type RegisterTab = "count" | "records" | "summary";
@@ -249,6 +249,9 @@ export default function AuditoriaPage() {
   const [loading, setLoading] = useState(false);
 
   const selectedStore = useMemo(() => stores.find(s => s.id === storeId), [stores, storeId]);
+  const isReadOnlySupervisor = user?.role === "Supervisor";
+  const canManageAudit = user?.role === "Administrador" || user?.role === "Validador";
+  const canViewAuditSummary = user?.role === "Administrador" || user?.role === "Supervisor";
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -257,7 +260,7 @@ export default function AuditoriaPage() {
     if (parsed.role === "Operario") { window.location.replace("/dashboard"); return; }
     supabase.from("cyclic_users").select("*").eq("id", parsed.id).maybeSingle().then(({ data }) => {
       const currentUser = (data || parsed) as CyclicUser;
-      if (currentUser.role !== "Administrador" && !currentUser.can_access_audit) {
+      if (currentUser.role !== "Administrador" && currentUser.role !== "Supervisor" && !currentUser.can_access_audit) {
         window.location.replace("/dashboard");
         return;
       }
@@ -284,12 +287,19 @@ export default function AuditoriaPage() {
   }, [registerTab]);
 
   useEffect(() => {
+    if (isReadOnlySupervisor && registerTab === "count") {
+      const timer = window.setTimeout(() => setRegisterTab("records"), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isReadOnlySupervisor, registerTab]);
+
+  useEffect(() => {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
     else sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
   }, [session?.id]);
 
   useEffect(() => {
-    if (user?.role === "Administrador" && mainTab === "adminSummary") {
+    if (canViewAuditSummary && mainTab === "adminSummary") {
       void loadAuditAdminSummary();
     }
   }, [user?.role, mainTab, adminSummaryPeriod, adminSummaryDate, adminSummaryMonth, adminSummaryFrom, adminSummaryTo]);
@@ -460,7 +470,7 @@ export default function AuditoriaPage() {
   }
 
   async function loadAuditAdminSummary() {
-    if (user?.role !== "Administrador") return;
+    if (!canViewAuditSummary) return;
     setAdminSummaryLoading(true);
     const range = adminSummaryRange();
     let data: any[] = [];
@@ -582,7 +592,7 @@ export default function AuditoriaPage() {
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
-    setRegisterTab(user?.role === "Administrador" ? "records" : "count");
+    setRegisterTab(user?.role === "Administrador" || user?.role === "Supervisor" ? "records" : "count");
     await loadSessionData(row.id);
   }
 
@@ -692,6 +702,7 @@ export default function AuditoriaPage() {
   }
 
   async function createSession() {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !storeId) return;
     setLoading(true);
     const { data, error } = await supabase.from("audit_sessions").insert({
@@ -773,6 +784,7 @@ export default function AuditoriaPage() {
   }
 
   async function addSelectedItems() {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!session) return;
     const existingProductIds = new Set(items.map(item => item.product_id));
     const selectedProducts = results.filter(p => selected.has(p.id));
@@ -983,6 +995,7 @@ export default function AuditoriaPage() {
   }
 
   async function saveCount() {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (savingCountRef.current) return;
     if (!session || !activeItem) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) {
@@ -1025,6 +1038,7 @@ export default function AuditoriaPage() {
 
 
   function startEdit(row: AuditCount) {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     setEditingCount(row);
     setEditLocation(row.location);
     setEditQty(String(row.quantity));
@@ -1046,6 +1060,7 @@ export default function AuditoriaPage() {
   }
 
   async function deleteCount(row: AuditCount) {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!session || !confirm("¿Eliminar este registro de auditoría?")) return;
     const { error } = await supabase.from("audit_counts").delete().eq("id", row.id);
     if (error) { setMessage("Error eliminando registro: " + error.message); return; }
@@ -1054,6 +1069,7 @@ export default function AuditoriaPage() {
   }
 
   async function finishSession() {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!session) return;
     const { error } = await supabase.from("audit_sessions").update({ status: "finished", finished_at: new Date().toISOString() }).eq("id", session.id);
     if (error) { setMessage("Error finalizando: " + error.message); return; }
@@ -1321,12 +1337,12 @@ export default function AuditoriaPage() {
       .replace(/'/g, "&#039;");
   }
 
-  function svgDataUrl(svg: string) {
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-  }
-
   function summaryObservation(row: typeof summaryRows[number]) {
     return itemObservationDrafts[row.item.id] ?? row.item.observation ?? "";
+  }
+
+  function svgDataUrl(svg: string) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   }
 
   function auditBarChart(title: string, data: { label: string; value: number; color: string }[]) {
@@ -1339,7 +1355,12 @@ export default function AuditoriaPage() {
       const y = 190 - barHeight;
       return `<g><rect x="${x}" y="${y}" width="72" height="${barHeight}" rx="8" fill="${d.color}"/><text x="${x + 36}" y="${y - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${escapeHTML(d.value)}</text><text x="${x + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${escapeHTML(d.label)}</text></g>`;
     }).join("");
-    return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="640" height="260" rx="18" fill="#f8fafc"/><text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">${escapeHTML(title)}</text><line x1="48" y1="194" x2="594" y2="194" stroke="#cbd5e1" stroke-width="1"/>${bars}</svg>`);
+    return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="max-width:100%;display:block;">
+      <rect x="0.5" y="0.5" width="639" height="259" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">${escapeHTML(title)}</text>
+      <line x1="48" y1="194" x2="594" y2="194" stroke="#cbd5e1" stroke-width="1"/>
+      ${bars}
+    </svg>`);
   }
 
   function buildAuditReportHTML() {
@@ -1478,7 +1499,7 @@ export default function AuditoriaPage() {
 
   if (!user) return <main className="min-h-screen grid place-items-center text-slate-500">Cargando...</main>;
 
-  const visibleMainTab = user.role === "Administrador" || mainTab !== "adminSummary" ? mainTab : "register";
+  const visibleMainTab = canViewAuditSummary || mainTab !== "adminSummary" ? mainTab : "register";
   const tabClass = (active: boolean) => `flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${active ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"}`;
   const subTabClass = (active: boolean) => `flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition ${active ? "border-blue-700 bg-blue-700 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`;
 
@@ -1495,7 +1516,7 @@ export default function AuditoriaPage() {
           <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
-          {user.role === "Administrador" && (
+          {(user.role === "Administrador" || user.role === "Supervisor") && (
             <select value="/auditoria" onChange={e => { window.location.href = e.target.value; }} className="hidden rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700 md:block" title="Cambiar modulo">
               <option value="/dashboard">Ciclicos</option>
               <option value="/auditoria">Auditorias</option>
@@ -1508,11 +1529,11 @@ export default function AuditoriaPage() {
       </header>
 
       <div className="mx-auto max-w-7xl px-3 py-4 md:px-5">
-        <div className={`mb-4 grid gap-2 rounded-2xl border bg-white p-1.5 shadow-sm ${user.role === "Administrador" ? "grid-cols-3" : "grid-cols-2"}`}>
+        <div className={`mb-4 grid gap-2 rounded-2xl border bg-white p-1.5 shadow-sm ${canViewAuditSummary ? "grid-cols-3" : "grid-cols-2"}`}>
           <button onClick={() => setMainTab("sessions")} className={tabClass(visibleMainTab === "sessions")}><Settings2 size={16} /> Sesiones</button>
           <button onClick={() => setMainTab("register")} className={tabClass(visibleMainTab === "register")}><ClipboardList size={16} /> Registro</button>
-          {user.role === "Administrador" && (
-            <button onClick={() => setMainTab("adminSummary")} className={tabClass(visibleMainTab === "adminSummary")}><BarChart3 size={16} /> Resumen admin</button>
+          {canViewAuditSummary && (
+            <button onClick={() => setMainTab("adminSummary")} className={tabClass(visibleMainTab === "adminSummary")}><BarChart3 size={16} /> Resumen</button>
           )}
         </div>
 
@@ -1521,7 +1542,7 @@ export default function AuditoriaPage() {
         {visibleMainTab === "sessions" && (
           <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
             <section className="space-y-4">
-              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              {canManageAudit ? <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <h2 className="font-black">Crear sesión de auditoría</h2>
                 <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditoría y carga la familia de productos a contar.</p>
                 <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
@@ -1542,9 +1563,13 @@ export default function AuditoriaPage() {
                 ) : (
                   null
                 )}
-              </div>
+              </div> : (
+                <div className="rounded-2xl border bg-white p-4 text-sm font-semibold text-slate-600 shadow-sm">
+                  Acceso de supervisor: puedes abrir sesiones, revisar registros, resumenes e informes sin crear ni modificar auditorias.
+                </div>
+              )}
 
-              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              {canManageAudit && <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <h2 className="font-black">Buscar familia</h2>
                 <div className="mt-3 flex gap-2">
                   <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") searchFamily(); }} placeholder="far lat innov ambar" className="min-w-0 flex-1 rounded-xl border px-3 py-3 text-sm" />
@@ -1555,7 +1580,7 @@ export default function AuditoriaPage() {
                   <button onClick={() => setSelected(new Set())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Quitar todo</button>
                 </div>
                 <button onClick={addSelectedItems} disabled={!session || selected.size === 0} className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-40"><Plus className="mr-2 inline" size={16} /> Agregar seleccionados</button>
-              </div>
+              </div>}
             </section>
 
             <section className="space-y-4">
@@ -1599,7 +1624,7 @@ export default function AuditoriaPage() {
           </div>
         )}
 
-        {visibleMainTab === "adminSummary" && user.role === "Administrador" && (
+        {visibleMainTab === "adminSummary" && canViewAuditSummary && (
           <section className="space-y-4">
             <div className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1703,7 +1728,7 @@ export default function AuditoriaPage() {
         {visibleMainTab === "register" && (
           <section className="space-y-4">
             <div className="grid grid-cols-3 gap-2">
-              <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>
+              {canManageAudit && <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>}
               <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
               <button onClick={() => setRegisterTab("summary")} className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</button>
             </div>
@@ -1771,7 +1796,7 @@ export default function AuditoriaPage() {
                     <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
                     <tbody>{filteredCounts.map(c => {
                       const item = items.find(i => i.id === c.item_id);
-                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center"><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></td></tr>;
+                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center">{canManageAudit ? <><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></> : <span className="text-xs font-semibold text-slate-400">Lectura</span>}</td></tr>;
                     })}</tbody>
                   </table>
                 </div>
