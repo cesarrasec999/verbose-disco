@@ -605,9 +605,12 @@ export default function InventariosPage() {
     const systemValue = rows.reduce((sum, row) => sum + row.system_stock * row.cost, 0);
     const codesWithDifference = surplusCodes + missingCodes;
     const countedValue = rows.filter(row => row.counted > 0).reduce((sum, row) => sum + row.system_stock * row.cost, 0);
+    const pendingValue = Math.max(0, systemValue - countedValue);
     return {
       eri: totalCodes > 0 ? Math.round((okCodes / totalCodes) * 100) : 0,
       systemValue,
+      countedValue,
+      pendingValue,
       codesWithDifference,
       surplusValue,
       missingValue,
@@ -3536,8 +3539,8 @@ export default function InventariosPage() {
               <div className="grid gap-4">
                 <div className="grid gap-4 lg:grid-cols-3">
                   <DonutKpi label="AVANCE POR SKU" value={kpis.skuProgress} detail={`${kpis.countedCodes} / ${kpis.totalCodes} codigos`} />
-                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.systemValue)} base`} tone="blue" />
-                  <DonutKpi label="ERI" value={kpis.eri} detail={`${kpis.totalCodes} codigos totales`} tone="green" />
+                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.countedValue)} de ${money(kpis.pendingValue)} faltante`} tone="blue" />
+                  <DonutKpi label="ERI" value={kpis.eri} detail={`${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} total`} tone="green" />
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <Kpi label="Codigos totales" value={kpis.totalCodes} />
