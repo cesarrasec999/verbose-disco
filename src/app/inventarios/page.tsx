@@ -327,9 +327,12 @@ export default function InventariosPage() {
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
+  const [scannerLowLight, setScannerLowLight] = useState(true);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
+  const scannerLowLightRef = useRef(true);
+  const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
   const scannerContainerId = "inventory-scanner";
@@ -766,6 +769,14 @@ export default function InventariosPage() {
   }, [scannerTarget]);
 
   useEffect(() => {
+    scannerLowLightRef.current = scannerLowLight;
+  }, [scannerLowLight]);
+
+  useEffect(() => {
+    torchOnRef.current = torchOn;
+  }, [torchOn]);
+
+  useEffect(() => {
     const onPopState = () => {
       if (!scannerTargetRef.current) return;
       scannerHistoryRef.current = false;
@@ -786,8 +797,8 @@ export default function InventariosPage() {
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
         await scanner.start(
-          { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
+          { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          { fps: 24, qrbox: { width: 330, height: 220 }, aspectRatio: 1.7777778 },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
@@ -816,6 +827,7 @@ export default function InventariosPage() {
           },
           () => {}
         );
+        await tuneScannerCamera();
       } catch (err: any) {
         setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
         await stopScanner();
@@ -830,6 +842,9 @@ export default function InventariosPage() {
       scannerHistoryRef.current = true;
     }
     setTorchOn(false);
+    torchOnRef.current = false;
+    setScannerLowLight(true);
+    scannerLowLightRef.current = true;
     setScannerTarget(target);
   }
 
@@ -842,6 +857,7 @@ export default function InventariosPage() {
     scannerTargetRef.current = null;
     activeRecountScanIdRef.current = null;
     setTorchOn(false);
+    torchOnRef.current = false;
     setScannerTarget(null);
     try {
       if (scannerRef.current) {
@@ -868,9 +884,48 @@ export default function InventariosPage() {
       }
       await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
       setTorchOn(next);
+      torchOnRef.current = next;
+      if (next) {
+        setScannerLowLight(false);
+        scannerLowLightRef.current = false;
+      }
     } catch {
       setMessage("La linterna no está disponible en este dispositivo.");
     }
+  }
+
+  async function tuneScannerCamera() {
+    const scanner = scannerRef.current;
+    if (!scanner?.applyVideoConstraints) return;
+    const advanced: any[] = [
+      { focusMode: "continuous" },
+      { exposureMode: "continuous" },
+      { whiteBalanceMode: "continuous" },
+      { torch: torchOnRef.current },
+    ];
+    if (scannerLowLightRef.current) advanced.push({ exposureCompensation: 1 });
+    try {
+      await scanner.applyVideoConstraints({
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30, max: 30 },
+        advanced,
+      });
+    } catch {}
+  }
+
+  async function toggleScannerLowLight() {
+    const next = !scannerLowLightRef.current;
+    scannerLowLightRef.current = next;
+    setScannerLowLight(next);
+    if (next && torchOnRef.current) {
+      try {
+        await scannerRef.current?.applyVideoConstraints?.({ advanced: [{ torch: false }] });
+      } catch {}
+      torchOnRef.current = false;
+      setTorchOn(false);
+    }
+    await tuneScannerCamera();
   }
 
   async function loadInitial(preferredSessionId = "") {
@@ -3672,13 +3727,26 @@ export default function InventariosPage() {
                 <h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3>
                 <p className="text-xs text-slate-500">Apunta al código con la cámara.</p>
               </div>
-              <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
-                <Flashlight className="mr-2 inline" size={18} /> Linterna
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={toggleScannerLowLight} className={`rounded-lg border px-3 py-2 text-sm font-black ${scannerLowLight ? "bg-blue-600 text-white" : "bg-white text-slate-700"}`} title="Baja luz">
+                  Baja luz
+                </button>
+                <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
+                  <Flashlight className="mr-2 inline" size={18} /> Linterna
+                </button>
+              </div>
             </div>
             <div className="overflow-hidden rounded-xl bg-black">
-              <div id={scannerContainerId} className="min-h-[280px] w-full" />
+              <div id={scannerContainerId} className="min-h-[320px] w-full" />
             </div>
+            <style>{`
+              #${scannerContainerId} video {
+                filter: ${scannerLowLight ? "contrast(1.28) brightness(1.08) saturate(0.92)" : "none"};
+              }
+              #${scannerContainerId} canvas {
+                filter: ${scannerLowLight ? "contrast(1.18) brightness(1.04)" : "none"};
+              }
+            `}</style>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
             </button>
