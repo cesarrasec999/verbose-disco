@@ -756,6 +756,7 @@ export default function InventariosPage() {
     if (!operator || isValidator) return;
     const raw = productCode.trim();
     if (selectedProduct && raw.toUpperCase() === selectedProduct.sku) return;
+    if (productLookupModeRef.current === "scan") return;
     setSelectedProduct(null);
     setProductLookupMessage("");
     if (raw.length < 3 || !selectedSessionId) {
@@ -824,20 +825,20 @@ export default function InventariosPage() {
     scannerBusyRef.current = false;
     await scanner.start(
       { facingMode: "environment" },
-      { fps: 15, qrbox: { width: 260, height: 160 }, aspectRatio: 1.6 },
+      { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true },
       async (decodedText: string) => {
         if (scannerBusyRef.current) return;
         scannerBusyRef.current = true;
         const target = scannerTargetRef.current;
         const activeRecountScanId = activeRecountScanIdRef.current;
         await stopScanner();
-        applyScannedValue(decodedText, target, activeRecountScanId);
+        await applyScannedValue(decodedText, target, activeRecountScanId);
       },
       () => {}
     );
   }
 
-  function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
+  async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
     const clean = decodedText.trim();
     if (target === "location") {
       setLocationCode(clean.toUpperCase());
@@ -848,8 +849,7 @@ export default function InventariosPage() {
       setProductLookupMode("scan");
       productLookupModeRef.current = "scan";
       setProductCode(clean);
-      setMessage("Código de producto escaneado.");
-      setTimeout(() => qtyInputRef.current?.focus(), 50);
+      await validateScannedProduct(clean);
     }
     if (target === "recount_location" && activeRecountScanId) {
       updateRecountDraft(activeRecountScanId, "locationCode", clean.toUpperCase());
@@ -858,6 +858,32 @@ export default function InventariosPage() {
     if (target === "recount_product" && activeRecountScanId) {
       updateRecountDraft(activeRecountScanId, "productCode", clean);
       setMessage("Codigo de reconteo escaneado.");
+    }
+  }
+
+  async function validateScannedProduct(code: string) {
+    const requestId = ++productLookupRequestRef.current;
+    setSelectedProduct(null);
+    setProductCandidates([]);
+    setProductLookupMessage("");
+    setMessage("Código escaneado. Buscando en maestro...");
+    try {
+      const result = await findProductCandidates(code, "scan");
+      if (requestId !== productLookupRequestRef.current) return;
+      setProductCandidates(result.products);
+      setProductLookupMessage(result.message);
+      if (result.products.length === 1) {
+        setSelectedProduct(result.products[0]);
+        setMessage("Producto encontrado.");
+        setTimeout(() => qtyInputRef.current?.focus(), 50);
+        return;
+      }
+      setMessage(result.products.length > 1 ? "El código escaneado coincide con varios productos. Elige el correcto." : "El código escaneado no está en el maestro de productos.");
+    } catch {
+      if (requestId !== productLookupRequestRef.current) return;
+      setProductCandidates([]);
+      setProductLookupMessage("");
+      setMessage("No se pudo validar el código escaneado. Intenta nuevamente.");
     }
   }
 
