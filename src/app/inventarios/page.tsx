@@ -181,27 +181,6 @@ function codeMatchRank(product: Product, query: string) {
   return 5;
 }
 
-function selectBestScannerCamera<T extends { id: string; label?: string }>(cameras: T[]) {
-  if (cameras.length === 0) return null;
-  const rearCameras = cameras.filter(camera => {
-    const label = (camera.label || "").toLowerCase();
-    if (/front|user|frontal|delantera/.test(label)) return false;
-    return /back|rear|environment|trasera|posterior/.test(label);
-  });
-  const candidates = rearCameras.length > 0 ? rearCameras : [cameras[cameras.length - 1]];
-  const scored = candidates.map((camera, index) => {
-    const label = (camera.label || "").toLowerCase();
-    let score = 0;
-    if (/back|rear|environment|trasera|posterior/.test(label)) score += 100;
-    if (/ultra|tele|telephoto/.test(label)) score -= 30;
-    if (/wide|gran angular|dual|triple|camera/.test(label)) score += 10;
-    score += index;
-    return { camera, score };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.camera || cameras[cameras.length - 1];
-}
-
 function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -831,42 +810,14 @@ export default function InventariosPage() {
     let cancelled = false;
     (async () => {
       try {
-        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+        const { Html5Qrcode } = await import("html5-qrcode");
         if (cancelled) return;
-        const isProductScanner = scannerTarget === "product" || scannerTarget === "recount_product";
-        const scanner = new Html5Qrcode(scannerContainerId, {
-          formatsToSupport: [
-            Html5QrcodeSupportedFormats.CODE_128,
-            Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.CODE_93,
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.ITF,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-            Html5QrcodeSupportedFormats.QR_CODE,
-          ],
-          useBarCodeDetectorIfSupported: false,
-          verbose: false,
-        });
+        const scanner = new Html5Qrcode(scannerContainerId);
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
-        const cameras = await Html5Qrcode.getCameras();
-        const backCamera = selectBestScannerCamera(cameras);
         await scanner.start(
-          backCamera?.id || { facingMode: "environment" },
-          {
-            fps: 30,
-            qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-              const width = Math.max(260, Math.min(viewfinderWidth - 24, isProductScanner ? 560 : 340));
-              const height = isProductScanner
-                ? Math.max(96, Math.min(150, Math.round(viewfinderHeight * 0.32)))
-                : Math.max(220, Math.min(320, Math.round(viewfinderHeight * 0.72)));
-              return { width, height };
-            },
-            aspectRatio: 1.7777778,
-            disableFlip: true,
-          },
+          { facingMode: "environment" },
+          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
@@ -897,7 +848,6 @@ export default function InventariosPage() {
           },
           () => {}
         );
-        await tuneScannerCamera();
       } catch (err: any) {
         setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
         await stopScanner();
@@ -964,24 +914,6 @@ export default function InventariosPage() {
     }
   }
 
-  async function tuneScannerCamera() {
-    const scanner = scannerRef.current;
-    if (!scanner?.applyVideoConstraints) return;
-    const advanced: Record<string, unknown>[] = [
-      { focusMode: "continuous" },
-      { exposureMode: "continuous" },
-      { whiteBalanceMode: "continuous" },
-      { torch: torchOnRef.current },
-    ];
-    if (scannerLowLightRef.current) advanced.push({ exposureCompensation: 1 });
-
-    for (const constraint of advanced) {
-      try {
-        await scanner.applyVideoConstraints({ advanced: [constraint] });
-      } catch {}
-    }
-  }
-
   async function toggleScannerLowLight() {
     const next = !scannerLowLightRef.current;
     scannerLowLightRef.current = next;
@@ -993,7 +925,6 @@ export default function InventariosPage() {
       torchOnRef.current = false;
       setTorchOn(false);
     }
-    await tuneScannerCamera();
   }
 
   async function loadInitial(preferredSessionId = "") {
