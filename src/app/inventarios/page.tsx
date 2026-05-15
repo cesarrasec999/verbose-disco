@@ -967,14 +967,6 @@ export default function InventariosPage() {
   async function tuneScannerCamera() {
     const scanner = scannerRef.current;
     if (!scanner?.applyVideoConstraints) return;
-    try {
-      await scanner.applyVideoConstraints({
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 30, max: 30 },
-      });
-    } catch {}
-
     const advanced: Record<string, unknown>[] = [
       { focusMode: "continuous" },
       { exposureMode: "continuous" },
@@ -982,17 +974,6 @@ export default function InventariosPage() {
       { torch: torchOnRef.current },
     ];
     if (scannerLowLightRef.current) advanced.push({ exposureCompensation: 1 });
-
-    try {
-      const capabilities = scanner.getRunningTrackCapabilities?.();
-      const zoom = capabilities?.zoom;
-      if (zoom && typeof zoom === "object") {
-        const minZoom = Number(zoom.min ?? 1);
-        const maxZoom = Number(zoom.max ?? 1);
-        const targetZoom = Math.min(maxZoom, Math.max(minZoom, 1.4));
-        if (targetZoom > minZoom) advanced.push({ zoom: targetZoom });
-      }
-    } catch {}
 
     for (const constraint of advanced) {
       try {
