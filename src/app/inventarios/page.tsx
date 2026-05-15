@@ -293,9 +293,7 @@ export default function InventariosPage() {
   const [newName, setNewName] = useState("");
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
   const [locationsFile, setLocationsFile] = useState<File | null>(null);
-  const [nonInventoryFile, setNonInventoryFile] = useState<File | null>(null);
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
-  const nonInventoryFileRef = useRef<HTMLInputElement | null>(null);
 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [counts, setCounts] = useState<CountRow[]>([]);
@@ -353,16 +351,7 @@ export default function InventariosPage() {
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
-  const iosVideoRef = useRef<HTMLVideoElement | null>(null);
-  const iosStreamRef = useRef<MediaStream | null>(null);
-  const iosScanTimerRef = useRef<number | null>(null);
-  const iosDetectorRef = useRef<any>(null);
   const scannerContainerId = "inventory-scanner";
-  const photoScannerContainerId = "inventory-photo-scanner";
-  const photoScannerInputRef = useRef<HTMLInputElement | null>(null);
-  const photoScannerTargetRef = useRef<ScannerTarget>(null);
-  const photoScannerRecountIdRef = useRef<string | null>(null);
-  const [iosNativeScanner, setIosNativeScanner] = useState(false);
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
   const isReadOnlySupervisor = user?.role === "Supervisor";
@@ -818,11 +807,7 @@ export default function InventariosPage() {
     let cancelled = false;
     (async () => {
       try {
-        if (isIosDevice()) {
-          const startedNative = await startIosNativeScanner(() => cancelled);
-          if (startedNative || cancelled) return;
-        }
-        await startHtml5Scanner(() => cancelled, isIosDevice());
+        await startHtml5Scanner(() => cancelled);
       } catch (err: any) {
         setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
         await stopScanner();
@@ -831,26 +816,10 @@ export default function InventariosPage() {
     return () => { cancelled = true; void stopScanner(false); };
   }, [scannerTarget]);
 
-  async function startHtml5Scanner(isCancelled: () => boolean, prioritizeBarcodeFormats = false) {
-    const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+  async function startHtml5Scanner(isCancelled: () => boolean) {
+    const { Html5Qrcode } = await import("html5-qrcode");
     if (isCancelled()) return;
-    const scanner = prioritizeBarcodeFormats
-      ? new Html5Qrcode(scannerContainerId, {
-        verbose: false,
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.CODE_93,
-          Html5QrcodeSupportedFormats.CODABAR,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.QR_CODE,
-        ],
-      })
-      : new Html5Qrcode(scannerContainerId);
+    const scanner = new Html5Qrcode(scannerContainerId);
     scannerRef.current = scanner;
     scannerBusyRef.current = false;
     await scanner.start(
@@ -866,74 +835,6 @@ export default function InventariosPage() {
       },
       () => {}
     );
-  }
-
-  async function startIosNativeScanner(isCancelled: () => boolean) {
-    const BarcodeDetectorCtor = typeof window !== "undefined" ? (window as any).BarcodeDetector : null;
-    const video = iosVideoRef.current;
-    if (!BarcodeDetectorCtor || !navigator.mediaDevices?.getUserMedia || !video) return false;
-
-    const preferredFormats = ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code", "data_matrix", "pdf417"];
-    const supportedFormats = typeof BarcodeDetectorCtor.getSupportedFormats === "function"
-      ? await BarcodeDetectorCtor.getSupportedFormats().catch(() => [])
-      : [];
-    const formats = supportedFormats.length > 0
-      ? preferredFormats.filter(format => supportedFormats.includes(format))
-      : preferredFormats;
-    if (supportedFormats.length > 0 && formats.length === 0) return false;
-
-    const detector = new BarcodeDetectorCtor(formats.length > 0 ? { formats } : undefined);
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    });
-
-    if (isCancelled()) {
-      stream.getTracks().forEach(track => track.stop());
-      return true;
-    }
-
-    iosDetectorRef.current = detector;
-    iosStreamRef.current = stream;
-    scannerBusyRef.current = false;
-    video.srcObject = stream;
-    video.muted = true;
-    video.playsInline = true;
-    await video.play();
-    setIosNativeScanner(true);
-
-    const track = stream.getVideoTracks()[0];
-    const capabilities = track?.getCapabilities?.() as any;
-    const advanced: any[] = [];
-    if (capabilities?.focusMode?.includes?.("continuous")) advanced.push({ focusMode: "continuous" });
-    if (capabilities?.exposureMode?.includes?.("continuous")) advanced.push({ exposureMode: "continuous" });
-    if (advanced.length > 0) await track.applyConstraints({ advanced } as any).catch(() => {});
-
-    const scanFrame = async () => {
-      if (isCancelled() || !scannerTargetRef.current || scannerBusyRef.current) return;
-      try {
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-          const detected = await detector.detect(video);
-          const value = detected?.[0]?.rawValue || detected?.[0]?.rawValueText || "";
-          if (value) {
-            scannerBusyRef.current = true;
-            const target = scannerTargetRef.current;
-            const activeRecountScanId = activeRecountScanIdRef.current;
-            await stopScanner();
-            applyScannedValue(value, target, activeRecountScanId);
-            return;
-          }
-        }
-      } catch {}
-      iosScanTimerRef.current = window.setTimeout(scanFrame, 90);
-    };
-
-    iosScanTimerRef.current = window.setTimeout(scanFrame, 120);
-    return true;
   }
 
   function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
@@ -981,15 +882,6 @@ export default function InventariosPage() {
     setTorchOn(false);
     torchOnRef.current = false;
     setScannerTarget(null);
-    setIosNativeScanner(false);
-    if (iosScanTimerRef.current) {
-      window.clearTimeout(iosScanTimerRef.current);
-      iosScanTimerRef.current = null;
-    }
-    iosStreamRef.current?.getTracks().forEach(track => track.stop());
-    iosStreamRef.current = null;
-    iosDetectorRef.current = null;
-    if (iosVideoRef.current) iosVideoRef.current.srcObject = null;
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -1018,33 +910,6 @@ export default function InventariosPage() {
       torchOnRef.current = next;
     } catch {
       setMessage("La linterna no está disponible en este dispositivo.");
-    }
-  }
-
-  async function openPhotoScanner() {
-    photoScannerTargetRef.current = scannerTargetRef.current;
-    photoScannerRecountIdRef.current = activeRecountScanIdRef.current;
-    await stopScanner(false);
-    window.setTimeout(() => photoScannerInputRef.current?.click(), 80);
-  }
-
-  async function scanPhotoFile(file: File) {
-    let photoScanner: any = null;
-    try {
-      const { Html5Qrcode } = await import("html5-qrcode");
-      photoScanner = new Html5Qrcode(photoScannerContainerId);
-      const decoded = await photoScanner.scanFile(file, false);
-      photoScanner.clear();
-      applyScannedValue(decoded, photoScannerTargetRef.current, photoScannerRecountIdRef.current);
-    } catch {
-      setMessage("No pude leer el código en la foto. Intenta acercar, tocar para enfocar y tomarla otra vez.");
-    } finally {
-      try {
-        photoScanner?.clear?.();
-      } catch {}
-      if (photoScannerInputRef.current) photoScannerInputRef.current.value = "";
-      photoScannerTargetRef.current = null;
-      photoScannerRecountIdRef.current = null;
     }
   }
 
@@ -1887,63 +1752,32 @@ export default function InventariosPage() {
     await loadPreparationData(selectedSessionId);
   }
 
-  async function importNonInventory() {
-    if (!selectedSessionId || !nonInventoryFile) {
-      setMessage("Selecciona el Excel de no inventariables.");
-      return;
-    }
-    const excelRows = await readWorkbookRows(nonInventoryFile);
-    const skus = [...new Set(excelRows
-      .map(row => normalizeCode(pickColumn(row, ["ID", "CODSAP", "CODIGO", "CÓDIGO", "SKU"])).toUpperCase())
-      .filter(Boolean))];
-    if (skus.length === 0) {
-      setMessage("No encontre codigos en el Excel.");
-      return;
-    }
-    const productRows: any[] = [];
-    for (let i = 0; i < skus.length; i += 500) {
-      const chunk = skus.slice(i, i + 500);
-      const { data } = await supabase.from("cyclic_products").select("id,sku,description").in("sku", chunk);
-      productRows.push(...(data || []));
-    }
-    const productBySku = new Map(productRows.map(row => [row.sku, row]));
-    const rows = skus.filter(sku => productBySku.has(sku)).map(sku => {
-      const product = productBySku.get(sku);
-      return {
-        session_id: selectedSessionId,
-        product_id: product.id,
-        sku,
-        description: product.description || null,
-        reason: "No inventariable",
-      };
-    });
-    if (rows.length === 0) {
-      setMessage("Ningun codigo del Excel coincide exactamente con el maestro.");
-      return;
-    }
-    const { error } = await supabase.from("general_inventory_non_inventory_products").upsert(rows, { onConflict: "session_id,sku" });
-    if (error) {
-      setMessage("Error cargando no inventariables: " + error.message);
-      return;
-    }
-    setNonInventoryFile(null);
-    if (nonInventoryFileRef.current) nonInventoryFileRef.current.value = "";
-    setMessage(`${rows.length} codigos no inventariables cargados. Omitidos por no coincidir: ${skus.length - rows.length}.`);
-    if (validatorTab === "resumen") await loadSummary(selectedSessionId, true);
+  async function freezeStock() {
+    await saveStockSnapshot("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.", "Stock congelado");
   }
 
-  async function freezeStock() {
+  async function updateStockSnapshot() {
+    if (selectedSession?.status === "frozen") {
+      const ok = confirm("Este inventario ya tiene una foto de stock congelada. Si aceptas, se reemplazara por el stock actual y esa nueva foto quedara congelada para los reportes posteriores.");
+      if (!ok) return;
+    }
+    await saveStockSnapshot("Actualizando stock actual y congelando nueva foto.", "Stock actualizado y congelado");
+  }
+
+  async function saveStockSnapshot(progressMessage: string, successLabel: string) {
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
     setLoading(true);
-    setMessage("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.");
+    setSummaryLoading(true);
+    setMessage(progressMessage);
     const { data, error } = await supabase.rpc("freeze_general_inventory_stock", {
       p_session_id: selectedSessionId,
       p_user_id: user.id,
     });
     setLoading(false);
+    setSummaryLoading(false);
     if (error) {
-      setMessage("No se pudo congelar stock: " + error.message);
+      setMessage("No se pudo actualizar stock: " + error.message);
       return;
     }
     const { count: productsWithStockCount } = await supabase
@@ -1951,7 +1785,7 @@ export default function InventariosPage() {
       .select("id", { count: "exact", head: true })
       .eq("session_id", selectedSessionId)
       .gt("system_stock", 0);
-    setMessage(`Stock congelado. Codigos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
+    setMessage(`${successLabel}. Codigos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
     await loadInitial(selectedSessionId);
     setValidatorTab("resumen");
     await loadSummary(selectedSessionId, true);
@@ -3663,6 +3497,11 @@ export default function InventariosPage() {
                   <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40">
                     {summaryLoading ? "Actualizando..." : "Actualizar KPIs"}
                   </button>
+                  {canManageInventory && (
+                    <button onClick={updateStockSnapshot} disabled={loading || summaryLoading} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                      <RefreshCw size={14} /> Actualizar stock
+                    </button>
+                  )}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
                   <button onClick={exportRecords} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black"><Download size={15} /> Registros</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
@@ -3886,19 +3725,6 @@ export default function InventariosPage() {
         </div>
       )}
 
-      <input
-        ref={photoScannerInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={event => {
-          const file = event.target.files?.[0];
-          if (file) void scanPhotoFile(file);
-        }}
-      />
-      <div id={photoScannerContainerId} className="fixed -left-[9999px] top-0 h-px w-px overflow-hidden" />
-
       {scannerTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4">
           <div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
@@ -3911,35 +3737,15 @@ export default function InventariosPage() {
                 <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
                   <Flashlight className="mr-2 inline" size={18} /> Linterna
                 </button>
-                {isIosDevice() && (
-                  <button onClick={() => void openPhotoScanner()} className="rounded-lg border bg-white px-3 py-2 text-sm font-black text-slate-700" title="Tomar foto">
-                    Tomar foto
-                  </button>
-                )}
               </div>
             </div>
             <div className="relative overflow-hidden rounded-xl border bg-black">
+              <div id={scannerContainerId} className="min-h-[320px] w-full" />
               {isIosDevice() && (
-                <video
-                  ref={iosVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className={`${iosNativeScanner ? "block" : "hidden"} h-[320px] w-full bg-black object-cover`}
-                />
-              )}
-              {isIosDevice() && iosNativeScanner && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <div className="relative h-32 w-[82%] max-w-sm border-2 border-white/90">
-                    <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
-                    <div className="absolute -left-1 -top-1 h-7 w-7 border-l-4 border-t-4 border-emerald-400" />
-                    <div className="absolute -right-1 -top-1 h-7 w-7 border-r-4 border-t-4 border-emerald-400" />
-                    <div className="absolute -bottom-1 -left-1 h-7 w-7 border-b-4 border-l-4 border-emerald-400" />
-                    <div className="absolute -bottom-1 -right-1 h-7 w-7 border-b-4 border-r-4 border-emerald-400" />
-                  </div>
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
+                  <div className="h-0.5 w-full max-w-sm bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
                 </div>
               )}
-              <div id={scannerContainerId} className={`${isIosDevice() && iosNativeScanner ? "hidden" : "min-h-[320px] w-full"}`} />
             </div>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
