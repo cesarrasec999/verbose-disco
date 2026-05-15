@@ -3533,22 +3533,25 @@ export default function InventariosPage() {
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
-              <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
-                <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-4">
+                <div className="grid gap-4 lg:grid-cols-3">
                   <DonutKpi label="AVANCE POR SKU" value={kpis.skuProgress} detail={`${kpis.countedCodes} / ${kpis.totalCodes} codigos`} />
                   <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.systemValue)} base`} tone="blue" />
                   <DonutKpi label="ERI" value={kpis.eri} detail={`${kpis.totalCodes} codigos totales`} tone="green" />
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <Kpi label="Codigos totales" value={kpis.totalCodes} />
+                  <Kpi label="Codigos contados" value={kpis.countedCodes} tone="green" />
                   <Kpi label="Codigos OK" value={summary.filter(row => row.diff === 0 && row.counted > 0).length} />
                   <Kpi label="No contados" value={kpis.notCountedCodes} tone="amber" />
                   <Kpi label="Codigos con diferencia" value={kpis.codesWithDifference} tone={kpis.codesWithDifference > 0 ? "amber" : "slate"} />
                 </div>
               </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <ValueBarKpi label="Sobrantes valorizados" value={kpis.surplusValue} maxValue={Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1)} tone="blue" />
+                <ValueBarKpi label="Faltantes valorizados" value={kpis.missingValue} maxValue={Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1)} tone="red" />
+              </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <Kpi label="Sobrantes valorizados" value={money(kpis.surplusValue)} tone="blue" />
-                <Kpi label="Faltantes valorizados" value={money(kpis.missingValue)} tone="red" />
                 <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
                 <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
                 <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
@@ -3812,27 +3815,55 @@ function DonutKpi({ label, value, detail, tone = "slate" }: { label: string; val
   const pct = Math.max(0, Math.min(100, Math.round(Number(value || 0))));
   const color = tone === "blue" ? "#1d4ed8" : tone === "green" ? "#16a34a" : "#0f172a";
   return (
-    <div className="rounded-xl border bg-slate-50 p-3">
-      <div className="flex items-center gap-3">
+    <div className="rounded-xl border bg-slate-50 p-4">
+      <div className="flex items-center gap-4">
         <div
-          className="grid h-20 w-20 shrink-0 place-items-center rounded-full"
+          className="grid h-28 w-28 shrink-0 place-items-center rounded-full"
           style={{ background: `conic-gradient(${color} ${pct * 3.6}deg, #e2e8f0 0deg)` }}
         >
-          <div className="grid h-14 w-14 place-items-center rounded-full bg-white text-sm font-black text-slate-950">
+          <div className="grid h-20 w-20 place-items-center rounded-full bg-white text-2xl font-black text-slate-950">
             {pct}%
           </div>
         </div>
         <div className="min-w-0">
-          <div className="text-xs font-black text-slate-500">{label}</div>
-          <div className="mt-1 text-sm font-black text-slate-900">{detail}</div>
+          <div className="text-[11px] font-black uppercase text-slate-500">{label}</div>
+          <div className="mt-2 text-base font-black text-slate-900">{detail}</div>
         </div>
       </div>
     </div>
   );
 }
 
-function Kpi({ label, value, tone = "slate" }: { label: string; value: string | number; tone?: "slate" | "blue" | "red" | "amber" }) {
-  const color = tone === "blue" ? "text-blue-700" : tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : "text-slate-900";
+function ValueBarKpi({ label, value, maxValue, tone }: { label: string; value: number; maxValue: number; tone: "blue" | "red" }) {
+  const absValue = Math.abs(Number(value || 0));
+  const pct = Math.max(2, Math.min(100, (absValue / Math.max(1, maxValue)) * 100));
+  const barColor = tone === "blue" ? "bg-blue-700" : "bg-red-600";
+  const softColor = tone === "blue" ? "bg-blue-50 border-blue-100" : "bg-red-50 border-red-100";
+  const textColor = tone === "blue" ? "text-blue-700" : "text-red-600";
+  return (
+    <div className={`rounded-xl border p-4 ${softColor}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-black uppercase text-slate-500">{label}</div>
+          <div className={`mt-1 text-2xl font-black ${textColor}`}>{money(value)}</div>
+        </div>
+        <div className="flex h-16 items-end gap-1">
+          {[0.35, 0.55, 0.75, 1].map((step, index) => (
+            <div key={index} className="w-3 rounded-t bg-white/80">
+              <div className={`${barColor} rounded-t`} style={{ height: `${Math.max(8, pct * step * 0.6)}px` }} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 h-3 overflow-hidden rounded-full bg-white">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function Kpi({ label, value, tone = "slate" }: { label: string; value: string | number; tone?: "slate" | "blue" | "red" | "amber" | "green" }) {
+  const color = tone === "blue" ? "text-blue-700" : tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : tone === "green" ? "text-green-700" : "text-slate-900";
   const displayValue = typeof value === "number" ? number2(value) : value;
   return (
     <div className="rounded-xl border bg-slate-50 p-3 text-center">
