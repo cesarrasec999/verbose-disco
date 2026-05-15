@@ -3539,7 +3539,7 @@ export default function InventariosPage() {
               <div className="grid gap-4">
                 <div className="grid gap-4 lg:grid-cols-3">
                   <DonutKpi label="AVANCE POR SKU" value={kpis.skuProgress} detail={`${kpis.countedCodes} / ${kpis.totalCodes} codigos`} />
-                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.countedValue)} de ${money(kpis.pendingValue)} faltante`} tone="blue" />
+                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.countedValue)} de ${money(kpis.systemValue)} total`} tone="blue" />
                   <DonutKpi label="ERI" value={kpis.eri} detail={`${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} total`} tone="green" />
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
