@@ -659,7 +659,7 @@ export default function InventariosPage() {
     if (!selectedSessionId) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
     void loadSessionData(selectedSessionId, validatorTab);
-  }, [selectedSessionId, validatorTab]);
+  }, [selectedSessionId, validatorTab, isValidator, operator?.id]);
 
   useEffect(() => {
     if (isReadOnlySupervisor && (validatorTab === "preparacion" || validatorTab === "reconteo" || validatorTab === "usuarios")) {
@@ -685,7 +685,7 @@ export default function InventariosPage() {
           if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
           return;
         }
-        void loadRecordsData(selectedSessionId);
+        void loadRecordsData(selectedSessionId, operator?.id || null);
       }, 1500);
     };
 
@@ -702,7 +702,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab]);
+  }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -712,12 +712,12 @@ export default function InventariosPage() {
         void loadSessionData(selectedSessionId, validatorTab);
         return;
       }
-      void loadRecordsData(selectedSessionId);
+      void loadRecordsData(selectedSessionId, operator?.id || null);
     };
 
     window.addEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
     return () => window.removeEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
-  }, [selectedSessionId, isValidator, validatorTab]);
+  }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -996,7 +996,13 @@ export default function InventariosPage() {
       return;
     }
 
-    await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId)]);
+    if (!operator?.id) {
+      await loadPreparationData(sessionId);
+      setCounts([]);
+      return;
+    }
+
+    await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId, operator.id)]);
   }
 
   async function loadPreparationData(sessionId: string) {
@@ -1009,15 +1015,20 @@ export default function InventariosPage() {
     setCountedLocationCodes([...new Set(countRows.map(row => row.location_code).filter(Boolean))]);
   }
 
-  async function loadRecordsData(sessionId: string) {
-    const countRows = await loadAllCounts(sessionId);
-    const pendingRows = await loadPendingOfflineCountRows(sessionId);
+  async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null) {
+    if (!isValidator && !operatorId) {
+      setCounts([]);
+      return;
+    }
+
+    const countRows = await loadAllCounts(sessionId, operatorId);
+    const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
     const rows = mergePendingCounts(countRows, pendingRows);
     setCounts(rows);
-    setCountedLocationCodes([...new Set(rows.map(row => row.location_code).filter(Boolean))]);
+    if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => row.location_code).filter(Boolean))]);
   }
 
-  async function loadPendingOfflineCountRows(sessionId: string): Promise<CountRow[]> {
+  async function loadPendingOfflineCountRows(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
     const pending = await listPendingOfflineItems().catch(() => []);
     return pending
       .filter(item => item.entity === "general_inventory_counts" && item.operation === "insert")
@@ -1039,7 +1050,7 @@ export default function InventariosPage() {
           operator_name: operator?.full_name || "Pendiente offline",
         };
       })
-      .filter(row => row.session_id === sessionId);
+      .filter(row => row.session_id === sessionId && (!operatorId || row.operator_id === operatorId));
   }
 
   function mergePendingCounts(serverRows: CountRow[], pendingRows: CountRow[]) {
@@ -1396,17 +1407,18 @@ export default function InventariosPage() {
     })) as RecountItem[]));
   }
 
-  async function loadAllCounts(sessionId: string): Promise<CountRow[]> {
+  async function loadAllCounts(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
     const rows: CountRow[] = [];
     const pageSize = 1000;
     let from = 0;
     while (true) {
-      const { data, error } = await supabase
+      let query = supabase
         .from("general_inventory_counts")
         .select("*, general_inventory_operators(full_name)")
         .eq("session_id", sessionId)
-        .order("counted_at", { ascending: false })
-        .range(from, from + pageSize - 1);
+        .order("counted_at", { ascending: false });
+      if (operatorId) query = query.eq("operator_id", operatorId);
+      const { data, error } = await query.range(from, from + pageSize - 1);
       if (error) {
         setMessage("Error leyendo registros: " + error.message);
         break;
@@ -1905,6 +1917,7 @@ export default function InventariosPage() {
         localStorage.setItem(OPERATOR_KEY, JSON.stringify(operatorRow));
         localStorage.setItem(SESSION_KEY, selectedSession.id);
         setMessage(`Bienvenido, ${operatorRow.full_name}.`);
+        await Promise.all([loadPreparationData(selectedSession.id), loadRecordsData(selectedSession.id, operatorRow.id)]);
         return;
       }
 
@@ -1937,6 +1950,7 @@ export default function InventariosPage() {
     localStorage.setItem(OPERATOR_KEY, JSON.stringify(operatorRow));
     localStorage.setItem(SESSION_KEY, selectedSession.id);
     setMessage(`Bienvenido, ${operatorRow.full_name}.`);
+    await Promise.all([loadPreparationData(selectedSession.id), loadRecordsData(selectedSession.id, operatorRow.id)]);
   }
 
   async function findProductCandidates(query: string, mode: ProductLookupMode = "typed"): Promise<{ products: Product[]; message: string }> {
