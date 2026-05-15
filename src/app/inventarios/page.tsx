@@ -342,11 +342,9 @@ export default function InventariosPage() {
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
-  const [scannerLowLight, setScannerLowLight] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
-  const scannerLowLightRef = useRef(false);
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
@@ -788,10 +786,6 @@ export default function InventariosPage() {
   }, [productLookupMode]);
 
   useEffect(() => {
-    scannerLowLightRef.current = scannerLowLight;
-  }, [scannerLowLight]);
-
-  useEffect(() => {
     torchOnRef.current = torchOn;
   }, [torchOn]);
 
@@ -817,7 +811,7 @@ export default function InventariosPage() {
         scannerBusyRef.current = false;
         await scanner.start(
           { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
+          { fps: 15, qrbox: { width: 260, height: 160 }, aspectRatio: 1.6 },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
@@ -863,8 +857,6 @@ export default function InventariosPage() {
     }
     setTorchOn(false);
     torchOnRef.current = false;
-    setScannerLowLight(false);
-    scannerLowLightRef.current = false;
     setScannerTarget(target);
   }
 
@@ -905,25 +897,8 @@ export default function InventariosPage() {
       await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
       setTorchOn(next);
       torchOnRef.current = next;
-      if (next) {
-        setScannerLowLight(false);
-        scannerLowLightRef.current = false;
-      }
     } catch {
       setMessage("La linterna no está disponible en este dispositivo.");
-    }
-  }
-
-  async function toggleScannerLowLight() {
-    const next = !scannerLowLightRef.current;
-    scannerLowLightRef.current = next;
-    setScannerLowLight(next);
-    if (next && torchOnRef.current) {
-      try {
-        await scannerRef.current?.applyVideoConstraints?.({ advanced: [{ torch: false }] });
-      } catch {}
-      torchOnRef.current = false;
-      setTorchOn(false);
     }
   }
 
@@ -3760,34 +3735,14 @@ export default function InventariosPage() {
                 <p className="text-xs text-slate-500">Apunta al código con la cámara.</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button onClick={toggleScannerLowLight} className={`rounded-lg border px-3 py-2 text-sm font-black ${scannerLowLight ? "bg-blue-600 text-white" : "bg-white text-slate-700"}`} title="Baja luz">
-                  Baja luz
-                </button>
                 <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
                   <Flashlight className="mr-2 inline" size={18} /> Linterna
                 </button>
               </div>
             </div>
-            <div className="relative overflow-hidden rounded-xl bg-black">
+            <div className="overflow-hidden rounded-xl border bg-black">
               <div id={scannerContainerId} className="min-h-[320px] w-full" />
-              <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <div className={`relative rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.18)] ${scannerTarget === "product" || scannerTarget === "recount_product" ? "h-24 w-[88%] max-w-md" : "h-56 w-[88%] max-w-xs"}`}>
-                  <div className="absolute left-4 right-4 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
-                  <div className="absolute -left-0.5 -top-0.5 h-5 w-5 rounded-tl-xl border-l-4 border-t-4 border-green-400" />
-                  <div className="absolute -right-0.5 -top-0.5 h-5 w-5 rounded-tr-xl border-r-4 border-t-4 border-green-400" />
-                  <div className="absolute -bottom-0.5 -left-0.5 h-5 w-5 rounded-bl-xl border-b-4 border-l-4 border-green-400" />
-                  <div className="absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-br-xl border-b-4 border-r-4 border-green-400" />
-                </div>
-              </div>
             </div>
-            <style>{`
-              #${scannerContainerId} video {
-                filter: ${scannerLowLight ? "contrast(1.16) brightness(1.02) saturate(0.96)" : "none"};
-              }
-              #${scannerContainerId} canvas {
-                filter: ${scannerLowLight ? "contrast(1.12) brightness(1.01)" : "none"};
-              }
-            `}</style>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
             </button>
