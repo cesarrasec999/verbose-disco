@@ -353,11 +353,16 @@ export default function InventariosPage() {
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
+  const iosVideoRef = useRef<HTMLVideoElement | null>(null);
+  const iosStreamRef = useRef<MediaStream | null>(null);
+  const iosScanTimerRef = useRef<number | null>(null);
+  const iosDetectorRef = useRef<any>(null);
   const scannerContainerId = "inventory-scanner";
   const photoScannerContainerId = "inventory-photo-scanner";
   const photoScannerInputRef = useRef<HTMLInputElement | null>(null);
   const photoScannerTargetRef = useRef<ScannerTarget>(null);
   const photoScannerRecountIdRef = useRef<string | null>(null);
+  const [iosNativeScanner, setIosNativeScanner] = useState(false);
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
   const isReadOnlySupervisor = user?.role === "Supervisor";
@@ -813,24 +818,11 @@ export default function InventariosPage() {
     let cancelled = false;
     (async () => {
       try {
-        const { Html5Qrcode } = await import("html5-qrcode");
-        if (cancelled) return;
-        const scanner = new Html5Qrcode(scannerContainerId);
-        scannerRef.current = scanner;
-        scannerBusyRef.current = false;
-        await scanner.start(
-          { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 260, height: 160 }, aspectRatio: 1.6 },
-          async (decodedText: string) => {
-            if (scannerBusyRef.current) return;
-            scannerBusyRef.current = true;
-            const target = scannerTargetRef.current;
-            const activeRecountScanId = activeRecountScanIdRef.current;
-            await stopScanner();
-            applyScannedValue(decodedText, target, activeRecountScanId);
-          },
-          () => {}
-        );
+        if (isIosDevice()) {
+          const startedNative = await startIosNativeScanner(() => cancelled);
+          if (startedNative || cancelled) return;
+        }
+        await startHtml5Scanner(() => cancelled, isIosDevice());
       } catch (err: any) {
         setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
         await stopScanner();
@@ -838,6 +830,111 @@ export default function InventariosPage() {
     })();
     return () => { cancelled = true; void stopScanner(false); };
   }, [scannerTarget]);
+
+  async function startHtml5Scanner(isCancelled: () => boolean, prioritizeBarcodeFormats = false) {
+    const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+    if (isCancelled()) return;
+    const scanner = prioritizeBarcodeFormats
+      ? new Html5Qrcode(scannerContainerId, {
+        verbose: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.CODABAR,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+      })
+      : new Html5Qrcode(scannerContainerId);
+    scannerRef.current = scanner;
+    scannerBusyRef.current = false;
+    await scanner.start(
+      { facingMode: "environment" },
+      { fps: 15, qrbox: { width: 260, height: 160 }, aspectRatio: 1.6 },
+      async (decodedText: string) => {
+        if (scannerBusyRef.current) return;
+        scannerBusyRef.current = true;
+        const target = scannerTargetRef.current;
+        const activeRecountScanId = activeRecountScanIdRef.current;
+        await stopScanner();
+        applyScannedValue(decodedText, target, activeRecountScanId);
+      },
+      () => {}
+    );
+  }
+
+  async function startIosNativeScanner(isCancelled: () => boolean) {
+    const BarcodeDetectorCtor = typeof window !== "undefined" ? (window as any).BarcodeDetector : null;
+    const video = iosVideoRef.current;
+    if (!BarcodeDetectorCtor || !navigator.mediaDevices?.getUserMedia || !video) return false;
+
+    const preferredFormats = ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code", "data_matrix", "pdf417"];
+    const supportedFormats = typeof BarcodeDetectorCtor.getSupportedFormats === "function"
+      ? await BarcodeDetectorCtor.getSupportedFormats().catch(() => [])
+      : [];
+    const formats = supportedFormats.length > 0
+      ? preferredFormats.filter(format => supportedFormats.includes(format))
+      : preferredFormats;
+    if (supportedFormats.length > 0 && formats.length === 0) return false;
+
+    const detector = new BarcodeDetectorCtor(formats.length > 0 ? { formats } : undefined);
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+
+    if (isCancelled()) {
+      stream.getTracks().forEach(track => track.stop());
+      return true;
+    }
+
+    iosDetectorRef.current = detector;
+    iosStreamRef.current = stream;
+    scannerBusyRef.current = false;
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    await video.play();
+    setIosNativeScanner(true);
+
+    const track = stream.getVideoTracks()[0];
+    const capabilities = track?.getCapabilities?.() as any;
+    const advanced: any[] = [];
+    if (capabilities?.focusMode?.includes?.("continuous")) advanced.push({ focusMode: "continuous" });
+    if (capabilities?.exposureMode?.includes?.("continuous")) advanced.push({ exposureMode: "continuous" });
+    if (advanced.length > 0) await track.applyConstraints({ advanced } as any).catch(() => {});
+
+    const scanFrame = async () => {
+      if (isCancelled() || !scannerTargetRef.current || scannerBusyRef.current) return;
+      try {
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          const detected = await detector.detect(video);
+          const value = detected?.[0]?.rawValue || detected?.[0]?.rawValueText || "";
+          if (value) {
+            scannerBusyRef.current = true;
+            const target = scannerTargetRef.current;
+            const activeRecountScanId = activeRecountScanIdRef.current;
+            await stopScanner();
+            applyScannedValue(value, target, activeRecountScanId);
+            return;
+          }
+        }
+      } catch {}
+      iosScanTimerRef.current = window.setTimeout(scanFrame, 90);
+    };
+
+    iosScanTimerRef.current = window.setTimeout(scanFrame, 120);
+    return true;
+  }
 
   function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
     const clean = decodedText.trim();
@@ -884,6 +981,15 @@ export default function InventariosPage() {
     setTorchOn(false);
     torchOnRef.current = false;
     setScannerTarget(null);
+    setIosNativeScanner(false);
+    if (iosScanTimerRef.current) {
+      window.clearTimeout(iosScanTimerRef.current);
+      iosScanTimerRef.current = null;
+    }
+    iosStreamRef.current?.getTracks().forEach(track => track.stop());
+    iosStreamRef.current = null;
+    iosDetectorRef.current = null;
+    if (iosVideoRef.current) iosVideoRef.current.srcObject = null;
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -3812,8 +3918,28 @@ export default function InventariosPage() {
                 )}
               </div>
             </div>
-            <div className="overflow-hidden rounded-xl border bg-black">
-              <div id={scannerContainerId} className="min-h-[320px] w-full" />
+            <div className="relative overflow-hidden rounded-xl border bg-black">
+              {isIosDevice() && (
+                <video
+                  ref={iosVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className={`${iosNativeScanner ? "block" : "hidden"} h-[320px] w-full bg-black object-cover`}
+                />
+              )}
+              {isIosDevice() && iosNativeScanner && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="relative h-32 w-[82%] max-w-sm border-2 border-white/90">
+                    <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
+                    <div className="absolute -left-1 -top-1 h-7 w-7 border-l-4 border-t-4 border-emerald-400" />
+                    <div className="absolute -right-1 -top-1 h-7 w-7 border-r-4 border-t-4 border-emerald-400" />
+                    <div className="absolute -bottom-1 -left-1 h-7 w-7 border-b-4 border-l-4 border-emerald-400" />
+                    <div className="absolute -bottom-1 -right-1 h-7 w-7 border-b-4 border-r-4 border-emerald-400" />
+                  </div>
+                </div>
+              )}
+              <div id={scannerContainerId} className={`${isIosDevice() && iosNativeScanner ? "hidden" : "min-h-[320px] w-full"}`} />
             </div>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
