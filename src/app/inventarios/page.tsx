@@ -169,6 +169,11 @@ function searchWords(value: string) {
   return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
 }
 
+function isIosDevice() {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 function codeMatchRank(product: Product, query: string) {
   const sku = normalizeCode(product.sku).toUpperCase();
   const barcode = normalizeCode(product.barcode).toUpperCase();
@@ -833,6 +838,7 @@ export default function InventariosPage() {
       try {
         const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
         if (cancelled) return;
+        const isIos = isIosDevice();
         const isProductScanner = scannerTarget === "product" || scannerTarget === "recount_product";
         const isLocationScanner = scannerTarget === "location" || scannerTarget === "recount_location";
         const scanner = new Html5Qrcode(scannerContainerId, {
@@ -848,7 +854,7 @@ export default function InventariosPage() {
             Html5QrcodeSupportedFormats.UPC_E,
             Html5QrcodeSupportedFormats.QR_CODE,
           ],
-          useBarCodeDetectorIfSupported: isLocationScanner,
+          useBarCodeDetectorIfSupported: isIos && isLocationScanner,
           verbose: false,
         });
         scannerRef.current = scanner;
@@ -860,9 +866,10 @@ export default function InventariosPage() {
           {
             fps: 30,
             qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-              const width = Math.max(280, Math.min(viewfinderWidth - 16, isProductScanner || isLocationScanner ? 620 : 360));
-              const height = isProductScanner || isLocationScanner
-                ? Math.max(120, Math.min(180, Math.round(viewfinderHeight * 0.38)))
+              const useBarcodeSlot = isProductScanner || (isIos && isLocationScanner);
+              const width = Math.max(260, Math.min(viewfinderWidth - 24, useBarcodeSlot ? 560 : 340));
+              const height = useBarcodeSlot
+                ? Math.max(96, Math.min(150, Math.round(viewfinderHeight * 0.32)))
                 : Math.max(220, Math.min(320, Math.round(viewfinderHeight * 0.72)));
               return { width, height };
             },
@@ -3861,7 +3868,7 @@ export default function InventariosPage() {
             <div className="relative overflow-hidden rounded-xl bg-black">
               <div id={scannerContainerId} className="min-h-[320px] w-full" />
               <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <div className={`relative w-[92%] max-w-lg rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.18)] ${scannerTarget === "product" || scannerTarget === "recount_product" || scannerTarget === "location" || scannerTarget === "recount_location" ? "h-28" : "h-56 max-w-xs"}`}>
+                <div className={`relative rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.18)] ${scannerTarget === "product" || scannerTarget === "recount_product" || (isIosDevice() && (scannerTarget === "location" || scannerTarget === "recount_location")) ? "h-24 w-[88%] max-w-md" : "h-56 w-[88%] max-w-xs"}`}>
                   <div className="absolute left-4 right-4 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
                   <div className="absolute -left-0.5 -top-0.5 h-5 w-5 rounded-tl-xl border-l-4 border-t-4 border-green-400" />
                   <div className="absolute -right-0.5 -top-0.5 h-5 w-5 rounded-tr-xl border-r-4 border-t-4 border-green-400" />
