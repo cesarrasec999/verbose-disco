@@ -112,6 +112,7 @@ type SummaryRow = {
 type RecountType = "surplus" | "missing";
 type RecountColumn = "zone";
 type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
+type ProductLookupMode = "typed" | "scan";
 
 type RecountCandidate = {
   product_id: string;
@@ -166,6 +167,18 @@ function normalizeCode(value: string | number | null | undefined) {
 
 function searchWords(value: string) {
   return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
+}
+
+function codeMatchRank(product: Product, query: string) {
+  const sku = normalizeCode(product.sku).toUpperCase();
+  const barcode = normalizeCode(product.barcode).toUpperCase();
+  const suffix = query.slice(-5);
+  if (sku === query || barcode === query) return 0;
+  if (query.length >= 4 && (sku.endsWith(query) || barcode.endsWith(query))) return 1;
+  if (suffix.length >= 4 && (sku.endsWith(suffix) || barcode.endsWith(suffix))) return 2;
+  if (query.length >= 4 && (sku.includes(query) || barcode.includes(query))) return 3;
+  if (suffix.length >= 4 && (sku.includes(suffix) || barcode.includes(suffix))) return 4;
+  return 5;
 }
 
 function money(value: number) {
@@ -293,9 +306,11 @@ export default function InventariosPage() {
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
+  const [productLookupMode, setProductLookupMode] = useState<ProductLookupMode>("typed");
   const [savingCount, setSavingCount] = useState(false);
   const savingCountRef = useRef(false);
   const productLookupRequestRef = useRef(0);
+  const productLookupModeRef = useRef<ProductLookupMode>("typed");
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -750,7 +765,7 @@ export default function InventariosPage() {
     const requestId = ++productLookupRequestRef.current;
     const timer = window.setTimeout(async () => {
       try {
-        const result = await findProductCandidates(raw);
+        const result = await findProductCandidates(raw, productLookupModeRef.current);
         if (requestId !== productLookupRequestRef.current) return;
         setProductCandidates(result.products);
         setProductLookupMessage(result.message);
@@ -762,11 +777,15 @@ export default function InventariosPage() {
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [productCode, selectedSessionId, operator?.id, isValidator, selectedProduct]);
+  }, [productCode, selectedSessionId, operator?.id, isValidator, selectedProduct, productLookupMode]);
 
   useEffect(() => {
     scannerTargetRef.current = scannerTarget;
   }, [scannerTarget]);
+
+  useEffect(() => {
+    productLookupModeRef.current = productLookupMode;
+  }, [productLookupMode]);
 
   useEffect(() => {
     scannerLowLightRef.current = scannerLowLight;
@@ -812,6 +831,8 @@ export default function InventariosPage() {
               setTimeout(() => productInputRef.current?.focus(), 50);
             }
             if (target === "product") {
+              setProductLookupMode("scan");
+              productLookupModeRef.current = "scan";
               setProductCode(clean);
               setMessage("Código de producto escaneado.");
               setTimeout(() => qtyInputRef.current?.focus(), 50);
@@ -1925,56 +1946,25 @@ export default function InventariosPage() {
     setMessage(`Bienvenido, ${operatorRow.full_name}.`);
   }
 
-  async function findProductCandidates(query: string): Promise<{ products: Product[]; message: string }> {
+  async function findProductCandidates(query: string, mode: ProductLookupMode = "typed"): Promise<{ products: Product[]; message: string }> {
     const text = query.trim();
     const raw = normalizeCode(text).toUpperCase();
     if (!raw || !selectedSessionId) return { products: [], message: "" };
-    const hasDescriptionSearch = /[a-zA-ZáéíóúÁÉÍÓÚñÑ]/.test(text);
+    const isNumericSearch = /^\d+$/.test(raw);
+    const shouldSearchDescription = mode === "typed" && !isNumericSearch;
 
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       const cachedProducts = await findCachedProductsByCode(raw);
       if (cachedProducts.length === 0) return { products: [], message: "Codigo no encontrado en el catalogo offline descargado." };
       return {
-        products: cachedProducts as Product[],
+        products: (cachedProducts as Product[]).sort((a, b) => codeMatchRank(a, raw) - codeMatchRank(b, raw) || a.sku.localeCompare(b.sku, "es", { numeric: true })),
         message: cachedProducts.length > 1 ? "El codigo coincide con varios productos offline. Elige una tarjeta antes de guardar." : "",
       };
     }
 
-    const [byUpc, byAlu] = await Promise.all([
-      supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
-      supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
-    ]).catch(async () => {
-      const cachedProducts = await findCachedProductsByCode(raw);
-      return [
-        { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
-        { data: [] },
-      ];
-    });
-    const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
-    const candidateSkus = [...new Set([raw, ...mapped])];
     const productMap = new Map<string, Product>();
 
-    if (candidateSkus.length > 0) {
-      const { data } = await supabase
-        .from("cyclic_products")
-        .select("*")
-        .in("sku", candidateSkus)
-        .eq("is_active", true)
-        .limit(20);
-      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
-    }
-
-    if (raw.length >= 4) {
-      const { data } = await supabase
-        .from("cyclic_products")
-        .select("*")
-        .eq("is_active", true)
-        .ilike("sku", `%${raw}%`)
-        .limit(12);
-      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
-    }
-
-    if (hasDescriptionSearch) {
+    if (shouldSearchDescription) {
       const words = searchWords(text);
       if (words.length > 0) {
         let descriptionQuery = supabase
@@ -1985,14 +1975,46 @@ export default function InventariosPage() {
         const { data } = await descriptionQuery.limit(500);
         for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
       }
+    } else {
+      const [byUpc, byAlu] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+      ]).catch(async () => {
+        const cachedProducts = await findCachedProductsByCode(raw);
+        return [
+          { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
+          { data: [] },
+        ];
+      });
+      const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
+      const candidateSkus = [...new Set([raw, ...mapped])];
+
+      const { data } = await supabase
+        .from("cyclic_products")
+        .select("*")
+        .in("sku", candidateSkus)
+        .eq("is_active", true)
+        .limit(20);
+      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+
+      if (raw.length >= 4) {
+        const suffix = raw.slice(-5);
+        const { data } = await supabase
+          .from("cyclic_products")
+          .select("*")
+          .eq("is_active", true)
+          .or(`sku.ilike.%${suffix},barcode.ilike.%${suffix},sku.ilike.%${raw}%,barcode.ilike.%${raw}%`)
+          .limit(mode === "scan" ? 20 : 80);
+        for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+      }
     }
 
     const products = [...productMap.values()];
     if (products.length === 0) {
       return {
         products: [],
-        message: hasDescriptionSearch
-          ? "No encontre productos por ese codigo o descripcion."
+        message: shouldSearchDescription
+          ? "No encontre productos por esa descripcion."
           : "Codigo no existe en el maestro ni en codigos de barra.",
       };
     }
@@ -2005,7 +2027,9 @@ export default function InventariosPage() {
     }
 
     return {
-      products: allowed.sort((a, b) => a.sku.localeCompare(b.sku, "es", { numeric: true })),
+      products: allowed.sort((a, b) => shouldSearchDescription
+        ? a.description.localeCompare(b.description, "es", { numeric: true, sensitivity: "base" }) || a.sku.localeCompare(b.sku, "es", { numeric: true })
+        : codeMatchRank(a, raw) - codeMatchRank(b, raw) || a.sku.localeCompare(b.sku, "es", { numeric: true })),
       message: allowed.length > 1 ? "La busqueda coincide con varios productos. Elige una tarjeta antes de guardar." : "",
     };
   }
@@ -2034,7 +2058,7 @@ export default function InventariosPage() {
     setSavingCount(true);
 
     try {
-      const latestCandidates = selectedProduct ? productCandidates : (await findProductCandidates(productCode)).products;
+      const latestCandidates = selectedProduct ? productCandidates : (await findProductCandidates(productCode, productLookupModeRef.current)).products;
       const product = selectedProduct || (latestCandidates.length === 1 ? latestCandidates[0] : null);
       if (!product) {
         setProductCandidates(latestCandidates);
@@ -2954,7 +2978,7 @@ export default function InventariosPage() {
                   </button>
                 </div>
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
-                  <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Codigo, barra o descripcion" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
+                  <input ref={productInputRef} value={productCode} onChange={event => { setProductLookupMode("typed"); productLookupModeRef.current = "typed"; setProductCode(event.target.value); }} placeholder="Codigo, barra o descripcion" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
                   <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear producto">
                     <QrCode size={22} />
                   </button>
