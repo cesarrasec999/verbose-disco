@@ -368,11 +368,11 @@ export default function InventariosPage() {
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
-  const [scannerLowLight, setScannerLowLight] = useState(true);
+  const [scannerLowLight, setScannerLowLight] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
-  const scannerLowLightRef = useRef(true);
+  const scannerLowLightRef = useRef(false);
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
@@ -922,8 +922,8 @@ export default function InventariosPage() {
     }
     setTorchOn(false);
     torchOnRef.current = false;
-    setScannerLowLight(true);
-    scannerLowLightRef.current = true;
+    setScannerLowLight(false);
+    scannerLowLightRef.current = false;
     setScannerTarget(target);
   }
 
@@ -3879,10 +3879,10 @@ export default function InventariosPage() {
             </div>
             <style>{`
               #${scannerContainerId} video {
-                filter: ${scannerLowLight ? "contrast(1.28) brightness(1.08) saturate(0.92)" : "none"};
+                filter: ${scannerLowLight ? "contrast(1.16) brightness(1.02) saturate(0.96)" : "none"};
               }
               #${scannerContainerId} canvas {
-                filter: ${scannerLowLight ? "contrast(1.18) brightness(1.04)" : "none"};
+                filter: ${scannerLowLight ? "contrast(1.12) brightness(1.01)" : "none"};
               }
             `}</style>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
