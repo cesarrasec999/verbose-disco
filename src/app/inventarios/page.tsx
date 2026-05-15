@@ -165,6 +165,11 @@ function normalizeCode(value: string | number | null | undefined) {
   return String(value ?? "").trim().replace(/\.0+$/, "");
 }
 
+function isIosDevice() {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 function searchWords(value: string) {
   return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
 }
@@ -349,6 +354,10 @@ export default function InventariosPage() {
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
   const scannerContainerId = "inventory-scanner";
+  const photoScannerContainerId = "inventory-photo-scanner";
+  const photoScannerInputRef = useRef<HTMLInputElement | null>(null);
+  const photoScannerTargetRef = useRef<ScannerTarget>(null);
+  const photoScannerRecountIdRef = useRef<string | null>(null);
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
   const isReadOnlySupervisor = user?.role === "Supervisor";
@@ -818,27 +827,7 @@ export default function InventariosPage() {
             const target = scannerTargetRef.current;
             const activeRecountScanId = activeRecountScanIdRef.current;
             await stopScanner();
-            const clean = decodedText.trim();
-            if (target === "location") {
-              setLocationCode(clean.toUpperCase());
-              setMessage("Ubicación escaneada.");
-              setTimeout(() => productInputRef.current?.focus(), 50);
-            }
-            if (target === "product") {
-              setProductLookupMode("scan");
-              productLookupModeRef.current = "scan";
-              setProductCode(clean);
-              setMessage("Código de producto escaneado.");
-              setTimeout(() => qtyInputRef.current?.focus(), 50);
-            }
-            if (target === "recount_location" && activeRecountScanId) {
-              updateRecountDraft(activeRecountScanId, "locationCode", clean.toUpperCase());
-              setMessage("Ubicacion de reconteo escaneada.");
-            }
-            if (target === "recount_product" && activeRecountScanId) {
-              updateRecountDraft(activeRecountScanId, "productCode", clean);
-              setMessage("Codigo de reconteo escaneado.");
-            }
+            applyScannedValue(decodedText, target, activeRecountScanId);
           },
           () => {}
         );
@@ -849,6 +838,30 @@ export default function InventariosPage() {
     })();
     return () => { cancelled = true; void stopScanner(false); };
   }, [scannerTarget]);
+
+  function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
+    const clean = decodedText.trim();
+    if (target === "location") {
+      setLocationCode(clean.toUpperCase());
+      setMessage("Ubicación escaneada.");
+      setTimeout(() => productInputRef.current?.focus(), 50);
+    }
+    if (target === "product") {
+      setProductLookupMode("scan");
+      productLookupModeRef.current = "scan";
+      setProductCode(clean);
+      setMessage("Código de producto escaneado.");
+      setTimeout(() => qtyInputRef.current?.focus(), 50);
+    }
+    if (target === "recount_location" && activeRecountScanId) {
+      updateRecountDraft(activeRecountScanId, "locationCode", clean.toUpperCase());
+      setMessage("Ubicacion de reconteo escaneada.");
+    }
+    if (target === "recount_product" && activeRecountScanId) {
+      updateRecountDraft(activeRecountScanId, "productCode", clean);
+      setMessage("Codigo de reconteo escaneado.");
+    }
+  }
 
   function openScanner(target: Exclude<ScannerTarget, null>) {
     if (!scannerHistoryRef.current) {
@@ -899,6 +912,33 @@ export default function InventariosPage() {
       torchOnRef.current = next;
     } catch {
       setMessage("La linterna no está disponible en este dispositivo.");
+    }
+  }
+
+  async function openPhotoScanner() {
+    photoScannerTargetRef.current = scannerTargetRef.current;
+    photoScannerRecountIdRef.current = activeRecountScanIdRef.current;
+    await stopScanner(false);
+    window.setTimeout(() => photoScannerInputRef.current?.click(), 80);
+  }
+
+  async function scanPhotoFile(file: File) {
+    let photoScanner: any = null;
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      photoScanner = new Html5Qrcode(photoScannerContainerId);
+      const decoded = await photoScanner.scanFile(file, false);
+      photoScanner.clear();
+      applyScannedValue(decoded, photoScannerTargetRef.current, photoScannerRecountIdRef.current);
+    } catch {
+      setMessage("No pude leer el código en la foto. Intenta acercar, tocar para enfocar y tomarla otra vez.");
+    } finally {
+      try {
+        photoScanner?.clear?.();
+      } catch {}
+      if (photoScannerInputRef.current) photoScannerInputRef.current.value = "";
+      photoScannerTargetRef.current = null;
+      photoScannerRecountIdRef.current = null;
     }
   }
 
@@ -3726,6 +3766,19 @@ export default function InventariosPage() {
         </div>
       )}
 
+      <input
+        ref={photoScannerInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={event => {
+          const file = event.target.files?.[0];
+          if (file) void scanPhotoFile(file);
+        }}
+      />
+      <div id={photoScannerContainerId} className="fixed -left-[9999px] top-0 h-px w-px overflow-hidden" />
+
       {scannerTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4">
           <div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
@@ -3738,6 +3791,11 @@ export default function InventariosPage() {
                 <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
                   <Flashlight className="mr-2 inline" size={18} /> Linterna
                 </button>
+                {isIosDevice() && (
+                  <button onClick={() => void openPhotoScanner()} className="rounded-lg border bg-white px-3 py-2 text-sm font-black text-slate-700" title="Tomar foto">
+                    Tomar foto
+                  </button>
+                )}
               </div>
             </div>
             <div className="overflow-hidden rounded-xl border bg-black">
