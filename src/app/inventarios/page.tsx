@@ -810,9 +810,23 @@ export default function InventariosPage() {
     let cancelled = false;
     (async () => {
       try {
-        const { Html5Qrcode } = await import("html5-qrcode");
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
         if (cancelled) return;
-        const scanner = new Html5Qrcode(scannerContainerId);
+        const scanner = new Html5Qrcode(scannerContainerId, {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          useBarCodeDetectorIfSupported: true,
+          verbose: false,
+        });
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
         const cameras = await Html5Qrcode.getCameras();
@@ -823,6 +837,7 @@ export default function InventariosPage() {
             fps: 24,
             qrbox: { width: 330, height: 220 },
             aspectRatio: 1.7777778,
+            disableFlip: true,
           },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
@@ -1981,6 +1996,36 @@ export default function InventariosPage() {
         const { data } = await descriptionQuery.limit(500);
         for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
       }
+    } else if (mode === "scan") {
+      const [byUpc, byAlu] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+      ]).catch(async () => {
+        const cachedProducts = await findCachedProductsByCode(raw);
+        return [
+          { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
+          { data: [] },
+        ];
+      });
+      const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
+      const candidateSkus = [...new Set([raw, ...mapped])];
+
+      const { data } = await supabase
+        .from("cyclic_products")
+        .select("*")
+        .eq("is_active", true)
+        .or(`sku.eq.${raw},barcode.eq.${raw}`);
+      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+
+      if (candidateSkus.length > 0) {
+        const { data: mappedProducts } = await supabase
+          .from("cyclic_products")
+          .select("*")
+          .in("sku", candidateSkus)
+          .eq("is_active", true)
+          .limit(20);
+        for (const product of (mappedProducts || []) as Product[]) productMap.set(product.sku, product);
+      }
     } else {
       const [byUpc, byAlu] = await Promise.all([
         supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
@@ -2010,7 +2055,7 @@ export default function InventariosPage() {
           .select("*")
           .eq("is_active", true)
           .or(`sku.ilike.%${suffix},barcode.ilike.%${suffix},sku.ilike.%${raw}%,barcode.ilike.%${raw}%`)
-          .limit(mode === "scan" ? 20 : 80);
+          .limit(80);
         for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
       }
     }
@@ -3766,8 +3811,17 @@ export default function InventariosPage() {
                 </button>
               </div>
             </div>
-            <div className="overflow-hidden rounded-xl bg-black">
+            <div className="relative overflow-hidden rounded-xl bg-black">
               <div id={scannerContainerId} className="min-h-[320px] w-full" />
+              <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                <div className="relative h-28 w-[82%] max-w-sm rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.18)]">
+                  <div className="absolute left-4 right-4 top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
+                  <div className="absolute -left-0.5 -top-0.5 h-5 w-5 rounded-tl-xl border-l-4 border-t-4 border-green-400" />
+                  <div className="absolute -right-0.5 -top-0.5 h-5 w-5 rounded-tr-xl border-r-4 border-t-4 border-green-400" />
+                  <div className="absolute -bottom-0.5 -left-0.5 h-5 w-5 rounded-bl-xl border-b-4 border-l-4 border-green-400" />
+                  <div className="absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-br-xl border-b-4 border-r-4 border-green-400" />
+                </div>
+              </div>
             </div>
             <style>{`
               #${scannerContainerId} video {
