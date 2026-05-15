@@ -351,7 +351,9 @@ export default function InventariosPage() {
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
+  const iosFrameScanTimerRef = useRef<number | null>(null);
   const scannerContainerId = "inventory-scanner";
+  const iosFrameScannerContainerId = "inventory-ios-frame-scanner";
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
   const isReadOnlySupervisor = user?.role === "Supervisor";
@@ -843,8 +845,20 @@ export default function InventariosPage() {
       : new Html5Qrcode(scannerContainerId);
     scannerRef.current = scanner;
     scannerBusyRef.current = false;
-    const scanConfig = isIosDevice()
-      ? { fps: 18, qrbox: { width: 320, height: 180 }, aspectRatio: 1.6, disableFlip: true }
+    const isIos = isIosDevice();
+    const scanConfig = isIos
+      ? {
+        fps: 12,
+        qrbox: { width: 340, height: 190 },
+        aspectRatio: 1.6,
+        disableFlip: true,
+        videoConstraints: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
+        },
+      }
       : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
     await scanner.start(
       { facingMode: "environment" },
@@ -859,6 +873,60 @@ export default function InventariosPage() {
       },
       () => {}
     );
+    if (isIos) startIosFrameScanner();
+  }
+
+  function startIosFrameScanner() {
+    if (iosFrameScanTimerRef.current) window.clearInterval(iosFrameScanTimerRef.current);
+    iosFrameScanTimerRef.current = window.setInterval(() => {
+      void scanCurrentIosFrame();
+    }, 1200);
+  }
+
+  async function scanCurrentIosFrame() {
+    if (!scannerTargetRef.current || scannerBusyRef.current) return;
+    const video = document.querySelector<HTMLVideoElement>(`#${scannerContainerId} video`);
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.95));
+      if (!blob) return;
+
+      scannerBusyRef.current = true;
+      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+      const frameScanner = new Html5Qrcode(iosFrameScannerContainerId, {
+        verbose: false,
+        useBarCodeDetectorIfSupported: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.CODABAR,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+        ],
+      });
+      try {
+        const decodedText = await frameScanner.scanFile(new File([blob], "barcode-frame.jpg", { type: "image/jpeg" }), false);
+        const target = scannerTargetRef.current;
+        const activeRecountScanId = activeRecountScanIdRef.current;
+        await stopScanner();
+        await applyScannedValue(decodedText, target, activeRecountScanId);
+      } finally {
+        frameScanner.clear();
+      }
+    } catch {
+      scannerBusyRef.current = false;
+    }
   }
 
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
@@ -931,6 +999,10 @@ export default function InventariosPage() {
     setTorchOn(false);
     torchOnRef.current = false;
     setScannerTarget(null);
+    if (iosFrameScanTimerRef.current) {
+      window.clearInterval(iosFrameScanTimerRef.current);
+      iosFrameScanTimerRef.current = null;
+    }
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -3805,6 +3877,7 @@ export default function InventariosPage() {
           </div>
         </div>
       )}
+      <div id={iosFrameScannerContainerId} className="fixed -left-[9999px] top-0 h-px w-px overflow-hidden" />
     </main>
   );
 }
