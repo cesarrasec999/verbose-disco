@@ -181,7 +181,7 @@ function codeMatchRank(product: Product, query: string) {
   return 5;
 }
 
-function selectBestScannerCamera<T extends { id: string; label?: string }>(cameras: T[], offset = 0) {
+function selectBestScannerCamera<T extends { id: string; label?: string }>(cameras: T[]) {
   if (cameras.length === 0) return null;
   const rearCameras = cameras.filter(camera => {
     const label = (camera.label || "").toLowerCase();
@@ -199,7 +199,7 @@ function selectBestScannerCamera<T extends { id: string; label?: string }>(camer
     return { camera, score };
   });
   scored.sort((a, b) => b.score - a.score);
-  return scored[Math.abs(offset) % scored.length]?.camera || cameras[cameras.length - 1];
+  return scored[0]?.camera || cameras[cameras.length - 1];
 }
 
 function money(value: number) {
@@ -364,7 +364,6 @@ export default function InventariosPage() {
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
   const [scannerLowLight, setScannerLowLight] = useState(true);
-  const [scannerCameraStep, setScannerCameraStep] = useState(0);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
@@ -846,13 +845,13 @@ export default function InventariosPage() {
             Html5QrcodeSupportedFormats.UPC_E,
             Html5QrcodeSupportedFormats.QR_CODE,
           ],
-          useBarCodeDetectorIfSupported: true,
+          useBarCodeDetectorIfSupported: false,
           verbose: false,
         });
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
         const cameras = await Html5Qrcode.getCameras();
-        const backCamera = selectBestScannerCamera(cameras, scannerCameraStep);
+        const backCamera = selectBestScannerCamera(cameras);
         const isProductScanner = scannerTarget === "product" || scannerTarget === "recount_product";
         await scanner.start(
           backCamera?.id || { facingMode: "environment" },
@@ -905,7 +904,7 @@ export default function InventariosPage() {
       }
     })();
     return () => { cancelled = true; void stopScanner(false); };
-  }, [scannerTarget, scannerCameraStep]);
+  }, [scannerTarget]);
 
   function openScanner(target: Exclude<ScannerTarget, null>) {
     if (!scannerHistoryRef.current) {
@@ -916,7 +915,6 @@ export default function InventariosPage() {
     torchOnRef.current = false;
     setScannerLowLight(true);
     scannerLowLightRef.current = true;
-    setScannerCameraStep(0);
     setScannerTarget(target);
   }
 
@@ -1015,17 +1013,6 @@ export default function InventariosPage() {
       setTorchOn(false);
     }
     await tuneScannerCamera();
-  }
-
-  async function switchScannerCamera() {
-    const target = scannerTargetRef.current;
-    if (!target) return;
-    await stopScanner(false);
-    setScannerCameraStep(prev => prev + 1);
-    window.setTimeout(() => {
-      scannerTargetRef.current = target;
-      setScannerTarget(target);
-    }, 80);
   }
 
   async function loadInitial(preferredSessionId = "") {
@@ -3863,9 +3850,6 @@ export default function InventariosPage() {
               <div className="flex flex-wrap gap-2">
                 <button onClick={toggleScannerLowLight} className={`rounded-lg border px-3 py-2 text-sm font-black ${scannerLowLight ? "bg-blue-600 text-white" : "bg-white text-slate-700"}`} title="Baja luz">
                   Baja luz
-                </button>
-                <button onClick={switchScannerCamera} className="rounded-lg border bg-white px-3 py-2 text-sm font-black text-slate-700" title="Cambiar lente trasera">
-                  Lente trasera
                 </button>
                 <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
                   <Flashlight className="mr-2 inline" size={18} /> Linterna
