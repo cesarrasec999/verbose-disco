@@ -164,6 +164,10 @@ function normalizeCode(value: string | number | null | undefined) {
   return String(value ?? "").trim().replace(/\.0+$/, "");
 }
 
+function searchWords(value: string) {
+  return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
+}
+
 function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -291,6 +295,7 @@ export default function InventariosPage() {
   const [productLookupMessage, setProductLookupMessage] = useState("");
   const [savingCount, setSavingCount] = useState(false);
   const savingCountRef = useRef(false);
+  const productLookupRequestRef = useRef(0);
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -735,16 +740,20 @@ export default function InventariosPage() {
     setSelectedProduct(null);
     setProductLookupMessage("");
     if (raw.length < 3 || !selectedSessionId) {
+      productLookupRequestRef.current += 1;
       setProductCandidates([]);
       return;
     }
+    const requestId = ++productLookupRequestRef.current;
     const timer = window.setTimeout(async () => {
       try {
         const result = await findProductCandidates(raw);
+        if (requestId !== productLookupRequestRef.current) return;
         setProductCandidates(result.products);
         setProductLookupMessage(result.message);
         if (result.products.length === 1) setSelectedProduct(result.products[0]);
       } catch {
+        if (requestId !== productLookupRequestRef.current) return;
         setProductCandidates([]);
         setProductLookupMessage("No se pudo consultar el producto. Intenta nuevamente.");
       }
@@ -1861,9 +1870,11 @@ export default function InventariosPage() {
     setMessage(`Bienvenido, ${operatorRow.full_name}.`);
   }
 
-  async function findProductCandidates(code: string): Promise<{ products: Product[]; message: string }> {
-    const raw = normalizeCode(code).toUpperCase();
+  async function findProductCandidates(query: string): Promise<{ products: Product[]; message: string }> {
+    const text = query.trim();
+    const raw = normalizeCode(text).toUpperCase();
     if (!raw || !selectedSessionId) return { products: [], message: "" };
+    const hasDescriptionSearch = /[a-zA-ZáéíóúÁÉÍÓÚñÑ]/.test(text);
 
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       const cachedProducts = await findCachedProductsByCode(raw);
@@ -1908,8 +1919,28 @@ export default function InventariosPage() {
       for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
     }
 
+    if (hasDescriptionSearch) {
+      const words = searchWords(text);
+      if (words.length > 0) {
+        let descriptionQuery = supabase
+          .from("cyclic_products")
+          .select("*")
+          .eq("is_active", true);
+        for (const word of words) descriptionQuery = descriptionQuery.ilike("description", `%${word}%`);
+        const { data } = await descriptionQuery.limit(500);
+        for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+      }
+    }
+
     const products = [...productMap.values()];
-    if (products.length === 0) return { products: [], message: "Codigo no existe en el maestro ni en codigos de barra." };
+    if (products.length === 0) {
+      return {
+        products: [],
+        message: hasDescriptionSearch
+          ? "No encontre productos por ese codigo o descripcion."
+          : "Codigo no existe en el maestro ni en codigos de barra.",
+      };
+    }
 
     const nonInvSkus = await loadNonInventorySkuSetForProducts(selectedSessionId, products.map(product => product.sku));
     const allowed = products.filter(product => !nonInvSkus.has(normalizeCode(product.sku).toUpperCase()));
@@ -1920,7 +1951,7 @@ export default function InventariosPage() {
 
     return {
       products: allowed.sort((a, b) => a.sku.localeCompare(b.sku, "es", { numeric: true })),
-      message: allowed.length > 1 ? "El codigo coincide con varios productos. Elige una tarjeta antes de guardar." : "",
+      message: allowed.length > 1 ? "La busqueda coincide con varios productos. Elige una tarjeta antes de guardar." : "",
     };
   }
 
@@ -2868,7 +2899,7 @@ export default function InventariosPage() {
                   </button>
                 </div>
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
-                  <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Código o barra del producto" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
+                  <input ref={productInputRef} value={productCode} onChange={event => setProductCode(event.target.value)} placeholder="Codigo, barra o descripcion" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
                   <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear producto">
                     <QrCode size={22} />
                   </button>
