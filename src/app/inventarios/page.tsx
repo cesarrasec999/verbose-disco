@@ -815,13 +815,14 @@ export default function InventariosPage() {
         const scanner = new Html5Qrcode(scannerContainerId);
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
+        const cameras = await Html5Qrcode.getCameras();
+        const backCamera = cameras.find((camera: { label?: string }) => /back|rear|environment|trasera|posterior/i.test(camera.label || "")) || cameras[cameras.length - 1];
         await scanner.start(
-          { facingMode: "environment" },
+          backCamera?.id || { facingMode: "environment" },
           {
             fps: 24,
             qrbox: { width: 330, height: 220 },
             aspectRatio: 1.7777778,
-            videoConstraints: { width: { ideal: 1920 }, height: { ideal: 1080 } },
           },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
