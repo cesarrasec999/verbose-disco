@@ -821,14 +821,34 @@ export default function InventariosPage() {
   }, [scannerTarget]);
 
   async function startHtml5Scanner(isCancelled: () => boolean) {
-    const { Html5Qrcode } = await import("html5-qrcode");
+    const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
     if (isCancelled()) return;
-    const scanner = new Html5Qrcode(scannerContainerId);
+    const scanner = isIosDevice()
+      ? new Html5Qrcode(scannerContainerId, {
+        verbose: false,
+        useBarCodeDetectorIfSupported: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.CODABAR,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+      })
+      : new Html5Qrcode(scannerContainerId);
     scannerRef.current = scanner;
     scannerBusyRef.current = false;
+    const scanConfig = isIosDevice()
+      ? { fps: 18, qrbox: { width: 320, height: 180 }, aspectRatio: 1.6, disableFlip: true }
+      : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
     await scanner.start(
       { facingMode: "environment" },
-      { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true },
+      scanConfig,
       async (decodedText: string) => {
         if (scannerBusyRef.current) return;
         scannerBusyRef.current = true;
