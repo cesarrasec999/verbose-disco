@@ -816,8 +816,13 @@ export default function InventariosPage() {
         scannerRef.current = scanner;
         scannerBusyRef.current = false;
         await scanner.start(
-          { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-          { fps: 24, qrbox: { width: 330, height: 220 }, aspectRatio: 1.7777778 },
+          { facingMode: "environment" },
+          {
+            fps: 24,
+            qrbox: { width: 330, height: 220 },
+            aspectRatio: 1.7777778,
+            videoConstraints: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+          },
           async (decodedText: string) => {
             if (scannerBusyRef.current) return;
             scannerBusyRef.current = true;
