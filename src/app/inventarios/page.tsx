@@ -320,6 +320,7 @@ export default function InventariosPage() {
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryHasPendingChanges, setSummaryHasPendingChanges] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
   const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
@@ -654,7 +655,7 @@ export default function InventariosPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!selectedSessionId || !isValidator) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
     void loadSessionData(selectedSessionId, validatorTab);
   }, [selectedSessionId, validatorTab, isValidator, operator?.id]);
@@ -677,13 +678,9 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (isValidator) {
-          if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-          if (validatorTab === "resumen") void loadSummary(selectedSessionId, true);
-          if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
-          return;
-        }
-        void loadRecordsData(selectedSessionId, operator?.id || null);
+        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+        if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
+        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
       }, 1500);
     };
 
@@ -700,7 +697,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
+  }, [selectedSessionId, isValidator, validatorTab]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1707,6 +1704,7 @@ export default function InventariosPage() {
     setSummary(rows);
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
     setSummaryLoadedSessionId(sessionId);
+    setSummaryHasPendingChanges(false);
     setSummaryLoading(false);
   }
 
@@ -2290,6 +2288,7 @@ export default function InventariosPage() {
           ? prev.map(item => item.id === editingCountId ? localRow : item)
           : [localRow, ...prev]
         );
+        setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
         setProductCode("");
         setProductCandidates([]);
         setSelectedProduct(null);
@@ -2320,7 +2319,9 @@ export default function InventariosPage() {
       setQuantity("");
       setEditingCountId(null);
       setMessage("Conteo guardado.");
-      await loadSessionData(selectedSession.id, isValidator ? validatorTab : "registros");
+      setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
+      if (isValidator) await loadSessionData(selectedSession.id, validatorTab);
+      else await loadRecordsData(selectedSession.id, operator.id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo guardar conteo.");
     } finally {
@@ -2536,7 +2537,7 @@ export default function InventariosPage() {
   }
 
   function exportRecords() {
-    const rows = counts.map(row => ({
+    const rows = filteredCounts.map(row => ({
       FECHA: new Date(row.counted_at).toLocaleString("es-PE"),
       CONTADOR: row.operator_name || "",
       UBICACION: row.location_code,
@@ -2544,10 +2545,20 @@ export default function InventariosPage() {
       DESCRIPCION: row.description,
       UM: row.unit,
       CANTIDAD: row.quantity,
+      COSTO: row.cost_snapshot,
       VALOR: row.quantity * row.cost_snapshot,
+    }));
+    const counterRows = counterStats.rows.map(row => ({
+      CONTADOR: row.name,
+      REGISTROS: row.count,
+      PRIMER_REGISTRO: Number.isFinite(row.first) ? new Date(row.first).toLocaleString("es-PE") : "",
+      ULTIMO_REGISTRO: Number.isFinite(row.last) ? new Date(row.last).toLocaleString("es-PE") : "",
+      MINUTOS: Number(row.minutes.toFixed(2)),
+      REGISTROS_POR_MINUTO: Number(row.perMinute.toFixed(2)),
     }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Registros");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), "Resumen contadores");
     XLSX.writeFile(wb, `inventario_registros_${selectedSession?.name || "sesion"}.xlsx`);
   }
 
@@ -3674,10 +3685,15 @@ export default function InventariosPage() {
           {isValidator && selectedSessionId && validatorTab === "resumen" && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-black">Dashboard de inventario</h2>
+                <div>
+                  <h2 className="font-black">Dashboard de inventario</h2>
+                  {summaryHasPendingChanges && (
+                    <div className="mt-1 text-xs font-black text-amber-600">Hay nuevos registros. Actualiza KPIs cuando necesites refrescar el resumen.</div>
+                  )}
+                </div>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black disabled:opacity-40">
-                    {summaryLoading ? "Actualizando..." : "Actualizar KPIs"}
+                  <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className={`inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-black disabled:opacity-40 ${summaryHasPendingChanges ? "bg-amber-500 text-white" : "border"}`}>
+                    {summaryLoading ? "Actualizando..." : summaryHasPendingChanges ? "Actualizar cambios" : "Actualizar KPIs"}
                   </button>
                   {canManageInventory && (
                     <button onClick={updateStockSnapshot} disabled={loading || summaryLoading} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
@@ -3751,9 +3767,14 @@ export default function InventariosPage() {
             <div className="border-b p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
-                <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
-                  <Search size={16} className="text-slate-400" />
-                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
+                    <Search size={16} className="text-slate-400" />
+                    <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                  </div>
+                  <button onClick={exportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                    <Download size={15} /> Descargar Excel
+                  </button>
                 </div>
               </div>
             </div>

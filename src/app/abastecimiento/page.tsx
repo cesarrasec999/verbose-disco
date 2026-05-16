@@ -431,8 +431,8 @@ export default function AbastecimientoPage() {
     if (selectedStoreCodes.length === 0) return;
     if (showSpinner) setLoading(true);
     setMessage("");
-    const deliveryQuery = supabase.from("abastecimiento_delivery_pending").select("*").order("creation_date", { ascending: false });
-    const receptionQuery = supabase.from("abastecimiento_reception_pending").select("*").order("request_created_at", { ascending: false });
+    const deliveryQuery = supabase.from("abastecimiento_delivery_pending").select("*").order("creation_date", { ascending: false }).limit(1000);
+    const receptionQuery = supabase.from("abastecimiento_reception_pending").select("*").order("request_created_at", { ascending: false }).limit(1000);
     if (!canSeeAllStores) {
       deliveryQuery.in("source_store_code", selectedStoreCodes);
       receptionQuery.in("destination_store_code", selectedStoreCodes);

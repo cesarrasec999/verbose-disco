@@ -140,7 +140,7 @@ select
   arl.updated_at
 from public.abastecimiento_request_lines arl
 where (
-    upper(coalesce(arl.status_code, '')) in ('C', 'CERRADO', 'CLOSED')
+    upper(coalesce(arl.status_code, '')) in ('C', 'X', 'CERRADO', 'CLOSED')
     or upper(coalesce(arl.status_name, '')) in ('CERRADO', 'CLOSED')
   )
   and coalesce(nullif(arl.qty_pending, 0), arl.qty_requested, 0) > 0;
