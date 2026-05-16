@@ -51,6 +51,14 @@ type StockGeneralRow = {
     sede: string | null;
     codsap: string | null;
     stock: number | string | null;
+    updated_at?: string | null;
+};
+
+type StockSyncStatus = {
+    lastUpdatedAt: string | null;
+    checkedAt: string | null;
+    error: string | null;
+    loading: boolean;
 };
 
 type NonInventoryProduct = {
@@ -433,6 +441,12 @@ export default function DashboardPage() {
     const [message, setMessage]         = useState("");
     const [messageType, setMessageType] = useState<"info"|"success"|"error">("info");
     const [loading, setLoading]         = useState(true);
+    const [stockSyncStatus, setStockSyncStatus] = useState<StockSyncStatus>({
+        lastUpdatedAt: null,
+        checkedAt: null,
+        error: null,
+        loading: false,
+    });
     const messageTimerRef               = useRef<ReturnType<typeof setTimeout>|null>(null);
 
     // ─── Operario: conteo activo — múltiples filas ─
@@ -712,6 +726,14 @@ export default function DashboardPage() {
     useEffect(() => {
         if (user) { loadStores(); loadProducts(); loadNonInventoryProducts(); if (user.role !== "Operario") loadAllUsers(); }
     }, [user]);
+
+    useEffect(() => {
+        const canSeeStockSync = user?.role === "Validador" || user?.role === "Supervisor" || user?.role === "Administrador";
+        if (!canSeeStockSync) return;
+        void loadStockSyncStatus(true);
+        const timer = window.setInterval(() => void loadStockSyncStatus(false), 10000);
+        return () => window.clearInterval(timer);
+    }, [user?.role]);
 
     useEffect(() => {
         if (!user) return;
@@ -1921,6 +1943,27 @@ export default function DashboardPage() {
             .maybeSingle();
 
         return Number(data?.stock || 0);
+    }
+
+    async function loadStockSyncStatus(showLoading = false) {
+        if (showLoading) {
+            setStockSyncStatus(prev => ({ ...prev, loading: true, error: null }));
+        }
+        const checkedAt = new Date().toISOString();
+        const { data, error } = await supabase
+            .from("stock_general")
+            .select("updated_at")
+            .not("updated_at", "is", null)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        setStockSyncStatus({
+            lastUpdatedAt: error ? null : (data?.updated_at || null),
+            checkedAt,
+            error: error?.message || null,
+            loading: false,
+        });
     }
 
     async function loadPagedStockRowsForCodesAndSedes(productCodes: string[], sedes: string[], onlyPositive = true): Promise<StockGeneralRow[]> {
@@ -6143,6 +6186,30 @@ export default function DashboardPage() {
     const isSupervisor = user?.role === "Supervisor";
     const canValidateCyclic = user?.role === "Validador" || isAdmin;
     const isValOrAdm = canValidateCyclic || isSupervisor;
+    const stockSyncAgeMinutes = stockSyncStatus.lastUpdatedAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(stockSyncStatus.lastUpdatedAt).getTime()) / 60000))
+        : null;
+    const stockSyncState = stockSyncStatus.error
+        ? "error"
+        : stockSyncAgeMinutes === null
+        ? "unknown"
+        : stockSyncAgeMinutes <= 7
+        ? "ok"
+        : stockSyncAgeMinutes <= 15
+        ? "warning"
+        : "late";
+    const stockSyncLabel = stockSyncStatus.error
+        ? "Error"
+        : stockSyncAgeMinutes === null
+        ? "Sin dato"
+        : stockSyncAgeMinutes < 1
+        ? "Ahora"
+        : `${stockSyncAgeMinutes} min`;
+    const stockSyncTitle = stockSyncStatus.error
+        ? `No se pudo leer stock_general: ${stockSyncStatus.error}`
+        : stockSyncStatus.lastUpdatedAt
+        ? `Ultima sincronizacion de stock: ${formatDateTime(stockSyncStatus.lastUpdatedAt)}`
+        : "Todavia no hay una fecha de sincronizacion disponible.";
 
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
@@ -6449,6 +6516,27 @@ export default function DashboardPage() {
                                 : ""}
                         </p>
                     </div>
+
+                    {isValOrAdm && (
+                        <button
+                            type="button"
+                            onClick={() => loadStockSyncStatus(true)}
+                            title={stockSyncTitle}
+                            className={`hidden sm:flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                                stockSyncState === "ok"
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                    : stockSyncState === "warning"
+                                    ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                                    : stockSyncState === "late" || stockSyncState === "error"
+                                    ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                                    : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                            }`}
+                        >
+                            <RefreshCw size={14} className={stockSyncStatus.loading ? "animate-spin" : ""} />
+                            <span>Stock</span>
+                            <span>{stockSyncLabel}</span>
+                        </button>
+                    )}
 
                     {/* Controles contextuales de tienda/fecha para Validador (excepto Dashboard) */}
                     {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && (
