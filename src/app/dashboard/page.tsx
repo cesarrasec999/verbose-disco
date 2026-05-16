@@ -6,14 +6,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 
 // ══════════════════════════════════════════════════════════
 //  TIPOS
 // ══════════════════════════════════════════════════════════
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type TabKey = "operario" | "validador" | "ubicaciones" | "reportes" | "admin";
-type ValTabKey = "asignar"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
+type ValTabKey = "asignar"|"no_inventariables"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
 
 type CyclicUser = {
     id: string;
@@ -59,6 +59,10 @@ type NonInventoryProduct = {
     sku: string;
     description: string | null;
     is_active: boolean;
+    barcode?: string | null;
+    unit?: string | null;
+    cost?: number | null;
+    product_description?: string | null;
 };
 
 type Assignment = {
@@ -485,6 +489,7 @@ export default function DashboardPage() {
     const bulkAssignRef = useRef<HTMLInputElement|null>(null);
     const [nonInventoryProducts, setNonInventoryProducts] = useState<NonInventoryProduct[]>([]);
     const [nonInventoryInput, setNonInventoryInput] = useState("");
+    const [nonInventorySearch, setNonInventorySearch] = useState("");
     const nonInventoryExcelRef = useRef<HTMLInputElement|null>(null);
     const [nonInventoryExcelBusy, setNonInventoryExcelBusy] = useState(false);
     const [nonInventoryExcelFileName, setNonInventoryExcelFileName] = useState("");
@@ -627,6 +632,18 @@ export default function DashboardPage() {
             .map(row => fullProductCode(row.sku).toUpperCase())
             .filter(Boolean)
     ), [nonInventoryProducts]);
+    const filteredNonInventoryProducts = useMemo(() => {
+        const q = nonInventorySearch.trim().toLowerCase();
+        const rows = nonInventoryProducts.filter(row => {
+            const description = row.product_description || row.description || "";
+            return !q ||
+                row.sku.toLowerCase().includes(q) ||
+                String(row.barcode || "").toLowerCase().includes(q) ||
+                description.toLowerCase().includes(q) ||
+                String(row.unit || "").toLowerCase().includes(q);
+        });
+        return rows.sort((a, b) => fullProductCode(a.sku).localeCompare(fullProductCode(b.sku), "es", { numeric: true, sensitivity: "base" }));
+    }, [nonInventoryProducts, nonInventorySearch]);
 
     // ════════════════════════════════════════════════════════
     //  INIT
@@ -666,7 +683,7 @@ export default function DashboardPage() {
                 }
 
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as ValTabKey | null;
-                if (savedValTab) setValTab(u.role === "Supervisor" && savedValTab === "asignar" ? "registros" : savedValTab);
+                if (savedValTab) setValTab(u.role === "Supervisor" && (savedValTab === "asignar" || savedValTab === "no_inventariables") ? "registros" : savedValTab);
 
                 const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
                 if (savedAdminTab && ["productos","tiendas","usuarios"].includes(savedAdminTab)) setAdminTab(savedAdminTab);
@@ -1010,14 +1027,24 @@ export default function DashboardPage() {
     async function loadNonInventoryProducts() {
         const { data, error } = await supabase
             .from("cyclic_non_inventory_products")
-            .select("id, product_id, sku, description, is_active")
+            .select("id, product_id, sku, description, is_active, cyclic_products(sku, barcode, description, unit, cost)")
             .eq("is_active", true)
             .order("sku");
         if (error) {
             console.warn("No se pudo cargar no inventariables ciclicos:", error.message);
             return;
         }
-        setNonInventoryProducts((data || []) as NonInventoryProduct[]);
+        setNonInventoryProducts((data || []).map((row: any) => ({
+            id: row.id,
+            product_id: row.product_id,
+            sku: row.cyclic_products?.sku || row.sku,
+            description: row.description,
+            is_active: row.is_active,
+            barcode: row.cyclic_products?.barcode || null,
+            unit: row.cyclic_products?.unit || null,
+            cost: row.cyclic_products?.cost ?? null,
+            product_description: row.cyclic_products?.description || row.description || null,
+        })) as NonInventoryProduct[]);
     }
 
     async function loadAllUsers() {
@@ -3535,6 +3562,20 @@ export default function DashboardPage() {
         if (error) { showMessage("Error quitando no inventariable: " + error.message, "error"); return; }
         await loadNonInventoryProducts();
         showMessage("Codigo habilitado para asignacion.", "success");
+    }
+
+    function exportNonInventoryProducts() {
+        const rows = filteredNonInventoryProducts.map(row => ({
+            SKU: row.sku,
+            BARRA: row.barcode || "",
+            DESCRIPCION: row.product_description || row.description || "",
+            UM: row.unit || "",
+            COSTO: Number(row.cost || 0),
+            ESTADO: row.is_active === false ? "Inactivo" : "Activo",
+        }));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "No inventariables");
+        XLSX.writeFile(wb, `codigos_no_inventariables_${todayISO()}.xlsx`);
     }
 
     async function assignProductLegacy(product: Product) {
@@ -6192,12 +6233,13 @@ export default function DashboardPage() {
                             <div className="px-3 space-y-0.5">
                                 {([
                                     { key: "asignar",   icon: Package,       label: "Asignar productos" },
+                                    { key: "no_inventariables", icon: Database, label: "No inventariables" },
                                     { key: "registros", icon: ClipboardList, label: "Registros"          },
                                     { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo" },
                                     { key: "resultados",icon: Search,        label: "Resultados"         },
                                     { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas"   },
                                     { key: "dashboard", icon: LineChart,     label: "Dashboard"           },
-                                ] as const).filter(item => canValidateCyclic || item.key !== "asignar").map(item => (
+                                ] as const).filter(item => canValidateCyclic || (item.key !== "asignar" && item.key !== "no_inventariables")).map(item => (
                                     (() => {
                                         const Icon = item.icon;
                                         return (
@@ -6387,6 +6429,7 @@ export default function DashboardPage() {
                         <h1 className="font-bold text-slate-900 text-base leading-tight">
                             {activeTab === "operario"  ? "Conteos del dia" :
                              activeTab === "validador" && valTab === "asignar"   ? "Asignar productos" :
+                             activeTab === "validador" && valTab === "no_inventariables" ? "No inventariables" :
                              activeTab === "validador" && valTab === "registros" ? "Registros de conteo" :
                              activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
                              activeTab === "validador" && valTab === "resultados"? "Resultados de conteo" :
@@ -7347,6 +7390,72 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
+                    {canValidateCyclic && valTab === "no_inventariables" && (
+                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-900">Codigos no inventariables</h3>
+                                    <p className="text-slate-500 text-sm mt-1">Codigos excluidos de asignaciones ciclicas y cargas masivas.</p>
+                                </div>
+                                <button onClick={exportNonInventoryProducts} disabled={filteredNonInventoryProducts.length === 0} className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
+                                    <Download size={16} /> Descargar Excel
+                                </button>
+                            </div>
+
+                            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                <input className="min-w-0 rounded-xl border bg-white px-3 py-3 text-sm text-slate-900" placeholder="Codsap exacto, uno o varios" value={nonInventoryInput} onChange={e => setNonInventoryInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addNonInventoryCodes(); }} />
+                                <button onClick={addNonInventoryCodes} className="rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white">Agregar</button>
+                                <button onClick={() => nonInventoryExcelRef.current?.click()} disabled={nonInventoryExcelBusy} className="rounded-xl border border-orange-300 bg-white px-4 py-3 text-sm font-black text-orange-700 disabled:opacity-50">
+                                    {nonInventoryExcelBusy ? "Subiendo..." : "Subir Excel"}
+                                </button>
+                                <input ref={nonInventoryExcelRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e => uploadNonInventoryExcel(e.target.files?.[0] || null)} />
+                            </div>
+                            {nonInventoryExcelFileName && <p className="text-xs font-semibold text-orange-700">Ultimo Excel: {nonInventoryExcelFileName}</p>}
+
+                            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="flex min-w-0 flex-1 items-center rounded-xl border bg-white px-3 py-2 md:max-w-xl">
+                                    <Search size={16} className="shrink-0 text-slate-400" />
+                                    <input value={nonInventorySearch} onChange={e => setNonInventorySearch(e.target.value)} placeholder="Buscar por codigo, barra, descripcion o UM" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                                </div>
+                                <div className="rounded-xl bg-slate-50 px-4 py-2 text-xs font-black text-slate-600">{filteredNonInventoryProducts.length} de {nonInventoryProducts.length} codigos</div>
+                            </div>
+
+                            <div className="overflow-auto rounded-2xl border">
+                                <table className="w-full min-w-[980px] text-sm">
+                                    <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                                        <tr>
+                                            <th className="p-3 text-left">SKU</th>
+                                            <th className="p-3 text-left">Barra</th>
+                                            <th className="p-3 text-left">Descripcion</th>
+                                            <th className="p-3 text-center">UM</th>
+                                            <th className="p-3 text-right">Costo</th>
+                                            <th className="p-3 text-center">Accion</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {filteredNonInventoryProducts.map(row => (
+                                            <tr key={row.id} className="border-t">
+                                                <td className="p-3 font-mono text-xs font-black text-slate-900">{row.sku}</td>
+                                                <td className="p-3 font-mono text-xs text-slate-500">{row.barcode || "-"}</td>
+                                                <td className="max-w-xl p-3 text-slate-700">{row.product_description || row.description || "-"}</td>
+                                                <td className="p-3 text-center font-semibold">{row.unit || "-"}</td>
+                                                <td className="p-3 text-right font-semibold">{formatMoney(Number(row.cost || 0))}</td>
+                                                <td className="p-3 text-center">
+                                                    <button onClick={() => removeNonInventoryCode(row)} className="rounded-xl border border-orange-300 bg-orange-50 px-3 py-2 text-xs font-black text-orange-700 hover:bg-orange-100">Habilitar</button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {filteredNonInventoryProducts.length === 0 && (
+                                            <tr>
+                                                <td colSpan={6} className="p-8 text-center text-sm font-semibold text-slate-400">No hay codigos no inventariables con ese filtro.</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+                    )}
+
                     {canValidateCyclic && valTab === "asignar" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
@@ -7438,62 +7547,6 @@ export default function DashboardPage() {
                                                     </div>
                                                 )}
                                             </div>
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="rounded-2xl border border-orange-200 bg-orange-50 p-3 space-y-3">
-                                    <div className="flex flex-col gap-2 md:flex-row md:items-end">
-                                        <div className="flex-1">
-                                            <p className="text-sm font-bold text-slate-800">Codigos no inventariables</p>
-                                            <p className="text-xs font-semibold text-slate-500">Estos codigos no apareceran para asignar en ciclicos ni en la carga masiva.</p>
-                                        </div>
-                                        <input
-                                            className="min-w-0 flex-1 rounded-xl border bg-white px-3 py-2 text-sm text-slate-900"
-                                            placeholder="Codsap exacto, uno o varios"
-                                            value={nonInventoryInput}
-                                            onChange={e => setNonInventoryInput(e.target.value)}
-                                            onKeyDown={e => { if (e.key === "Enter") addNonInventoryCodes(); }}
-                                        />
-                                        <button
-                                            onClick={addNonInventoryCodes}
-                                            className="rounded-xl bg-orange-600 px-4 py-2 text-sm font-black text-white"
-                                        >
-                                            Agregar
-                                        </button>
-                                        <button
-                                            onClick={() => nonInventoryExcelRef.current?.click()}
-                                            disabled={nonInventoryExcelBusy}
-                                            className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-black text-orange-700 disabled:opacity-50"
-                                        >
-                                            {nonInventoryExcelBusy ? "Subiendo..." : "Subir Excel"}
-                                        </button>
-                                        <input
-                                            ref={nonInventoryExcelRef}
-                                            type="file"
-                                            accept=".xlsx,.xls"
-                                            className="hidden"
-                                            onChange={e => uploadNonInventoryExcel(e.target.files?.[0] || null)}
-                                        />
-                                    </div>
-                                    {nonInventoryExcelFileName && (
-                                        <p className="text-xs font-semibold text-orange-700">
-                                            Ultimo Excel: {nonInventoryExcelFileName}
-                                        </p>
-                                    )}
-                                    {nonInventoryProducts.length > 0 && (
-                                        <div className="flex max-h-28 flex-wrap gap-2 overflow-auto">
-                                            {nonInventoryProducts.slice(0, 80).map(row => (
-                                                <button
-                                                    key={row.id}
-                                                    onClick={() => removeNonInventoryCode(row)}
-                                                    className="rounded-full border border-orange-300 bg-white px-3 py-1 text-xs font-bold text-orange-700 hover:bg-orange-100"
-                                                    title="Quitar de no inventariables"
-                                                >
-                                                    {row.sku} x
-                                                </button>
-                                            ))}
-                                            {nonInventoryProducts.length > 80 && <span className="px-2 py-1 text-xs font-bold text-slate-500">+{nonInventoryProducts.length - 80}</span>}
                                         </div>
                                     )}
                                 </div>
