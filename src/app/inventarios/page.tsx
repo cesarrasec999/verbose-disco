@@ -880,7 +880,7 @@ export default function InventariosPage() {
     if (iosFrameScanTimerRef.current) window.clearInterval(iosFrameScanTimerRef.current);
     iosFrameScanTimerRef.current = window.setInterval(() => {
       void scanCurrentIosFrame();
-    }, 1200);
+    }, 700);
   }
 
   async function scanCurrentIosFrame() {
@@ -889,14 +889,8 @@ export default function InventariosPage() {
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
 
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) return;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.95));
-      if (!blob) return;
+      const frameFiles = await buildIosFrameScanFiles(video);
+      if (frameFiles.length === 0) return;
 
       scannerBusyRef.current = true;
       const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
@@ -916,17 +910,66 @@ export default function InventariosPage() {
         ],
       });
       try {
-        const decodedText = await frameScanner.scanFile(new File([blob], "barcode-frame.jpg", { type: "image/jpeg" }), false);
-        const target = scannerTargetRef.current;
-        const activeRecountScanId = activeRecountScanIdRef.current;
-        await stopScanner();
-        await applyScannedValue(decodedText, target, activeRecountScanId);
+        for (const file of frameFiles) {
+          try {
+            const decodedText = await frameScanner.scanFile(file, false);
+            const target = scannerTargetRef.current;
+            const activeRecountScanId = activeRecountScanIdRef.current;
+            await stopScanner();
+            await applyScannedValue(decodedText, target, activeRecountScanId);
+            return;
+          } catch {}
+        }
+        scannerBusyRef.current = false;
       } finally {
         frameScanner.clear();
       }
     } catch {
       scannerBusyRef.current = false;
     }
+  }
+
+  async function buildIosFrameScanFiles(video: HTMLVideoElement) {
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    const crops = [
+      { name: "center-tight", sx: width * 0.08, sy: height * 0.38, sw: width * 0.84, sh: height * 0.24, scale: 3.2, contrast: 1.9 },
+      { name: "center-wide", sx: width * 0.02, sy: height * 0.30, sw: width * 0.96, sh: height * 0.40, scale: 2.6, contrast: 1.7 },
+      { name: "full", sx: 0, sy: 0, sw: width, sh: height, scale: 1.4, contrast: 1.45 },
+    ];
+    const files: File[] = [];
+    for (const crop of crops) {
+      const file = await buildEnhancedFrameFile(video, crop);
+      if (file) files.push(file);
+    }
+    return files;
+  }
+
+  async function buildEnhancedFrameFile(
+    video: HTMLVideoElement,
+    crop: { name: string; sx: number; sy: number; sw: number; sh: number; scale: number; contrast: number }
+  ) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(crop.sw * crop.scale));
+    canvas.height = Math.max(1, Math.round(crop.sh * crop.scale));
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.imageSmoothingEnabled = false;
+    context.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.width, canvas.height);
+
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    const data = image.data;
+    for (let index = 0; index < data.length; index += 4) {
+      const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+      const boosted = Math.max(0, Math.min(255, (gray - 128) * crop.contrast + 128));
+      data[index] = boosted;
+      data[index + 1] = boosted;
+      data[index + 2] = boosted;
+    }
+    context.putImageData(image, 0, 0);
+
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
+    return blob ? new File([blob], `${crop.name}.png`, { type: "image/png" }) : null;
   }
 
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
