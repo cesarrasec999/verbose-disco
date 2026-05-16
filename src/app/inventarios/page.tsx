@@ -2150,6 +2150,18 @@ export default function InventariosPage() {
       }
     }
 
+    let usedDescriptionFallback = false;
+    if (mode === "typed" && isNumericSearch && productMap.size === 0) {
+      const { data } = await supabase
+        .from("cyclic_products")
+        .select("*")
+        .eq("is_active", true)
+        .ilike("description", `%${raw}%`)
+        .limit(80);
+      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+      usedDescriptionFallback = productMap.size > 0;
+    }
+
     const products = [...productMap.values()];
     if (products.length === 0) {
       return {
@@ -2168,7 +2180,7 @@ export default function InventariosPage() {
     }
 
     return {
-      products: allowed.sort((a, b) => shouldSearchDescription
+      products: allowed.sort((a, b) => (shouldSearchDescription || usedDescriptionFallback)
         ? a.description.localeCompare(b.description, "es", { numeric: true, sensitivity: "base" }) || a.sku.localeCompare(b.sku, "es", { numeric: true })
         : codeMatchRank(a, raw) - codeMatchRank(b, raw) || a.sku.localeCompare(b.sku, "es", { numeric: true })),
       message: allowed.length > 1 ? "La busqueda coincide con varios productos. Elige una tarjeta antes de guardar." : "",
