@@ -3604,7 +3604,7 @@ export default function InventariosPage() {
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="font-black text-slate-950">{product.sku}</div>
-                            <div className="line-clamp-2 text-sm font-semibold text-slate-700">{product.description}</div>
+                            <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{product.description}</div>
                             <div className="mt-1 text-xs text-slate-500">UM: {product.unit || "N/D"} · Costo: {money(Number(product.cost || 0))}</div>
                           </div>
                           <span className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-black ${selectedProduct?.id === product.id ? "bg-green-700 text-white" : "bg-slate-100 text-slate-600"}`}>
@@ -3646,7 +3646,7 @@ export default function InventariosPage() {
                           <span className="font-black text-slate-900">{row.location_code}</span>
                           <span className="font-black text-blue-700">{row.sku}</span>
                         </div>
-                        <div className="max-w-full truncate text-sm text-slate-600">{row.description}</div>
+                        <div className="max-w-full whitespace-normal break-words text-sm text-slate-600">{row.description}</div>
                         <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
                       </div>
                       <div className="text-right">
@@ -3680,7 +3680,7 @@ export default function InventariosPage() {
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="font-black text-slate-950">{row.sku}</div>
-                        <div className="line-clamp-2 text-sm font-semibold text-slate-700">{row.description}</div>
+                        <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{row.description}</div>
                       </div>
                       <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
                         {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
@@ -3869,7 +3869,7 @@ export default function InventariosPage() {
                           <td className="p-2">{row.location_code || "Por codigo"}</td>
                           <td className="p-2">{row.zone || "-"}</td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
-                          <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
+                          <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
                           <td className="p-2 text-center">{row.unit}</td>
                           <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
                           <td className="p-2 text-center font-bold">{number2(row.counted_qty)}</td>
@@ -3943,7 +3943,7 @@ export default function InventariosPage() {
                           <td className="p-2 font-black">{row.ticket || "-"}</td>
                           <td className="p-2">{row.location_code || "Por codigo"}</td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
-                          <td className="max-w-sm truncate p-2 text-slate-700">{row.description}</td>
+                          <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
                           <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
                           <td className="p-2 text-center font-bold">{number2(row.counted_qty)}</td>
                           <td className="p-2 text-center font-black">{number2(row.diff_qty)}</td>
@@ -4008,7 +4008,7 @@ export default function InventariosPage() {
                       <div className="mb-3 flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-black text-slate-950">{row.sku}</div>
-                          <div className="line-clamp-2 text-sm font-semibold text-slate-700">{row.description}</div>
+                          <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{row.description}</div>
                         </div>
                         <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
                           {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
@@ -4243,7 +4243,7 @@ export default function InventariosPage() {
                       <td className="max-w-[180px] truncate p-2 font-bold text-slate-700">{row.operator_name || "Sin usuario"}</td>
                       <td className="p-2 text-center font-black text-slate-800">{row.location_code}</td>
                       <td className="p-2 text-center font-black text-blue-700">{row.sku}</td>
-                      <td className="max-w-md truncate p-2 text-slate-700">{row.description}</td>
+                      <td className="max-w-md whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
                       <td className="p-2 text-center">{row.unit}</td>
                       <td className="p-2 text-center font-black">{number2(row.quantity)}</td>
                       <td className="p-2 text-center">
@@ -4317,7 +4317,7 @@ export default function InventariosPage() {
                     {filteredSummary.map(row => (
                       <tr key={row.product_id} className="border-b">
                         <td className="p-2 font-black">{row.sku}</td>
-                        <td className="max-w-sm truncate p-2">{row.description}</td>
+                        <td className="max-w-sm whitespace-normal break-words p-2">{row.description}</td>
                         <td className="p-2 text-center">{row.unit}</td>
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-black">{number2(row.counted)}</td>
@@ -4347,7 +4347,7 @@ export default function InventariosPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
           <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
             <h3 className="font-black">Editar registro</h3>
-            <p className="mt-1 line-clamp-2 text-sm text-slate-500">{editingAdminCount.sku} - {editingAdminCount.description}</p>
+            <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">{editingAdminCount.sku} - {editingAdminCount.description}</p>
             <div className="mt-4 space-y-3">
               <input
                 value={editingAdminLocation}

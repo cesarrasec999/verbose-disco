@@ -6698,7 +6698,7 @@ export default function DashboardPage() {
                                     <div key={a.id} className="flex items-center justify-between gap-3 border-2 border-amber-300 rounded-2xl p-4 bg-amber-50 active:scale-[0.98] transition-transform">
                                         <div className="flex-1 min-w-0">
                                             <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
-                                            <div className="text-sm text-slate-600 truncate">{a.description}</div>
+                                            <div className="whitespace-normal break-words text-sm text-slate-600">{a.description}</div>
                                             <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} · Stock: <b>{formatNumber(a.system_stock)}</b></div>
                                         </div>
                                         <button
@@ -6730,7 +6730,7 @@ export default function DashboardPage() {
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="flex-1 min-w-0">
                                                     <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
-                                                    <div className="text-sm text-slate-600 truncate">{a.description}</div>
+                                                    <div className="whitespace-normal break-words text-sm text-slate-600">{a.description}</div>
                                                     <div className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
                                                         <span>Stock: <b>{formatNumber(a.system_stock)}</b></span>
                                                         <span>·</span>
@@ -6930,7 +6930,7 @@ export default function DashboardPage() {
                                         <div className="flex items-center justify-between gap-3">
                                             <div className="flex-1 min-w-0">
                                                 <div className="font-semibold text-slate-900 truncate">{a.sku}</div>
-                                                <div className="text-xs text-slate-600 truncate">{a.description}</div>
+                                                <div className="whitespace-normal break-words text-xs text-slate-600">{a.description}</div>
                                                 <div className="text-xs text-slate-400 mt-0.5">
                                                     {isUncounted
                                                         ? <span className="text-amber-700 font-semibold">⏳ No contado · Stock: <b>{formatNumber(a.system_stock)}</b></span>
@@ -7365,7 +7365,7 @@ export default function DashboardPage() {
                                                         <td className="p-2 border font-semibold">{row.store_name}</td>
                                                         <td className="p-2 border text-center">{row.assigned_date}</td>
                                                         <td className="p-2 border font-mono text-xs">{row.sku}</td>
-                                                        <td className="p-2 border text-slate-600 max-w-[220px] truncate">{row.description}</td>
+                                                        <td className="p-2 border text-slate-600 max-w-[220px] whitespace-normal break-words">{row.description}</td>
                                                         <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
                                                         <td className="p-2 border text-center font-semibold">{formatNumber(row.counted_quantity)}</td>
                                                         <td className="p-2 border text-center font-semibold text-green-700">{row.ok > 0 ? formatNumber(row.ok) : "-"}</td>
@@ -7528,7 +7528,7 @@ export default function DashboardPage() {
                                                             />
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="font-semibold text-slate-900 text-sm">{p.sku}</div>
-                                                                <div className="text-xs text-slate-600 truncate">{p.description}</div>
+                                                                <div className="whitespace-normal break-words text-xs text-slate-600">{p.description}</div>
                                                                 <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
@@ -7779,7 +7779,7 @@ export default function DashboardPage() {
                                                 return (
                                                 <tr key={c.id} className={isSinStock ? "bg-red-50" : "hover:bg-slate-50"}>
                                                     <td className="p-2 border font-medium">{c.sku}</td>
-                                                    <td className="p-2 border text-slate-600 max-w-[180px] truncate">{c.description}</td>
+                                                    <td className="p-2 border text-slate-600 max-w-[180px] whitespace-normal break-words">{c.description}</td>
                                                     <td className="p-2 border text-center font-semibold">{c.stock_snapshot !== null && c.stock_snapshot !== undefined ? formatNumber(c.stock_snapshot) : c.system_stock !== null && c.system_stock !== undefined ? formatNumber(c.system_stock) : "—"}</td>
                                                     <td className="p-2 border text-center font-mono text-xs">
                                                         {isSinStock
@@ -7947,7 +7947,7 @@ export default function DashboardPage() {
                                                             r.difference !== 0 ? "bg-red-50" : "hover:bg-slate-50"
                                                         }>
                                                             <td className="p-2 border font-medium">{r.sku}</td>
-                                                            <td className="p-2 border text-slate-600 max-w-[180px] truncate">{r.description}</td>
+                                                            <td className="p-2 border text-slate-600 max-w-[180px] whitespace-normal break-words">{r.description}</td>
                                                             <td className="p-2 border text-center text-xs">{r.unit}</td>
                                                             <td className="p-2 border text-center">
                                                                 {resumenEditMode ? (
@@ -8028,7 +8028,7 @@ export default function DashboardPage() {
                                                             return (
                                                                 <tr key={a.id} className="bg-amber-50/50 hover:bg-amber-100/50">
                                                                     <td className="p-2 border border-amber-100 font-medium text-amber-900">{a.sku}</td>
-                                                                    <td className="p-2 border border-amber-100 text-slate-600 max-w-[180px] truncate">{a.description}</td>
+                                                                    <td className="p-2 border border-amber-100 text-slate-600 max-w-[180px] whitespace-normal break-words">{a.description}</td>
                                                                     <td className="p-2 border border-amber-100 text-center text-xs">{a.unit}</td>
                                                                     <td className="p-2 border border-amber-100 text-center text-xs">{formatMoney(a.cost || 0)}</td>
                                                                     <td className="p-2 border border-amber-100 text-center font-semibold">{formatNumber(a.system_stock)}</td>
@@ -8307,7 +8307,7 @@ export default function DashboardPage() {
                                                 {filteredProducts.map(p => (
                                                     <tr key={p.id} className="hover:bg-slate-50">
                                                         <td className="p-2 border font-medium">{p.sku}</td>
-                                                        <td className="p-2 border text-slate-600 max-w-[200px] truncate">{p.description}</td>
+                                                        <td className="p-2 border text-slate-600 max-w-[200px] whitespace-normal break-words">{p.description}</td>
                                                         <td className="p-2 border text-center">{p.unit}</td>
                                                         <td className="p-2 border text-center">{formatMoney(p.cost)}</td>
                                                         <td className="p-2 border text-center font-mono text-xs">{p.barcode || "—"}</td>
@@ -9276,7 +9276,7 @@ export default function DashboardPage() {
                                 >
                                     <div className="text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div>
                                     <div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div>
-                                    <div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div>
+                                    <div className="mt-1 whitespace-normal break-words text-sm text-slate-600">{product.description}</div>
                                     <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-bold text-slate-500">
                                         <span>UM: {product.unit || "N/D"}</span>
                                         <span>Costo: {formatMoney(product.cost)}</span>
