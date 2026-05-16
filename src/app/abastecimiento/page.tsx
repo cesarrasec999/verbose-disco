@@ -75,7 +75,9 @@ type ReceiptCount = {
 type SupplyGroup = {
   document_no: string;
   destination_store_code: string;
+  destination_store_name: string;
   source_store_code: string;
+  source_store_name: string;
   reason: string;
   notes: string;
   request_date: string | null;
@@ -125,6 +127,46 @@ function storeCodeFromStore(store: Store | null) {
   return store.code || store.erp_sede || store.name || "";
 }
 
+function storeCodeCandidates(store: Store | null) {
+  const codes = new Set<string>();
+  const add = (value: unknown) => {
+    const code = normalize(value);
+    if (!code) return;
+    codes.add(code);
+    if (!/^\d+$/.test(code)) return;
+    const num = Number(code);
+    codes.add(String(num));
+    if (num >= 1000) codes.add(String(num - 1000));
+    if (num < 1000) codes.add(String(num + 1000));
+  };
+
+  add(storeCodeFromStore(store));
+  add(store?.code);
+  add(store?.erp_store_no);
+
+  const label = `${store?.name || ""} ${store?.erp_sede || ""}`;
+  if (/CD-GPC/i.test(label)) {
+    add("0");
+    add("1000");
+  }
+  const gpc = label.match(/GPC0*([0-9]+)/i);
+  if (gpc) {
+    const num = Number(gpc[1]);
+    add(num);
+    add(num + 1000);
+  }
+  return [...codes];
+}
+
+function supplyGroupKey(group: SupplyGroup) {
+  return `${group.document_no}|${group.destination_store_code}|${group.source_store_code}`;
+}
+
+function storeLabel(code: string, name: string | null | undefined, storeNameByCode: Map<string, string>) {
+  const clean = normalize(code);
+  return normalize(name) || storeNameByCode.get(clean) || clean || "Tienda pendiente";
+}
+
 function lineExpectedQty(line: SupplyLine) {
   return numberValue(line.expected_qty ?? line.qty_pending ?? line.qty_requested);
 }
@@ -154,7 +196,9 @@ function groupLines(lines: SupplyLine[]) {
       map.set(key, {
         document_no: line.document_no || "Sin documento",
         destination_store_code: line.destination_store_code || "",
+        destination_store_name: line.destination_store_name || "",
         source_store_code: line.source_store_code || "",
+        source_store_name: line.source_store_name || "",
         reason: cleanReason(line.reason),
         notes: line.notes || "",
         request_date: line.request_date || line.creation_date || line.request_created_at || null,
@@ -162,7 +206,10 @@ function groupLines(lines: SupplyLine[]) {
         lines: [],
       });
     }
-    map.get(key)!.lines.push(line);
+    const group = map.get(key)!;
+    if (!group.destination_store_name && line.destination_store_name) group.destination_store_name = line.destination_store_name;
+    if (!group.source_store_name && line.source_store_name) group.source_store_name = line.source_store_name;
+    group.lines.push(line);
   }
   return [...map.values()].sort((a, b) => String(b.request_date || "").localeCompare(String(a.request_date || "")));
 }
@@ -171,12 +218,6 @@ function cleanReason(value: unknown) {
   const text = normalize(value);
   if (!text) return "-";
   return text.replace(/\s*From Inventory Request.*$/i, "").trim() || text;
-}
-
-function originLabel(group: SupplyGroup) {
-  const source = normalize(group.source_store_code);
-  if (!source) return "Origen pendiente";
-  return source;
 }
 
 export default function AbastecimientoPage() {
@@ -191,7 +232,7 @@ export default function AbastecimientoPage() {
     return (sessionStorage.getItem(TAB_KEY) as TabKey) || "receptions";
   });
   const [query, setQuery] = useState("");
-  const [selectedDocument, setSelectedDocument] = useState<string>("");
+  const [activeGroupKey, setActiveGroupKey] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [message, setMessage] = useState("");
@@ -207,7 +248,16 @@ export default function AbastecimientoPage() {
   const scannerContainerId = "supply-scanner";
 
   const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
-  const selectedStoreCode = useMemo(() => storeCodeFromStore(selectedStore), [selectedStore]);
+  const selectedStoreCodes = useMemo(() => storeCodeCandidates(selectedStore), [selectedStore]);
+  const storeNameByCode = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const store of stores) {
+      for (const code of storeCodeCandidates(store)) {
+        if (code) map.set(code, store.name);
+      }
+    }
+    return map;
+  }, [stores]);
   const canSeeAllStores = user?.role === "Administrador" || user?.role === "Supervisor" || user?.can_access_all_stores;
 
   const countByLine = useMemo(() => {
@@ -220,7 +270,13 @@ export default function AbastecimientoPage() {
   const filteredReceptions = useMemo(() => receptions.filter(line => lineMatches(line, query)), [receptions, query]);
   const deliveryGroups = useMemo(() => groupLines(filteredDeliveries), [filteredDeliveries]);
   const receptionGroups = useMemo(() => groupLines(filteredReceptions), [filteredReceptions]);
-  const selectedReceptionGroup = useMemo(() => receptionGroups.find(group => group.document_no === selectedDocument) || receptionGroups[0] || null, [receptionGroups, selectedDocument]);
+  const visibleGroups = tab === "deliveries" ? deliveryGroups : receptionGroups;
+  const activeGroup = useMemo(() => visibleGroups.find(group => supplyGroupKey(group) === activeGroupKey) || null, [visibleGroups, activeGroupKey]);
+  const activeGroupCounts = useMemo(() => {
+    if (!activeGroup) return [];
+    const keys = new Set(activeGroup.lines.map(line => line.line_key));
+    return counts.filter(count => keys.has(count.line_key));
+  }, [activeGroup, counts]);
 
   const stats = useMemo(() => {
     const expected = receptions.reduce((sum, line) => sum + lineExpectedQty(line), 0);
@@ -248,6 +304,7 @@ export default function AbastecimientoPage() {
 
   useEffect(() => {
     sessionStorage.setItem(TAB_KEY, tab);
+    setActiveGroupKey("");
   }, [tab]);
 
   useEffect(() => {
@@ -260,6 +317,12 @@ export default function AbastecimientoPage() {
   useEffect(() => {
     scannerTargetRef.current = scannerTarget;
   }, [scannerTarget]);
+
+  useEffect(() => {
+    if (activeGroupKey && !visibleGroups.some(group => supplyGroupKey(group) === activeGroupKey)) {
+      setActiveGroupKey("");
+    }
+  }, [activeGroupKey, visibleGroups]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -331,17 +394,17 @@ export default function AbastecimientoPage() {
   }
 
   async function loadSupplyData(showSpinner = true) {
-    if (!selectedStoreCode) return;
+    if (selectedStoreCodes.length === 0) return;
     if (showSpinner) setLoading(true);
     setMessage("");
     const deliveryQuery = supabase.from("abastecimiento_delivery_pending").select("*").order("creation_date", { ascending: false });
     const receptionQuery = supabase.from("abastecimiento_reception_pending").select("*").order("request_created_at", { ascending: false });
     if (!canSeeAllStores) {
-      deliveryQuery.eq("source_store_code", selectedStoreCode);
-      receptionQuery.eq("destination_store_code", selectedStoreCode);
-    } else if (selectedStoreCode) {
-      deliveryQuery.eq("source_store_code", selectedStoreCode);
-      receptionQuery.eq("destination_store_code", selectedStoreCode);
+      deliveryQuery.in("source_store_code", selectedStoreCodes);
+      receptionQuery.in("destination_store_code", selectedStoreCodes);
+    } else if (selectedStoreCodes.length > 0) {
+      deliveryQuery.in("source_store_code", selectedStoreCodes);
+      receptionQuery.in("destination_store_code", selectedStoreCodes);
     }
     const [deliveryRes, receptionRes] = await Promise.all([deliveryQuery, receptionQuery]);
     if (deliveryRes.error || receptionRes.error) {
@@ -429,7 +492,7 @@ export default function AbastecimientoPage() {
   }
 
   function findReceiptLine(code: string) {
-    const group = selectedReceptionGroup;
+    const group = activeGroup;
     if (!group) return null;
     const clean = normalizeCode(code);
     return group.lines.find(line => {
@@ -440,7 +503,7 @@ export default function AbastecimientoPage() {
   }
 
   async function saveReceiptCount(forcedCode?: string) {
-    if (!user || !selectedReceptionGroup) return;
+    if (!user || !activeGroup || tab !== "receptions") return;
     const code = normalizeCode(forcedCode || scanCode);
     const qty = numberValue(quantity || 1);
     if (!code || qty <= 0) {
@@ -554,86 +617,119 @@ export default function AbastecimientoPage() {
         {message && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>}
         {loading && <div className="rounded-2xl border bg-white p-6 text-center text-sm font-bold text-slate-500">Cargando datos...</div>}
 
-        {!loading && tab === "deliveries" && (
-          <div className="grid gap-3">
-            {deliveryGroups.map(group => (
-              <TransferCard key={`${group.document_no}-${group.destination_store_code}-${group.source_store_code}`} group={group} mode="delivery" countByLine={countByLine} />
-            ))}
-            {deliveryGroups.length === 0 && <EmptyState text="No hay entregas pendientes para esta tienda." />}
-          </div>
-        )}
-
-        {!loading && tab === "receptions" && (
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-            <div className="grid gap-3">
-              {receptionGroups.map(group => (
-                <button
-                  key={`${group.document_no}-${group.destination_store_code}-${group.source_store_code}`}
-                  onClick={() => setSelectedDocument(group.document_no)}
-                  className={`text-left ${selectedReceptionGroup?.document_no === group.document_no ? "ring-2 ring-emerald-300" : ""}`}
-                >
-                  <TransferCard group={group} mode="reception" countByLine={countByLine} />
-                </button>
-              ))}
-              {receptionGroups.length === 0 && <EmptyState text="No hay recepciones en transito para esta tienda." />}
+        {!loading && activeGroup && (
+          <section className="grid gap-4">
+            <button onClick={() => setActiveGroupKey("")} className="flex w-fit items-center gap-2 rounded-xl border bg-white px-4 py-2 text-sm font-black">
+              <ArrowLeft size={18} /> Volver a pendientes
+            </button>
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-black uppercase text-slate-400">Documento / guia de remision</div>
+                  <h2 className="text-2xl font-black">{activeGroup.document_no}</h2>
+                  <div className="mt-2 grid gap-1 text-sm text-slate-600">
+                    <span><b>Desde:</b> {storeLabel(activeGroup.source_store_code, activeGroup.source_store_name, storeNameByCode)}</span>
+                    <span><b>Para:</b> {storeLabel(activeGroup.destination_store_code, activeGroup.destination_store_name, storeNameByCode)}</span>
+                    <span><b>Creado:</b> {dateTime(activeGroup.request_date)}</span>
+                    <span><b>Motivo:</b> {activeGroup.reason}</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <MiniMetric label="Codigos" value={activeGroup.lines.length} />
+                  <MiniMetric label="Esperado" value={number2(activeGroup.lines.reduce((sum, line) => sum + lineExpectedQty(line), 0))} />
+                  <MiniMetric label="Contado" value={number2(activeGroup.lines.reduce((sum, line) => sum + (countByLine.get(line.line_key) || 0), 0))} />
+                </div>
+              </div>
             </div>
 
-            <aside className="h-fit rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-black">Revisar requerimiento</h2>
-                  <p className="text-xs text-slate-500">{selectedReceptionGroup?.document_no || "Selecciona una recepcion"}</p>
+            {tab === "receptions" && (
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-black">Verificar codigo y cantidad</h3>
+                    <p className="text-xs text-slate-500">Escanea o digita el codigo del producto recibido.</p>
+                  </div>
+                  <ClipboardCheck className="text-emerald-700" size={24} />
                 </div>
-                <ClipboardCheck className="text-emerald-700" size={24} />
+                <div className="grid gap-2 md:grid-cols-[1fr_180px_auto]">
+                  <div className="flex rounded-xl border p-1">
+                    <input value={scanCode} onChange={event => setScanCode(event.target.value)} placeholder="Codigo de producto" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
+                    <button onClick={() => openScanner("receipt")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-emerald-700 text-white">
+                      <QrCode size={20} />
+                    </button>
+                  </div>
+                  <input value={quantity} onChange={event => setQuantity(event.target.value)} inputMode="decimal" placeholder="Cantidad" className="rounded-xl border px-3 py-2 text-sm font-bold outline-none" />
+                  <button onClick={() => void saveReceiptCount()} disabled={saving} className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-black text-white disabled:opacity-50">
+                    Guardar
+                  </button>
+                </div>
               </div>
+            )}
 
-              {selectedReceptionGroup ? (
-                <>
-                  <div className="grid gap-2">
-                    <div className="flex rounded-xl border p-1">
-                      <input value={scanCode} onChange={event => setScanCode(event.target.value)} placeholder="Codigo de producto" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
-                      <button onClick={() => openScanner("receipt")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-emerald-700 text-white">
-                        <QrCode size={20} />
-                      </button>
+            <div className="grid gap-3">
+              <h3 className="text-lg font-black">Avance por codigo</h3>
+              {activeGroup.lines.map(line => {
+                const expected = lineExpectedQty(line);
+                const counted = countByLine.get(line.line_key) || 0;
+                const diff = counted - expected;
+                const progress = expected > 0 ? Math.min(100, Math.max(0, (counted / expected) * 100)) : 0;
+                return (
+                  <div key={line.line_key} className="rounded-2xl border bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-black text-blue-700">{line.product_code}</div>
+                        <div className="line-clamp-2 text-sm font-bold text-slate-700">{line.description}</div>
+                      </div>
+                      <div className={`rounded-lg px-2 py-1 text-xs font-black ${diff === 0 ? "bg-green-100 text-green-700" : diff > 0 ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>
+                        {diff === 0 ? "OK" : diff > 0 ? "Sobrante" : "Faltante"}
+                      </div>
                     </div>
-                    <div className="grid grid-cols-[1fr_auto] gap-2">
-                      <input value={quantity} onChange={event => setQuantity(event.target.value)} inputMode="decimal" placeholder="Cantidad" className="rounded-xl border px-3 py-2 text-sm font-bold outline-none" />
-                      <button onClick={() => void saveReceiptCount()} disabled={saving} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-50">
-                        Guardar
-                      </button>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-full rounded-full bg-emerald-600" style={{ width: `${progress}%` }} />
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                      <MiniMetric label="Esperado" value={number2(expected)} />
+                      <MiniMetric label="Contado" value={number2(counted)} />
+                      <MiniMetric label="Dif." value={number2(diff)} />
                     </div>
                   </div>
+                );
+              })}
+            </div>
 
-                  <div className="mt-4 grid gap-2">
-                    {selectedReceptionGroup.lines.map(line => {
-                      const expected = lineExpectedQty(line);
-                      const counted = countByLine.get(line.line_key) || 0;
-                      const diff = counted - expected;
-                      return (
-                        <div key={line.line_key} className="rounded-xl border bg-slate-50 p-3">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="font-black text-blue-700">{line.product_code}</div>
-                              <div className="line-clamp-2 text-sm font-bold text-slate-700">{line.description}</div>
-                            </div>
-                            <div className={`rounded-lg px-2 py-1 text-xs font-black ${diff === 0 ? "bg-green-100 text-green-700" : diff > 0 ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>
-                              {diff === 0 ? "OK" : diff > 0 ? "Sobrante" : "Faltante"}
-                            </div>
-                          </div>
-                          <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-                            <MiniMetric label="Esperado" value={number2(expected)} />
-                            <MiniMetric label="Contado" value={number2(counted)} />
-                            <MiniMetric label="Dif." value={number2(diff)} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : (
-                <EmptyState text="Selecciona una recepcion pendiente para empezar." />
-              )}
-            </aside>
+            {tab === "receptions" && (
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h3 className="mb-3 text-lg font-black">Historial de registros</h3>
+                <div className="grid gap-2">
+                  {activeGroupCounts.map(count => (
+                    <div key={count.id} className="grid gap-1 rounded-xl bg-slate-50 px-3 py-2 text-sm md:grid-cols-[1fr_auto_auto] md:items-center">
+                      <div className="min-w-0">
+                        <div className="font-black text-blue-700">{count.product_code}</div>
+                        <div className="truncate text-slate-500">{count.description}</div>
+                      </div>
+                      <div className="font-black">{number2(count.counted_qty)}</div>
+                      <div className="text-xs font-bold text-slate-400">{dateTime(count.counted_at)}</div>
+                    </div>
+                  ))}
+                  {activeGroupCounts.length === 0 && <EmptyState text="Aun no hay registros para este requerimiento." />}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {!loading && !activeGroup && (
+          <div className="grid gap-3">
+            {visibleGroups.map(group => (
+              <button
+                key={supplyGroupKey(group)}
+                onClick={() => setActiveGroupKey(supplyGroupKey(group))}
+                className="text-left"
+              >
+                <TransferCard group={group} mode={tab === "deliveries" ? "delivery" : "reception"} countByLine={countByLine} storeNameByCode={storeNameByCode} />
+              </button>
+            ))}
+            {visibleGroups.length === 0 && <EmptyState text={tab === "deliveries" ? "No hay entregas pendientes para esta tienda." : "No hay recepciones en transito para esta tienda."} />}
           </div>
         )}
       </section>
@@ -668,21 +764,26 @@ export default function AbastecimientoPage() {
   );
 }
 
-function TransferCard({ group, mode, countByLine }: { group: SupplyGroup; mode: "delivery" | "reception"; countByLine: Map<string, number> }) {
+function TransferCard({ group, mode, countByLine, storeNameByCode }: { group: SupplyGroup; mode: "delivery" | "reception"; countByLine: Map<string, number>; storeNameByCode: Map<string, string> }) {
   const expected = group.lines.reduce((sum, line) => sum + lineExpectedQty(line), 0);
   const counted = group.lines.reduce((sum, line) => sum + (countByLine.get(line.line_key) || 0), 0);
   const codes = group.lines.length;
+  const from = storeLabel(group.source_store_code, group.source_store_name, storeNameByCode);
+  const to = storeLabel(group.destination_store_code, group.destination_store_name, storeNameByCode);
   return (
     <article className="rounded-2xl border bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
+          <div className="text-xs font-black uppercase text-slate-400">Documento / guia de remision</div>
           <div className="flex items-center gap-2">
             {mode === "delivery" ? <ClipboardList size={20} /> : <PackageCheck size={20} />}
             <h3 className="font-black">{group.document_no}</h3>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            {mode === "delivery" ? `Entregar a ${group.destination_store_code}` : `Desde ${originLabel(group)}`} - {group.reason}
-          </p>
+          <div className="mt-2 grid gap-1 text-sm text-slate-500">
+            <span><b>Desde:</b> {from}</span>
+            <span><b>{mode === "delivery" ? "Entregar a:" : "Para:"}</b> {to}</span>
+            <span><b>Motivo:</b> {group.reason}</span>
+          </div>
           {group.notes && <p className="mt-1 line-clamp-2 text-xs font-bold text-slate-500">{group.notes}</p>}
         </div>
         <div className="grid grid-cols-3 gap-2 text-center">
