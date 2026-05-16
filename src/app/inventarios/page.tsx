@@ -150,6 +150,14 @@ type RecountItem = RecountCandidate & {
   assigned_operator_name?: string | null;
 };
 
+type RecountDocumentRow = RecountItem & {
+  recount_count_id: string;
+  recount_operator_id: string;
+  recount_operator_name: string;
+  recount_quantity: number;
+  recount_counted_at: string;
+};
+
 type RecountDraft = {
   locationCode: string;
   productCode: string;
@@ -3010,6 +3018,192 @@ export default function InventariosPage() {
     setTimeout(() => reportWindow.print(), 500);
   }
 
+  async function generateRecountCommitmentDocuments() {
+    if (!selectedSession) {
+      setMessage("Selecciona un inventario para generar las actas de reconteo.");
+      return;
+    }
+    if (!selectedSessionId) return;
+
+    const { data, error } = await supabase
+      .from("general_inventory_recount_counts")
+      .select("id,recount_item_id,operator_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
+      .eq("session_id", selectedSessionId)
+      .order("operator_id", { ascending: true })
+      .order("counted_at", { ascending: true });
+
+    if (error) {
+      setMessage("No se pudieron leer los reconteos guardados: " + error.message);
+      return;
+    }
+
+    const itemById = new Map(recountItems.map(row => [row.id, row]));
+    const documentRows = (data || [])
+      .map((countRow: any) => {
+        const item = itemById.get(String(countRow.recount_item_id));
+        if (!item) return null;
+        const operatorName = countRow.general_inventory_operators?.full_name || item.assigned_operator_name || "Sin asesor";
+        return {
+          ...item,
+          location_code: countRow.location_code || item.location_code,
+          sku: countRow.sku || item.sku,
+          description: countRow.description || item.description,
+          unit: countRow.unit || item.unit,
+          recount_count_id: String(countRow.id),
+          recount_operator_id: String(countRow.operator_id),
+          recount_operator_name: operatorName,
+          recount_quantity: Number(countRow.quantity || 0),
+          recount_counted_at: String(countRow.counted_at || ""),
+        } as RecountDocumentRow;
+      })
+      .filter(Boolean) as RecountDocumentRow[];
+
+    if (documentRows.length === 0) {
+      setMessage("Aun no hay reconteos guardados por asesores para generar el documento.");
+      return;
+    }
+
+    const grouped = new Map<string, { operatorName: string; rows: RecountDocumentRow[] }>();
+    for (const row of documentRows) {
+      const key = row.recount_operator_id;
+      if (!grouped.has(key)) grouped.set(key, { operatorName: row.recount_operator_name, rows: [] });
+      grouped.get(key)?.rows.push(row);
+    }
+
+    const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+    const pages = [...grouped.values()].map((group, index) => {
+      const totalValue = group.rows.reduce((sum, row) => sum + Math.abs(row.value_diff), 0);
+      const rowsHtml = group.rows.map((row, rowIndex) => `
+        <tr>
+          <td class="num">${rowIndex + 1}</td>
+          <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
+          <td>${escapeHtml(row.ticket || "-")}</td>
+          <td>${escapeHtml(row.location_code || "Por codigo")}</td>
+          <td>${escapeHtml(row.sku)}</td>
+          <td>${escapeHtml(row.description)}</td>
+          <td class="num">${number2(row.system_stock)}</td>
+          <td class="num">${number2(row.counted_qty)}</td>
+          <td class="num">${number2(row.recount_quantity)}</td>
+          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })) : "-"}</td>
+          <td class="num">${money(row.value_diff)}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <section class="page ${index > 0 ? "pageBreak" : ""}">
+          <div class="header">
+            <div>
+              <h1>Acta de asignacion de reconteo</h1>
+              <div class="muted">Inventario general: <strong>${escapeHtml(selectedSession.name)}</strong></div>
+              <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
+              <div class="muted">Fecha programada: <strong>${escapeHtml(selectedSession.scheduled_date || "-")}</strong></div>
+            </div>
+            <div class="meta">
+              <div>Generado: <strong>${escapeHtml(generatedAt)}</strong></div>
+              <div>Codigos recontados: <strong>${number2(group.rows.length)}</strong></div>
+              <div>Diferencia valorizada ref.: <strong>${money(totalValue)}</strong></div>
+            </div>
+          </div>
+
+          <div class="operatorBox">
+            <div class="field"><span>Asesor responsable</span><strong>${escapeHtml(group.operatorName)}</strong></div>
+            <div class="field"><span>DNI</span><strong>&nbsp;</strong></div>
+            <div class="field"><span>Hora de entrega</span><strong>&nbsp;</strong></div>
+          </div>
+
+          <h2>Compromiso</h2>
+          <p>
+            Declaro haber realizado los reconteos detallados en esta acta y confirmo que verifique ubicacion,
+            codigo, unidad y cantidad con cuidado, registrando informacion real y completa en el sistema.
+          </p>
+          <p>
+            Entiendo que, si despues del inventario general se detecta un error de conteo, faltante o sobrante
+            post inventario relacionado con mi conteo o reconteo, asumire la responsabilidad correspondiente.
+            Segun evaluacion y decision del jefe de operaciones, esta responsabilidad puede incluir medidas
+            administrativas y/o descuentos permitidos por la empresa y la normativa aplicable.
+          </p>
+
+          <h2>Codigos recontados por el asesor</h2>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:26px" class="num">#</th>
+                <th style="width:56px">Tipo</th>
+                <th style="width:54px">Ticket</th>
+                <th style="width:70px">Ubicacion</th>
+                <th style="width:70px">Codigo</th>
+                <th>Descripcion</th>
+                <th style="width:48px" class="num">Sistema</th>
+                <th style="width:48px" class="num">Conteo</th>
+                <th style="width:52px" class="num">Reconteo</th>
+                <th style="width:70px" class="num">Fecha</th>
+                <th style="width:62px" class="num">Val.</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+
+          <div class="signatureGrid">
+            <div class="signature">Firma asesor responsable</div>
+            <div class="signature">Firma validador / jefe</div>
+          </div>
+        </section>
+      `;
+    }).join("");
+
+    const html = `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Actas de reconteo - ${escapeHtml(selectedSession.name)}</title>
+  <style>
+    @page { size: A4 portrait; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
+    h1 { margin: 0; font-size: 18px; }
+    h2 { margin: 10px 0 5px; font-size: 12px; }
+    p { margin: 5px 0; line-height: 1.35; text-align: justify; }
+    .pageBreak { break-before: page; }
+    .header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
+    .muted { color: #64748b; line-height: 1.45; }
+    .meta { text-align: right; line-height: 1.5; }
+    .operatorBox { display: grid; grid-template-columns: 1.5fr .7fr .8fr; gap: 6px; margin: 10px 0; }
+    .field { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; min-height: 42px; }
+    .field span { display: block; color: #64748b; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+    .field strong { display: block; margin-top: 4px; font-size: 11px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #cbd5e1; padding: 3px; line-height: 1.15; vertical-align: top; word-wrap: break-word; }
+    th { background: #f1f5f9; text-align: left; font-size: 9px; }
+    .num { text-align: right; white-space: nowrap; }
+    .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: 34px; break-inside: avoid; }
+    .signature { border-top: 1px solid #0f172a; padding-top: 22px; text-align: center; font-weight: 800; }
+    .toolbar { position: sticky; top: 0; margin-bottom: 8px; padding: 8px; background: white; border-bottom: 1px solid #cbd5e1; }
+    button { padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
+    @media print {
+      .toolbar { display: none; }
+      .page { break-inside: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar"><button onclick="window.print()">Imprimir / guardar PDF</button></div>
+  ${pages}
+</body>
+</html>`;
+
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo las actas de reconteo. Permite ventanas emergentes e intenta otra vez.");
+      return;
+    }
+    reportWindow.document.open();
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    setTimeout(() => reportWindow.print(), 500);
+  }
+
   function logoutOperator() {
     setOperator(null);
     setOperatorMode("conteo");
@@ -3701,6 +3895,13 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Lineas asignadas / reasignar</h3>
+                  <button
+                    onClick={generateRecountCommitmentDocuments}
+                    disabled={assignedRecountRows.length === 0}
+                    className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                  >
+                    <Download size={15} /> Actas por asesor
+                  </button>
                   <div className="flex min-w-[240px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
                     <Search size={16} className="shrink-0 text-slate-400" />
                     <input
