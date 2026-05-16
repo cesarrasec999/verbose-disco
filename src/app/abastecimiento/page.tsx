@@ -155,7 +155,7 @@ function groupLines(lines: SupplyLine[]) {
         document_no: line.document_no || "Sin documento",
         destination_store_code: line.destination_store_code || "",
         source_store_code: line.source_store_code || "",
-        reason: line.reason || "-",
+        reason: cleanReason(line.reason),
         notes: line.notes || "",
         request_date: line.request_date || line.creation_date || line.request_created_at || null,
         delivered_at: line.delivered_at || null,
@@ -165,6 +165,18 @@ function groupLines(lines: SupplyLine[]) {
     map.get(key)!.lines.push(line);
   }
   return [...map.values()].sort((a, b) => String(b.request_date || "").localeCompare(String(a.request_date || "")));
+}
+
+function cleanReason(value: unknown) {
+  const text = normalize(value);
+  if (!text) return "-";
+  return text.replace(/\s*From Inventory Request.*$/i, "").trim() || text;
+}
+
+function originLabel(group: SupplyGroup) {
+  const source = normalize(group.source_store_code);
+  if (!source) return "Origen pendiente";
+  return source;
 }
 
 export default function AbastecimientoPage() {
@@ -333,7 +345,7 @@ export default function AbastecimientoPage() {
     }
     const [deliveryRes, receptionRes] = await Promise.all([deliveryQuery, receptionQuery]);
     if (deliveryRes.error || receptionRes.error) {
-      setMessage("Ejecuta supabase_abastecimiento.sql y verifica que la tarea cargue transfer_store_code. " + (deliveryRes.error?.message || receptionRes.error?.message || ""));
+      setMessage("Ejecuta la version actualizada de supabase_abastecimiento.sql y verifica que la tarea cargue abastecimiento_request_lines. " + (deliveryRes.error?.message || receptionRes.error?.message || ""));
       setLoading(false);
       return;
     }
@@ -669,7 +681,7 @@ function TransferCard({ group, mode, countByLine }: { group: SupplyGroup; mode: 
             <h3 className="font-black">{group.document_no}</h3>
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            {mode === "delivery" ? `Entregar a ${group.destination_store_code}` : `Desde ${group.source_store_code || "-"}`} - {group.reason}
+            {mode === "delivery" ? `Entregar a ${group.destination_store_code}` : `Desde ${originLabel(group)}`} - {group.reason}
           </p>
           {group.notes && <p className="mt-1 line-clamp-2 text-xs font-bold text-slate-500">{group.notes}</p>}
         </div>

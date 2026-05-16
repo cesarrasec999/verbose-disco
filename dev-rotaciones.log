@@ -132,3 +132,67 @@
  GET /rotaciones 200 in 1382ms (next.js: 915ms, application-code: 466ms)
  GET /rotaciones 200 in 348ms (next.js: 249ms, application-code: 99ms)
 ✓ Compiled in 2.9s
+ GET /abastecimiento 200 in 2.7s (next.js: 2.2s, application-code: 513ms)
+ GET /abastecimiento 200 in 83ms (next.js: 6ms, application-code: 78ms)
+ GET /abastecimiento 200 in 92ms (next.js: 7ms, application-code: 85ms)
+ GET /abastecimiento 200 in 100ms (next.js: 13ms, application-code: 87ms)
+ GET /dashboard 200 in 891ms (next.js: 340ms, application-code: 552ms)
+ GET / 200 in 571ms (next.js: 252ms, application-code: 319ms)
+[browser] Uncaught Error: Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
+      <LoadingBoundary name="/" loading={null}>
+        <HTTPAccessFallbackBoundary notFound={{...}} forbidden={undefined} unauthorized={undefined}>
+          <HTTPAccessFallbackErrorBoundary pathname="/" notFound={{...}} forbidden={undefined} unauthorized={undefined} ...>
+            <RedirectBoundary>
+              <RedirectErrorBoundary router={{...}}>
+                <InnerLayoutRouter url="/" tree={[...]} params={{}} cacheNode={{rsc:{...}, ...}} segmentPath={[...]} ...>
+                  <SegmentViewNode type="page" pagePath="page.tsx">
+                    <SegmentTrieNode>
+                    <ClientPageRoot Component={function LoginPage} serverProvidedParams={{...}}>
+                      <LoginPage params={Promise} searchParams={Promise}>
+                        <main className="min-h-scre..." style={{...}}>
+                          <div>
+                          <div>
+                          <div>
+                          <div className="relative z..." style={{...}}>
+                            <div>
+                            <div className="space-y-3">
+                              <input>
+                              <div>
+                              <select className="w-full rou..." style={{...}} value="/dashboard" ...>
+-                               <option value="/abastecimiento" className="text-slate-900">
+                            ...
+                  ...
+                ...
+
+    at <unknown> (https://react.dev/link/hydration-mismatch)
+    at throwOnHydrationMismatch (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:3318:56)
+    at popHydrationState (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:3403:13)
+    at completeWork (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:6922:25)
+    at runWithFiberInDEV (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:965:74)
+    at completeUnitOfWork (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9622:23)
+    at performUnitOfWork (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9557:28)
+    at workLoopConcurrentByScheduler (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9551:58)
+    at renderRootConcurrent (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9534:71)
+    at performWorkOnRoot (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:9061:150)
+    at performWorkOnRootViaSchedulerTask (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_react-dom_058-ah~._.js:10255:9)
+    at MessagePort.performWorkUntilDeadline (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_compiled_0rpq4pf._.js:2647:64)
+    at select (<anonymous>)
+    at LoginPage (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/src_app_page_tsx_0u-7s7d._.js:838:231)
+    at ClientPageRoot (file://C:/Users/Manuel Coaquera/ciclicos/.next/dev/static/chunks/node_modules_next_dist_0l5.6e8._.js:6213:50)
+ GET /dashboard 200 in 158ms (next.js: 10ms, application-code: 148ms)
+ GET / 200 in 120ms (next.js: 12ms, application-code: 108ms)
+ GET / 200 in 72ms (next.js: 7ms, application-code: 65ms)
+ GET / 200 in 71ms (next.js: 6ms, application-code: 64ms)
