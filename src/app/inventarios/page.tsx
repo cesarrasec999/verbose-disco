@@ -849,7 +849,7 @@ export default function InventariosPage() {
     const scanConfig = isIos
       ? {
         fps: 12,
-        qrbox: { width: 340, height: 190 },
+        qrbox: { width: 340, height: 92 },
         aspectRatio: 1.6,
         disableFlip: true,
         videoConstraints: {
@@ -880,7 +880,7 @@ export default function InventariosPage() {
     if (iosFrameScanTimerRef.current) window.clearInterval(iosFrameScanTimerRef.current);
     iosFrameScanTimerRef.current = window.setInterval(() => {
       void scanCurrentIosFrame();
-    }, 700);
+    }, 200);
   }
 
   async function scanCurrentIosFrame() {
@@ -933,9 +933,9 @@ export default function InventariosPage() {
     const width = video.videoWidth;
     const height = video.videoHeight;
     const crops = [
-      { name: "center-tight", sx: width * 0.08, sy: height * 0.38, sw: width * 0.84, sh: height * 0.24, scale: 3.2, contrast: 1.9 },
-      { name: "center-wide", sx: width * 0.02, sy: height * 0.30, sw: width * 0.96, sh: height * 0.40, scale: 2.6, contrast: 1.7 },
-      { name: "full", sx: 0, sy: 0, sw: width, sh: height, scale: 1.4, contrast: 1.45 },
+      { name: "line-very-tight", sx: width * 0.10, sy: height * 0.455, sw: width * 0.80, sh: height * 0.09, scale: 5.0, contrast: 2.25 },
+      { name: "line-tight", sx: width * 0.06, sy: height * 0.425, sw: width * 0.88, sh: height * 0.15, scale: 4.0, contrast: 2.05 },
+      { name: "line-wide", sx: width * 0.02, sy: height * 0.37, sw: width * 0.96, sh: height * 0.26, scale: 2.8, contrast: 1.8 },
     ];
     const files: File[] = [];
     for (const crop of crops) {
