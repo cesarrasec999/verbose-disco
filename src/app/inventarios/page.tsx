@@ -3919,10 +3919,16 @@ export default function InventariosPage() {
               </div>
             </div>
             <div className="relative overflow-hidden rounded-xl border bg-black">
-              <div id={scannerContainerId} className="min-h-[320px] w-full" />
+              <div id={scannerContainerId} className={isIosDevice() ? "h-[220px] w-full" : "min-h-[320px] w-full"} />
               {isIosDevice() && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
-                  <div className="h-0.5 w-full max-w-sm bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
+                  <div className="relative h-24 w-full max-w-sm border-2 border-white/90 bg-black/10 shadow-[0_0_0_999px_rgba(0,0,0,0.18)]">
+                    <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
+                    <div className="absolute -left-1 -top-1 h-6 w-6 border-l-4 border-t-4 border-emerald-400" />
+                    <div className="absolute -right-1 -top-1 h-6 w-6 border-r-4 border-t-4 border-emerald-400" />
+                    <div className="absolute -bottom-1 -left-1 h-6 w-6 border-b-4 border-l-4 border-emerald-400" />
+                    <div className="absolute -bottom-1 -right-1 h-6 w-6 border-b-4 border-r-4 border-emerald-400" />
+                  </div>
                 </div>
               )}
             </div>
