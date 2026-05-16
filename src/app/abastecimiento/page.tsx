@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type TabKey = "deliveries" | "receptions";
 type ScannerTarget = "search" | "receipt" | null;
+const PAGE_SIZE = 25;
 
 type CyclicUser = {
   id: string;
@@ -188,6 +189,16 @@ function lineMatches(line: SupplyLine, query: string) {
   ].some(value => normalizeText(value).includes(q));
 }
 
+function findLineInGroup(group: SupplyGroup, code: string) {
+  const clean = normalizeCode(code);
+  if (!clean) return null;
+  return group.lines.find(line => {
+    const product = normalizeCode(line.product_code);
+    const barcode = normalizeCode(line.barcode);
+    return product === clean || barcode === clean || product.endsWith(clean) || barcode.endsWith(clean);
+  }) || null;
+}
+
 function groupLines(lines: SupplyLine[]) {
   const map = new Map<string, SupplyGroup>();
   for (const line of lines) {
@@ -233,6 +244,8 @@ export default function AbastecimientoPage() {
   });
   const [query, setQuery] = useState("");
   const [activeGroupKey, setActiveGroupKey] = useState("");
+  const [selectedLineKey, setSelectedLineKey] = useState("");
+  const [listPage, setListPage] = useState(1);
   const [scanCode, setScanCode] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [message, setMessage] = useState("");
@@ -272,11 +285,17 @@ export default function AbastecimientoPage() {
   const receptionGroups = useMemo(() => groupLines(filteredReceptions), [filteredReceptions]);
   const visibleGroups = tab === "deliveries" ? deliveryGroups : receptionGroups;
   const activeGroup = useMemo(() => visibleGroups.find(group => supplyGroupKey(group) === activeGroupKey) || null, [visibleGroups, activeGroupKey]);
+  const totalPages = Math.max(1, Math.ceil(visibleGroups.length / PAGE_SIZE));
+  const pagedGroups = useMemo(() => visibleGroups.slice((listPage - 1) * PAGE_SIZE, listPage * PAGE_SIZE), [visibleGroups, listPage]);
   const activeGroupCounts = useMemo(() => {
     if (!activeGroup) return [];
     const keys = new Set(activeGroup.lines.map(line => line.line_key));
     return counts.filter(count => keys.has(count.line_key));
   }, [activeGroup, counts]);
+  const selectedReceiptLine = useMemo(() => {
+    if (!activeGroup) return null;
+    return activeGroup.lines.find(line => line.line_key === selectedLineKey) || findLineInGroup(activeGroup, scanCode) || null;
+  }, [activeGroup, selectedLineKey, scanCode]);
 
   const stats = useMemo(() => {
     const expected = receptions.reduce((sum, line) => sum + lineExpectedQty(line), 0);
@@ -305,6 +324,7 @@ export default function AbastecimientoPage() {
   useEffect(() => {
     sessionStorage.setItem(TAB_KEY, tab);
     setActiveGroupKey("");
+    setListPage(1);
   }, [tab]);
 
   useEffect(() => {
@@ -323,6 +343,20 @@ export default function AbastecimientoPage() {
       setActiveGroupKey("");
     }
   }, [activeGroupKey, visibleGroups]);
+
+  useEffect(() => {
+    setListPage(1);
+  }, [query, selectedStoreId]);
+
+  useEffect(() => {
+    if (!activeGroup || tab !== "receptions") {
+      setCounts([]);
+      setSelectedLineKey("");
+      return;
+    }
+    setSelectedLineKey("");
+    void loadCounts(activeGroup.lines);
+  }, [activeGroupKey, tab]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -415,7 +449,7 @@ export default function AbastecimientoPage() {
     const receptionRows = (receptionRes.data || []) as SupplyLine[];
     setDeliveries((deliveryRes.data || []) as SupplyLine[]);
     setReceptions(receptionRows);
-    await loadCounts(receptionRows);
+    if (!activeGroupKey) setCounts([]);
     setLastSync(new Date());
     setLoading(false);
   }
@@ -426,16 +460,22 @@ export default function AbastecimientoPage() {
       return;
     }
     const keys = [...new Set(lines.map(line => line.line_key).filter(Boolean))];
-    const { data, error } = await supabase
-      .from("abastecimiento_receipt_counts")
-      .select("*")
-      .in("line_key", keys)
-      .order("counted_at", { ascending: false });
-    if (error) {
-      setMessage("No se pudieron leer conteos de recepcion: " + error.message);
-      return;
+    const rows: ReceiptCount[] = [];
+    for (let i = 0; i < keys.length; i += 100) {
+      const chunk = keys.slice(i, i + 100);
+      const { data, error } = await supabase
+        .from("abastecimiento_receipt_counts")
+        .select("*")
+        .in("line_key", chunk)
+        .order("counted_at", { ascending: false });
+      if (error) {
+        setMessage("No se pudieron leer conteos de recepcion: " + error.message);
+        return;
+      }
+      rows.push(...((data || []) as ReceiptCount[]));
     }
-    setCounts((data || []) as ReceiptCount[]);
+    rows.sort((a, b) => String(b.counted_at || "").localeCompare(String(a.counted_at || "")));
+    setCounts(rows);
   }
 
   function applyScannedCode(value: string, target = scannerTargetRef.current) {
@@ -443,7 +483,7 @@ export default function AbastecimientoPage() {
     if (!clean) return;
     if (target === "receipt") {
       setScanCode(clean);
-      setTimeout(() => void saveReceiptCount(clean), 50);
+      selectReceiptCode(clean);
       return;
     }
     setQuery(clean);
@@ -492,14 +532,13 @@ export default function AbastecimientoPage() {
   }
 
   function findReceiptLine(code: string) {
-    const group = activeGroup;
-    if (!group) return null;
-    const clean = normalizeCode(code);
-    return group.lines.find(line => {
-      const product = normalizeCode(line.product_code);
-      const barcode = normalizeCode(line.barcode);
-      return product === clean || barcode === clean || product.endsWith(clean) || barcode.endsWith(clean);
-    }) || null;
+    return activeGroup ? findLineInGroup(activeGroup, code) : null;
+  }
+
+  function selectReceiptCode(code: string) {
+    const line = findReceiptLine(code);
+    setSelectedLineKey(line?.line_key || "");
+    setMessage(line ? "Codigo encontrado en este requerimiento." : "El codigo no esta en el requerimiento seleccionado.");
   }
 
   async function saveReceiptCount(forcedCode?: string) {
@@ -536,8 +575,9 @@ export default function AbastecimientoPage() {
     }
     setMessage("Conteo registrado.");
     setScanCode("");
+    setSelectedLineKey("");
     setQuantity("1");
-    await loadCounts(receptions);
+    await loadCounts(activeGroup.lines);
   }
 
   function logout() {
@@ -653,7 +693,17 @@ export default function AbastecimientoPage() {
                 </div>
                 <div className="grid gap-2 md:grid-cols-[1fr_180px_auto]">
                   <div className="flex rounded-xl border p-1">
-                    <input value={scanCode} onChange={event => setScanCode(event.target.value)} placeholder="Codigo de producto" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none" />
+                    <input
+                      value={scanCode}
+                      onChange={event => {
+                        const value = event.target.value;
+                        setScanCode(value);
+                        if (normalizeCode(value)) selectReceiptCode(value);
+                        else setSelectedLineKey("");
+                      }}
+                      placeholder="Codigo de producto"
+                      className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm outline-none"
+                    />
                     <button onClick={() => openScanner("receipt")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-emerald-700 text-white">
                       <QrCode size={20} />
                     </button>
@@ -663,6 +713,21 @@ export default function AbastecimientoPage() {
                     Guardar
                   </button>
                 </div>
+                {selectedReceiptLine && (
+                  <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-black uppercase text-emerald-700">Codigo seleccionado</div>
+                        <div className="font-black text-blue-700">{selectedReceiptLine.product_code}</div>
+                        <div className="line-clamp-2 text-sm font-bold text-slate-700">{selectedReceiptLine.description}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-black">{number2(countByLine.get(selectedReceiptLine.line_key) || 0)} / {number2(lineExpectedQty(selectedReceiptLine))}</div>
+                        <div className="text-xs font-bold text-slate-500">contado / esperado</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -720,7 +785,15 @@ export default function AbastecimientoPage() {
 
         {!loading && !activeGroup && (
           <div className="grid gap-3">
-            {visibleGroups.map(group => (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-600">
+              <span>{tab === "deliveries" ? "Entregas pendientes" : "Recepciones pendientes"}: {visibleGroups.length}</span>
+              <div className="flex items-center gap-2">
+                <button disabled={listPage <= 1} onClick={() => setListPage(page => Math.max(1, page - 1))} className="rounded-lg border px-3 py-2 disabled:opacity-40">Anterior</button>
+                <span>Pagina {listPage} de {totalPages}</span>
+                <button disabled={listPage >= totalPages} onClick={() => setListPage(page => Math.min(totalPages, page + 1))} className="rounded-lg border px-3 py-2 disabled:opacity-40">Siguiente</button>
+              </div>
+            </div>
+            {pagedGroups.map(group => (
               <button
                 key={supplyGroupKey(group)}
                 onClick={() => setActiveGroupKey(supplyGroupKey(group))}

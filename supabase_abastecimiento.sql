@@ -143,18 +143,6 @@ where (
     upper(coalesce(arl.status_code, '')) in ('C', 'CERRADO', 'CLOSED')
     or upper(coalesce(arl.status_name, '')) in ('CERRADO', 'CLOSED')
   )
-  and coalesce(nullif(arl.qty_pending, 0), arl.qty_requested, 0) > 0
-  and not exists (
-    select 1
-    from public.erp_movements m
-    where m.operation = 'Ingreso por Transferencia'
-      and coalesce(m.status, '') in ('RECIBIDO', 'CERRADO', 'CLOSED')
-      and trim(m.store_code) = arl.destination_store_code
-      and upper(trim(m.product_code)) = upper(trim(coalesce(nullif(arl.product_code, ''), nullif(arl.sku, ''))))
-      and (
-        nullif(trim(m.reference_document_no), '') = nullif(trim(coalesce(arl.doc_number, arl.inv_request_no, arl.inv_request_id)), '')
-        or nullif(trim(m.document_no), '') = nullif(trim(coalesce(arl.doc_number, arl.inv_request_no, arl.inv_request_id)), '')
-      )
-  );
+  and coalesce(nullif(arl.qty_pending, 0), arl.qty_requested, 0) > 0;
 
 notify pgrst, 'reload schema';
