@@ -68,6 +68,9 @@ type InventoryLocation = {
   full_location?: string | null;
   description?: string | null;
   is_active: boolean;
+  is_empty?: boolean | null;
+  empty_marked_by?: string | null;
+  empty_marked_at?: string | null;
 };
 
 type Product = {
@@ -235,6 +238,22 @@ function pickColumn(row: Record<string, string>, names: string[]) {
   return "";
 }
 
+function normalizeHeader(value: string) {
+  return value.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/_\d+$/, "");
+}
+
+function pickFirstMatchingColumn(row: Record<string, string>, names: string[]) {
+  const normalizedNames = new Set(names.map(normalizeHeader));
+  const found = Object.entries(row).find(([key]) => normalizedNames.has(normalizeHeader(key)));
+  return String(found?.[1] ?? "").trim();
+}
+
+function pickLastMatchingColumn(row: Record<string, string>, names: string[]) {
+  const normalizedNames = new Set(names.map(normalizeHeader));
+  const found = [...Object.entries(row)].reverse().find(([key]) => normalizedNames.has(normalizeHeader(key)));
+  return String(found?.[1] ?? "").trim();
+}
+
 function firstColumnValue(row: Record<string, string>) {
   const first = Object.values(row)[0];
   return String(first ?? "").trim();
@@ -296,6 +315,7 @@ export default function InventariosPage() {
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
+  const [savingEmptyLocationId, setSavingEmptyLocationId] = useState<string | null>(null);
   const [counts, setCounts] = useState<CountRow[]>([]);
   const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
@@ -591,8 +611,13 @@ export default function InventariosPage() {
 
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes);
-    return locations.filter(location => !counted.has(location.location_code));
+    return locations.filter(location => !location.is_empty && !counted.has(location.location_code));
   }, [locations, countedLocationCodes]);
+
+  const emptyLocations = useMemo(
+    () => locations.filter(location => location.is_empty),
+    [locations]
+  );
 
   const kpis = useMemo(() => {
     const rows = summary;
@@ -1834,6 +1859,45 @@ export default function InventariosPage() {
     await loadRecountAssignments(selectedSessionId);
   }
 
+  async function markLocationEmpty(location: InventoryLocation) {
+    if (!selectedSessionId || !user || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede marcar ubicaciones vacias.");
+      return;
+    }
+    if (countedLocationCodes.includes(location.location_code)) {
+      setMessage("Esta ubicacion ya tiene registros y no puede marcarse como vacia.");
+      return;
+    }
+    const confirmed = window.confirm(`Marcar la ubicacion ${location.location_code} como vacia? Desaparecera de pendientes reales y quedara guardada para reportes.`);
+    if (!confirmed) return;
+
+    setSavingEmptyLocationId(location.id);
+    try {
+      const { error } = await supabase
+        .from("general_inventory_locations")
+        .update({
+          is_empty: true,
+          empty_marked_by: user.id,
+          empty_marked_at: new Date().toISOString(),
+        })
+        .eq("id", location.id)
+        .eq("session_id", selectedSessionId);
+      if (error) {
+        setMessage("No se pudo marcar como vacia. Ejecuta supabase_inventarios_generales.sql actualizado: " + error.message);
+        return;
+      }
+      setLocations(prev => prev.map(row => row.id === location.id ? {
+        ...row,
+        is_empty: true,
+        empty_marked_by: user.id,
+        empty_marked_at: new Date().toISOString(),
+      } : row));
+      setMessage(`Ubicacion ${location.location_code} marcada como vacia.`);
+    } finally {
+      setSavingEmptyLocationId(null);
+    }
+  }
+
   async function createSession() {
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !newStoreId || !newName.trim()) {
@@ -1887,21 +1951,22 @@ export default function InventariosPage() {
       const ticket = firstColumnValue(row);
       const locationCode = normalizeCode(ticket).toUpperCase();
       if (!locationCode) continue;
+      const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
       const zona = pickColumn(row, ["ZONA"]);
-      const zonaRef = pickColumn(row, ["ZONA REF"]);
+      const zonaRef = pickColumn(row, ["ZONA REF"]) || zona;
       const lineal = pickColumn(row, ["LINEAL"]);
       const referencia = pickColumn(row, ["REFERENCIA"]);
-      const fullLocation = pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]);
+      const fullLocation = pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
       uniqueRows.set(locationCode, {
         session_id: selectedSessionId,
         location_code: locationCode,
         ticket: locationCode,
-        zone: zona || null,
+        zone: bloqueUbicacion || null,
         zone_ref: zonaRef || null,
         lineal: lineal || null,
         reference: referencia || null,
         full_location: fullLocation || null,
-        description: fullLocation || [zona, zonaRef, lineal, referencia].filter(Boolean).join(" - ") || null,
+        description: fullLocation || [bloqueUbicacion, zona, lineal, referencia].filter(Boolean).join(" - ") || null,
       });
     }
     const rows = [...uniqueRows.values()];
@@ -3063,7 +3128,7 @@ export default function InventariosPage() {
                     <p className="text-xs text-slate-500">Carga ubicaciones autorizadas y productos no inventariables para esta sesión.</p>
                   </div>
                   <div className="rounded-xl bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">
-                    Ubicaciones: {locations.length} | Pendientes: {pendingLocations.length}
+                    Ubicaciones: {locations.length} | Pendientes: {pendingLocations.length} | Vacias: {emptyLocations.length}
                   </div>
                 </div>
 
@@ -3098,11 +3163,11 @@ export default function InventariosPage() {
                       <div className="font-black text-slate-900">Ubicaciones pendientes</div>
                       <div className="text-xs text-slate-500">Ubicaciones cargadas que todavía no tienen registros.</div>
                     </div>
-                    <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes</div>
+                    <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes | {emptyLocations.length} vacias</div>
                   </div>
                   <div className="max-h-[420px] overflow-auto rounded-xl border bg-white">
                     {pendingLocations.length > 0 ? pendingLocations.map(location => (
-                      <div key={location.id} className="grid gap-2 border-b p-3 last:border-b-0 md:grid-cols-[140px_1fr]">
+                      <div key={location.id} className="grid gap-2 border-b p-3 last:border-b-0 md:grid-cols-[140px_1fr_auto]">
                         <div className="font-black text-slate-900">{location.location_code}</div>
                         <div className="min-w-0 text-slate-600">
                           <div className="truncate">{location.full_location || location.description || "Sin descripción"}</div>
@@ -3111,6 +3176,15 @@ export default function InventariosPage() {
                               {[location.zone, location.lineal, location.zone_ref].filter(Boolean).join(" | ")}
                             </div>
                           )}
+                        </div>
+                        <div className="flex items-start justify-end">
+                          <button
+                            onClick={() => markLocationEmpty(location)}
+                            disabled={savingEmptyLocationId === location.id}
+                            className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-black text-amber-700 hover:bg-amber-100 disabled:opacity-40"
+                          >
+                            {savingEmptyLocationId === location.id ? "Guardando" : "Vacia"}
+                          </button>
                         </div>
                       </div>
                     )) : (
@@ -3347,7 +3421,7 @@ export default function InventariosPage() {
 
                   <div className="grid gap-2">
                     <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
-                      <option value="">Selecciona zona</option>
+                      <option value="">Selecciona ubicacion</option>
                       {recountValues.map(value => <option key={value} value={value}>{value}</option>)}
                     </select>
                   </div>

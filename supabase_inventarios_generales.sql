@@ -58,6 +58,9 @@ create table if not exists general_inventory_locations (
   full_location text,
   description text,
   is_active boolean not null default true,
+  is_empty boolean not null default false,
+  empty_marked_by uuid references cyclic_users(id),
+  empty_marked_at timestamptz,
   created_at timestamptz not null default now(),
   unique (session_id, location_code)
 );
@@ -68,11 +71,15 @@ alter table general_inventory_locations add column if not exists zone_ref text;
 alter table general_inventory_locations add column if not exists lineal text;
 alter table general_inventory_locations add column if not exists reference text;
 alter table general_inventory_locations add column if not exists full_location text;
+alter table general_inventory_locations add column if not exists is_empty boolean not null default false;
+alter table general_inventory_locations add column if not exists empty_marked_by uuid references cyclic_users(id);
+alter table general_inventory_locations add column if not exists empty_marked_at timestamptz;
 
 create index if not exists idx_gi_locations_session_code on general_inventory_locations(session_id, location_code);
 create index if not exists idx_gi_locations_session_zone on general_inventory_locations(session_id, zone);
 create index if not exists idx_gi_locations_session_zone_ref on general_inventory_locations(session_id, zone_ref);
 create index if not exists idx_gi_locations_session_lineal on general_inventory_locations(session_id, lineal);
+create index if not exists idx_gi_locations_session_empty on general_inventory_locations(session_id, is_empty);
 
 create table if not exists general_inventory_non_inventory_products (
   id uuid primary key default gen_random_uuid(),
