@@ -94,7 +94,9 @@ create table if not exists general_inventory_non_inventory_products (
 
 create index if not exists idx_gi_noninv_session_sku on general_inventory_non_inventory_products(session_id, sku);
 create index if not exists idx_stock_general_sede_codsap on stock_general(sede, codsap);
+create index if not exists idx_stock_general_sede_stock_codsap on stock_general(sede, codsap) where stock > 0;
 create index if not exists idx_cyclic_products_active_sku on cyclic_products(sku) where is_active = true;
+create index if not exists idx_cyclic_non_inventory_active_sku on cyclic_non_inventory_products(sku) where is_active = true;
 
 create table if not exists general_inventory_stock_snapshot (
   id uuid primary key default gen_random_uuid(),
@@ -252,6 +254,7 @@ create or replace function freeze_general_inventory_stock(
 returns integer
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
   v_store_id uuid;
@@ -290,17 +293,24 @@ begin
     p.sku,
     p.description,
     p.unit,
-    coalesce(sg.stock, 0)::numeric,
+    sg.stock::numeric,
     coalesce(sg.costo, p.cost, 0)::numeric,
     now()
-  from stock_general sg
-  join cyclic_products p
+  from public.stock_general sg
+  join public.cyclic_products p
     on p.sku = sg.codsap
   where sg.sede = v_sede
+    and sg.stock > 0
     and p.is_active = true
     and not exists (
       select 1
-      from general_inventory_non_inventory_products ni
+      from public.cyclic_non_inventory_products ni
+      where ni.is_active = true
+        and ni.sku = p.sku
+    )
+    and not exists (
+      select 1
+      from public.general_inventory_non_inventory_products ni
       where ni.session_id = p_session_id
         and ni.sku = p.sku
     );

@@ -83,6 +83,12 @@ type Product = {
   is_active: boolean;
 };
 
+type StockGeneralRow = {
+  codsap: string;
+  stock: number | string | null;
+  costo: number | string | null;
+};
+
 type CountRow = {
   id: string;
   session_id: string;
@@ -2035,25 +2041,144 @@ export default function InventariosPage() {
     setLoading(true);
     setSummaryLoading(true);
     setMessage(progressMessage);
-    const { data, error } = await supabase.rpc("freeze_general_inventory_stock", {
-      p_session_id: selectedSessionId,
-      p_user_id: user.id,
-    });
-    setLoading(false);
-    setSummaryLoading(false);
-    if (error) {
-      setMessage("No se pudo actualizar stock: " + error.message);
-      return;
+    try {
+      const { data, error } = await supabase.rpc("freeze_general_inventory_stock", {
+        p_session_id: selectedSessionId,
+        p_user_id: user.id,
+      });
+      if (error) {
+        const shouldFallback = error.message.toLowerCase().includes("statement timeout") || error.message.toLowerCase().includes("canceling statement");
+        if (!shouldFallback) {
+          setMessage("No se pudo actualizar stock: " + error.message);
+          return;
+        }
+        setMessage("La actualizacion directa demoro demasiado. Continuo por lotes para evitar timeout...");
+        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel);
+        if (fallbackInserted === null) return;
+      } else {
+        const { count: productsWithStockCount } = await supabase
+          .from("general_inventory_stock_snapshot")
+          .select("id", { count: "exact", head: true })
+          .eq("session_id", selectedSessionId)
+          .gt("system_stock", 0);
+        setMessage(`${successLabel}. Codigos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
+      }
+      await loadInitial(selectedSessionId);
+      setValidatorTab("resumen");
+      await loadSummary(selectedSessionId, true);
+    } finally {
+      setLoading(false);
+      setSummaryLoading(false);
     }
-    const { count: productsWithStockCount } = await supabase
+  }
+
+  async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string) {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const store = stores.find(row => row.id === session?.store_id);
+    const sede = store?.erp_sede || store?.name || session?.store_name || "";
+    if (!sede) {
+      setMessage("No se pudo actualizar stock por lotes: no encontre la sede ERP del inventario.");
+      return null;
+    }
+
+    const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
+    const deleteRes = await supabase
       .from("general_inventory_stock_snapshot")
-      .select("id", { count: "exact", head: true })
-      .eq("session_id", selectedSessionId)
-      .gt("system_stock", 0);
-    setMessage(`${successLabel}. Codigos en foto: ${data || 0}. Con stock: ${productsWithStockCount || 0}.`);
-    await loadInitial(selectedSessionId);
-    setValidatorTab("resumen");
-    await loadSummary(selectedSessionId, true);
+      .delete()
+      .eq("session_id", sessionId);
+    if (deleteRes.error) {
+      setMessage("No se pudo limpiar la foto anterior de stock: " + deleteRes.error.message);
+      return null;
+    }
+
+    let inserted = 0;
+    let totalValue = 0;
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const stockRes = await supabase
+        .from("stock_general")
+        .select("codsap,stock,costo")
+        .eq("sede", sede)
+        .gt("stock", 0)
+        .order("codsap", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (stockRes.error) {
+        setMessage("No se pudo leer stock por lotes: " + stockRes.error.message);
+        return null;
+      }
+
+      const stockRows = (stockRes.data || []) as StockGeneralRow[];
+      if (stockRows.length === 0) break;
+      const stockBySku = new Map<string, StockGeneralRow>();
+      for (const row of stockRows) {
+        const sku = normalizeCode(row.codsap).toUpperCase();
+        if (sku && !nonInventorySkus.has(sku)) stockBySku.set(sku, row);
+      }
+
+      const skus = [...stockBySku.keys()];
+      for (let i = 0; i < skus.length; i += 500) {
+        const chunk = skus.slice(i, i + 500);
+        const productsRes = await supabase
+          .from("cyclic_products")
+          .select("id,sku,description,unit,cost,is_active")
+          .eq("is_active", true)
+          .in("sku", chunk);
+        if (productsRes.error) {
+          setMessage("No se pudo cruzar stock con maestro de productos: " + productsRes.error.message);
+          return null;
+        }
+        const rows = ((productsRes.data || []) as Product[]).map(product => {
+          const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
+          const systemStock = Number(stock?.stock || 0);
+          const cost = Number(stock?.costo ?? product.cost ?? 0);
+          totalValue += systemStock * cost;
+          return {
+            session_id: sessionId,
+            product_id: product.id,
+            sku: product.sku,
+            description: product.description,
+            unit: product.unit,
+            system_stock: systemStock,
+            cost,
+            frozen_at: new Date().toISOString(),
+          };
+        });
+        if (rows.length > 0) {
+          const upsertRes = await supabase
+            .from("general_inventory_stock_snapshot")
+            .upsert(rows, { onConflict: "session_id,product_id" });
+          if (upsertRes.error) {
+            setMessage("No se pudo guardar stock por lotes: " + upsertRes.error.message);
+            return null;
+          }
+          inserted += rows.length;
+          setMessage(`Actualizando stock por lotes... ${inserted} codigos cargados.`);
+        }
+      }
+
+      if (stockRows.length < pageSize) break;
+      from += pageSize;
+    }
+
+    const sessionUpdate = await supabase
+      .from("general_inventory_sessions")
+      .update({
+        status: "frozen",
+        frozen_by: userId,
+        stock_frozen_at: new Date().toISOString(),
+        frozen_total_value: Math.round(totalValue * 100) / 100,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", sessionId);
+    if (sessionUpdate.error) {
+      setMessage("Stock cargado, pero no se pudo congelar la sesion: " + sessionUpdate.error.message);
+      return null;
+    }
+
+    setMessage(`${successLabel}. Codigos en foto: ${inserted}. Con stock: ${inserted}.`);
+    return inserted;
   }
 
   async function finishSession() {
