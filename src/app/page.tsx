@@ -40,7 +40,7 @@ type OperatorSessionRow = {
     general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios";
+type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios" | "/abastecimiento";
 type InventoryAuthMode = "login" | "register";
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
 
@@ -582,6 +582,7 @@ export default function LoginPage() {
                         <option value="/dashboard" className="text-slate-900">Conteo ciclico</option>
                         <option value="/auditoria" className="text-slate-900">Auditoria</option>
                         <option value="/inventarios" className="text-slate-900">Inventario general</option>
+                        <option value="/abastecimiento" className="text-slate-900">Abastecimiento</option>
                     </select>
                 </div>
 

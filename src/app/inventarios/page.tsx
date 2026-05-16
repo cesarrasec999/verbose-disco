@@ -353,7 +353,6 @@ export default function InventariosPage() {
   const scannerHistoryRef = useRef(false);
   const iosFrameScanTimerRef = useRef<number | null>(null);
   const scannerContainerId = "inventory-scanner";
-  const iosFrameScannerContainerId = "inventory-ios-frame-scanner";
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
   const isReadOnlySupervisor = user?.role === "Supervisor";
@@ -905,37 +904,28 @@ export default function InventariosPage() {
       if (frameFiles.length === 0) return;
 
       scannerBusyRef.current = true;
-      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
-      const frameScanner = new Html5Qrcode(iosFrameScannerContainerId, {
-        verbose: false,
-        useBarCodeDetectorIfSupported: false,
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.CODE_93,
-          Html5QrcodeSupportedFormats.CODABAR,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.ITF,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-        ],
-      });
-      try {
-        for (const file of frameFiles) {
-          try {
-            const decodedText = await frameScanner.scanFile(file, false);
-            const target = scannerTargetRef.current;
-            const activeRecountScanId = activeRecountScanIdRef.current;
-            await stopScanner();
-            await applyScannedValue(decodedText, target, activeRecountScanId);
-            return;
-          } catch {}
+      const { readBarcodes } = await import("zxing-wasm/reader");
+      for (const file of frameFiles) {
+        const results = await readBarcodes(file, {
+          formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE"],
+          tryHarder: true,
+          tryRotate: true,
+          tryInvert: true,
+          tryDownscale: false,
+          minLineCount: 1,
+          maxNumberOfSymbols: 3,
+          textMode: "Plain",
+        });
+        const decodedText = results.find(result => result.isValid && result.text.trim())?.text.trim();
+        if (decodedText) {
+          const target = scannerTargetRef.current;
+          const activeRecountScanId = activeRecountScanIdRef.current;
+          await stopScanner();
+          await applyScannedValue(decodedText, target, activeRecountScanId);
+          return;
         }
-        scannerBusyRef.current = false;
-      } finally {
-        frameScanner.clear();
       }
+      scannerBusyRef.current = false;
     } catch {
       scannerBusyRef.current = false;
     }
@@ -3954,7 +3944,6 @@ export default function InventariosPage() {
           </div>
         </div>
       )}
-      <div id={iosFrameScannerContainerId} className="fixed -left-[9999px] top-0 h-px w-px overflow-hidden" />
     </main>
   );
 }
