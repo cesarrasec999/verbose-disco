@@ -168,6 +168,37 @@ function normalizeCode(value: string | number | null | undefined) {
   return String(value ?? "").trim().replace(/\.0+$/, "");
 }
 
+function normalizeLocationCode(value: string | number | null | undefined) {
+  return normalizeCode(value)
+    .replace(/\u00a0/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function numericLocationKey(value: string | number | null | undefined) {
+  const clean = normalizeLocationCode(value);
+  return /^\d+$/.test(clean) ? clean.replace(/^0+(?=\d)/, "") : "";
+}
+
+function findInventoryLocation(locations: InventoryLocation[], value: string | number | null | undefined) {
+  const target = normalizeLocationCode(value);
+  if (!target) return null;
+
+  const exact = locations.find(row =>
+    normalizeLocationCode(row.location_code) === target ||
+    normalizeLocationCode(row.ticket) === target
+  );
+  if (exact) return exact;
+
+  const numericTarget = numericLocationKey(target);
+  if (!numericTarget) return null;
+  const numericMatches = locations.filter(row =>
+    numericLocationKey(row.location_code) === numericTarget ||
+    numericLocationKey(row.ticket) === numericTarget
+  );
+  return numericMatches.length === 1 ? numericMatches[0] : null;
+}
+
 function isIosDevice() {
   if (typeof navigator === "undefined") return false;
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -610,8 +641,8 @@ export default function InventariosPage() {
   }
 
   const pendingLocations = useMemo(() => {
-    const counted = new Set(countedLocationCodes);
-    return locations.filter(location => !location.is_empty && !counted.has(location.location_code));
+    const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
+    return locations.filter(location => !location.is_empty && !counted.has(normalizeLocationCode(location.location_code)));
   }, [locations, countedLocationCodes]);
 
   const emptyLocations = useMemo(
@@ -1864,7 +1895,8 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede marcar ubicaciones vacias.");
       return;
     }
-    if (countedLocationCodes.includes(location.location_code)) {
+    const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
+    if (counted.has(normalizeLocationCode(location.location_code))) {
       setMessage("Esta ubicacion ya tiene registros y no puede marcarse como vacia.");
       return;
     }
@@ -1949,7 +1981,7 @@ export default function InventariosPage() {
     }>();
     for (const row of excelRows) {
       const ticket = firstColumnValue(row);
-      const locationCode = normalizeCode(ticket).toUpperCase();
+      const locationCode = normalizeLocationCode(ticket);
       if (!locationCode) continue;
       const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
       const zona = pickColumn(row, ["ZONA"]);
@@ -2263,8 +2295,21 @@ export default function InventariosPage() {
       return;
     }
 
-    const locCode = locationCode.trim().toUpperCase();
-    const loc = locations.find(row => row.location_code === locCode);
+    const locCode = normalizeLocationCode(locationCode);
+    let loc = findInventoryLocation(locations, locCode);
+    if (!loc && navigator.onLine) {
+      const freshLocationsRes = await supabase
+        .from("general_inventory_locations")
+        .select("*")
+        .eq("session_id", selectedSession.id)
+        .eq("is_active", true)
+        .order("location_code");
+      if (!freshLocationsRes.error) {
+        const freshLocations = (freshLocationsRes.data || []) as InventoryLocation[];
+        setLocations(freshLocations);
+        loc = findInventoryLocation(freshLocations, locCode);
+      }
+    }
     if (!loc) {
       setMessage("Ubicacion no autorizada para esta sesion.");
       return;
