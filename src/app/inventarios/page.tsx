@@ -3775,7 +3775,6 @@ export default function InventariosPage() {
                     </button>
                   )}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
-                  <button onClick={exportRecords} className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black"><Download size={15} /> Registros</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
