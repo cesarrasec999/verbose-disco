@@ -839,7 +839,6 @@ export default function InventariosPage() {
           Html5QrcodeSupportedFormats.ITF,
           Html5QrcodeSupportedFormats.UPC_A,
           Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.QR_CODE,
         ],
       })
       : new Html5Qrcode(scannerContainerId);
@@ -848,8 +847,8 @@ export default function InventariosPage() {
     const isIos = isIosDevice();
     const scanConfig = isIos
       ? {
-        fps: 12,
-        qrbox: { width: 340, height: 92 },
+        fps: 15,
+        qrbox: { width: 380, height: 190 },
         aspectRatio: 1.6,
         disableFlip: true,
         videoConstraints: {
@@ -945,10 +944,14 @@ export default function InventariosPage() {
   async function buildIosFrameScanFiles(video: HTMLVideoElement) {
     const width = video.videoWidth;
     const height = video.videoHeight;
+    const box = { sx: width * 0.04, sy: height * 0.28, sw: width * 0.92, sh: height * 0.44 };
     const crops = [
-      { name: "line-very-tight", sx: width * 0.10, sy: height * 0.455, sw: width * 0.80, sh: height * 0.09, scale: 5.0, contrast: 2.25 },
-      { name: "line-tight", sx: width * 0.06, sy: height * 0.425, sw: width * 0.88, sh: height * 0.15, scale: 4.0, contrast: 2.05 },
-      { name: "line-wide", sx: width * 0.02, sy: height * 0.37, sw: width * 0.96, sh: height * 0.26, scale: 2.8, contrast: 1.8 },
+      { name: "box-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 2.4, contrast: 1.8 },
+      { name: "box-top", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
+      { name: "box-upper-middle", sx: box.sx, sy: box.sy + box.sh * 0.18, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
+      { name: "box-center", sx: box.sx, sy: box.sy + box.sh * 0.34, sw: box.sw, sh: box.sh * 0.32, scale: 4.5, contrast: 2.25 },
+      { name: "box-lower-middle", sx: box.sx, sy: box.sy + box.sh * 0.50, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
+      { name: "box-bottom", sx: box.sx, sy: box.sy + box.sh * 0.68, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
     ];
     const files: File[] = [];
     for (const crop of crops) {
@@ -3932,10 +3935,10 @@ export default function InventariosPage() {
               </div>
             </div>
             <div className="relative overflow-hidden rounded-xl border bg-black">
-              <div id={scannerContainerId} className={isIosDevice() ? "h-[220px] w-full" : "min-h-[320px] w-full"} />
+              <div id={scannerContainerId} className={isIosDevice() ? "h-[340px] max-h-[48vh] min-h-[300px] w-full" : "min-h-[320px] w-full"} />
               {isIosDevice() && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8">
-                  <div className="relative h-24 w-full max-w-sm border-2 border-white/90 bg-black/10 shadow-[0_0_0_999px_rgba(0,0,0,0.18)]">
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+                  <div className="relative h-44 w-full max-w-sm border-2 border-white/90 bg-black/10 shadow-[0_0_0_999px_rgba(0,0,0,0.18)]">
                     <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
                     <div className="absolute -left-1 -top-1 h-6 w-6 border-l-4 border-t-4 border-emerald-400" />
                     <div className="absolute -right-1 -top-1 h-6 w-6 border-r-4 border-t-4 border-emerald-400" />
