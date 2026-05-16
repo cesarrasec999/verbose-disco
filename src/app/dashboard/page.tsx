@@ -47,6 +47,12 @@ type Product = {
     system_stock?: number;
 };
 
+type StockGeneralRow = {
+    sede: string | null;
+    codsap: string | null;
+    stock: number | string | null;
+};
+
 type NonInventoryProduct = {
     id: string;
     product_id: string | null;
@@ -249,6 +255,10 @@ function fullProductCode(value: string | number | null | undefined): string {
         if (isFinite(n)) s = Math.round(n).toString();
     }
     return s.replace(/\.0+$/, "");
+}
+
+function normalizeUnit(value: string | null | undefined): string {
+    return String(value || "").trim().toUpperCase();
 }
 
 function visibleProductCode(value: string | number | null | undefined): string {
@@ -458,6 +468,7 @@ export default function DashboardPage() {
     // ─── Validador: asignación ───────────────────────────────
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
+    const [assignUnitFilter, setAssignUnitFilter] = useState("");
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
     const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
@@ -1885,6 +1896,43 @@ export default function DashboardPage() {
         return Number(data?.stock || 0);
     }
 
+    async function loadPagedStockRowsForCodesAndSedes(productCodes: string[], sedes: string[], onlyPositive = true): Promise<StockGeneralRow[]> {
+        const cleanCodes = [...new Set(productCodes.map(code => fullProductCode(code)).filter(Boolean))];
+        const cleanSedes = [...new Set(sedes.map(sede => String(sede || "").trim()).filter(Boolean))];
+        if (cleanCodes.length === 0 || cleanSedes.length === 0) return [];
+
+        const rows: StockGeneralRow[] = [];
+        const codeChunkSize = 300;
+        const sedeChunkSize = 40;
+        const pageSize = 1000;
+
+        for (let c = 0; c < cleanCodes.length; c += codeChunkSize) {
+            const codeChunk = cleanCodes.slice(c, c + codeChunkSize);
+            for (let s = 0; s < cleanSedes.length; s += sedeChunkSize) {
+                const sedeChunk = cleanSedes.slice(s, s + sedeChunkSize);
+                let from = 0;
+                while (true) {
+                    let query = supabase
+                        .from("stock_general")
+                        .select("sede,codsap,stock")
+                        .in("codsap", codeChunk)
+                        .in("sede", sedeChunk)
+                        .order("sede", { ascending: true })
+                        .order("codsap", { ascending: true })
+                        .range(from, from + pageSize - 1);
+                    if (onlyPositive) query = query.gt("stock", 0);
+                    const { data, error } = await query;
+                    if (error) throw error;
+                    rows.push(...((data || []) as StockGeneralRow[]));
+                    if (!data || data.length < pageSize) break;
+                    from += pageSize;
+                }
+            }
+        }
+
+        return rows;
+    }
+
     async function filterProductsInStoreStock(productsToFilter: Product[], storeId: string): Promise<Product[]> {
         const store = allStores.find(s => s.id === storeId) || stores.find(s => s.id === storeId);
         const sede = String(store?.erp_sede || store?.name || "").trim();
@@ -1892,16 +1940,8 @@ export default function DashboardPage() {
 
         const skus = [...new Set(productsToFilter.map(product => fullProductCode(product.sku)).filter(Boolean))];
         const available = new Set<string>();
-        for (let i = 0; i < skus.length; i += 500) {
-            const chunk = skus.slice(i, i + 500);
-            const { data } = await supabase
-                .from("stock_general")
-                .select("codsap")
-                .eq("sede", sede)
-                .in("codsap", chunk)
-                .gt("stock", 0);
-            for (const row of data || []) available.add(fullProductCode(row.codsap));
-        }
+        const stockRows = await loadPagedStockRowsForCodesAndSedes(skus, [sede]);
+        for (const row of stockRows) available.add(fullProductCode(row.codsap));
 
         return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
     }
@@ -1912,37 +1952,34 @@ export default function DashboardPage() {
         if (sedes.length === 0) return [];
         const skus = [...new Set(productsToFilter.map(product => fullProductCode(product.sku)).filter(Boolean))];
         const available = new Set<string>();
-        for (let i = 0; i < skus.length; i += 500) {
-            const { data } = await supabase
-                .from("stock_general")
-                .select("codsap")
-                .in("codsap", skus.slice(i, i + 500))
-                .in("sede", sedes)
-                .gt("stock", 0);
-            for (const row of data || []) available.add(fullProductCode(row.codsap));
-        }
+        const stockRows = await loadPagedStockRowsForCodesAndSedes(skus, sedes);
+        for (const row of stockRows) available.add(fullProductCode(row.codsap));
         return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
     }
 
-    async function loadPositiveStockCodesForStores(targetStores: Store[], maxRows = 20000): Promise<string[]> {
+    async function loadPositiveStockCodesForStores(targetStores: Store[]): Promise<string[]> {
         const sedes = [...new Set(targetStores.map(store => String(store.erp_sede || store.name || "").trim()).filter(Boolean))];
         if (sedes.length === 0) return [];
         const codes = new Set<string>();
         const pageSize = 1000;
-        for (let from = 0; from < maxRows; from += pageSize) {
-            const to = from + pageSize - 1;
-            const { data, error } = await supabase
-                .from("stock_general")
-                .select("codsap")
-                .in("sede", sedes)
-                .gt("stock", 0)
-                .range(from, to);
-            if (error || !data || data.length === 0) break;
-            for (const row of data) {
-                const code = fullProductCode(row.codsap);
-                if (code) codes.add(code);
+        for (const sede of sedes) {
+            let from = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("stock_general")
+                    .select("codsap")
+                    .eq("sede", sede)
+                    .gt("stock", 0)
+                    .order("codsap", { ascending: true })
+                    .range(from, from + pageSize - 1);
+                if (error || !data || data.length === 0) break;
+                for (const row of data) {
+                    const code = fullProductCode(row.codsap);
+                    if (code) codes.add(code);
+                }
+                if (data.length < pageSize) break;
+                from += pageSize;
             }
-            if (data.length < pageSize) break;
         }
         return [...codes];
     }
@@ -2790,6 +2827,23 @@ export default function DashboardPage() {
         return selected ? [selected] : [];
     }
 
+    const assignUnitOptions = useMemo(() => {
+        const units = [...new Set(assignResults.map(product => normalizeUnit(product.unit)).filter(Boolean))];
+        return units.sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }));
+    }, [assignResults]);
+
+    const filteredAssignResults = useMemo(() => {
+        const unit = normalizeUnit(assignUnitFilter);
+        if (!unit) return assignResults;
+        return assignResults.filter(product => normalizeUnit(product.unit) === unit);
+    }, [assignResults, assignUnitFilter]);
+
+    useEffect(() => {
+        if (assignUnitFilter && assignUnitOptions.length > 0 && !assignUnitOptions.includes(assignUnitFilter)) {
+            setAssignUnitFilter("");
+        }
+    }, [assignUnitFilter, assignUnitOptions]);
+
     function toggleAssignSelection(productId: string) {
         setAssignSelectedIds(prev => {
             const next = new Set(prev);
@@ -2801,7 +2855,7 @@ export default function DashboardPage() {
 
     function toggleAllAssignResults() {
         setAssignSelectedIds(prev => {
-            const visibleIds = assignResults.map(product => product.id);
+            const visibleIds = filteredAssignResults.map(product => product.id);
             const allSelected = visibleIds.length > 0 && visibleIds.every(id => prev.has(id));
             if (allSelected) return new Set([...prev].filter(id => !visibleIds.includes(id)));
             return new Set([...prev, ...visibleIds]);
@@ -2923,14 +2977,8 @@ export default function DashboardPage() {
             const productCodes = [...new Set(cleanProducts.map(product => fullProductCode(product.sku)).filter(Boolean))];
             const sedes = [...new Set(targetStores.map(store => String(store.erp_sede || store.name || "").trim()).filter(Boolean))];
             const stockByStoreSku = new Map<string, number>();
-            for (let i = 0; i < productCodes.length; i += 500) {
-                const chunk = productCodes.slice(i, i + 500);
-                let query = supabase.from("stock_general").select("sede,codsap,stock").in("codsap", chunk);
-                if (sedes.length > 0) query = query.in("sede", sedes);
-                const { data, error } = await query;
-                if (error) throw error;
-                for (const row of data || []) stockByStoreSku.set(`${String(row.sede || "").trim()}__${fullProductCode(row.codsap)}`, Number(row.stock || 0));
-            }
+            const stockRows = await loadPagedStockRowsForCodesAndSedes(productCodes, sedes);
+            for (const row of stockRows) stockByStoreSku.set(`${String(row.sede || "").trim()}__${fullProductCode(row.codsap)}`, Number(row.stock || 0));
 
             const storeIds = targetStores.map(store => store.id);
             const productIds = cleanProducts.map(product => product.id);
@@ -2939,14 +2987,23 @@ export default function DashboardPage() {
                 const storeChunk = storeIds.slice(i, i + 100);
                 for (let j = 0; j < productIds.length; j += 500) {
                     const productChunk = productIds.slice(j, j + 500);
-                    const { data, error } = await supabase
-                        .from("cyclic_assignments")
-                        .select("id,store_id,product_id")
-                        .in("store_id", storeChunk)
-                        .in("product_id", productChunk)
-                        .eq("assigned_date", valDate);
-                    if (error) throw error;
-                    existingRows.push(...((data || []) as { id: string; store_id: string; product_id: string }[]));
+                    let from = 0;
+                    const pageSize = 1000;
+                    while (true) {
+                        const { data, error } = await supabase
+                            .from("cyclic_assignments")
+                            .select("id,store_id,product_id")
+                            .in("store_id", storeChunk)
+                            .in("product_id", productChunk)
+                            .eq("assigned_date", valDate)
+                            .order("store_id", { ascending: true })
+                            .order("product_id", { ascending: true })
+                            .range(from, from + pageSize - 1);
+                        if (error) throw error;
+                        existingRows.push(...((data || []) as { id: string; store_id: string; product_id: string }[]));
+                        if (!data || data.length < pageSize) break;
+                        from += pageSize;
+                    }
                 }
             }
 
@@ -3391,12 +3448,12 @@ export default function DashboardPage() {
     }
 
     async function assignFirst30Results() {
-        await assignProductsToStores(assignResults.slice(0, 30), "30 primeros");
+        await assignProductsToStores(filteredAssignResults.slice(0, 30), "30 primeros");
     }
 
     async function assignSelectedResults() {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
-        const selected = assignResults.filter(product => assignSelectedIds.has(product.id));
+        const selected = filteredAssignResults.filter(product => assignSelectedIds.has(product.id));
         await assignProductsToStores(selected, "seleccionados");
     }
 
@@ -3678,14 +3735,9 @@ export default function DashboardPage() {
 
             const productSkus = [...new Set([...prodBySkuMap.values()].map(p => fullProductCode(p.sku)).filter(Boolean))];
             const stockBySedeSku = new Map<string, number>();
-            for (let i = 0; i < productSkus.length; i += CHUNK) {
-                const chunk = productSkus.slice(i, i + CHUNK);
-                let q = supabase.from("stock_general").select("codsap, sede, stock").in("codsap", chunk);
-                if (sedesArr.length > 0) q = q.in("sede", sedesArr);
-                const { data: stockRows } = await q;
-                for (const row of stockRows || []) {
-                    stockBySedeSku.set(String(row.sede || "").trim() + "__" + fullProductCode(row.codsap), Number(row.stock || 0));
-                }
+            const stockRows = await loadPagedStockRowsForCodesAndSedes(productSkus, sedesArr, false);
+            for (const row of stockRows) {
+                stockBySedeSku.set(String(row.sede || "").trim() + "__" + fullProductCode(row.codsap), Number(row.stock || 0));
             }
 
             // ── PASO 5: Traer asignaciones existentes para la fecha ──────
@@ -7304,12 +7356,23 @@ export default function DashboardPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <input
-                                        className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
-                                        placeholder="Buscar por codsap completo, codigo o familia/descripcion..."
-                                        value={assignSearch}
-                                        onChange={e => handleAssignSearchChange(e.target.value)}
-                                    />
+                                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px]">
+                                        <input
+                                            className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
+                                            placeholder="Buscar por codsap completo, codigo o familia/descripcion..."
+                                            value={assignSearch}
+                                            onChange={e => handleAssignSearchChange(e.target.value)}
+                                        />
+                                        <select
+                                            value={assignUnitFilter}
+                                            onChange={e => setAssignUnitFilter(e.target.value)}
+                                            disabled={assignUnitOptions.length === 0}
+                                            className="w-full rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-800 disabled:opacity-40"
+                                        >
+                                            <option value="">Todas las UM</option>
+                                            {assignUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
+                                        </select>
+                                    </div>
                                     {assignSearchNotice && (
                                         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
                                             {assignSearchNotice}
@@ -7322,7 +7385,7 @@ export default function DashboardPage() {
                                                     onClick={toggleAllAssignResults}
                                                     className="rounded-xl border bg-white px-3 py-2 text-xs font-bold text-slate-700"
                                                 >
-                                                    {assignResults.every(product => assignSelectedIds.has(product.id)) ? "Quitar seleccion" : "Seleccionar visibles"}
+                                                    {filteredAssignResults.length > 0 && filteredAssignResults.every(product => assignSelectedIds.has(product.id)) ? "Quitar seleccion" : "Seleccionar visibles"}
                                                 </button>
                                                 <button
                                                     onClick={assignFirst30Results}
@@ -7336,14 +7399,14 @@ export default function DashboardPage() {
                                                     disabled={assignBusy || assignSelectedIds.size === 0}
                                                     className="rounded-xl bg-blue-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
                                                 >
-                                                    Asignar seleccionados ({assignResults.filter(product => assignSelectedIds.has(product.id)).length})
+                                                    Asignar seleccionados ({filteredAssignResults.filter(product => assignSelectedIds.has(product.id)).length})
                                                 </button>
                                                 <span className="text-xs font-semibold text-slate-500">
-                                                    {valStoreId === ALL_STORES_VALUE ? "Destino: todas las tiendas" : "Destino: tienda seleccionada"}
+                                                    {filteredAssignResults.length} visibles · {valStoreId === ALL_STORES_VALUE ? "Destino: todas las tiendas" : "Destino: tienda seleccionada"}
                                                 </span>
                                             </div>
                                             <div className="max-h-72 overflow-auto">
-                                                {assignResults.map(p => {
+                                                {filteredAssignResults.map(p => {
                                                     const alreadyAssigned = valStoreId !== ALL_STORES_VALUE && assignments.some(a => a.product_id === p.id);
                                                     const selected = assignSelectedIds.has(p.id);
                                                     return (
@@ -7369,6 +7432,11 @@ export default function DashboardPage() {
                                                         </div>
                                                     );
                                                 })}
+                                                {filteredAssignResults.length === 0 && (
+                                                    <div className="p-6 text-center text-sm font-semibold text-slate-400">
+                                                        No hay productos con esa unidad minima.
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     )}
