@@ -854,9 +854,10 @@ export default function InventariosPage() {
         disableFlip: true,
         videoConstraints: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
           frameRate: { ideal: 30 },
+          resizeMode: "none",
         },
       }
       : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
@@ -873,7 +874,19 @@ export default function InventariosPage() {
       },
       () => {}
     );
-    if (isIos) startIosFrameScanner();
+    if (isIos) {
+      try {
+        await scanner.applyVideoConstraints?.({
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
+          frameRate: { ideal: 30 },
+          resizeMode: "none",
+        } as MediaTrackConstraints);
+      } catch {
+        // Safari puede rechazar 4K en algunos iPhone; en ese caso mantiene la mejor resolución disponible.
+      }
+      startIosFrameScanner();
+    }
   }
 
   function startIosFrameScanner() {
