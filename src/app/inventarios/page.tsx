@@ -3367,7 +3367,7 @@ export default function InventariosPage() {
     const diffTable = diffRows.map(row => `
       <tr>
         <td>${escapeHtml(row.sku)}</td>
-        <td>${escapeHtml(row.description)}</td>
+        <td class="oneLine">${escapeHtml(row.description)}</td>
         <td>${escapeHtml(row.unit)}</td>
         <td class="num">${money(row.cost)}</td>
         <td class="num">${number2(row.system_stock)}</td>
@@ -3377,7 +3377,7 @@ export default function InventariosPage() {
         <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
         <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
         <td class="num">${row.re_counted ? "Si" : "No"}</td>
-        <td>${escapeHtml(row.observation || "")}</td>
+        <td class="oneLine">${escapeHtml(row.observation || "")}</td>
       </tr>
     `).join("");
 
@@ -3426,6 +3426,8 @@ export default function InventariosPage() {
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th, td { border: 1px solid #cbd5e1; padding: 2px 3px; line-height: 1.12; vertical-align: top; }
     th { background: #f1f5f9; font-size: 9px; text-align: left; }
+    .diffTable th, .diffTable td { padding: 1px 2px; line-height: 1.05; }
+    .oneLine { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .num { text-align: right; white-space: nowrap; }
     .ok { color: #15803d; font-weight: 800; }
     .bad { color: #b91c1c; font-weight: 800; }
@@ -3490,21 +3492,21 @@ export default function InventariosPage() {
   </div>
 
   <h2>Todas las diferencias sobrantes y faltantes (${number2(diffRows.length)})</h2>
-  <table>
+  <table class="diffTable">
     <thead>
       <tr>
-        <th style="width:64px">Codigo</th>
+        <th style="width:62px">Codigo</th>
         <th>Descripcion</th>
-        <th style="width:28px">UM</th>
-        <th style="width:56px" class="num">Costo</th>
-        <th style="width:50px" class="num">Sistema</th>
-        <th style="width:48px" class="num">Conteo</th>
-        <th style="width:52px" class="num">Reconteo</th>
-        <th style="width:50px" class="num">Final</th>
-        <th style="width:45px" class="num">Dif.</th>
-        <th style="width:66px" class="num">Valorizado</th>
-        <th style="width:52px" class="num">Recontado</th>
-        <th style="width:88px">Obs.</th>
+        <th style="width:25px">UM</th>
+        <th style="width:52px" class="num">Costo</th>
+        <th style="width:44px" class="num">Sistema</th>
+        <th style="width:42px" class="num">Conteo</th>
+        <th style="width:46px" class="num">Reconteo</th>
+        <th style="width:42px" class="num">Final</th>
+        <th style="width:40px" class="num">Dif.</th>
+        <th style="width:60px" class="num">Valorizado</th>
+        <th style="width:46px" class="num">Recontado</th>
+        <th style="width:70px">Obs.</th>
       </tr>
     </thead>
     <tbody>
