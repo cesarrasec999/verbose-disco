@@ -482,6 +482,7 @@ export default function InventariosPage() {
   const recountColumn: RecountColumn = "zone";
   const [recountValue, setRecountValue] = useState("");
   const [recountOperatorId, setRecountOperatorId] = useState("");
+  const [recountPrintOperatorId, setRecountPrintOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
@@ -3747,12 +3748,14 @@ export default function InventariosPage() {
     }
     if (!selectedSessionId) return;
 
-    const { data, error } = await supabase
+    let query = supabase
       .from("general_inventory_recount_counts")
       .select("id,recount_item_id,operator_id,location_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
       .eq("session_id", selectedSessionId)
       .order("operator_id", { ascending: true })
       .order("counted_at", { ascending: false });
+    if (recountPrintOperatorId) query = query.eq("operator_id", recountPrintOperatorId);
+    const { data, error } = await query;
 
     if (error) {
       setMessage("No se pudieron leer los reconteos guardados: " + error.message);
@@ -3786,7 +3789,7 @@ export default function InventariosPage() {
       .filter(Boolean) as RecountDocumentRow[];
 
     if (documentRows.length === 0) {
-      setMessage("Aun no hay reconteos guardados por asesores para generar el documento.");
+      setMessage(recountPrintOperatorId ? "Ese recontador aun no tiene reconteos guardados para generar el documento." : "Aun no hay reconteos guardados por asesores para generar el documento.");
       return;
     }
 
@@ -4756,6 +4759,17 @@ export default function InventariosPage() {
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Codigos asignados / reasignar</h3>
                   <div className="flex flex-wrap gap-2">
+                    <select
+                      value={recountPrintOperatorId}
+                      onChange={event => setRecountPrintOperatorId(event.target.value)}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
+                      title="Filtrar actas por recontador"
+                    >
+                      <option value="">Todos los recontadores</option>
+                      {sessionOperators.map(operatorRow => (
+                        <option key={operatorRow.id} value={operatorRow.id}>{operatorRow.full_name}</option>
+                      ))}
+                    </select>
                     <button
                       onClick={generateRecountCommitmentDocuments}
                       disabled={assignedRecountRows.length === 0}
