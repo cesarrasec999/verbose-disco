@@ -173,6 +173,22 @@ type RecountDocumentRow = RecountItem & {
   recount_counted_at: string;
 };
 
+type OperatorRecountRecord = {
+  id: string;
+  recount_item_id: string;
+  operator_id: string;
+  location_id: string | null;
+  location_code: string;
+  product_id: string;
+  sku: string;
+  description: string;
+  unit: string;
+  quantity: number;
+  cost_snapshot: number;
+  counted_at: string;
+  item: RecountItem;
+};
+
 type RecountDraft = {
   productCode: string;
   extraProductCode: string;
@@ -450,6 +466,8 @@ export default function InventariosPage() {
   const [recountOperatorId, setRecountOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
+  const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
+  const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
   const scannerRef = useRef<any>(null);
@@ -1640,8 +1658,8 @@ export default function InventariosPage() {
       setMessage("No se pudo leer reconteos asignados: " + error.message);
       return;
     }
-    const openRows = (data || []).filter((row: any) => !["counted", "cancelled"].includes(row.status || ""));
-    const mappedRows = sortOperatorRecountCards(openRows.map((row: any) => ({
+    const assignedRows = (data || []) as any[];
+    const mappedRows = sortOperatorRecountCards(assignedRows.map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -1673,7 +1691,13 @@ export default function InventariosPage() {
       .select("*")
       .eq("session_id", sessionId)
       .eq("is_active", true);
-    const [countRowsRes, locationsRes] = productIds.length > 0
+    const savedRecountsRequest = supabase
+      .from("general_inventory_recount_counts")
+      .select("*")
+      .eq("session_id", sessionId)
+      .in("operator_id", [...operatorIds])
+      .order("counted_at", { ascending: false });
+    const [countRowsRes, locationsRes, savedRecountsRes] = productIds.length > 0
       ? await Promise.all([
         supabase
           .from("general_inventory_counts")
@@ -1681,8 +1705,9 @@ export default function InventariosPage() {
           .eq("session_id", sessionId)
           .in("product_id", productIds),
         locationsRequest,
+        savedRecountsRequest,
       ])
-      : [{ data: [] }, await locationsRequest];
+      : [{ data: [] }, await locationsRequest, await savedRecountsRequest];
     const activeLocations = (locationsRes.data || []) as InventoryLocation[];
     setLocations(activeLocations);
     const locationById = new Map(activeLocations.map(row => [row.id, row]));
@@ -1719,7 +1744,30 @@ export default function InventariosPage() {
         : [],
       location_count: row.recount_type === "surplus" ? (linesByProduct.get(row.product_id) || []).length : 0,
     }));
-    setRecountItems(rowsWithLocations);
+    setRecountItems(rowsWithLocations.filter(row => !["counted", "cancelled"].includes(row.status || "")));
+    const itemById = new Map(rowsWithLocations.map(row => [row.id, row]));
+    const savedRecords = ((savedRecountsRes.data || []) as any[])
+      .map(countRow => {
+        const item = itemById.get(String(countRow.recount_item_id || ""));
+        if (!item) return null;
+        return {
+          id: String(countRow.id || ""),
+          recount_item_id: String(countRow.recount_item_id || ""),
+          operator_id: String(countRow.operator_id || ""),
+          location_id: countRow.location_id ? String(countRow.location_id) : null,
+          location_code: String(countRow.location_code || ""),
+          product_id: String(countRow.product_id || item.product_id || ""),
+          sku: String(countRow.sku || item.sku || ""),
+          description: String(countRow.description || item.description || ""),
+          unit: String(countRow.unit || item.unit || ""),
+          quantity: Number(countRow.quantity || 0),
+          cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
+          counted_at: String(countRow.counted_at || ""),
+          item,
+        } as OperatorRecountRecord;
+      })
+      .filter(Boolean) as OperatorRecountRecord[];
+    setOperatorRecountRecords(savedRecords);
   }
 
   async function loadAllCounts(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
@@ -2851,6 +2899,43 @@ export default function InventariosPage() {
     });
   }
 
+  function editRecountRecord(record: OperatorRecountRecord) {
+    const item = record.item;
+    const relatedRecords = operatorRecountRecords
+      .filter(row => row.recount_item_id === record.recount_item_id)
+      .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
+    const originalCodes = new Set(item.original_locations.map(location => normalizeLocationCode(location.location_code)));
+
+    setRecountItems(prev => prev.some(row => row.id === item.id) ? prev : sortOperatorRecountCards([item, ...prev]));
+    setRecountDrafts(prev => ({
+      ...prev,
+      [item.id]: {
+        productCode: record.sku || item.sku,
+        extraProductCode: "",
+        rows: relatedRecords.map(row => ({
+          locationCode: row.location_code,
+          quantity: String(row.quantity),
+          isExtra: !originalCodes.has(normalizeLocationCode(row.location_code)),
+        })),
+      },
+    }));
+    setEditingRecountItemId(item.id);
+    setMessage("Reconteo cargado para editar.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function cancelRecountEdit(row: RecountItem) {
+    setEditingRecountItemId(null);
+    setRecountDrafts(prev => {
+      const next = { ...prev };
+      delete next[row.id];
+      return next;
+    });
+    if (row.status === "counted") {
+      setRecountItems(prev => prev.filter(item => item.id !== row.id));
+    }
+  }
+
   async function saveRecountValidation(row: RecountItem) {
     if (!operator || !selectedSessionId || savingRecountId) return;
     const draft = recountDraftFor(row);
@@ -2986,6 +3071,7 @@ export default function InventariosPage() {
         delete next[row.id];
         return next;
       });
+      setEditingRecountItemId(null);
       setMessage("Reconteo guardado.");
       await loadOperatorRecountItems(selectedSessionId, operator.id);
     } finally {
@@ -4080,6 +4166,7 @@ export default function InventariosPage() {
                       <div className="min-w-0">
                         <div className="font-black text-slate-950">{row.sku}</div>
                         <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{row.description}</div>
+                        {editingRecountItemId === row.id && <div className="mt-1 text-xs font-black text-amber-700">Editando reconteo guardado</div>}
                       </div>
                       <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
                         {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
@@ -4161,9 +4248,14 @@ export default function InventariosPage() {
                             + Agregar ubicacion
                           </button>
                         </div>
-                        <div className="flex justify-end">
+                        <div className="flex justify-end gap-2">
+                          {editingRecountItemId === row.id && (
+                            <button onClick={() => cancelRecountEdit(row)} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
+                              Cancelar
+                            </button>
+                          )}
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                            {savingRecountId === row.id ? "Guardando" : "Guardar reconteo"}
+                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : "Guardar reconteo"}
                           </button>
                         </div>
                       </div>
@@ -4176,6 +4268,38 @@ export default function InventariosPage() {
                     No tienes códigos asignados para reconteo en este inventario.
                   </div>
                 )}
+              </div>
+              <div className="mt-4 rounded-2xl border bg-white">
+                <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                  <div>
+                    <h3 className="font-black text-slate-900">Reconteos guardados</h3>
+                    <p className="text-xs text-slate-500">Registro de lo que vas guardando en esta sesión.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{operatorRecountRecords.length}</span>
+                </div>
+                <div className="divide-y">
+                  {operatorRecountRecords.map(record => (
+                    <div key={record.id} className="p-3">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-black text-slate-900">{record.location_code || "Sin ubicación"}</span>
+                            <span className="font-black text-blue-700">{record.sku}</span>
+                          </div>
+                          <div className="max-w-full whitespace-normal break-words text-sm text-slate-600">{record.description}</div>
+                          <div className="mt-1 text-xs text-slate-400">{record.counted_at ? new Date(record.counted_at).toLocaleString("es-PE") : "-"} · {record.unit}</div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="text-xl font-black text-slate-950">{number2(record.quantity)}</div>
+                          <button onClick={() => editRecountRecord(record)} className="mt-1 rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {operatorRecountRecords.length === 0 && (
+                    <div className="p-8 text-center text-sm font-semibold text-slate-400">Aún no tienes reconteos guardados.</div>
+                  )}
+                </div>
               </div>
             </section>
           )}
