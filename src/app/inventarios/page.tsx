@@ -3345,7 +3345,7 @@ export default function InventariosPage() {
       return;
     }
 
-    const sortedByValue = [...summary].sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+    const sortedByValue = [...summary].sort((a, b) => a.valueDiff - b.valueDiff);
     const diffRows = sortedByValue.filter(row => row.diff !== 0);
     const okRows = summary.filter(row => row.diff === 0 && row.counted > 0);
     const surplusRows = summary.filter(row => row.diff > 0);
@@ -3360,10 +3360,12 @@ export default function InventariosPage() {
         <td>${escapeHtml(row.sku)}</td>
         <td>${escapeHtml(row.description)}</td>
         <td>${escapeHtml(row.unit)}</td>
+        <td class="num">${money(row.cost)}</td>
         <td class="num">${number2(row.system_stock)}</td>
         <td class="num">${number2(row.counted)}</td>
         <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
         <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
+        <td class="num">${row.re_counted ? "Si" : "No"}</td>
         <td>${escapeHtml(row.observation || "")}</td>
       </tr>
     `).join("");
@@ -3483,15 +3485,17 @@ export default function InventariosPage() {
         <th style="width:64px">Codigo</th>
         <th>Descripcion</th>
         <th style="width:28px">UM</th>
+        <th style="width:56px" class="num">Costo</th>
         <th style="width:50px" class="num">Sistema</th>
         <th style="width:50px" class="num">Contado</th>
         <th style="width:45px" class="num">Dif.</th>
         <th style="width:66px" class="num">Valorizado</th>
+        <th style="width:52px" class="num">Recontado</th>
         <th style="width:88px">Obs.</th>
       </tr>
     </thead>
     <tbody>
-      ${diffTable || `<tr><td colspan="8" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
+      ${diffTable || `<tr><td colspan="10" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
     </tbody>
   </table>
 
@@ -4247,6 +4251,7 @@ export default function InventariosPage() {
                       <div className="min-w-0">
                         <div className="font-black text-slate-950">{row.sku}</div>
                         <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{row.description}</div>
+                        {row.unit && <div className="mt-1 text-xs font-black text-slate-900">UM: {row.unit}</div>}
                         {editingRecountItemId === row.id && <div className="mt-1 text-xs font-black text-amber-700">Editando reconteo guardado</div>}
                       </div>
                       <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-black ${row.recount_type === "missing" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
@@ -4306,7 +4311,7 @@ export default function InventariosPage() {
                                   {original && (
                                     <div className="mb-2 rounded-xl border bg-white px-3 py-2">
                                       <div className="text-[10px] font-black uppercase text-slate-500">Conteo original</div>
-                                      <div className="text-2xl font-black leading-tight text-slate-950">{number2(original.counted_qty)} <span className="text-sm text-slate-500">{row.unit}</span></div>
+                                      <div className="text-2xl font-black leading-tight text-slate-950">{number2(original.counted_qty)} <span className="text-sm font-black text-slate-900">{row.unit}</span></div>
                                     </div>
                                   )}
                                   <div className="grid grid-cols-[1fr_110px_42px] gap-2">
