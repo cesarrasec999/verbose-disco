@@ -176,6 +176,7 @@ type RecountDocumentRow = RecountItem & {
   recount_quantity: number;
   recount_original_quantity: number;
   recount_counted_at: string;
+  recount_updated_at: string;
 };
 
 type OperatorRecountRecord = {
@@ -1443,7 +1444,7 @@ export default function InventariosPage() {
       const chunk = cleanProductIds.slice(i, i + 100);
       const { data, error } = await supabase
         .from("general_inventory_counts")
-        .select("product_id,location_id,location_code,quantity")
+        .select("product_id,sku,location_id,location_code,quantity")
         .eq("session_id", sessionId)
         .in("product_id", chunk);
       if (error) {
@@ -1454,9 +1455,13 @@ export default function InventariosPage() {
         const qty = Number(row.quantity || 0);
         const codeKey = `${row.product_id}__code__${normalizeLocationCode(row.location_code)}`;
         originalByLocation.set(codeKey, (originalByLocation.get(codeKey) || 0) + qty);
+        const skuCodeKey = `sku__${normalizeCode(row.sku).toUpperCase()}__code__${normalizeLocationCode(row.location_code)}`;
+        originalByLocation.set(skuCodeKey, (originalByLocation.get(skuCodeKey) || 0) + qty);
         if (row.location_id) {
           const idKey = `${row.product_id}__id__${row.location_id}`;
           originalByLocation.set(idKey, (originalByLocation.get(idKey) || 0) + qty);
+          const skuIdKey = `sku__${normalizeCode(row.sku).toUpperCase()}__id__${row.location_id}`;
+          originalByLocation.set(skuIdKey, (originalByLocation.get(skuIdKey) || 0) + qty);
         }
       }
     }
@@ -1476,8 +1481,6 @@ export default function InventariosPage() {
     }
 
     const countRows = (data || []) as any[];
-    const productIds = [...new Set(countRows.map(row => String(row.product_id || "")).filter(Boolean))];
-    const originalByLocation = await loadOriginalCountedByProductLocation(sessionId, productIds);
     const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
     const itemRows: any[] = [];
     for (let i = 0; i < itemIds.length; i += 100) {
@@ -1492,6 +1495,12 @@ export default function InventariosPage() {
       }
       itemRows.push(...(itemRowsRes.data || []));
     }
+
+    const productIds = [...new Set([
+      ...countRows.map(row => String(row.product_id || "")).filter(Boolean),
+      ...itemRows.map(row => String(row.product_id || "")).filter(Boolean),
+    ])];
+    const originalByLocation = await loadOriginalCountedByProductLocation(sessionId, productIds);
 
     const itemById = new Map(itemRows.map(row => [String(row.id), {
       id: String(row.id),
@@ -1523,6 +1532,29 @@ export default function InventariosPage() {
       .map(countRow => {
         const item = itemById.get(String(countRow.recount_item_id || ""));
         if (!item) return null;
+        const locationId = String(countRow.location_id || "");
+        const locationCode = normalizeLocationCode(countRow.location_code);
+        const productIdsToCheck = [...new Set([String(countRow.product_id || ""), item.product_id].filter(Boolean))];
+        const skusToCheck = [...new Set([String(countRow.sku || ""), item.sku].map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+        let originalQuantity = 0;
+        for (const productId of productIdsToCheck) {
+          const byId = locationId ? originalByLocation.get(`${productId}__id__${locationId}`) : undefined;
+          const byCode = locationCode ? originalByLocation.get(`${productId}__code__${locationCode}`) : undefined;
+          if (byId !== undefined || byCode !== undefined) {
+            originalQuantity = byId ?? byCode ?? 0;
+            break;
+          }
+        }
+        if (originalQuantity === 0) {
+          for (const sku of skusToCheck) {
+            const byId = locationId ? originalByLocation.get(`sku__${sku}__id__${locationId}`) : undefined;
+            const byCode = locationCode ? originalByLocation.get(`sku__${sku}__code__${locationCode}`) : undefined;
+            if (byId !== undefined || byCode !== undefined) {
+              originalQuantity = byId ?? byCode ?? 0;
+              break;
+            }
+          }
+        }
         return {
           id: String(countRow.id || ""),
           recount_item_id: String(countRow.recount_item_id || ""),
@@ -1535,9 +1567,7 @@ export default function InventariosPage() {
           description: String(countRow.description || item.description || ""),
           unit: String(countRow.unit || item.unit || ""),
           quantity: Number(countRow.quantity || 0),
-          original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__id__${String(countRow.location_id || "")}`) ??
-            originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__code__${normalizeLocationCode(countRow.location_code)}`) ??
-            0,
+          original_quantity: originalQuantity,
           cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
           counted_at: String(countRow.counted_at || ""),
           updated_at: String(countRow.updated_at || countRow.counted_at || ""),
@@ -3790,9 +3820,10 @@ export default function InventariosPage() {
 
     let query = supabase
       .from("general_inventory_recount_counts")
-      .select("id,recount_item_id,operator_id,location_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
+      .select("id,recount_item_id,operator_id,location_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at,general_inventory_operators(id,full_name,phone)")
       .eq("session_id", selectedSessionId)
       .order("operator_id", { ascending: true })
+      .order("updated_at", { ascending: false, nullsFirst: false })
       .order("counted_at", { ascending: false });
     if (recountPrintOperatorId) query = query.eq("operator_id", recountPrintOperatorId);
     const { data, error } = await query;
@@ -3803,14 +3834,40 @@ export default function InventariosPage() {
     }
 
     const recountCountRows = (data || []) as any[];
-    const recountProductIds = [...new Set(recountCountRows.map(row => String(row.product_id || "")).filter(Boolean))];
-    const originalByLocation = await loadOriginalCountedByProductLocation(selectedSessionId, recountProductIds);
     const itemById = new Map(recountItems.map(row => [row.id, row]));
+    const recountProductIds = [...new Set([
+      ...recountCountRows.map(row => String(row.product_id || "")).filter(Boolean),
+      ...recountCountRows.map(row => itemById.get(String(row.recount_item_id))?.product_id || "").filter(Boolean),
+    ])];
+    const originalByLocation = await loadOriginalCountedByProductLocation(selectedSessionId, recountProductIds);
     const locationById = new Map(locations.map(row => [row.id, row]));
     const documentRows = recountCountRows
       .map((countRow: any) => {
         const item = itemById.get(String(countRow.recount_item_id));
         if (!item) return null;
+        const locationId = String(countRow.location_id || "");
+        const locationCode = normalizeLocationCode(countRow.location_code);
+        const productIdsToCheck = [...new Set([String(countRow.product_id || ""), item.product_id].filter(Boolean))];
+        const skusToCheck = [...new Set([String(countRow.sku || ""), item.sku].map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+        let originalQuantity = 0;
+        for (const productId of productIdsToCheck) {
+          const byId = locationId ? originalByLocation.get(`${productId}__id__${locationId}`) : undefined;
+          const byCode = locationCode ? originalByLocation.get(`${productId}__code__${locationCode}`) : undefined;
+          if (byId !== undefined || byCode !== undefined) {
+            originalQuantity = byId ?? byCode ?? 0;
+            break;
+          }
+        }
+        if (originalQuantity === 0) {
+          for (const sku of skusToCheck) {
+            const byId = locationId ? originalByLocation.get(`sku__${sku}__id__${locationId}`) : undefined;
+            const byCode = locationCode ? originalByLocation.get(`sku__${sku}__code__${locationCode}`) : undefined;
+            if (byId !== undefined || byCode !== undefined) {
+              originalQuantity = byId ?? byCode ?? 0;
+              break;
+            }
+          }
+        }
         const operatorName = countRow.general_inventory_operators?.full_name || item.assigned_operator_name || "Sin asesor";
         const location = locationById.get(String(countRow.location_id || "")) ||
           findInventoryLocation(locations, countRow.location_code || "");
@@ -3826,10 +3883,9 @@ export default function InventariosPage() {
           recount_operator_id: String(countRow.operator_id),
           recount_operator_name: operatorName,
           recount_quantity: Number(countRow.quantity || 0),
-          recount_original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__id__${String(countRow.location_id || "")}`) ??
-            originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__code__${normalizeLocationCode(countRow.location_code)}`) ??
-            0,
+          recount_original_quantity: originalQuantity,
           recount_counted_at: String(countRow.counted_at || ""),
+          recount_updated_at: String(countRow.updated_at || countRow.counted_at || ""),
         } as RecountDocumentRow;
       })
       .filter(Boolean) as RecountDocumentRow[];
@@ -3849,19 +3905,20 @@ export default function InventariosPage() {
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const pages = [...grouped.values()].map((group, index) => {
       const orderedRows = [...group.rows].sort((a, b) =>
-        new Date(b.recount_counted_at || 0).getTime() - new Date(a.recount_counted_at || 0).getTime()
+        new Date(b.recount_updated_at || b.recount_counted_at || 0).getTime() - new Date(a.recount_updated_at || a.recount_counted_at || 0).getTime()
       );
-      const recountDate = orderedRows[0]?.recount_counted_at
-        ? new Date(orderedRows[0].recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })
+      const recountDate = (orderedRows[0]?.recount_updated_at || orderedRows[0]?.recount_counted_at)
+        ? new Date(orderedRows[0].recount_updated_at || orderedRows[0].recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })
         : generatedAt;
       const rowsHtml = orderedRows.map((row, rowIndex) => `
         <tr>
           <td class="num">${rowIndex + 1}</td>
-          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", hour12: false })) : "-"}</td>
+          <td class="num">${(row.recount_updated_at || row.recount_counted_at) ? escapeHtml(new Date(row.recount_updated_at || row.recount_counted_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", hour12: false })) : "-"}</td>
           <td>${escapeHtml(row.full_location || row.location_code || "Por codigo")}</td>
           <td>${escapeHtml(row.sku)}</td>
           <td>${escapeHtml(row.description)}</td>
           <td>${escapeHtml(row.unit)}</td>
+          <td class="num">${number2(row.system_stock)}</td>
           <td class="num">${number2(row.recount_original_quantity)}</td>
           <td class="num">${number2(row.recount_quantity)}</td>
           <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
@@ -3899,6 +3956,7 @@ export default function InventariosPage() {
                 <th style="width:70px">Codigo</th>
                 <th>Descripcion</th>
                 <th style="width:34px">UM</th>
+                <th style="width:44px" class="num">Stock</th>
                 <th style="width:50px" class="num">Conteo</th>
                 <th style="width:56px" class="num">Reconteo</th>
                 <th style="width:58px">Tipo</th>
