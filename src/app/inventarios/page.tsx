@@ -670,7 +670,7 @@ export default function InventariosPage() {
   }, [recountCandidates, recountColumn, recountType, recountValue]);
 
   const assignedRecountKeys = useMemo(
-    () => new Set(recountItems.filter(row => row.status !== "cancelled").map(row => recountKey(row))),
+    () => new Set(recountItems.map(row => recountKey(row))),
     [recountItems]
   );
 
@@ -2113,7 +2113,7 @@ export default function InventariosPage() {
       setMessage("No se pudo quitar la asignacion: " + error.message);
       return;
     }
-    setMessage("Asignacion quitada. La linea volvio a pendientes de reconteo.");
+    setMessage("Asignacion quitada. La linea queda fuera de pendientes porque ya fue enviada a reconteo.");
     await loadRecountAssignments(selectedSessionId);
   }
 
@@ -3639,7 +3639,7 @@ export default function InventariosPage() {
 
           <div class="signatureGrid">
             <div class="signature">Firma recontador</div>
-            <div class="signature">Firma validador / jefe</div>
+            <div class="signature">Firma lider de tienda</div>
           </div>
         </section>
       `;
@@ -3657,7 +3657,7 @@ export default function InventariosPage() {
     body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
     h1 { margin: 0; font-size: 18px; }
     h2 { margin: 10px 0 5px; font-size: 12px; }
-    .page { min-height: 190mm; }
+    .page { min-height: 190mm; display: flex; flex-direction: column; }
     .pageBreak { break-before: page; }
     .header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
     .muted { color: #64748b; line-height: 1.45; }
@@ -3670,7 +3670,7 @@ export default function InventariosPage() {
     th, td { border: 1px solid #cbd5e1; padding: 3px; line-height: 1.15; vertical-align: top; word-wrap: break-word; }
     th { background: #f1f5f9; text-align: left; font-size: 9px; }
     .num { text-align: right; white-space: nowrap; }
-    .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: 38px; break-inside: avoid; }
+    .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: auto; padding-top: 18mm; break-inside: avoid; page-break-inside: avoid; }
     .signature { border-top: 1px solid #0f172a; padding-top: 22px; text-align: center; font-weight: 800; }
     .toolbar { position: sticky; top: 0; margin-bottom: 8px; padding: 8px; background: white; border-bottom: 1px solid #cbd5e1; }
     button { padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
