@@ -2990,7 +2990,7 @@ export default function InventariosPage() {
       .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
     const originalCodes = new Set(item.original_locations.map(location => normalizeLocationCode(location.location_code)));
 
-    setRecountItems(prev => prev.some(row => row.id === item.id) ? prev : sortOperatorRecountCards([item, ...prev]));
+    setRecountItems(prev => [item, ...prev.filter(row => row.id !== item.id)]);
     setRecountDrafts(prev => ({
       ...prev,
       [item.id]: {
