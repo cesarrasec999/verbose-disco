@@ -1737,13 +1737,15 @@ export default function InventariosPage() {
       }
     }
 
-    const rowsWithLocations = mappedRows.map(row => ({
-      ...row,
-      original_locations: row.recount_type === "surplus"
-        ? (linesByProduct.get(row.product_id) || []).sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }))
-        : [],
-      location_count: row.recount_type === "surplus" ? (linesByProduct.get(row.product_id) || []).length : 0,
-    }));
+    const rowsWithLocations = mappedRows.map(row => {
+      const originalLocations = (linesByProduct.get(row.product_id) || [])
+        .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
+      return {
+        ...row,
+        original_locations: originalLocations,
+        location_count: originalLocations.length,
+      };
+    });
     setRecountItems(rowsWithLocations.filter(row => !["counted", "cancelled"].includes(row.status || "")));
     const itemById = new Map(rowsWithLocations.map(row => [row.id, row]));
     const savedRecords = ((savedRecountsRes.data || []) as any[])
@@ -2837,7 +2839,7 @@ export default function InventariosPage() {
     return recountDrafts[row.id] || {
       productCode: row.sku,
       extraProductCode: "",
-      rows: row.recount_type === "surplus" && row.original_locations.length > 0
+      rows: row.original_locations.length > 0
         ? row.original_locations.map(location => ({
           locationCode: location.location_code,
           quantity: "",
