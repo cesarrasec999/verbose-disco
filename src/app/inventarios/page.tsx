@@ -174,6 +174,7 @@ type RecountDocumentRow = RecountItem & {
   recount_operator_id: string;
   recount_operator_name: string;
   recount_quantity: number;
+  recount_original_quantity: number;
   recount_counted_at: string;
 };
 
@@ -189,6 +190,7 @@ type OperatorRecountRecord = {
   description: string;
   unit: string;
   quantity: number;
+  original_quantity?: number;
   cost_snapshot: number;
   counted_at: string;
   updated_at?: string | null;
@@ -1434,6 +1436,28 @@ export default function InventariosPage() {
     ]);
   }
 
+  async function loadOriginalCountedByProductLocation(sessionId: string, productIds: string[]) {
+    const originalByLocation = new Map<string, number>();
+    const cleanProductIds = [...new Set(productIds.filter(Boolean))];
+    for (let i = 0; i < cleanProductIds.length; i += 100) {
+      const chunk = cleanProductIds.slice(i, i + 100);
+      const { data, error } = await supabase
+        .from("general_inventory_counts")
+        .select("product_id,location_code,quantity")
+        .eq("session_id", sessionId)
+        .in("product_id", chunk);
+      if (error) {
+        setMessage("No se pudo leer conteo original por ubicacion: " + error.message);
+        return originalByLocation;
+      }
+      for (const row of data || []) {
+        const key = `${row.product_id}__${normalizeLocationCode(row.location_code)}`;
+        originalByLocation.set(key, (originalByLocation.get(key) || 0) + Number(row.quantity || 0));
+      }
+    }
+    return originalByLocation;
+  }
+
   async function loadAdminRecountRecords(sessionId: string) {
     const { data, error } = await supabase
       .from("general_inventory_recount_counts")
@@ -1447,6 +1471,8 @@ export default function InventariosPage() {
     }
 
     const countRows = (data || []) as any[];
+    const productIds = [...new Set(countRows.map(row => String(row.product_id || "")).filter(Boolean))];
+    const originalByLocation = await loadOriginalCountedByProductLocation(sessionId, productIds);
     const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
     const itemRows: any[] = [];
     for (let i = 0; i < itemIds.length; i += 100) {
@@ -1504,6 +1530,7 @@ export default function InventariosPage() {
           description: String(countRow.description || item.description || ""),
           unit: String(countRow.unit || item.unit || ""),
           quantity: Number(countRow.quantity || 0),
+          original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__${normalizeLocationCode(countRow.location_code)}`) || 0,
           cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
           counted_at: String(countRow.counted_at || ""),
           updated_at: String(countRow.updated_at || countRow.counted_at || ""),
@@ -3768,9 +3795,12 @@ export default function InventariosPage() {
       return;
     }
 
+    const recountCountRows = (data || []) as any[];
+    const recountProductIds = [...new Set(recountCountRows.map(row => String(row.product_id || "")).filter(Boolean))];
+    const originalByLocation = await loadOriginalCountedByProductLocation(selectedSessionId, recountProductIds);
     const itemById = new Map(recountItems.map(row => [row.id, row]));
     const locationById = new Map(locations.map(row => [row.id, row]));
-    const documentRows = (data || [])
+    const documentRows = recountCountRows
       .map((countRow: any) => {
         const item = itemById.get(String(countRow.recount_item_id));
         if (!item) return null;
@@ -3789,6 +3819,7 @@ export default function InventariosPage() {
           recount_operator_id: String(countRow.operator_id),
           recount_operator_name: operatorName,
           recount_quantity: Number(countRow.quantity || 0),
+          recount_original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__${normalizeLocationCode(countRow.location_code)}`) || 0,
           recount_counted_at: String(countRow.counted_at || ""),
         } as RecountDocumentRow;
       })
@@ -3822,7 +3853,7 @@ export default function InventariosPage() {
           <td>${escapeHtml(row.sku)}</td>
           <td>${escapeHtml(row.description)}</td>
           <td>${escapeHtml(row.unit)}</td>
-          <td class="num">${number2(row.counted_qty)}</td>
+          <td class="num">${number2(row.recount_original_quantity)}</td>
           <td class="num">${number2(row.recount_quantity)}</td>
           <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
         </tr>
@@ -4957,7 +4988,7 @@ export default function InventariosPage() {
                           <td className="p-2 text-center">{record.unit}</td>
                           <td className="p-2 text-center font-black">{number2(record.quantity)}</td>
                           <td className="p-2 text-center">{number2(record.item.system_stock)}</td>
-                          <td className="p-2 text-center">{number2(record.item.counted_qty)}</td>
+                          <td className="p-2 text-center">{number2(record.original_quantity || 0)}</td>
                           <td className="p-2 text-center font-black">{number2(record.item.diff_qty)}</td>
                           <td className="p-2 text-center">{money(record.cost_snapshot)}</td>
                           <td className="p-2 text-center font-black">{money(record.item.value_diff)}</td>
