@@ -3523,7 +3523,7 @@ export default function InventariosPage() {
       .select("id,recount_item_id,operator_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
       .eq("session_id", selectedSessionId)
       .order("operator_id", { ascending: true })
-      .order("counted_at", { ascending: true });
+      .order("counted_at", { ascending: false });
 
     if (error) {
       setMessage("No se pudieron leer los reconteos guardados: " + error.message);
@@ -3565,20 +3565,22 @@ export default function InventariosPage() {
 
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const pages = [...grouped.values()].map((group, index) => {
-      const totalValue = group.rows.reduce((sum, row) => sum + Math.abs(row.value_diff), 0);
-      const rowsHtml = group.rows.map((row, rowIndex) => `
+      const orderedRows = [...group.rows].sort((a, b) =>
+        new Date(b.recount_counted_at || 0).getTime() - new Date(a.recount_counted_at || 0).getTime()
+      );
+      const recountDate = orderedRows[0]?.recount_counted_at
+        ? new Date(orderedRows[0].recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })
+        : generatedAt;
+      const rowsHtml = orderedRows.map((row, rowIndex) => `
         <tr>
           <td class="num">${rowIndex + 1}</td>
-          <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
-          <td>${escapeHtml(row.ticket || "-")}</td>
+          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })) : "-"}</td>
           <td>${escapeHtml(row.location_code || "Por codigo")}</td>
           <td>${escapeHtml(row.sku)}</td>
           <td>${escapeHtml(row.description)}</td>
-          <td class="num">${number2(row.system_stock)}</td>
-          <td class="num">${number2(row.counted_qty)}</td>
           <td class="num">${number2(row.recount_quantity)}</td>
-          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })) : "-"}</td>
-          <td class="num">${money(row.value_diff)}</td>
+          <td>${escapeHtml(row.unit)}</td>
+          <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
         </tr>
       `).join("");
 
@@ -3586,58 +3588,42 @@ export default function InventariosPage() {
         <section class="page ${index > 0 ? "pageBreak" : ""}">
           <div class="header">
             <div>
-              <h1>Acta de asignacion de reconteo</h1>
-              <div class="muted">Inventario general: <strong>${escapeHtml(selectedSession.name)}</strong></div>
+              <h1>Reconteo de la tienda ${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</h1>
+              <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
               <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
-              <div class="muted">Fecha programada: <strong>${escapeHtml(selectedSession.scheduled_date || "-")}</strong></div>
             </div>
             <div class="meta">
+              <div>Fecha de reconteo: <strong>${escapeHtml(recountDate)}</strong></div>
               <div>Generado: <strong>${escapeHtml(generatedAt)}</strong></div>
-              <div>Codigos recontados: <strong>${number2(group.rows.length)}</strong></div>
-              <div>Diferencia valorizada ref.: <strong>${money(totalValue)}</strong></div>
+              <div>Registros: <strong>${number2(orderedRows.length)}</strong></div>
             </div>
           </div>
 
           <div class="operatorBox">
-            <div class="field"><span>Asesor responsable</span><strong>${escapeHtml(group.operatorName)}</strong></div>
-            <div class="field"><span>DNI</span><strong>&nbsp;</strong></div>
-            <div class="field"><span>Hora de entrega</span><strong>&nbsp;</strong></div>
+            <div class="field"><span>Nombre del recontador</span><strong>${escapeHtml(group.operatorName)}</strong></div>
+            <div class="field"><span>Fecha de reconteo</span><strong>${escapeHtml(recountDate)}</strong></div>
+            <div class="field"><span>Total registros</span><strong>${number2(orderedRows.length)}</strong></div>
           </div>
 
-          <h2>Compromiso</h2>
-          <p>
-            Declaro haber realizado los reconteos detallados en esta acta y confirmo que verifique ubicacion,
-            codigo, unidad y cantidad con cuidado, registrando informacion real y completa en el sistema.
-          </p>
-          <p>
-            Entiendo que, si despues del inventario general se detecta un error de conteo, faltante o sobrante
-            post inventario relacionado con mi conteo o reconteo, asumire la responsabilidad correspondiente.
-            Segun evaluacion y decision del jefe de operaciones, esta responsabilidad puede incluir medidas
-            administrativas y/o descuentos permitidos por la empresa y la normativa aplicable.
-          </p>
-
-          <h2>Codigos recontados por el asesor</h2>
+          <h2>Registros guardados</h2>
           <table>
             <thead>
               <tr>
                 <th style="width:26px" class="num">#</th>
-                <th style="width:56px">Tipo</th>
-                <th style="width:54px">Ticket</th>
-                <th style="width:70px">Ubicacion</th>
+                <th style="width:82px" class="num">Fecha</th>
+                <th style="width:78px">Ubicacion</th>
                 <th style="width:70px">Codigo</th>
                 <th>Descripcion</th>
-                <th style="width:48px" class="num">Sistema</th>
-                <th style="width:48px" class="num">Conteo</th>
-                <th style="width:52px" class="num">Reconteo</th>
-                <th style="width:70px" class="num">Fecha</th>
-                <th style="width:62px" class="num">Val.</th>
+                <th style="width:52px" class="num">Cantidad</th>
+                <th style="width:34px">UM</th>
+                <th style="width:58px">Tipo</th>
               </tr>
             </thead>
             <tbody>${rowsHtml}</tbody>
           </table>
 
           <div class="signatureGrid">
-            <div class="signature">Firma asesor responsable</div>
+            <div class="signature">Firma recontador</div>
             <div class="signature">Firma validador / jefe</div>
           </div>
         </section>
@@ -3656,12 +3642,12 @@ export default function InventariosPage() {
     body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
     h1 { margin: 0; font-size: 18px; }
     h2 { margin: 10px 0 5px; font-size: 12px; }
-    p { margin: 5px 0; line-height: 1.35; text-align: justify; }
+    .page { min-height: 270mm; }
     .pageBreak { break-before: page; }
     .header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
     .muted { color: #64748b; line-height: 1.45; }
     .meta { text-align: right; line-height: 1.5; }
-    .operatorBox { display: grid; grid-template-columns: 1.5fr .7fr .8fr; gap: 6px; margin: 10px 0; }
+    .operatorBox { display: grid; grid-template-columns: 1.4fr .9fr .7fr; gap: 6px; margin: 10px 0; }
     .field { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; min-height: 42px; }
     .field span { display: block; color: #64748b; font-size: 9px; font-weight: 800; text-transform: uppercase; }
     .field strong { display: block; margin-top: 4px; font-size: 11px; }
@@ -3669,7 +3655,7 @@ export default function InventariosPage() {
     th, td { border: 1px solid #cbd5e1; padding: 3px; line-height: 1.15; vertical-align: top; word-wrap: break-word; }
     th { background: #f1f5f9; text-align: left; font-size: 9px; }
     .num { text-align: right; white-space: nowrap; }
-    .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: 34px; break-inside: avoid; }
+    .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: 38px; break-inside: avoid; }
     .signature { border-top: 1px solid #0f172a; padding-top: 22px; text-align: center; font-weight: 800; }
     .toolbar { position: sticky; top: 0; margin-bottom: 8px; padding: 8px; background: white; border-bottom: 1px solid #cbd5e1; }
     button { padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
