@@ -1668,6 +1668,11 @@ export default function InventariosPage() {
     })) as RecountItem[]);
 
     const productIds = [...new Set(mappedRows.map(row => row.product_id).filter(Boolean))];
+    const locationsRequest = supabase
+      .from("general_inventory_locations")
+      .select("*")
+      .eq("session_id", sessionId)
+      .eq("is_active", true);
     const [countRowsRes, locationsRes] = productIds.length > 0
       ? await Promise.all([
         supabase
@@ -1675,14 +1680,12 @@ export default function InventariosPage() {
           .select("product_id,location_id,location_code,quantity")
           .eq("session_id", sessionId)
           .in("product_id", productIds),
-        supabase
-          .from("general_inventory_locations")
-          .select("*")
-          .eq("session_id", sessionId)
-          .eq("is_active", true),
+        locationsRequest,
       ])
-      : [{ data: [] }, { data: [] }];
-    const locationById = new Map(((locationsRes.data || []) as InventoryLocation[]).map(row => [row.id, row]));
+      : [{ data: [] }, await locationsRequest];
+    const activeLocations = (locationsRes.data || []) as InventoryLocation[];
+    setLocations(activeLocations);
+    const locationById = new Map(activeLocations.map(row => [row.id, row]));
     const linesByProduct = new Map<string, RecountLocationLine[]>();
     for (const countRow of countRowsRes.data || []) {
       const productId = String(countRow.product_id || "");
@@ -2869,13 +2872,27 @@ export default function InventariosPage() {
       return;
     }
 
+    let availableLocations = locations;
     const locationRows: Array<{ loc: InventoryLocation; quantity: number }> = [];
     for (const line of lines) {
       if (!line.locationCode) {
         setMessage("Completa la ubicacion en todas las lineas del reconteo.");
         return;
       }
-      const loc = findInventoryLocation(locations, line.locationCode);
+      let loc = findInventoryLocation(availableLocations, line.locationCode);
+      if (!loc && navigator.onLine) {
+        const freshLocationsRes = await supabase
+          .from("general_inventory_locations")
+          .select("*")
+          .eq("session_id", selectedSessionId)
+          .eq("is_active", true)
+          .order("location_code");
+        if (!freshLocationsRes.error) {
+          availableLocations = (freshLocationsRes.data || []) as InventoryLocation[];
+          setLocations(availableLocations);
+          loc = findInventoryLocation(availableLocations, line.locationCode);
+        }
+      }
       if (!loc) {
         setMessage(`Ubicacion ${line.locationCode} no autorizada para esta sesion.`);
         return;
