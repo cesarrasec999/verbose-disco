@@ -825,7 +825,7 @@ export default function InventariosPage() {
     const missingValue = rows.filter(row => row.diff < 0).reduce((sum, row) => sum + row.valueDiff, 0);
     const systemValue = rows.reduce((sum, row) => sum + row.system_stock * row.cost, 0);
     const codesWithDifference = surplusCodes + missingCodes;
-    const countedValue = rows.filter(row => row.counted > 0).reduce((sum, row) => sum + row.system_stock * row.cost, 0);
+    const countedValue = rows.reduce((sum, row) => sum + row.counted * row.cost, 0);
     const pendingValue = Math.max(0, systemValue - countedValue);
     return {
       eri: totalCodes > 0 ? Math.round((okCodes / totalCodes) * 100) : 0,
@@ -4807,7 +4807,6 @@ export default function InventariosPage() {
                       <tr>
                         <SortHeader label="Estado" active={recountAssignedSort.key === "status"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("status")} align="left" />
                         <SortHeader label="Tipo" active={recountAssignedSort.key === "recount_type"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("recount_type")} align="left" />
-                        <SortHeader label="Ticket" active={recountAssignedSort.key === "ticket"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("ticket")} align="left" />
                         <SortHeader label="Ubicacion" active={recountAssignedSort.key === "location_code"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("location_code")} align="left" />
                         <SortHeader label="Codigo" active={recountAssignedSort.key === "sku"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("sku")} align="left" />
                         <SortHeader label="Descripcion" active={recountAssignedSort.key === "description"} direction={recountAssignedSort.direction} onClick={() => toggleRecountAssignedSort("description")} align="left" />
@@ -4829,8 +4828,20 @@ export default function InventariosPage() {
                               {row.recount_type === "missing" ? "Faltante" : "Sobrante"}
                             </span>
                           </td>
-                          <td className="p-2 font-black">{row.ticket || "-"}</td>
-                          <td className="p-2">{row.location_code || "Por codigo"}</td>
+                          <td className="p-2">
+                            <div className="max-w-[260px] space-y-1">
+                              {row.original_locations.length > 0 ? row.original_locations.map(location => (
+                                <div key={location.id} className="rounded-lg border bg-slate-50 px-2 py-1">
+                                  <div className="font-black text-slate-900">{location.full_location || location.location_code}</div>
+                                  <div className="text-[10px] font-bold text-slate-500">
+                                    {location.ticket || location.location_code} · {number2(location.counted_qty)} {row.unit}
+                                  </div>
+                                </div>
+                              )) : (
+                                <span>{row.full_location || row.location_code || "Por codigo"}</span>
+                              )}
+                            </div>
+                          </td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
                           <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
                           <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
@@ -4883,7 +4894,7 @@ export default function InventariosPage() {
                       ))}
                       {assignedRecountRows.length === 0 && (
                         <tr>
-                          <td colSpan={13} className="p-8 text-center text-sm text-slate-400">
+                          <td colSpan={12} className="p-8 text-center text-sm text-slate-400">
                             No hay reconteos asignados con ese filtro.
                           </td>
                         </tr>
