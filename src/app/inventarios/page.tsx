@@ -1740,10 +1740,17 @@ export default function InventariosPage() {
     const rowsWithLocations = mappedRows.map(row => {
       const originalLocations = (linesByProduct.get(row.product_id) || [])
         .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
+      const originalTotal = originalLocations.reduce((sum, location) => sum + Number(location.counted_qty || 0), 0);
+      const shouldUseCountedLocations = row.recount_type === "surplus" || originalLocations.length > 0;
+      const countedQty = row.recount_type === "missing" && originalLocations.length > 0 ? originalTotal : row.counted_qty;
+      const diffQty = row.recount_type === "missing" && originalLocations.length > 0 ? countedQty - row.system_stock : row.diff_qty;
       return {
         ...row,
-        original_locations: originalLocations,
-        location_count: originalLocations.length,
+        counted_qty: countedQty,
+        diff_qty: diffQty,
+        value_diff: row.recount_type === "missing" && originalLocations.length > 0 ? diffQty * row.cost_snapshot : row.value_diff,
+        original_locations: shouldUseCountedLocations ? originalLocations : [],
+        location_count: shouldUseCountedLocations ? originalLocations.length : 0,
       };
     });
     setRecountItems(rowsWithLocations.filter(row => !["counted", "cancelled"].includes(row.status || "")));
