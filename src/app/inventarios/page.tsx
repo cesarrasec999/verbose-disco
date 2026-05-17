@@ -170,6 +170,14 @@ type InventoryOperatorDraft = {
   password: string;
 };
 
+type ManualLocationDraft = {
+  location_code: string;
+  zone: string;
+  zone_ref: string;
+  lineal: string;
+  reference: string;
+};
+
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
@@ -187,6 +195,13 @@ function normalizeLocationCode(value: string | number | null | undefined) {
     .replace(/\u00a0/g, " ")
     .trim()
     .toUpperCase();
+}
+
+function buildFullLocationFromParts(parts: Pick<ManualLocationDraft, "zone" | "zone_ref" | "lineal" | "reference">) {
+  return [parts.zone, parts.zone_ref, parts.lineal, parts.reference]
+    .map(value => value.trim())
+    .filter(Boolean)
+    .join(" - ");
 }
 
 function numericLocationKey(value: string | number | null | undefined) {
@@ -358,6 +373,14 @@ export default function InventariosPage() {
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
   const [locationsFile, setLocationsFile] = useState<File | null>(null);
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
+  const [manualLocationDraft, setManualLocationDraft] = useState<ManualLocationDraft>({
+    location_code: "",
+    zone: "",
+    zone_ref: "",
+    lineal: "",
+    reference: "",
+  });
+  const [savingManualLocation, setSavingManualLocation] = useState(false);
 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [savingEmptyLocationId, setSavingEmptyLocationId] = useState<string | null>(null);
@@ -662,6 +685,11 @@ export default function InventariosPage() {
   const emptyLocations = useMemo(
     () => locations.filter(location => location.is_empty),
     [locations]
+  );
+
+  const manualFullLocation = useMemo(
+    () => buildFullLocationFromParts(manualLocationDraft),
+    [manualLocationDraft]
   );
 
   const kpis = useMemo(() => {
@@ -1695,6 +1723,34 @@ export default function InventariosPage() {
     return new Set(rows.map(row => normalizeCode(row.sku).toUpperCase()).filter(Boolean));
   }
 
+  async function loadStockGeneralBySkuForSession(sessionId: string, skus: string[]): Promise<Map<string, StockGeneralRow>> {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const store = stores.find(row => row.id === session?.store_id);
+    const sede = store?.erp_sede || store?.name || session?.store_name || "";
+    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+    const stockBySku = new Map<string, StockGeneralRow>();
+    if (!sede || cleanSkus.length === 0) return stockBySku;
+
+    for (let i = 0; i < cleanSkus.length; i += 100) {
+      const chunk = cleanSkus.slice(i, i + 100);
+      const { data, error } = await supabase
+        .from("stock_general")
+        .select("codsap,stock,costo")
+        .eq("sede", sede)
+        .in("codsap", chunk);
+      if (error) {
+        setMessage("No se pudo cruzar stock actual de la tienda: " + error.message);
+        return stockBySku;
+      }
+      for (const row of (data || []) as StockGeneralRow[]) {
+        const sku = normalizeCode(row.codsap).toUpperCase();
+        if (sku) stockBySku.set(sku, row);
+      }
+    }
+
+    return stockBySku;
+  }
+
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     setSummaryLoading(true);
@@ -1705,6 +1761,10 @@ export default function InventariosPage() {
       loadInventoryNonInventoryRows(sessionId),
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,counted_qty", sessionId, "product_id"),
+    ]);
+    const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
+      ...countRows.map(row => row.sku),
+      ...recountCountRows.map(row => row.sku),
     ]);
 
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
@@ -1754,17 +1814,20 @@ export default function InventariosPage() {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       if (productIdsInSnapshot.has(row.product_id)) continue;
       const counted = countedByProduct.get(row.product_id) || 0;
-      const cost = Number(row.cost_snapshot || 0);
+      const liveStock = liveStockBySku.get(normalizeCode(row.sku).toUpperCase());
+      const systemStock = Number(liveStock?.stock || 0);
+      const cost = Number(liveStock?.costo ?? row.cost_snapshot ?? 0);
+      const diff = counted - systemStock;
       rows.push({
         product_id: row.product_id,
         sku: row.sku,
         description: row.description || "",
         unit: row.unit || "",
-        system_stock: 0,
+        system_stock: systemStock,
         counted,
-        diff: counted,
+        diff,
         cost,
-        valueDiff: counted * cost,
+        valueDiff: diff * cost,
         observation: observations.get(row.product_id) || "",
       });
       productIdsInSnapshot.add(row.product_id);
@@ -2029,6 +2092,75 @@ export default function InventariosPage() {
     if (locationsFileRef.current) locationsFileRef.current.value = "";
     setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
     await loadPreparationData(selectedSessionId);
+  }
+
+  function updateManualLocationDraft(field: keyof ManualLocationDraft, value: string) {
+    setManualLocationDraft(prev => ({ ...prev, [field]: value }));
+  }
+
+  async function saveManualLocation() {
+    if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    if (!selectedSessionId) {
+      setMessage("Selecciona un inventario.");
+      return;
+    }
+
+    const locationCode = normalizeLocationCode(manualLocationDraft.location_code);
+    if (!locationCode) {
+      setMessage("Ingresa el ticket o codigo de ubicacion.");
+      return;
+    }
+
+    const fullLocation = manualFullLocation;
+    const row = {
+      session_id: selectedSessionId,
+      location_code: locationCode,
+      ticket: locationCode,
+      zone: manualLocationDraft.zone.trim() || null,
+      zone_ref: manualLocationDraft.zone_ref.trim() || null,
+      lineal: manualLocationDraft.lineal.trim() || null,
+      reference: manualLocationDraft.reference.trim() || null,
+      full_location: fullLocation || null,
+      description: fullLocation || null,
+      is_active: true,
+    };
+
+    setSavingManualLocation(true);
+    const { data, error } = await supabase
+      .from("general_inventory_locations")
+      .upsert(row, { onConflict: "session_id,location_code" })
+      .select("*")
+      .single();
+    setSavingManualLocation(false);
+
+    if (error) {
+      setMessage("No se pudo guardar la ubicacion: " + error.message);
+      return;
+    }
+
+    if (data) {
+      setLocations(prev => {
+        const nextRow = data as InventoryLocation;
+        const exists = prev.some(location => location.id === nextRow.id || normalizeLocationCode(location.location_code) === locationCode);
+        if (exists) {
+          return prev
+            .map(location => location.id === nextRow.id || normalizeLocationCode(location.location_code) === locationCode ? nextRow : location)
+            .sort((a, b) => String(a.location_code).localeCompare(String(b.location_code), "es", { numeric: true, sensitivity: "base" }));
+        }
+        return [...prev, nextRow].sort((a, b) => String(a.location_code).localeCompare(String(b.location_code), "es", { numeric: true, sensitivity: "base" }));
+      });
+    } else {
+      await loadPreparationData(selectedSessionId);
+    }
+
+    setManualLocationDraft({
+      location_code: "",
+      zone: "",
+      zone_ref: "",
+      lineal: "",
+      reference: "",
+    });
+    setMessage(`Ubicacion ${locationCode} guardada.`);
   }
 
   async function freezeStock() {
@@ -3238,6 +3370,82 @@ export default function InventariosPage() {
     window.location.href = path;
   }
 
+  function renderManualLocationForm() {
+    return (
+      <div className="rounded-2xl border bg-white p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-black text-slate-900">Agregar ubicacion</h3>
+            <p className="text-xs text-slate-500">Mismas columnas del Excel; la ubicacion concatenada se calcula sola.</p>
+          </div>
+          <button
+            onClick={saveManualLocation}
+            disabled={savingManualLocation || !selectedSessionId}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40"
+          >
+            <Save size={16} /> {savingManualLocation ? "Guardando" : "Guardar"}
+          </button>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-black text-slate-500">Ticket / codigo</span>
+            <input
+              value={manualLocationDraft.location_code}
+              onChange={event => updateManualLocationDraft("location_code", event.target.value.toUpperCase())}
+              placeholder="Ej. A-01-03"
+              className="w-full rounded-xl border px-3 py-3 text-sm font-bold uppercase"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black text-slate-500">Ubicacion</span>
+            <input
+              value={manualLocationDraft.zone}
+              onChange={event => updateManualLocationDraft("zone", event.target.value.toUpperCase())}
+              placeholder="Bloque / area"
+              className="w-full rounded-xl border px-3 py-3 text-sm font-bold uppercase"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black text-slate-500">Zona ref</span>
+            <input
+              value={manualLocationDraft.zone_ref}
+              onChange={event => updateManualLocationDraft("zone_ref", event.target.value.toUpperCase())}
+              placeholder="Zona"
+              className="w-full rounded-xl border px-3 py-3 text-sm font-bold uppercase"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black text-slate-500">Lineal</span>
+            <input
+              value={manualLocationDraft.lineal}
+              onChange={event => updateManualLocationDraft("lineal", event.target.value.toUpperCase())}
+              placeholder="Lineal"
+              className="w-full rounded-xl border px-3 py-3 text-sm font-bold uppercase"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-black text-slate-500">Referencia</span>
+            <input
+              value={manualLocationDraft.reference}
+              onChange={event => updateManualLocationDraft("reference", event.target.value.toUpperCase())}
+              placeholder="Referencia"
+              className="w-full rounded-xl border px-3 py-3 text-sm font-bold uppercase"
+            />
+          </label>
+          <label className="block md:col-span-2 xl:col-span-1">
+            <span className="mb-1 block text-xs font-black text-slate-500">Ubicacion concatenada</span>
+            <input
+              value={manualFullLocation}
+              readOnly
+              placeholder="Se genera automaticamente"
+              className="w-full rounded-xl border bg-slate-50 px-3 py-3 text-sm font-bold uppercase text-slate-600"
+            />
+          </label>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
@@ -3368,6 +3576,7 @@ export default function InventariosPage() {
                   </button>
                 </div>
               </div>
+              {renderManualLocationForm()}
               <div className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
                 Los no inventariables se toman automaticamente desde la base de datos global.
               </div>
@@ -3515,6 +3724,8 @@ export default function InventariosPage() {
                       </button>
                     </div>
                   </div>
+
+                  {renderManualLocationForm()}
 
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-800">
                     No inventariables: se excluyen automaticamente usando la base global de codigos no inventariables.
