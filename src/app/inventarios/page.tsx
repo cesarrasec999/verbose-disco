@@ -1448,15 +1448,21 @@ export default function InventariosPage() {
 
     const countRows = (data || []) as any[];
     const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
-    const itemRowsRes = itemIds.length > 0
-      ? await supabase.from("general_inventory_recount_items").select("*").in("id", itemIds)
-      : { data: [], error: null };
-    if (itemRowsRes.error) {
-      setMessage("No se pudieron leer detalles de reconteo: " + itemRowsRes.error.message);
-      return;
+    const itemRows: any[] = [];
+    for (let i = 0; i < itemIds.length; i += 100) {
+      const chunk = itemIds.slice(i, i + 100);
+      const itemRowsRes = await supabase
+        .from("general_inventory_recount_items")
+        .select("*")
+        .in("id", chunk);
+      if (itemRowsRes.error) {
+        setMessage("No se pudieron leer detalles de reconteo: " + itemRowsRes.error.message);
+        return;
+      }
+      itemRows.push(...(itemRowsRes.data || []));
     }
 
-    const itemById = new Map(((itemRowsRes.data || []) as any[]).map(row => [String(row.id), {
+    const itemById = new Map(itemRows.map(row => [String(row.id), {
       id: String(row.id),
       product_id: String(row.product_id || ""),
       sku: String(row.sku || ""),
