@@ -14,7 +14,7 @@ type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
-type RecountManagerTab = "pendientes" | "asignados";
+type RecountManagerTab = "pendientes" | "asignados" | "registros";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "diff" | "cost" | "valueDiff" | "observation";
@@ -469,6 +469,7 @@ export default function InventariosPage() {
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
   const [recountAssignedSort, setRecountAssignedSort] = useState<SortState<RecountAssignedSortKey>>({ key: "ticket", direction: "asc" });
   const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
+  const [recountRecordsQuery, setRecountRecordsQuery] = useState("");
   const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
   const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
   const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
@@ -743,6 +744,18 @@ export default function InventariosPage() {
     () => recountItems.filter(row => row.status !== "cancelled" && row.recount_type === recountType).length,
     [recountItems, recountType]
   );
+
+  const filteredAdminRecountRecords = useMemo(() => {
+    const q = recountRecordsQuery.trim().toLowerCase();
+    return adminRecountRecords.filter(record => {
+      if (record.item.recount_type !== recountType) return false;
+      return !q ||
+        record.sku.toLowerCase().includes(q) ||
+        record.description.toLowerCase().includes(q) ||
+        record.location_code.toLowerCase().includes(q) ||
+        String(record.operator_name || "").toLowerCase().includes(q);
+    });
+  }, [adminRecountRecords, recountRecordsQuery, recountType]);
 
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
@@ -4641,7 +4654,7 @@ export default function InventariosPage() {
                 <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
               </section>
 
-              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-2">
+              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-3">
                 <button
                   onClick={() => setRecountManagerTab("pendientes")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "pendientes" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
@@ -4653,6 +4666,12 @@ export default function InventariosPage() {
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
                   Reconteos asignados ({assignedRecountRows.length})
+                </button>
+                <button
+                  onClick={() => setRecountManagerTab("registros")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >
+                  Registros guardados ({filteredAdminRecountRecords.length})
                 </button>
               </div>
 
@@ -4855,13 +4874,23 @@ export default function InventariosPage() {
               </section>
               )}
 
+              {recountManagerTab === "registros" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="font-black">Registros guardados de reconteo</h3>
                     <p className="text-xs text-slate-500">Edicion y borrado por linea de lo registrado por los recontadores.</p>
                   </div>
-                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{adminRecountRecords.length}</div>
+                  <div className="flex min-w-[260px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                    <input
+                      value={recountRecordsQuery}
+                      onChange={event => setRecountRecordsQuery(event.target.value)}
+                      placeholder="Buscar codigo, descripcion, ubicacion o recontador"
+                      className="min-w-0 flex-1 px-2 text-sm outline-none"
+                    />
+                  </div>
+                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{filteredAdminRecountRecords.length}</div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
                   <table className="w-full min-w-[1460px] text-xs">
@@ -4884,7 +4913,7 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {adminRecountRecords.map(record => (
+                      {filteredAdminRecountRecords.map(record => (
                         <tr key={record.id} className="border-t">
                           <td className="p-2 font-black text-slate-800">{record.operator_name || "Sin recontador"}</td>
                           <td className="p-2 text-center text-slate-500">{record.updated_at ? new Date(record.updated_at).toLocaleString("es-PE") : "-"}</td>
@@ -4909,7 +4938,7 @@ export default function InventariosPage() {
                           </td>
                         </tr>
                       ))}
-                      {adminRecountRecords.length === 0 && (
+                      {filteredAdminRecountRecords.length === 0 && (
                         <tr>
                           <td colSpan={14} className="p-8 text-center text-sm text-slate-400">Aun no hay registros guardados de reconteo.</td>
                         </tr>
@@ -4918,6 +4947,7 @@ export default function InventariosPage() {
                   </table>
                 </div>
               </section>
+              )}
 
               <section className="hidden rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
