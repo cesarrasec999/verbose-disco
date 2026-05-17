@@ -4104,8 +4104,9 @@ export default function InventariosPage() {
                                     )}
                                   </div>
                                   {original && (
-                                    <div className="mb-2 text-[11px] text-slate-500">
-                                      Conteo original: {number2(original.counted_qty)} {row.unit}
+                                    <div className="mb-2 rounded-xl border bg-white px-3 py-2">
+                                      <div className="text-[10px] font-black uppercase text-slate-500">Conteo original</div>
+                                      <div className="text-2xl font-black leading-tight text-slate-950">{number2(original.counted_qty)} <span className="text-sm text-slate-500">{row.unit}</span></div>
                                     </div>
                                   )}
                                   <div className="grid grid-cols-[1fr_110px_42px] gap-2">
