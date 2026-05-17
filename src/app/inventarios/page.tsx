@@ -3042,9 +3042,13 @@ export default function InventariosPage() {
     }
 
     let availableLocations = locations;
-    const locationRows: Array<{ loc: InventoryLocation; quantity: number }> = [];
+    const locationRows: Array<{ loc: InventoryLocation | null; locationCode: string; quantity: number }> = [];
     for (const line of lines) {
       if (!line.locationCode) {
+        if (row.recount_type === "missing" && line.quantity === 0) {
+          locationRows.push({ loc: null, locationCode: "SIN_FISICO", quantity: 0 });
+          continue;
+        }
         setMessage("Completa la ubicacion en todas las lineas del reconteo.");
         return;
       }
@@ -3070,9 +3074,9 @@ export default function InventariosPage() {
         setMessage("Ingresa cantidades validas para todas las lineas del reconteo.");
         return;
       }
-      const existing = locationRows.find(item => normalizeLocationCode(item.loc.location_code) === normalizeLocationCode(loc.location_code));
+      const existing = locationRows.find(item => normalizeLocationCode(item.locationCode) === normalizeLocationCode(loc.location_code));
       if (existing) existing.quantity += line.quantity;
-      else locationRows.push({ loc, quantity: line.quantity });
+      else locationRows.push({ loc, locationCode: loc.location_code, quantity: line.quantity });
     }
 
     setSavingRecountId(row.id);
@@ -3116,12 +3120,12 @@ export default function InventariosPage() {
         return;
       }
 
-      const rows = locationRows.map(({ loc, quantity }) => ({
+      const rows = locationRows.map(({ loc, locationCode, quantity }) => ({
           recount_item_id: row.id,
           session_id: selectedSessionId,
           operator_id: operator.id,
-          location_id: loc.id,
-          location_code: loc.location_code,
+          location_id: loc?.id || null,
+          location_code: loc?.location_code || locationCode,
           product_id: product.id,
           sku: product.sku,
           description: product.description,
@@ -3561,10 +3565,10 @@ export default function InventariosPage() {
       return;
     }
 
-    const grouped = new Map<string, { operatorName: string; rows: RecountDocumentRow[] }>();
+    const grouped = new Map<string, { operatorName: string; recountType: RecountType; rows: RecountDocumentRow[] }>();
     for (const row of documentRows) {
-      const key = row.recount_operator_id;
-      if (!grouped.has(key)) grouped.set(key, { operatorName: row.recount_operator_name, rows: [] });
+      const key = `${row.recount_operator_id}__${row.recount_type}`;
+      if (!grouped.has(key)) grouped.set(key, { operatorName: row.recount_operator_name, recountType: row.recount_type, rows: [] });
       grouped.get(key)?.rows.push(row);
     }
 
@@ -3594,7 +3598,7 @@ export default function InventariosPage() {
         <section class="page ${index > 0 ? "pageBreak" : ""}">
           <div class="header">
             <div>
-              <h1>Reconteo de la tienda ${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</h1>
+              <h1>Reconteo de ${group.recountType === "missing" ? "faltantes" : "sobrantes"} - tienda ${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</h1>
               <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
               <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
             </div>
@@ -3608,7 +3612,7 @@ export default function InventariosPage() {
           <div class="operatorBox">
             <div class="field"><span>Nombre del recontador</span><strong>${escapeHtml(group.operatorName)}</strong></div>
             <div class="field"><span>Fecha de reconteo</span><strong>${escapeHtml(recountDate)}</strong></div>
-            <div class="field"><span>Total registros</span><strong>${number2(orderedRows.length)}</strong></div>
+            <div class="field"><span>Tipo / registros</span><strong>${escapeHtml(group.recountType === "missing" ? "Faltantes" : "Sobrantes")} - ${number2(orderedRows.length)}</strong></div>
           </div>
 
           <h2>Registros guardados</h2>
