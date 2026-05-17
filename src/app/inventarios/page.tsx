@@ -44,6 +44,8 @@ type InventorySession = {
   status: SessionStatus;
   scheduled_date: string | null;
   stock_frozen_at: string | null;
+  finished_at?: string | null;
+  created_at?: string | null;
   frozen_total_value: number;
   notes?: string | null;
   store_name?: string;
@@ -179,6 +181,7 @@ type OperatorRecountRecord = {
   id: string;
   recount_item_id: string;
   operator_id: string;
+  operator_name?: string | null;
   location_id: string | null;
   location_code: string;
   product_id: string;
@@ -188,6 +191,7 @@ type OperatorRecountRecord = {
   quantity: number;
   cost_snapshot: number;
   counted_at: string;
+  updated_at?: string | null;
   item: RecountItem;
 };
 
@@ -294,6 +298,17 @@ function number2(value: number | string | null | undefined) {
   const n = Number(value || 0);
   if (!Number.isFinite(n)) return "0";
   return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
+}
+
+function dateOnly(value: string | null | undefined) {
+  if (!value) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-");
+    return `${day}/${month}/${year}`;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("es-PE");
 }
 
 function escapeHtml(value: unknown) {
@@ -469,6 +484,10 @@ export default function InventariosPage() {
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
+  const [adminRecountRecords, setAdminRecountRecords] = useState<OperatorRecountRecord[]>([]);
+  const [editingAdminRecountRecord, setEditingAdminRecountRecord] = useState<OperatorRecountRecord | null>(null);
+  const [editingAdminRecountLocation, setEditingAdminRecountLocation] = useState("");
+  const [editingAdminRecountQuantity, setEditingAdminRecountQuantity] = useState("");
   const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
@@ -875,6 +894,11 @@ export default function InventariosPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "general_inventory_counts", filter: `session_id=eq.${selectedSessionId}` },
+        reloadInventoryCounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadInventoryCounts
       )
       .subscribe();
@@ -1392,7 +1416,82 @@ export default function InventariosPage() {
       loadRecordsData(sessionId),
       loadSummary(sessionId),
       loadRecountAssignments(sessionId),
+      loadAdminRecountRecords(sessionId),
     ]);
+  }
+
+  async function loadAdminRecountRecords(sessionId: string) {
+    const { data, error } = await supabase
+      .from("general_inventory_recount_counts")
+      .select("*, general_inventory_operators(full_name)")
+      .eq("session_id", sessionId)
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .order("counted_at", { ascending: false });
+    if (error) {
+      setMessage("No se pudieron leer registros de reconteo: " + error.message);
+      return;
+    }
+
+    const countRows = (data || []) as any[];
+    const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
+    const itemRowsRes = itemIds.length > 0
+      ? await supabase.from("general_inventory_recount_items").select("*").in("id", itemIds)
+      : { data: [], error: null };
+    if (itemRowsRes.error) {
+      setMessage("No se pudieron leer detalles de reconteo: " + itemRowsRes.error.message);
+      return;
+    }
+
+    const itemById = new Map(((itemRowsRes.data || []) as any[]).map(row => [String(row.id), {
+      id: String(row.id),
+      product_id: String(row.product_id || ""),
+      sku: String(row.sku || ""),
+      description: String(row.description || ""),
+      unit: String(row.unit || ""),
+      location_id: row.location_id ? String(row.location_id) : null,
+      location_code: row.location_code || null,
+      full_location: row.full_location || null,
+      zone: row.zone || null,
+      zone_ref: row.zone_ref || null,
+      lineal: row.lineal || null,
+      ticket: row.ticket || row.location_code || null,
+      recount_type: row.recount_type,
+      system_stock: Number(row.system_stock || 0),
+      counted_qty: Number(row.counted_qty || 0),
+      diff_qty: Number(row.diff_qty || 0),
+      cost_snapshot: Number(row.cost_snapshot || 0),
+      value_diff: Number(row.value_diff || 0),
+      location_count: Number(row.location_count || 0),
+      original_locations: [],
+      assigned_operator_id: row.assigned_operator_id || null,
+      assigned_operator_name: null,
+      status: row.status || "assigned",
+    } as RecountItem]));
+
+    const rows = countRows
+      .map(countRow => {
+        const item = itemById.get(String(countRow.recount_item_id || ""));
+        if (!item) return null;
+        return {
+          id: String(countRow.id || ""),
+          recount_item_id: String(countRow.recount_item_id || ""),
+          operator_id: String(countRow.operator_id || ""),
+          operator_name: countRow.general_inventory_operators?.full_name || null,
+          location_id: countRow.location_id ? String(countRow.location_id) : null,
+          location_code: String(countRow.location_code || ""),
+          product_id: String(countRow.product_id || item.product_id || ""),
+          sku: String(countRow.sku || item.sku || ""),
+          description: String(countRow.description || item.description || ""),
+          unit: String(countRow.unit || item.unit || ""),
+          quantity: Number(countRow.quantity || 0),
+          cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
+          counted_at: String(countRow.counted_at || ""),
+          updated_at: String(countRow.updated_at || countRow.counted_at || ""),
+          item,
+        } as OperatorRecountRecord;
+      })
+      .filter(Boolean) as OperatorRecountRecord[];
+    setAdminRecountRecords(rows);
   }
 
   async function loadRecountAssignments(sessionId: string) {
@@ -1787,6 +1886,7 @@ export default function InventariosPage() {
           quantity: Number(countRow.quantity || 0),
           cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
           counted_at: String(countRow.counted_at || ""),
+          updated_at: String(countRow.updated_at || countRow.counted_at || ""),
           item,
         } as OperatorRecountRecord;
       })
@@ -2156,6 +2256,100 @@ export default function InventariosPage() {
       .eq("id", item.id);
     setMessage("Reconteo guardado borrado. La linea volvio a asignado.");
     await refreshAfterRecountDelete(selectedSessionId);
+  }
+
+  function openAdminEditRecountRecord(record: OperatorRecountRecord) {
+    setEditingAdminRecountRecord(record);
+    setEditingAdminRecountLocation(record.location_code === "SIN_FISICO" ? "" : record.location_code || "");
+    setEditingAdminRecountQuantity(String(record.quantity || ""));
+  }
+
+  async function saveAdminEditRecountRecord() {
+    if (!editingAdminRecountRecord || !selectedSessionId) return;
+    const qty = Number(editingAdminRecountQuantity);
+    const location = normalizeLocationCode(editingAdminRecountLocation);
+    if (!Number.isFinite(qty) || qty < 0) {
+      setMessage("Ingresa cantidad valida.");
+      return;
+    }
+
+    let loc: InventoryLocation | null = null;
+    let locationCode = location;
+    if (!locationCode) {
+      if (editingAdminRecountRecord.item.recount_type === "missing" && qty === 0) {
+        locationCode = "SIN_FISICO";
+      } else {
+        setMessage("Ingresa ubicacion valida.");
+        return;
+      }
+    } else {
+      loc = findInventoryLocation(locations, locationCode);
+      if (!loc) {
+        setMessage("La ubicacion no esta cargada para esta sesion.");
+        return;
+      }
+      locationCode = loc.location_code;
+    }
+
+    const { error } = await supabase
+      .from("general_inventory_recount_counts")
+      .update({
+        location_id: loc?.id || null,
+        location_code: locationCode,
+        quantity: qty,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", editingAdminRecountRecord.id)
+      .eq("session_id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo actualizar registro de reconteo: " + error.message);
+      return;
+    }
+
+    setEditingAdminRecountRecord(null);
+    setMessage("Registro de reconteo actualizado.");
+    await Promise.all([
+      loadAdminRecountRecords(selectedSessionId),
+      loadSummary(selectedSessionId, true),
+      loadRecountAssignments(selectedSessionId),
+    ]);
+  }
+
+  async function deleteAdminRecountRecord(record: OperatorRecountRecord) {
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
+      return;
+    }
+    const confirmed = window.confirm(`Borrar el registro de reconteo de ${record.sku} en ${record.location_code || "SIN UBICACION"}?`);
+    if (!confirmed) return;
+    const { error } = await supabase
+      .from("general_inventory_recount_counts")
+      .delete()
+      .eq("id", record.id)
+      .eq("session_id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo borrar el registro de reconteo: " + error.message);
+      return;
+    }
+
+    const remaining = await supabase
+      .from("general_inventory_recount_counts")
+      .select("id")
+      .eq("recount_item_id", record.recount_item_id)
+      .limit(1);
+    if (!remaining.error && (remaining.data || []).length === 0) {
+      await supabase
+        .from("general_inventory_recount_items")
+        .update({ status: "assigned", updated_at: new Date().toISOString() })
+        .eq("id", record.recount_item_id);
+    }
+
+    setMessage("Registro de reconteo borrado.");
+    await Promise.all([
+      loadAdminRecountRecords(selectedSessionId),
+      loadSummary(selectedSessionId, true),
+      loadRecountAssignments(selectedSessionId),
+    ]);
   }
 
   async function deleteAllAssignedRecountCounts() {
@@ -3316,7 +3510,6 @@ export default function InventariosPage() {
       STOCK_SISTEMA: row.system_stock,
       CONTEO: row.counted_original,
       RECONTEO: row.recounted_qty ?? "",
-      CONTADO_FINAL: row.counted,
       DIFERENCIA: row.diff,
       COSTO: row.cost,
       DIF_VALORIZADA: row.valueDiff,
@@ -3362,6 +3555,8 @@ export default function InventariosPage() {
     const notCountedRows = summary.filter(row => row.counted <= 0);
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const frozenAt = selectedSession.stock_frozen_at ? new Date(selectedSession.stock_frozen_at).toLocaleString("es-PE") : "-";
+    const reportStartDate = dateOnly(selectedSession.scheduled_date || selectedSession.created_at);
+    const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
     const reportNotes = inventoryNotesDraft.trim() || selectedSession.notes || "";
 
     const diffTable = diffRows.map(row => `
@@ -3373,7 +3568,6 @@ export default function InventariosPage() {
         <td class="num">${number2(row.system_stock)}</td>
         <td class="num">${number2(row.counted_original)}</td>
         <td class="num">${row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
-        <td class="num">${number2(row.counted)}</td>
         <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
         <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
         <td class="num">${row.re_counted ? "Si" : "No"}</td>
@@ -3447,7 +3641,7 @@ export default function InventariosPage() {
       <h1>Informe de inventario general</h1>
       <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
       <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
-      <div class="muted">Fecha programada: <strong>${escapeHtml(selectedSession.scheduled_date || "-")}</strong></div>
+      <div class="muted">Fecha: <strong>${escapeHtml(reportStartDate || "-")} - ${escapeHtml(reportEndDate)}</strong></div>
     </div>
     <div class="meta">
       <div>Estado: <strong>${escapeHtml(statusLabel(selectedSession.status))}</strong></div>
@@ -3502,7 +3696,6 @@ export default function InventariosPage() {
         <th style="width:44px" class="num">Sistema</th>
         <th style="width:42px" class="num">Conteo</th>
         <th style="width:46px" class="num">Reconteo</th>
-        <th style="width:42px" class="num">Final</th>
         <th style="width:40px" class="num">Dif.</th>
         <th style="width:60px" class="num">Valorizado</th>
         <th style="width:46px" class="num">Recontado</th>
@@ -3510,7 +3703,7 @@ export default function InventariosPage() {
       </tr>
     </thead>
     <tbody>
-      ${diffTable || `<tr><td colspan="12" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
+      ${diffTable || `<tr><td colspan="11" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
     </tbody>
   </table>
 
@@ -4662,6 +4855,70 @@ export default function InventariosPage() {
               </section>
               )}
 
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-black">Registros guardados de reconteo</h3>
+                    <p className="text-xs text-slate-500">Edicion y borrado por linea de lo registrado por los recontadores.</p>
+                  </div>
+                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{adminRecountRecords.length}</div>
+                </div>
+                <div className="overflow-auto rounded-xl border">
+                  <table className="w-full min-w-[1460px] text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="p-2 text-left">Contador</th>
+                        <th className="p-2 text-center">Ult. edicion</th>
+                        <th className="p-2 text-left">Tipo</th>
+                        <th className="p-2 text-left">Ubicacion</th>
+                        <th className="p-2 text-left">Codigo</th>
+                        <th className="p-2 text-left">Descripcion</th>
+                        <th className="p-2 text-center">UM</th>
+                        <th className="p-2 text-center">Cantidad</th>
+                        <th className="p-2 text-center">Sistema</th>
+                        <th className="p-2 text-center">Conteo</th>
+                        <th className="p-2 text-center">Dif.</th>
+                        <th className="p-2 text-center">Costo</th>
+                        <th className="p-2 text-center">Dif. val.</th>
+                        <th className="p-2 text-center">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminRecountRecords.map(record => (
+                        <tr key={record.id} className="border-t">
+                          <td className="p-2 font-black text-slate-800">{record.operator_name || "Sin recontador"}</td>
+                          <td className="p-2 text-center text-slate-500">{record.updated_at ? new Date(record.updated_at).toLocaleString("es-PE") : "-"}</td>
+                          <td className={`p-2 font-black ${record.item.recount_type === "missing" ? "text-red-600" : "text-blue-700"}`}>
+                            {record.item.recount_type === "missing" ? "Faltante" : "Sobrante"}
+                          </td>
+                          <td className="p-2 font-black text-slate-800">{record.location_code || "Sin ubicacion"}</td>
+                          <td className="p-2 font-black text-slate-950">{record.sku}</td>
+                          <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{record.description}</td>
+                          <td className="p-2 text-center">{record.unit}</td>
+                          <td className="p-2 text-center font-black">{number2(record.quantity)}</td>
+                          <td className="p-2 text-center">{number2(record.item.system_stock)}</td>
+                          <td className="p-2 text-center">{number2(record.item.counted_qty)}</td>
+                          <td className="p-2 text-center font-black">{number2(record.item.diff_qty)}</td>
+                          <td className="p-2 text-center">{money(record.cost_snapshot)}</td>
+                          <td className="p-2 text-center font-black">{money(record.item.value_diff)}</td>
+                          <td className="p-2">
+                            <div className="flex justify-center gap-1">
+                              <button onClick={() => openAdminEditRecountRecord(record)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                              <button onClick={() => deleteAdminRecountRecord(record)} className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-700">Borrar</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {adminRecountRecords.length === 0 && (
+                        <tr>
+                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">Aun no hay registros guardados de reconteo.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
               <section className="hidden rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Cards de reconteo</h3>
@@ -4972,7 +5229,6 @@ export default function InventariosPage() {
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
                       <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
-                      <SortHeader label="Final" active={summarySort.key === "counted"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted")} />
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
@@ -4990,7 +5246,6 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                         <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
-                        <td className="p-2 text-center font-black">{number2(row.counted)}</td>
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
@@ -5043,6 +5298,45 @@ export default function InventariosPage() {
                 Guardar
               </button>
               <button onClick={() => setEditingAdminCount(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingAdminRecountRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
+          <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h3 className="font-black">Editar registro de reconteo</h3>
+            <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">
+              {editingAdminRecountRecord.sku} - {editingAdminRecountRecord.description}
+            </p>
+            <div className="mt-3 rounded-xl border bg-slate-50 p-3 text-xs text-slate-600">
+              <div><strong>Recontador:</strong> {editingAdminRecountRecord.operator_name || "Sin recontador"}</div>
+              <div><strong>Tipo:</strong> {editingAdminRecountRecord.item.recount_type === "missing" ? "Faltante" : "Sobrante"}</div>
+              <div><strong>UM:</strong> {editingAdminRecountRecord.unit}</div>
+            </div>
+            <div className="mt-4 space-y-3">
+              <input
+                value={editingAdminRecountLocation}
+                onChange={event => setEditingAdminRecountLocation(event.target.value.toUpperCase())}
+                placeholder={editingAdminRecountRecord.item.recount_type === "missing" ? "Ubicacion / vacio si no hay fisico" : "Ubicacion / ticket"}
+                className="w-full rounded-xl border px-3 py-3 text-sm font-bold"
+              />
+              <input
+                value={editingAdminRecountQuantity}
+                onChange={event => setEditingAdminRecountQuantity(event.target.value)}
+                placeholder="Cantidad"
+                inputMode="decimal"
+                className="w-full rounded-xl border px-3 py-3 text-sm font-bold"
+              />
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <button onClick={saveAdminEditRecountRecord} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                Guardar
+              </button>
+              <button onClick={() => setEditingAdminRecountRecord(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
                 Cancelar
               </button>
             </div>
