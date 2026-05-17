@@ -691,6 +691,7 @@ export default function InventariosPage() {
     const q = recountAssignedQuery.trim().toLowerCase();
     const rows = recountItems.filter(row =>
       row.status !== "cancelled" &&
+      row.recount_type === recountType &&
       (!q ||
         row.sku.toLowerCase().includes(q) ||
         row.description.toLowerCase().includes(q) ||
@@ -715,7 +716,12 @@ export default function InventariosPage() {
       const right = recountAssignedSort.key === "assigned_operator_name" ? String(b.assigned_operator_name || "") : b[recountAssignedSort.key];
       return compareValues(left as string | number, right as string | number, recountAssignedSort.direction);
     });
-  }, [recountAssignedQuery, recountAssignedSort, recountItems]);
+  }, [recountAssignedQuery, recountAssignedSort, recountItems, recountType]);
+
+  const activeAssignedRecountCount = useMemo(
+    () => recountItems.filter(row => row.status !== "cancelled" && row.recount_type === recountType).length,
+    [recountItems, recountType]
+  );
 
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
@@ -4419,7 +4425,7 @@ export default function InventariosPage() {
                   </select>
 
                   <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
-                    {unassignedRecountCandidates.length} pendientes | {recountItems.length} asignados
+                    {unassignedRecountCandidates.length} pendientes | {activeAssignedRecountCount} asignados
                   </div>
                 </div>
                 <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
