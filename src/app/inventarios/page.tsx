@@ -1443,7 +1443,7 @@ export default function InventariosPage() {
       const chunk = cleanProductIds.slice(i, i + 100);
       const { data, error } = await supabase
         .from("general_inventory_counts")
-        .select("product_id,location_code,quantity")
+        .select("product_id,location_id,location_code,quantity")
         .eq("session_id", sessionId)
         .in("product_id", chunk);
       if (error) {
@@ -1451,8 +1451,13 @@ export default function InventariosPage() {
         return originalByLocation;
       }
       for (const row of data || []) {
-        const key = `${row.product_id}__${normalizeLocationCode(row.location_code)}`;
-        originalByLocation.set(key, (originalByLocation.get(key) || 0) + Number(row.quantity || 0));
+        const qty = Number(row.quantity || 0);
+        const codeKey = `${row.product_id}__code__${normalizeLocationCode(row.location_code)}`;
+        originalByLocation.set(codeKey, (originalByLocation.get(codeKey) || 0) + qty);
+        if (row.location_id) {
+          const idKey = `${row.product_id}__id__${row.location_id}`;
+          originalByLocation.set(idKey, (originalByLocation.get(idKey) || 0) + qty);
+        }
       }
     }
     return originalByLocation;
@@ -1530,7 +1535,9 @@ export default function InventariosPage() {
           description: String(countRow.description || item.description || ""),
           unit: String(countRow.unit || item.unit || ""),
           quantity: Number(countRow.quantity || 0),
-          original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__${normalizeLocationCode(countRow.location_code)}`) || 0,
+          original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__id__${String(countRow.location_id || "")}`) ??
+            originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__code__${normalizeLocationCode(countRow.location_code)}`) ??
+            0,
           cost_snapshot: Number(countRow.cost_snapshot || item.cost_snapshot || 0),
           counted_at: String(countRow.counted_at || ""),
           updated_at: String(countRow.updated_at || countRow.counted_at || ""),
@@ -3819,7 +3826,9 @@ export default function InventariosPage() {
           recount_operator_id: String(countRow.operator_id),
           recount_operator_name: operatorName,
           recount_quantity: Number(countRow.quantity || 0),
-          recount_original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__${normalizeLocationCode(countRow.location_code)}`) || 0,
+          recount_original_quantity: originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__id__${String(countRow.location_id || "")}`) ??
+            originalByLocation.get(`${String(countRow.product_id || item.product_id || "")}__code__${normalizeLocationCode(countRow.location_code)}`) ??
+            0,
           recount_counted_at: String(countRow.counted_at || ""),
         } as RecountDocumentRow;
       })
