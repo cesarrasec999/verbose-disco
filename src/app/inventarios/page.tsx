@@ -2908,8 +2908,23 @@ export default function InventariosPage() {
 
     setSavingRecountId(row.id);
     try {
+      const normalizedDraftProductCode = normalizeCode(draft.productCode).toUpperCase();
+      const normalizedAssignedSku = normalizeCode(row.sku).toUpperCase();
       const candidates = (await findProductCandidates(draft.productCode)).products;
-      const product = candidates.find(item => item.sku === draft.productCode.trim().toUpperCase()) || (candidates.length === 1 ? candidates[0] : null);
+      const assignedProductFallback: Product | null = normalizedDraftProductCode === normalizedAssignedSku
+        ? {
+          id: row.product_id,
+          sku: row.sku,
+          barcode: null,
+          description: row.description,
+          unit: row.unit,
+          cost: row.cost_snapshot,
+          is_active: true,
+        }
+        : null;
+      const product = candidates.find(item => normalizeCode(item.sku).toUpperCase() === normalizedDraftProductCode) ||
+        (candidates.length === 1 ? candidates[0] : null) ||
+        assignedProductFallback;
       if (!product) {
         setMessage(candidates.length > 1 ? "El codigo del reconteo coincide con varios productos. Ingresa el CodSap exacto." : "Codigo no existe en el maestro ni en codigos de barra.");
         return;
