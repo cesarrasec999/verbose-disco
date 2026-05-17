@@ -693,12 +693,12 @@ export default function InventariosPage() {
   }, [recountCandidates, recountColumn, recountType, recountValue]);
 
   const assignedRecountKeys = useMemo(
-    () => new Set(recountItems.map(row => recountKey(row))),
+    () => new Set(recountItems.map(row => row.product_id)),
     [recountItems]
   );
 
   const unassignedRecountCandidates = useMemo(
-    () => selectedRecountCandidates.filter(row => !assignedRecountKeys.has(recountKey(row))),
+    () => selectedRecountCandidates.filter(row => !assignedRecountKeys.has(row.product_id)),
     [assignedRecountKeys, selectedRecountCandidates]
   );
 
