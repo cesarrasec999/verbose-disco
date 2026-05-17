@@ -3574,12 +3574,13 @@ export default function InventariosPage() {
       const rowsHtml = orderedRows.map((row, rowIndex) => `
         <tr>
           <td class="num">${rowIndex + 1}</td>
-          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" })) : "-"}</td>
+          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })) : "-"}</td>
           <td>${escapeHtml(row.location_code || "Por codigo")}</td>
           <td>${escapeHtml(row.sku)}</td>
           <td>${escapeHtml(row.description)}</td>
-          <td class="num">${number2(row.recount_quantity)}</td>
           <td>${escapeHtml(row.unit)}</td>
+          <td class="num">${number2(row.counted_qty)}</td>
+          <td class="num">${number2(row.recount_quantity)}</td>
           <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
         </tr>
       `).join("");
@@ -3610,12 +3611,13 @@ export default function InventariosPage() {
             <thead>
               <tr>
                 <th style="width:26px" class="num">#</th>
-                <th style="width:82px" class="num">Fecha</th>
-                <th style="width:78px">Ubicacion</th>
+                <th style="width:42px" class="num">Hora</th>
+                <th style="width:72px">Ubicacion</th>
                 <th style="width:70px">Codigo</th>
                 <th>Descripcion</th>
-                <th style="width:52px" class="num">Cantidad</th>
                 <th style="width:34px">UM</th>
+                <th style="width:50px" class="num">Conteo</th>
+                <th style="width:56px" class="num">Reconteo</th>
                 <th style="width:58px">Tipo</th>
               </tr>
             </thead>
@@ -3637,12 +3639,12 @@ export default function InventariosPage() {
   <meta charset="utf-8" />
   <title>Actas de reconteo - ${escapeHtml(selectedSession.name)}</title>
   <style>
-    @page { size: A4 portrait; margin: 10mm; }
+    @page { size: A4 landscape; margin: 10mm; }
     * { box-sizing: border-box; }
     body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
     h1 { margin: 0; font-size: 18px; }
     h2 { margin: 10px 0 5px; font-size: 12px; }
-    .page { min-height: 270mm; }
+    .page { min-height: 190mm; }
     .pageBreak { break-before: page; }
     .header { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
     .muted { color: #64748b; line-height: 1.45; }
