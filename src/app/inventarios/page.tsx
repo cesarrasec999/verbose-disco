@@ -3520,7 +3520,7 @@ export default function InventariosPage() {
 
     const { data, error } = await supabase
       .from("general_inventory_recount_counts")
-      .select("id,recount_item_id,operator_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
+      .select("id,recount_item_id,operator_id,location_id,location_code,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_operators(id,full_name,phone)")
       .eq("session_id", selectedSessionId)
       .order("operator_id", { ascending: true })
       .order("counted_at", { ascending: false });
@@ -3531,14 +3531,19 @@ export default function InventariosPage() {
     }
 
     const itemById = new Map(recountItems.map(row => [row.id, row]));
+    const locationById = new Map(locations.map(row => [row.id, row]));
     const documentRows = (data || [])
       .map((countRow: any) => {
         const item = itemById.get(String(countRow.recount_item_id));
         if (!item) return null;
         const operatorName = countRow.general_inventory_operators?.full_name || item.assigned_operator_name || "Sin asesor";
+        const location = locationById.get(String(countRow.location_id || "")) ||
+          findInventoryLocation(locations, countRow.location_code || "");
+        const fullLocation = location?.full_location || location?.description || countRow.location_code || item.full_location || item.location_code || "Por codigo";
         return {
           ...item,
           location_code: countRow.location_code || item.location_code,
+          full_location: fullLocation,
           sku: countRow.sku || item.sku,
           description: countRow.description || item.description,
           unit: countRow.unit || item.unit,
@@ -3574,8 +3579,8 @@ export default function InventariosPage() {
       const rowsHtml = orderedRows.map((row, rowIndex) => `
         <tr>
           <td class="num">${rowIndex + 1}</td>
-          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })) : "-"}</td>
-          <td>${escapeHtml(row.location_code || "Por codigo")}</td>
+          <td class="num">${row.recount_counted_at ? escapeHtml(new Date(row.recount_counted_at).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", hour12: false })) : "-"}</td>
+          <td>${escapeHtml(row.full_location || row.location_code || "Por codigo")}</td>
           <td>${escapeHtml(row.sku)}</td>
           <td>${escapeHtml(row.description)}</td>
           <td>${escapeHtml(row.unit)}</td>
@@ -3611,8 +3616,8 @@ export default function InventariosPage() {
             <thead>
               <tr>
                 <th style="width:26px" class="num">#</th>
-                <th style="width:42px" class="num">Hora</th>
-                <th style="width:72px">Ubicacion</th>
+                <th style="width:40px" class="num">Hora</th>
+                <th style="width:145px">Ubicacion</th>
                 <th style="width:70px">Codigo</th>
                 <th>Descripcion</th>
                 <th style="width:34px">UM</th>
