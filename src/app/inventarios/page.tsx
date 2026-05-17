@@ -17,7 +17,7 @@ type OperatorMode = "conteo" | "reconteo";
 type RecountManagerTab = "pendientes" | "asignados";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
-type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "diff" | "cost" | "valueDiff" | "observation";
+type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "diff" | "cost" | "valueDiff" | "observation";
 type RecountAssignedSortKey = "status" | "recount_type" | "ticket" | "location_code" | "sku" | "description" | "system_stock" | "counted_qty" | "diff_qty" | "value_diff" | "assigned_operator_name";
 type SortState<T extends string> = { key: T; direction: SortDirection };
 
@@ -112,6 +112,8 @@ type SummaryRow = {
   unit: string;
   system_stock: number;
   counted: number;
+  counted_original: number;
+  recounted_qty: number | null;
   diff: number;
   cost: number;
   valueDiff: number;
@@ -550,8 +552,8 @@ export default function InventariosPage() {
       String(row.observation || "").toLowerCase().includes(q)
     );
     return rows.sort((a, b) => {
-      const left = summarySort.key === "observation" ? String(a.observation || "") : a[summarySort.key];
-      const right = summarySort.key === "observation" ? String(b.observation || "") : b[summarySort.key];
+      const left = summarySort.key === "observation" ? String(a.observation || "") : a[summarySort.key] ?? "";
+      const right = summarySort.key === "observation" ? String(b.observation || "") : b[summarySort.key] ?? "";
       return compareValues(left, right, summarySort.direction);
     });
   }, [summary, summaryQuery, summarySort]);
@@ -1917,10 +1919,10 @@ export default function InventariosPage() {
     ]);
 
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const countedByProduct = new Map<string, number>();
+    const originalCountedByProduct = new Map<string, number>();
     for (const row of countRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
+      originalCountedByProduct.set(row.product_id, (originalCountedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
     const recountTotalByProduct = new Map<string, number>();
@@ -1931,9 +1933,6 @@ export default function InventariosPage() {
         recountTotalByProduct.set(item.product_id, (recountTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
-    for (const [productId, recountTotal] of recountTotalByProduct) {
-      countedByProduct.set(productId, recountTotal);
-    }
 
     const observations = new Map<string, string>();
     for (const row of observationRows) observations.set(row.product_id, row.observation || "");
@@ -1942,7 +1941,9 @@ export default function InventariosPage() {
     const rows: SummaryRow[] = [];
     for (const snap of snapshotRows) {
       if (nonInventorySkus.has(normalizeCode(snap.sku).toUpperCase())) continue;
-      const counted = countedByProduct.get(snap.product_id) || 0;
+      const countedOriginal = originalCountedByProduct.get(snap.product_id) || 0;
+      const recountedQty = recountTotalByProduct.has(snap.product_id) ? recountTotalByProduct.get(snap.product_id)! : null;
+      const counted = recountedQty ?? countedOriginal;
       const systemStock = Number(snap.system_stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
       productIdsInSnapshot.add(snap.product_id);
@@ -1955,6 +1956,8 @@ export default function InventariosPage() {
         unit: snap.unit || "",
         system_stock: systemStock,
         counted,
+        counted_original: countedOriginal,
+        recounted_qty: recountedQty,
         diff,
         cost,
         valueDiff: diff * cost,
@@ -1966,7 +1969,9 @@ export default function InventariosPage() {
     for (const row of countRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       if (productIdsInSnapshot.has(row.product_id)) continue;
-      const counted = countedByProduct.get(row.product_id) || 0;
+      const countedOriginal = originalCountedByProduct.get(row.product_id) || 0;
+      const recountedQty = recountTotalByProduct.has(row.product_id) ? recountTotalByProduct.get(row.product_id)! : null;
+      const counted = recountedQty ?? countedOriginal;
       const liveStock = liveStockBySku.get(normalizeCode(row.sku).toUpperCase());
       const systemStock = Number(liveStock?.stock || 0);
       const cost = Number(liveStock?.costo ?? row.cost_snapshot ?? 0);
@@ -1978,6 +1983,8 @@ export default function InventariosPage() {
         unit: row.unit || "",
         system_stock: systemStock,
         counted,
+        counted_original: countedOriginal,
+        recounted_qty: recountedQty,
         diff,
         cost,
         valueDiff: diff * cost,
@@ -3307,7 +3314,9 @@ export default function InventariosPage() {
       DESCRIPCION: row.description,
       UM: row.unit,
       STOCK_SISTEMA: row.system_stock,
-      CONTADO: row.counted,
+      CONTEO: row.counted_original,
+      RECONTEO: row.recounted_qty ?? "",
+      CONTADO_FINAL: row.counted,
       DIFERENCIA: row.diff,
       COSTO: row.cost,
       DIF_VALORIZADA: row.valueDiff,
@@ -3362,6 +3371,8 @@ export default function InventariosPage() {
         <td>${escapeHtml(row.unit)}</td>
         <td class="num">${money(row.cost)}</td>
         <td class="num">${number2(row.system_stock)}</td>
+        <td class="num">${number2(row.counted_original)}</td>
+        <td class="num">${row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
         <td class="num">${number2(row.counted)}</td>
         <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
         <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
@@ -3487,7 +3498,9 @@ export default function InventariosPage() {
         <th style="width:28px">UM</th>
         <th style="width:56px" class="num">Costo</th>
         <th style="width:50px" class="num">Sistema</th>
-        <th style="width:50px" class="num">Contado</th>
+        <th style="width:48px" class="num">Conteo</th>
+        <th style="width:52px" class="num">Reconteo</th>
+        <th style="width:50px" class="num">Final</th>
         <th style="width:45px" class="num">Dif.</th>
         <th style="width:66px" class="num">Valorizado</th>
         <th style="width:52px" class="num">Recontado</th>
@@ -3495,7 +3508,7 @@ export default function InventariosPage() {
       </tr>
     </thead>
     <tbody>
-      ${diffTable || `<tr><td colspan="10" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
+      ${diffTable || `<tr><td colspan="12" style="text-align:center;color:#64748b">Sin diferencias para mostrar.</td></tr>`}
     </tbody>
   </table>
 
@@ -4948,14 +4961,16 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className="w-full min-w-[1200px] text-sm">
+                <table className="w-full min-w-[1320px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
                       <SortHeader label="Descripción" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => toggleSummarySort("description")} align="left" />
                       <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
-                      <SortHeader label="Contado" active={summarySort.key === "counted"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted")} />
+                      <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
+                      <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
+                      <SortHeader label="Final" active={summarySort.key === "counted"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted")} />
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
@@ -4971,6 +4986,8 @@ export default function InventariosPage() {
                         <td className="max-w-sm whitespace-normal break-words p-2">{row.description}</td>
                         <td className="p-2 text-center">{row.unit}</td>
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
+                        <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
+                        <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
                         <td className="p-2 text-center font-black">{number2(row.counted)}</td>
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
