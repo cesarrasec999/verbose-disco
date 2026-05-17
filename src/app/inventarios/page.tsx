@@ -175,6 +175,7 @@ type RecountDocumentRow = RecountItem & {
 
 type RecountDraft = {
   productCode: string;
+  extraProductCode: string;
   rows: Array<{
     locationCode: string;
     quantity: string;
@@ -2784,6 +2785,7 @@ export default function InventariosPage() {
   function recountDraftFor(row: RecountItem) {
     return recountDrafts[row.id] || {
       productCode: row.sku,
+      extraProductCode: "",
       rows: row.recount_type === "surplus" && row.original_locations.length > 0
         ? row.original_locations.map(location => ({
           locationCode: location.location_code,
@@ -2796,11 +2798,12 @@ export default function InventariosPage() {
     };
   }
 
-  function updateRecountDraft(rowId: string, field: "productCode", value: string) {
+  function updateRecountDraft(rowId: string, field: "productCode" | "extraProductCode", value: string) {
     setRecountDrafts(prev => ({
       ...prev,
       [rowId]: {
         productCode: field === "productCode" ? value : prev[rowId]?.productCode || "",
+        extraProductCode: field === "extraProductCode" ? value : prev[rowId]?.extraProductCode || "",
         rows: prev[rowId]?.rows || [],
       },
     }));
@@ -2831,6 +2834,10 @@ export default function InventariosPage() {
         },
       };
     });
+  }
+
+  function clearRecountDraftLineQuantity(row: RecountItem, index: number) {
+    updateRecountDraftLine(row, index, "quantity", "0");
   }
 
   function removeRecountDraftLine(row: RecountItem, index: number) {
@@ -4047,19 +4054,20 @@ export default function InventariosPage() {
                       </span>
                     </div>
                     <div className="space-y-2 text-xs text-slate-600">
-                      <div className="rounded-xl border bg-white p-3">
+                      <div className="rounded-xl border bg-white p-3 text-sm font-black text-slate-800">
+                        Ubicaciones contadas: {row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)}
+                      </div>
+                      <div className="hidden">
                         <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
                         <div className="truncate">{row.full_location || "Reconteo por código"}</div>
                         {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <MiniMetric label="Sistema" value={row.system_stock} />
-                        <MiniMetric label="Contado" value={row.counted_qty} />
-                        <MiniMetric label="Dif." value={row.diff_qty} />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <MiniMetric label="Ubicaciones" value={row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)} />
-                        <MiniMetric label="Dif. val." value={money(row.value_diff)} />
+                      <div className="grid grid-cols-5 gap-1 rounded-xl border bg-white p-2 text-center">
+                        <MiniMetric label="Sistema" value={row.system_stock} compact />
+                        <MiniMetric label="Contado" value={row.counted_qty} compact />
+                        <MiniMetric label="Dif." value={row.diff_qty} compact />
+                        <MiniMetric label="Ubics." value={row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)} compact />
+                        <MiniMetric label="Dif. val." value={money(row.value_diff)} compact />
                       </div>
                       <div className="grid gap-2">
                         <div>
@@ -4078,8 +4086,17 @@ export default function InventariosPage() {
                               const original = row.original_locations.find(item => normalizeLocationCode(item.location_code) === normalizeLocationCode(line.locationCode));
                               return (
                                 <div key={`${row.id}-${index}`} className="rounded-lg border bg-slate-50 p-2">
-                                  <div className="mb-1 flex items-center justify-between gap-2">
-                                    <span className="font-black text-slate-700">{line.isExtra ? "Ubicacion extra" : `Linea ${index + 1}`}</span>
+                                  <div className="mb-1 flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="whitespace-normal break-words text-base font-black text-slate-950">
+                                        {line.isExtra ? "Ubicacion extra" : original?.full_location || line.locationCode || "Ubicacion"}
+                                      </div>
+                                      {!line.isExtra && (
+                                        <div className="mt-0.5 text-[11px] font-bold text-slate-500">
+                                          Ticket: {original?.location_code || line.locationCode || "-"}
+                                        </div>
+                                      )}
+                                    </div>
                                     {line.isExtra && (
                                       <button onClick={() => removeRecountDraftLine(row, index)} className="rounded-md border px-2 py-1 text-[11px] font-black text-red-600">
                                         Quitar
@@ -4088,8 +4105,7 @@ export default function InventariosPage() {
                                   </div>
                                   {original && (
                                     <div className="mb-2 text-[11px] text-slate-500">
-                                      Original: {original.location_code} - {number2(original.counted_qty)} {row.unit}
-                                      {original.full_location ? ` - ${original.full_location}` : ""}
+                                      Conteo original: {number2(original.counted_qty)} {row.unit}
                                     </div>
                                   )}
                                   <div className="grid grid-cols-[1fr_110px_42px] gap-2">
@@ -4099,6 +4115,11 @@ export default function InventariosPage() {
                                       <QrCode size={18} />
                                     </button>
                                   </div>
+                                  {!line.isExtra && (
+                                    <button onClick={() => clearRecountDraftLineQuantity(row, index)} className="mt-2 w-full rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-black text-red-700">
+                                      No se encontro en esta ubicacion
+                                    </button>
+                                  )}
                                 </div>
                               );
                             })}
@@ -4803,12 +4824,12 @@ function SortHeader({ label, active, direction, onClick, align = "center" }: { l
   );
 }
 
-function MiniMetric({ label, value }: { label: string; value: string | number }) {
+function MiniMetric({ label, value, compact = false }: { label: string; value: string | number; compact?: boolean }) {
   const displayValue = typeof value === "number" ? number2(value) : value;
   return (
-    <div className="rounded-xl bg-white p-2 text-center">
-      <div className="text-sm font-black text-slate-950">{displayValue}</div>
-      <div className="text-[11px] font-bold text-slate-500">{label}</div>
+    <div className={`rounded-xl bg-white text-center ${compact ? "p-1" : "p-2"}`}>
+      <div className={`${compact ? "text-xs" : "text-sm"} font-black text-slate-950`}>{displayValue}</div>
+      <div className="text-[10px] font-bold text-slate-500">{label}</div>
     </div>
   );
 }
