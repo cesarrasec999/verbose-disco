@@ -115,6 +115,7 @@ type SummaryRow = {
   diff: number;
   cost: number;
   valueDiff: number;
+  re_counted: boolean;
   observation?: string | null;
 };
 
@@ -122,6 +123,18 @@ type RecountType = "surplus" | "missing";
 type RecountColumn = "zone";
 type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
 type ProductLookupMode = "typed" | "scan";
+
+type RecountLocationLine = {
+  id: string;
+  location_id: string | null;
+  location_code: string;
+  full_location: string | null;
+  zone: string | null;
+  zone_ref: string | null;
+  lineal: string | null;
+  ticket: string | null;
+  counted_qty: number;
+};
 
 type RecountCandidate = {
   product_id: string;
@@ -141,6 +154,8 @@ type RecountCandidate = {
   diff_qty: number;
   cost_snapshot: number;
   value_diff: number;
+  location_count: number;
+  original_locations: RecountLocationLine[];
 };
 
 type RecountItem = RecountCandidate & {
@@ -159,9 +174,12 @@ type RecountDocumentRow = RecountItem & {
 };
 
 type RecountDraft = {
-  locationCode: string;
   productCode: string;
-  quantity: string;
+  rows: Array<{
+    locationCode: string;
+    quantity: string;
+    isExtra?: boolean;
+  }>;
 };
 
 type InventoryOperatorDraft = {
@@ -325,30 +343,30 @@ function compareValues(a: string | number, b: string | number, direction: SortDi
   return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }) * multiplier;
 }
 
-function recountKey(row: Pick<RecountCandidate, "product_id" | "location_code" | "recount_type">) {
-  return `${row.product_id}__${row.location_code || "FALTANTE"}__${row.recount_type}`;
+function recountKey(row: Pick<RecountCandidate, "product_id" | "recount_type">) {
+  return `${row.product_id}__${row.recount_type}`;
 }
 
-function sortRecountAssignmentLines<T extends Pick<RecountCandidate, "value_diff" | "ticket" | "location_code" | "sku">>(rows: T[]) {
+function sortRecountAssignmentLines<T extends Pick<RecountCandidate, "value_diff" | "recount_type" | "sku">>(rows: T[]) {
   return [...rows].sort((a, b) => {
-    const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
-    if (ticketCompare !== 0) return ticketCompare;
-    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    const aValue = Number(a.value_diff || 0);
+    const bValue = Number(b.value_diff || 0);
+    const valueCompare = a.recount_type === "missing"
+      ? aValue - bValue
+      : bValue - aValue;
     if (valueCompare !== 0) return valueCompare;
-    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
-    if (locationCompare !== 0) return locationCompare;
     return String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
   });
 }
 
-function sortOperatorRecountCards<T extends Pick<RecountCandidate, "location_code" | "ticket" | "sku" | "value_diff">>(rows: T[]) {
+function sortOperatorRecountCards<T extends Pick<RecountCandidate, "sku" | "value_diff" | "recount_type">>(rows: T[]) {
   return [...rows].sort((a, b) => {
-    const ticketCompare = String(a.ticket || "").localeCompare(String(b.ticket || ""), "es", { numeric: true, sensitivity: "base" });
-    if (ticketCompare !== 0) return ticketCompare;
-    const valueCompare = Math.abs(Number(b.value_diff || 0)) - Math.abs(Number(a.value_diff || 0));
+    const aValue = Number(a.value_diff || 0);
+    const bValue = Number(b.value_diff || 0);
+    const valueCompare = a.recount_type === "missing"
+      ? aValue - bValue
+      : bValue - aValue;
     if (valueCompare !== 0) return valueCompare;
-    const locationCompare = String(a.location_code || "").localeCompare(String(b.location_code || ""), "es", { numeric: true, sensitivity: "base" });
-    if (locationCompare !== 0) return locationCompare;
     const skuCompare = String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
     if (skuCompare !== 0) return skuCompare;
     return 0;
@@ -425,7 +443,6 @@ export default function InventariosPage() {
   const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
   const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
-  const [operatorRecountContextItems, setOperatorRecountContextItems] = useState<RecountItem[]>([]);
   const [recountType, setRecountType] = useState<RecountType>("surplus");
   const recountColumn: RecountColumn = "zone";
   const [recountValue, setRecountValue] = useState("");
@@ -529,11 +546,31 @@ export default function InventariosPage() {
       const summaryRow = summaryByProduct.get(row.product_id);
       if (!summaryRow || summaryRow.diff <= 0) continue;
       const location = locationById.get(row.location_id) || null;
-      const key = `${row.product_id}__${row.location_id || row.location_code}`;
+      const key = row.product_id;
+      const qty = Number(row.quantity || 0);
       const current = surplusGroups.get(key);
       if (current) {
-        current.counted_qty += Number(row.quantity || 0);
+        current.counted_qty += qty;
         current.value_diff = summaryRow.valueDiff;
+        current.diff_qty = summaryRow.diff;
+        const lineKey = normalizeLocationCode(row.location_code || location?.location_code || "");
+        const existingLine = current.original_locations.find(item => normalizeLocationCode(item.location_code) === lineKey);
+        if (existingLine) {
+          existingLine.counted_qty += qty;
+        } else {
+          current.original_locations.push({
+            id: `${row.product_id}__${lineKey || current.original_locations.length}`,
+            location_id: row.location_id || location?.id || null,
+            location_code: row.location_code || location?.location_code || "",
+            full_location: location?.full_location || location?.description || null,
+            zone: location?.zone || null,
+            zone_ref: location?.zone_ref || null,
+            lineal: location?.lineal || null,
+            ticket: location?.ticket || row.location_code,
+            counted_qty: qty,
+          });
+          current.location_count = current.original_locations.length;
+        }
         continue;
       }
       surplusGroups.set(key, {
@@ -542,18 +579,30 @@ export default function InventariosPage() {
         description: row.description,
         unit: row.unit,
         location_id: row.location_id,
-        location_code: row.location_code,
+        location_code: null,
         full_location: location?.full_location || location?.description || null,
         zone: location?.zone || null,
         zone_ref: location?.zone_ref || null,
         lineal: location?.lineal || null,
-        ticket: location?.ticket || row.location_code,
+        ticket: "CODIGO COMPLETO",
         recount_type: "surplus",
         system_stock: summaryRow.system_stock,
-        counted_qty: Number(row.quantity || 0),
+        counted_qty: qty,
         diff_qty: summaryRow.diff,
         cost_snapshot: Number(row.cost_snapshot || summaryRow.cost || 0),
         value_diff: summaryRow.valueDiff,
+        location_count: 1,
+        original_locations: [{
+          id: `${row.product_id}__${normalizeLocationCode(row.location_code || location?.location_code || "") || "SIN_UBICACION"}`,
+          location_id: row.location_id || location?.id || null,
+          location_code: row.location_code || location?.location_code || "",
+          full_location: location?.full_location || location?.description || null,
+          zone: location?.zone || null,
+          zone_ref: location?.zone_ref || null,
+          lineal: location?.lineal || null,
+          ticket: location?.ticket || row.location_code,
+          counted_qty: qty,
+        }],
       });
     }
 
@@ -577,6 +626,8 @@ export default function InventariosPage() {
         diff_qty: row.diff,
         cost_snapshot: row.cost,
         value_diff: row.valueDiff,
+        location_count: 0,
+        original_locations: [],
       }));
 
     return sortRecountAssignmentLines([...surplusGroups.values(), ...missingRows]);
@@ -593,7 +644,10 @@ export default function InventariosPage() {
     if (recountType === "missing") {
       return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "missing"));
     }
-    return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "surplus" && String(row[recountColumn] || "") === recountValue));
+    return sortRecountAssignmentLines(recountCandidates.filter(row =>
+      row.recount_type === "surplus" &&
+      (!recountValue || row.original_locations.some(location => String(location[recountColumn] || "") === recountValue))
+    ));
   }, [recountCandidates, recountColumn, recountType, recountValue]);
 
   const assignedRecountKeys = useMemo(
@@ -1087,11 +1141,14 @@ export default function InventariosPage() {
       await validateScannedProduct(clean);
     }
     if (target === "recount_location" && activeRecountScanId) {
-      updateRecountDraft(activeRecountScanId, "locationCode", clean.toUpperCase());
+      const [rowId, indexText] = activeRecountScanId.split(":");
+      const item = recountItems.find(row => row.id === rowId);
+      if (item) updateRecountDraftLine(item, Number(indexText || 0), "locationCode", clean.toUpperCase());
       setMessage("Ubicacion de reconteo escaneada.");
     }
     if (target === "recount_product" && activeRecountScanId) {
-      updateRecountDraft(activeRecountScanId, "productCode", clean);
+      const [rowId] = activeRecountScanId.split(":");
+      updateRecountDraft(rowId, "productCode", clean);
       setMessage("Codigo de reconteo escaneado.");
     }
   }
@@ -1132,8 +1189,8 @@ export default function InventariosPage() {
     setScannerTarget(target);
   }
 
-  function openRecountScanner(rowId: string, target: "recount_location" | "recount_product") {
-    activeRecountScanIdRef.current = rowId;
+  function openRecountScanner(rowId: string, target: "recount_location" | "recount_product", lineIndex = 0) {
+    activeRecountScanIdRef.current = `${rowId}:${lineIndex}`;
     openScanner(target);
   }
 
@@ -1397,6 +1454,8 @@ export default function InventariosPage() {
       diff_qty: Number(row.diff_qty || 0),
       cost_snapshot: Number(row.cost_snapshot || 0),
       value_diff: Number(row.value_diff || 0),
+      location_count: Number(row.location_count || 0),
+      original_locations: [],
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operatorLabelById.get(row.assigned_operator_id) || null,
       status: row.status || "assigned",
@@ -1600,47 +1659,63 @@ export default function InventariosPage() {
       diff_qty: Number(row.diff_qty || 0),
       cost_snapshot: Number(row.cost_snapshot || 0),
       value_diff: Number(row.value_diff || 0),
+      location_count: Number(row.location_count || 0),
+      original_locations: [],
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operator?.full_name || null,
       status: row.status || "assigned",
     })) as RecountItem[]);
-    setRecountItems(mappedRows);
 
-    const surplusProductIds = [...new Set(mappedRows.filter(row => row.recount_type === "surplus").map(row => row.product_id))];
-    if (surplusProductIds.length === 0) {
-      setOperatorRecountContextItems([]);
-      return;
+    const productIds = [...new Set(mappedRows.map(row => row.product_id).filter(Boolean))];
+    const [countRowsRes, locationsRes] = productIds.length > 0
+      ? await Promise.all([
+        supabase
+          .from("general_inventory_counts")
+          .select("product_id,location_id,location_code,quantity")
+          .eq("session_id", sessionId)
+          .in("product_id", productIds),
+        supabase
+          .from("general_inventory_locations")
+          .select("*")
+          .eq("session_id", sessionId)
+          .eq("is_active", true),
+      ])
+      : [{ data: [] }, { data: [] }];
+    const locationById = new Map(((locationsRes.data || []) as InventoryLocation[]).map(row => [row.id, row]));
+    const linesByProduct = new Map<string, RecountLocationLine[]>();
+    for (const countRow of countRowsRes.data || []) {
+      const productId = String(countRow.product_id || "");
+      const loc = locationById.get(String(countRow.location_id || ""));
+      const code = normalizeLocationCode(countRow.location_code || loc?.location_code || "");
+      if (!productId || !code) continue;
+      if (!linesByProduct.has(productId)) linesByProduct.set(productId, []);
+      const rows = linesByProduct.get(productId)!;
+      const existing = rows.find(row => normalizeLocationCode(row.location_code) === code);
+      if (existing) {
+        existing.counted_qty += Number(countRow.quantity || 0);
+      } else {
+        rows.push({
+          id: `${productId}__${code}`,
+          location_id: String(countRow.location_id || loc?.id || "") || null,
+          location_code: code,
+          full_location: loc?.full_location || loc?.description || null,
+          zone: loc?.zone || null,
+          zone_ref: loc?.zone_ref || null,
+          lineal: loc?.lineal || null,
+          ticket: loc?.ticket || code,
+          counted_qty: Number(countRow.quantity || 0),
+        });
+      }
     }
 
-    const contextRes = await supabase
-      .from("general_inventory_recount_items")
-      .select("*")
-      .eq("session_id", sessionId)
-      .eq("recount_type", "surplus")
-      .in("product_id", surplusProductIds);
-    setOperatorRecountContextItems(sortOperatorRecountCards((contextRes.data || []).map((row: any) => ({
-      id: row.id,
-      product_id: row.product_id,
-      sku: row.sku,
-      description: row.description || "",
-      unit: row.unit || "",
-      location_id: row.location_id,
-      location_code: row.location_code,
-      full_location: row.full_location || null,
-      zone: row.zone || null,
-      zone_ref: row.zone_ref || null,
-      lineal: row.lineal || null,
-      ticket: row.ticket || row.location_code || null,
-      recount_type: row.recount_type,
-      system_stock: Number(row.system_stock || 0),
-      counted_qty: Number(row.counted_qty || 0),
-      diff_qty: Number(row.diff_qty || 0),
-      cost_snapshot: Number(row.cost_snapshot || 0),
-      value_diff: Number(row.value_diff || 0),
-      assigned_operator_id: row.assigned_operator_id,
-      assigned_operator_name: null,
-      status: row.status || "assigned",
-    })) as RecountItem[]));
+    const rowsWithLocations = mappedRows.map(row => ({
+      ...row,
+      original_locations: row.recount_type === "surplus"
+        ? (linesByProduct.get(row.product_id) || []).sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }))
+        : [],
+      location_count: row.recount_type === "surplus" ? (linesByProduct.get(row.product_id) || []).length : 0,
+    }));
+    setRecountItems(rowsWithLocations);
   }
 
   async function loadAllCounts(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
@@ -1760,7 +1835,7 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
       loadInventoryNonInventoryRows(sessionId),
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
-      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,counted_qty", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status", sessionId, "product_id"),
     ]);
     const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
       ...countRows.map(row => row.sku),
@@ -1774,13 +1849,16 @@ export default function InventariosPage() {
       countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
+    const recountTotalByProduct = new Map<string, number>();
     for (const row of recountCountRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const original = recountItemById.get(row.recount_item_id);
-      if (original?.product_id) {
-        countedByProduct.set(original.product_id, (countedByProduct.get(original.product_id) || 0) - Number(original.counted_qty || 0));
+      const item = recountItemById.get(row.recount_item_id);
+      if (item?.product_id && item.status === "counted") {
+        recountTotalByProduct.set(item.product_id, (recountTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
-      countedByProduct.set(row.product_id, (countedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
+    }
+    for (const [productId, recountTotal] of recountTotalByProduct) {
+      countedByProduct.set(productId, recountTotal);
     }
 
     const observations = new Map<string, string>();
@@ -1806,6 +1884,7 @@ export default function InventariosPage() {
         diff,
         cost,
         valueDiff: diff * cost,
+        re_counted: recountTotalByProduct.has(snap.product_id),
         observation: observations.get(snap.product_id) || "",
       });
     }
@@ -1828,6 +1907,7 @@ export default function InventariosPage() {
         diff,
         cost,
         valueDiff: diff * cost,
+        re_counted: recountTotalByProduct.has(row.product_id),
         observation: observations.get(row.product_id) || "",
       });
       productIdsInSnapshot.add(row.product_id);
@@ -1846,23 +1926,18 @@ export default function InventariosPage() {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
     }
-    if (recountType === "surplus" && !recountValue) {
-      setMessage("Selecciona el bloque de ubicaciones para sobrantes.");
-      return;
-    }
-
     const baseRows = explicitRows || unassignedRecountCandidates;
     const sourceRows = typeof limit === "number" ? baseRows.slice(0, limit) : baseRows;
     const rows = sourceRows.map(row => ({
       session_id: selectedSessionId,
       product_id: row.product_id,
-      location_id: row.location_id,
-      location_code: row.location_code || "FALTANTE",
-      ticket: row.ticket,
-      zone: row.zone,
-      zone_ref: row.zone_ref,
-      lineal: row.lineal,
-      full_location: row.full_location,
+      location_id: null,
+      location_code: "CODIGO_COMPLETO",
+      ticket: row.recount_type === "missing" ? "FALTANTE" : "CODIGO COMPLETO",
+      zone: row.recount_type === "surplus" ? recountValue || null : null,
+      zone_ref: null,
+      lineal: null,
+      full_location: row.recount_type === "missing" ? "Reconteo por codigo faltante" : `${row.location_count} ubicacion(es) contadas`,
       recount_type: row.recount_type,
       sku: row.sku,
       description: row.description,
@@ -1872,6 +1947,7 @@ export default function InventariosPage() {
       diff_qty: row.diff_qty,
       cost_snapshot: row.cost_snapshot,
       value_diff: row.value_diff,
+      location_count: row.location_count,
       assigned_operator_id: recountOperatorId,
       assigned_by: user.id,
       status: "assigned",
@@ -2707,38 +2783,103 @@ export default function InventariosPage() {
 
   function recountDraftFor(row: RecountItem) {
     return recountDrafts[row.id] || {
-      locationCode: row.location_code || "",
       productCode: row.sku,
-      quantity: "",
+      rows: row.recount_type === "surplus" && row.original_locations.length > 0
+        ? row.original_locations.map(location => ({
+          locationCode: location.location_code,
+          quantity: "",
+        }))
+        : [{
+          locationCode: "",
+          quantity: "",
+        }],
     };
   }
 
-  function updateRecountDraft(rowId: string, field: keyof RecountDraft, value: string) {
+  function updateRecountDraft(rowId: string, field: "productCode", value: string) {
     setRecountDrafts(prev => ({
       ...prev,
       [rowId]: {
-        locationCode: prev[rowId]?.locationCode || "",
-        productCode: prev[rowId]?.productCode || "",
-        quantity: prev[rowId]?.quantity || "",
-        [field]: value,
+        productCode: field === "productCode" ? value : prev[rowId]?.productCode || "",
+        rows: prev[rowId]?.rows || [],
       },
     }));
+  }
+
+  function updateRecountDraftLine(row: RecountItem, index: number, field: "locationCode" | "quantity", value: string) {
+    setRecountDrafts(prev => {
+      const current = prev[row.id] || recountDraftFor(row);
+      const rows = current.rows.length > 0 ? [...current.rows] : [{ locationCode: "", quantity: "" }];
+      rows[index] = {
+        locationCode: rows[index]?.locationCode || "",
+        quantity: rows[index]?.quantity || "",
+        isExtra: rows[index]?.isExtra,
+        [field]: value,
+      };
+      return { ...prev, [row.id]: { ...current, rows } };
+    });
+  }
+
+  function addRecountDraftLine(row: RecountItem) {
+    setRecountDrafts(prev => {
+      const current = prev[row.id] || recountDraftFor(row);
+      return {
+        ...prev,
+        [row.id]: {
+          ...current,
+          rows: [...current.rows, { locationCode: "", quantity: "", isExtra: true }],
+        },
+      };
+    });
+  }
+
+  function removeRecountDraftLine(row: RecountItem, index: number) {
+    setRecountDrafts(prev => {
+      const current = prev[row.id] || recountDraftFor(row);
+      const rows = current.rows.filter((_, rowIndex) => rowIndex !== index);
+      return { ...prev, [row.id]: { ...current, rows: rows.length > 0 ? rows : [{ locationCode: "", quantity: "" }] } };
+    });
   }
 
   async function saveRecountValidation(row: RecountItem) {
     if (!operator || !selectedSessionId || savingRecountId) return;
     const draft = recountDraftFor(row);
-    const locCode = draft.locationCode.trim().toUpperCase();
-    const loc = locations.find(location => location.location_code === locCode);
-    if (!loc) {
-      setMessage("Ubicacion no autorizada para esta sesion.");
+    if (!draft.productCode.trim()) {
+      setMessage("Ingresa codigo valido para el reconteo.");
       return;
     }
 
-    const qty = Number(draft.quantity);
-    if (!draft.productCode.trim() || !Number.isFinite(qty) || qty < 0) {
-      setMessage("Ingresa codigo y cantidad valida para el reconteo.");
+    const lines = draft.rows
+      .map(line => ({
+        locationCode: normalizeLocationCode(line.locationCode),
+        quantity: Number(line.quantity),
+        isExtra: Boolean(line.isExtra),
+      }))
+      .filter(line => line.locationCode || line.quantity > 0 || !line.isExtra);
+
+    if (lines.length === 0) {
+      setMessage("Ingresa al menos una ubicacion y cantidad para el reconteo.");
       return;
+    }
+
+    const locationRows: Array<{ loc: InventoryLocation; quantity: number }> = [];
+    for (const line of lines) {
+      if (!line.locationCode) {
+        setMessage("Completa la ubicacion en todas las lineas del reconteo.");
+        return;
+      }
+      const loc = findInventoryLocation(locations, line.locationCode);
+      if (!loc) {
+        setMessage(`Ubicacion ${line.locationCode} no autorizada para esta sesion.`);
+        return;
+      }
+      if (!Number.isFinite(line.quantity) || line.quantity < 0) {
+        setMessage("Ingresa cantidades validas para todas las lineas del reconteo.");
+        return;
+      }
+      const existing = locationRows.find(item => normalizeLocationCode(item.loc.location_code) === normalizeLocationCode(loc.location_code));
+      if (existing) existing.quantity += line.quantity;
+      else locationRows.push({ loc, quantity: line.quantity });
     }
 
     setSavingRecountId(row.id);
@@ -2758,9 +2899,16 @@ export default function InventariosPage() {
         .maybeSingle();
 
       const cost = Number(snapshot.data?.cost ?? product.cost ?? row.cost_snapshot ?? 0);
-      const { error } = await supabase
+      const deleteExisting = await supabase
         .from("general_inventory_recount_counts")
-        .upsert({
+        .delete()
+        .eq("recount_item_id", row.id);
+      if (deleteExisting.error) {
+        setMessage("No se pudo reemplazar el reconteo anterior: " + deleteExisting.error.message);
+        return;
+      }
+
+      const rows = locationRows.map(({ loc, quantity }) => ({
           recount_item_id: row.id,
           session_id: selectedSessionId,
           operator_id: operator.id,
@@ -2770,13 +2918,16 @@ export default function InventariosPage() {
           sku: product.sku,
           description: product.description,
           unit: product.unit,
-          quantity: qty,
+          quantity,
           cost_snapshot: cost,
           client_uuid: createClientUuid("gi-recount"),
           client_device_id: getOrCreateDeviceId(),
           sync_origin: "web",
           updated_at: new Date().toISOString(),
-        }, { onConflict: "recount_item_id" });
+      }));
+      const { error } = await supabase
+        .from("general_inventory_recount_counts")
+        .insert(rows);
       if (error) {
         setMessage("No se pudo guardar reconteo. Ejecuta el SQL actualizado: " + error.message);
         return;
@@ -2947,6 +3098,7 @@ export default function InventariosPage() {
       DIFERENCIA: row.diff,
       COSTO: row.cost,
       DIF_VALORIZADA: row.valueDiff,
+      RECONTADO: row.re_counted ? "SI" : "NO",
       OBSERVACION: row.observation || "",
     }));
     const wb = XLSX.utils.book_new();
@@ -3883,9 +4035,6 @@ export default function InventariosPage() {
               <div className="grid gap-3 md:grid-cols-2">
                 {recountItems.map(row => {
                   const draft = recountDraftFor(row);
-                  const relatedSurplusRows = row.recount_type === "surplus"
-                    ? operatorRecountContextItems.filter(item => item.product_id === row.product_id)
-                    : [];
                   return (
                   <article key={row.id} className="rounded-2xl border bg-slate-50 p-4">
                     <div className="mb-3 flex items-start justify-between gap-3">
@@ -3903,46 +4052,18 @@ export default function InventariosPage() {
                         <div className="truncate">{row.full_location || "Reconteo por código"}</div>
                         {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                       </div>
-                      {row.recount_type === "surplus" && relatedSurplusRows.length > 1 && (
-                        <div className="rounded-xl border bg-white p-3">
-                          <div className="mb-2 font-black text-slate-900">Registros del mismo codigo</div>
-                          <div className="space-y-2">
-                            {relatedSurplusRows.map(item => (
-                              <div key={item.id} className={`rounded-lg border px-3 py-2 ${item.id === row.id ? "border-blue-600 bg-blue-50" : "bg-slate-50 opacity-75"}`}>
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="font-black">{item.location_code || "Sin ubicacion"}</span>
-                                  <span className={item.id === row.id ? "font-black text-blue-700" : "font-bold text-slate-400"}>
-                                    {item.id === row.id ? "Asignado" : "Referencia"}
-                                  </span>
-                                </div>
-                                <div className="truncate text-slate-500">{item.full_location || "Reconteo por codigo"}</div>
-                                <div className="mt-1 grid grid-cols-3 gap-1 text-center">
-                                  <MiniMetric label="Sistema" value={item.system_stock} />
-                                  <MiniMetric label="Contado" value={item.counted_qty} />
-                                  <MiniMetric label="Dif." value={item.diff_qty} />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       <div className="grid grid-cols-3 gap-2">
                         <MiniMetric label="Sistema" value={row.system_stock} />
                         <MiniMetric label="Contado" value={row.counted_qty} />
                         <MiniMetric label="Dif." value={row.diff_qty} />
                       </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <MiniMetric label="Ubicaciones" value={row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)} />
+                        <MiniMetric label="Dif. val." value={money(row.value_diff)} />
+                      </div>
                       <div className="grid gap-2">
                         <div>
-                          <label className="mb-1 block text-[11px] font-black text-slate-500">{row.recount_type === "missing" && !row.location_code ? "Ubicacion final del faltante" : "Ubicacion asignada"}</label>
-                          <div className="flex rounded-xl border bg-white p-1">
-                            <input value={draft.locationCode} onChange={event => updateRecountDraft(row.id, "locationCode", event.target.value.toUpperCase())} placeholder="Ubicacion / ticket final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
-                            <button onClick={() => openRecountScanner(row.id, "recount_location")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear ubicacion">
-                              <QrCode size={18} />
-                            </button>
-                          </div>
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-[11px] font-black text-slate-500">Codigo final</label>
+                          <label className="mb-1 block text-[11px] font-black text-slate-500">Codigo validado</label>
                           <div className="flex rounded-xl border bg-white p-1">
                             <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", event.target.value)} placeholder="Codigo final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
                             <button onClick={() => openRecountScanner(row.id, "recount_product")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear producto">
@@ -3950,10 +4071,45 @@ export default function InventariosPage() {
                             </button>
                           </div>
                         </div>
-                        <div className="grid grid-cols-[1fr_auto] gap-2">
-                          <input value={draft.quantity} onChange={event => updateRecountDraft(row.id, "quantity", event.target.value)} placeholder="Cantidad final" inputMode="decimal" className="min-w-0 rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none" />
+                        <div className="rounded-xl border bg-white p-3">
+                          <div className="mb-2 font-black text-slate-900">Ubicaciones a validar</div>
+                          <div className="space-y-2">
+                            {draft.rows.map((line, index) => {
+                              const original = row.original_locations.find(item => normalizeLocationCode(item.location_code) === normalizeLocationCode(line.locationCode));
+                              return (
+                                <div key={`${row.id}-${index}`} className="rounded-lg border bg-slate-50 p-2">
+                                  <div className="mb-1 flex items-center justify-between gap-2">
+                                    <span className="font-black text-slate-700">{line.isExtra ? "Ubicacion extra" : `Linea ${index + 1}`}</span>
+                                    {line.isExtra && (
+                                      <button onClick={() => removeRecountDraftLine(row, index)} className="rounded-md border px-2 py-1 text-[11px] font-black text-red-600">
+                                        Quitar
+                                      </button>
+                                    )}
+                                  </div>
+                                  {original && (
+                                    <div className="mb-2 text-[11px] text-slate-500">
+                                      Original: {original.location_code} - {number2(original.counted_qty)} {row.unit}
+                                      {original.full_location ? ` - ${original.full_location}` : ""}
+                                    </div>
+                                  )}
+                                  <div className="grid grid-cols-[1fr_110px_42px] gap-2">
+                                    <input value={line.locationCode} onChange={event => updateRecountDraftLine(row, index, "locationCode", event.target.value.toUpperCase())} placeholder="Ubicacion" className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold outline-none" />
+                                    <input value={line.quantity} onChange={event => updateRecountDraftLine(row, index, "quantity", event.target.value)} placeholder="Cant." inputMode="decimal" className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold outline-none" />
+                                    <button onClick={() => openRecountScanner(row.id, "recount_location", index)} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear ubicacion">
+                                      <QrCode size={18} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <button onClick={() => addRecountDraftLine(row)} className="mt-2 w-full rounded-xl border px-3 py-2 text-xs font-black text-slate-700">
+                            + Agregar ubicacion
+                          </button>
+                        </div>
+                        <div className="flex justify-end">
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                            {savingRecountId === row.id ? "Guardando" : "Guardar"}
+                            {savingRecountId === row.id ? "Guardando" : "Guardar reconteo"}
                           </button>
                         </div>
                       </div>
@@ -4010,7 +4166,7 @@ export default function InventariosPage() {
                     {unassignedRecountCandidates.length} pendientes | {recountItems.length} asignados
                   </div>
                 </div>
-                <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: ticket primero, luego mayor diferencia valorizada.</p>
+                <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
               </section>
 
               <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-2">
@@ -4031,7 +4187,7 @@ export default function InventariosPage() {
               {recountManagerTab === "pendientes" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">Lineas pendientes por asignar</h3>
+                  <h3 className="font-black">Codigos pendientes por asignar</h3>
                   <div className="text-xs font-bold text-slate-500">{selectedPendingRecountRows.length} seleccionadas</div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
@@ -4049,6 +4205,7 @@ export default function InventariosPage() {
                         <th className="p-2 text-left">Tipo</th>
                         <th className="p-2 text-left">Ticket</th>
                         <th className="p-2 text-left">Ubicacion</th>
+                        <th className="p-2 text-center">Ubics.</th>
                         <th className="p-2 text-left">Zona</th>
                         <th className="p-2 text-left">Codigo</th>
                         <th className="p-2 text-left">Descripcion</th>
@@ -4078,6 +4235,7 @@ export default function InventariosPage() {
                           </td>
                           <td className="p-2 font-black">{row.ticket || "-"}</td>
                           <td className="p-2">{row.location_code || "Por codigo"}</td>
+                          <td className="p-2 text-center font-black">{row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)}</td>
                           <td className="p-2">{row.zone || "-"}</td>
                           <td className="p-2 font-black text-slate-950">{row.sku}</td>
                           <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
@@ -4091,8 +4249,8 @@ export default function InventariosPage() {
                       ))}
                       {unassignedRecountCandidates.length === 0 && (
                         <tr>
-                          <td colSpan={13} className="p-8 text-center text-sm text-slate-400">
-                            No hay lineas pendientes para asignar con el filtro actual.
+                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
+                            No hay codigos pendientes para asignar con el filtro actual.
                           </td>
                         </tr>
                       )}
@@ -4105,7 +4263,7 @@ export default function InventariosPage() {
               {recountManagerTab === "asignados" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">Lineas asignadas / reasignar</h3>
+                  <h3 className="font-black">Codigos asignados / reasignar</h3>
                   <button
                     onClick={generateRecountCommitmentDocuments}
                     disabled={assignedRecountRows.length === 0}
@@ -4509,7 +4667,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className="w-full min-w-[1120px] text-sm">
+                <table className="w-full min-w-[1200px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -4520,6 +4678,7 @@ export default function InventariosPage() {
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
+                      <th className="p-2 text-center">Recontado</th>
                       <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
                       <th className="p-2">Acciones</th>
                     </tr>
@@ -4535,6 +4694,11 @@ export default function InventariosPage() {
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
+                        <td className="p-2 text-center">
+                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${row.re_counted ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                            {row.re_counted ? "Si" : "No"}
+                          </span>
+                        </td>
                         <td className="p-2">
                           <input value={observationDrafts[row.product_id] || ""} onChange={event => setObservationDrafts(prev => ({ ...prev, [row.product_id]: event.target.value }))} className="w-full rounded-lg border px-2 py-1 text-xs" />
                         </td>

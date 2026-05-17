@@ -176,6 +176,7 @@ alter table general_inventory_recount_items add column if not exists zone text;
 alter table general_inventory_recount_items add column if not exists zone_ref text;
 alter table general_inventory_recount_items add column if not exists lineal text;
 alter table general_inventory_recount_items add column if not exists full_location text;
+alter table general_inventory_recount_items add column if not exists location_count integer not null default 0;
 
 create table if not exists general_inventory_recount_counts (
   id uuid primary key default gen_random_uuid(),
@@ -208,34 +209,9 @@ alter table general_inventory_recount_counts add column if not exists unit text;
 alter table general_inventory_recount_counts add column if not exists cost_snapshot numeric(14,6) not null default 0;
 
 create index if not exists idx_gi_recount_counts_sku on general_inventory_recount_counts(session_id, sku);
+create index if not exists idx_gi_recount_counts_item_location on general_inventory_recount_counts(recount_item_id, location_code);
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'general_inventory_recount_counts_recount_item_id_key'
-  ) then
-    delete from general_inventory_recount_counts
-    where id in (
-      select id
-      from (
-        select
-          id,
-          row_number() over (
-            partition by recount_item_id
-            order by updated_at desc, counted_at desc, id desc
-          ) as rn
-        from general_inventory_recount_counts
-      ) duplicated
-      where duplicated.rn > 1
-    );
-
-    alter table general_inventory_recount_counts
-      add constraint general_inventory_recount_counts_recount_item_id_key unique (recount_item_id);
-  end if;
-end;
-$$;
+alter table general_inventory_recount_counts drop constraint if exists general_inventory_recount_counts_recount_item_id_key;
 
 create table if not exists general_inventory_item_observations (
   id uuid primary key default gen_random_uuid(),
