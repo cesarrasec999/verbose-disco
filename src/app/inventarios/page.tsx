@@ -750,6 +750,13 @@ export default function InventariosPage() {
     });
   }
 
+  function changeRecountType(type: RecountType) {
+    setRecountType(type);
+    setSelectedPendingRecountKeys(new Set());
+    setRecountManagerTab("pendientes");
+    if (type === "missing") setRecountValue("");
+  }
+
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
     return locations.filter(location => !location.is_empty && !counted.has(normalizeLocationCode(location.location_code)));
@@ -2102,6 +2109,68 @@ export default function InventariosPage() {
     }
     setMessage("Asignacion quitada. La linea volvio a pendientes de reconteo.");
     await loadRecountAssignments(selectedSessionId);
+  }
+
+  async function refreshAfterRecountDelete(sessionId: string, operatorId?: string) {
+    if (operatorId) await loadOperatorRecountItems(sessionId, operatorId);
+    if (isValidator) {
+      await loadRecountData(sessionId);
+      await loadSummary(sessionId, true);
+    } else {
+      setSummaryHasPendingChanges(true);
+    }
+  }
+
+  async function deleteAssignedRecountCounts(item: RecountItem) {
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
+      return;
+    }
+    const confirmed = window.confirm(`Borrar el reconteo guardado de ${item.sku}? La asignacion quedara abierta y el resumen volvera a tomar el conteo original.`);
+    if (!confirmed) return;
+    const { error } = await supabase
+      .from("general_inventory_recount_counts")
+      .delete()
+      .eq("recount_item_id", item.id)
+      .eq("session_id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo borrar el reconteo guardado: " + error.message);
+      return;
+    }
+    await supabase
+      .from("general_inventory_recount_items")
+      .update({ status: "assigned", updated_at: new Date().toISOString() })
+      .eq("id", item.id);
+    setMessage("Reconteo guardado borrado. La linea volvio a asignado.");
+    await refreshAfterRecountDelete(selectedSessionId);
+  }
+
+  async function deleteAllAssignedRecountCounts() {
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
+      return;
+    }
+    const confirmed = window.confirm("Borrar TODOS los reconteos guardados de esta sesion? Las asignaciones quedaran abiertas y el resumen volvera a tomar los conteos originales.");
+    if (!confirmed) return;
+    const { error } = await supabase
+      .from("general_inventory_recount_counts")
+      .delete()
+      .eq("session_id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudieron borrar los reconteos guardados: " + error.message);
+      return;
+    }
+    const statusUpdate = await supabase
+      .from("general_inventory_recount_items")
+      .update({ status: "assigned", updated_at: new Date().toISOString() })
+      .eq("session_id", selectedSessionId)
+      .eq("status", "counted");
+    if (statusUpdate.error) {
+      setMessage("Reconteos borrados, pero no se pudo reabrir asignaciones: " + statusUpdate.error.message);
+      return;
+    }
+    setMessage("Todos los reconteos guardados fueron borrados. El resumen vuelve al conteo original.");
+    await refreshAfterRecountDelete(selectedSessionId);
   }
 
   async function markLocationEmpty(location: InventoryLocation) {
@@ -4333,8 +4402,8 @@ export default function InventariosPage() {
 
                 <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr_220px]">
                   <div className="grid grid-cols-2 overflow-hidden rounded-xl border p-1">
-                    <button onClick={() => setRecountType("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
-                    <button onClick={() => setRecountType("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
+                    <button onClick={() => changeRecountType("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
+                    <button onClick={() => changeRecountType("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
                   </div>
 
                   <div className="grid gap-2">
@@ -4451,13 +4520,22 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">Codigos asignados / reasignar</h3>
-                  <button
-                    onClick={generateRecountCommitmentDocuments}
-                    disabled={assignedRecountRows.length === 0}
-                    className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
-                  >
-                    <Download size={15} /> Actas por asesor
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={generateRecountCommitmentDocuments}
+                      disabled={assignedRecountRows.length === 0}
+                      className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                    >
+                      <Download size={15} /> Actas por asesor
+                    </button>
+                    <button
+                      onClick={deleteAllAssignedRecountCounts}
+                      disabled={!assignedRecountRows.some(row => row.status === "counted")}
+                      className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"
+                    >
+                      <Trash2 size={14} /> Borrar guardados
+                    </button>
+                  </div>
                   <div className="flex min-w-[240px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
                     <Search size={16} className="shrink-0 text-slate-400" />
                     <input
@@ -4536,6 +4614,14 @@ export default function InventariosPage() {
                               >
                                 Quitar
                               </button>
+                              {row.status === "counted" && (
+                                <button
+                                  onClick={() => deleteAssignedRecountCounts(row)}
+                                  className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700"
+                                >
+                                  Borrar
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
