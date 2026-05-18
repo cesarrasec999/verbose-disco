@@ -6224,6 +6224,7 @@ export default function DashboardPage() {
     const isAdmin    = user?.role === "Administrador";
     const isSupervisor = user?.role === "Supervisor";
     const canValidateCyclic = user?.role === "Validador" || isAdmin;
+    const canManageLocations = Boolean(user);
     const isValOrAdm = canValidateCyclic || isSupervisor;
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
@@ -8508,7 +8509,7 @@ export default function DashboardPage() {
                                     <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
                                         {locationBusy ? "Consultando..." : "Consultar"}
                                     </button>
-                                    {canValidateCyclic && <button
+                                    {canManageLocations && <button
                                         className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
                                         disabled={locationBusy || !locationStoreId}
                                         onClick={openLocationEntryCard}
@@ -8548,7 +8549,7 @@ export default function DashboardPage() {
                                                         <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
                                                         <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source || "manual"}</td>
                                                         <td className="p-2 border text-center whitespace-nowrap">
-                                                            {canValidateCyclic ? (
+                                                            {canManageLocations ? (
                                                             <>
                                                             <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
                                                                 const next = prompt("Nueva ubicacion", row.location);
