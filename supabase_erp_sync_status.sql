@@ -10,6 +10,7 @@ insert into public.erp_sync_status (id, source_path, synced_at, updated_at)
 values ('stock_general', '\\192.168.5.51\rms\CESAR\erp-sync', now(), now())
 on conflict (id) do update set
   source_path = excluded.source_path,
+  synced_at = excluded.synced_at,
   updated_at = now();
 
 create index if not exists idx_erp_sync_status_synced_at

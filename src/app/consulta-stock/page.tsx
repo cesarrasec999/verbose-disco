@@ -155,16 +155,11 @@ export default function ConsultaStockPage() {
   async function loadBaseData() {
     const [{ data: storeRows }, syncStatus, fallbackSync] = await Promise.all([
       supabase.from("stores").select("id,name,erp_sede,is_active").eq("is_active", true).order("name"),
-      supabase.from("erp_sync_status").select("synced_at").eq("id", "stock_general").maybeSingle(),
+      supabase.from("erp_sync_status").select("synced_at,updated_at").eq("id", "stock_general").maybeSingle(),
       supabase.from("stock_general").select("updated_at").order("updated_at", { ascending: false }).limit(1),
     ]);
     setStores((storeRows || []) as Store[]);
-    const statusTime = syncStatus.data?.synced_at || null;
-    const fallbackTime = fallbackSync.data?.[0]?.updated_at || null;
-    const newest = [statusTime, fallbackTime]
-      .filter(Boolean)
-      .sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0] || null;
-    setLastSync(newest);
+    setLastSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || fallbackSync.data?.[0]?.updated_at || null);
   }
 
   async function resolveProducts(text: string) {
