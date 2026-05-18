@@ -4460,16 +4460,18 @@ export default function DashboardPage() {
             const productIds = [...productMap.keys()];
             const byId = new Map<string, ProductLocation>();
             if (productIds.length > 0) {
+                const cleanIds = [...new Set(productIds)].filter(Boolean);
                 const { data, error } = await supabase
                     .from("product_locations")
                     .select("*, cyclic_products(sku,description,unit,cost)")
-                    .in("product_id", productIds)
+                    .in("product_id", cleanIds)
                     .eq("is_active", true)
                     .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
                     .order("updated_at", { ascending: false });
                 if (error) throw error;
                 for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
             }
+
             const locationTerm = term.toUpperCase();
             const { data: locationRows, error: locationError } = await supabase
                 .from("product_locations")
