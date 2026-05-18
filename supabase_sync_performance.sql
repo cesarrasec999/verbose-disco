@@ -7,6 +7,9 @@ create index if not exists idx_stock_general_sede_codsap
 create index if not exists idx_stock_general_codsap_sede
   on public.stock_general(codsap, sede);
 
+create index if not exists idx_stock_general_updated_at
+  on public.stock_general(updated_at desc);
+
 create index if not exists idx_codigos_barra_codsap_upc
   on public.codigos_barra(codsap, upc);
 

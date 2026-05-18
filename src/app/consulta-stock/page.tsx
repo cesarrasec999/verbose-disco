@@ -260,12 +260,6 @@ export default function ConsultaStockPage() {
         };
       });
       setResults(nextResults);
-      const newest = (stockRows || [])
-        .map(row => row.updated_at)
-        .filter(Boolean)
-        .sort()
-        .at(-1);
-      if (newest) setLastSync(newest);
     } catch (error: any) {
       setMessage("Error consultando stock: " + (error?.message || error));
     } finally {
