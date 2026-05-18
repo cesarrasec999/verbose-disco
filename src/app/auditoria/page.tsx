@@ -1592,6 +1592,7 @@ export default function AuditoriaPage() {
               <option value="/inventarios">Inventarios</option>
             </select>
           )}
+          <button onClick={() => { window.location.href = "/consulta-stock"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Consulta de stock"><PackageSearch size={18} /></button>
           <button onClick={refreshAuditData} disabled={loading} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40" title="Actualizar datos"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
           <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
         </div>

@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardCheck, ClipboardList, Flashlight, LogOut, PackageCheck, QrCode, RefreshCw, Search, Truck, XCircle } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, ClipboardList, Flashlight, LogOut, PackageCheck, PackageSearch, QrCode, RefreshCw, Search, Truck, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
@@ -608,6 +608,9 @@ export default function AbastecimientoPage() {
           <div className="flex items-center gap-2">
             <button onClick={() => void loadSupplyData()} className="grid h-11 w-11 place-items-center rounded-xl border bg-white" title="Actualizar">
               <RefreshCw size={20} />
+            </button>
+            <button onClick={() => { window.location.href = "/consulta-stock"; }} className="grid h-11 w-11 place-items-center rounded-xl border bg-white" title="Consulta de stock">
+              <PackageSearch size={20} />
             </button>
             <button onClick={logout} className="grid h-11 w-11 place-items-center rounded-xl border bg-white" title="Salir">
               <LogOut size={20} />

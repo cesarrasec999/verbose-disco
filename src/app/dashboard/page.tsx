@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 
 // ══════════════════════════════════════════════════════════
 //  TIPOS
@@ -6422,6 +6422,13 @@ export default function DashboardPage() {
                                 >
                                     <Package size={16} />
                                     <span className="truncate">Inventarios</span>
+                                </button>
+                                <button
+                                    onClick={() => { window.location.href = "/consulta-stock"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <PackageSearch size={16} />
+                                    <span className="truncate">Consulta de stock</span>
                                 </button>
                                 <button
                                     onClick={() => { window.location.href = "/abastecimiento"; }}

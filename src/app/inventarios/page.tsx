@@ -4296,6 +4296,11 @@ export default function InventariosPage() {
           <button onClick={refreshCurrentView} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} />
           </button>
+          {user && (
+            <button onClick={() => goModule("/consulta-stock")} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Consulta de stock">
+              <PackageSearch size={18} />
+            </button>
+          )}
           {(user?.role === "Administrador" || user?.role === "Supervisor") && (
             <select
               value="/inventarios"
