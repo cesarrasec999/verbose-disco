@@ -32,7 +32,6 @@ type StockRow = {
   sede: string | null;
   codsap: string | null;
   stock: number | string | null;
-  updated_at?: string | null;
 };
 
 type StockResult = {
@@ -41,7 +40,6 @@ type StockResult = {
   rows: Array<{
     store: Store;
     stock: number;
-    updated_at?: string | null;
   }>;
 };
 
@@ -155,12 +153,13 @@ export default function ConsultaStockPage() {
   }, [scannerOpen]);
 
   async function loadBaseData() {
-    const [{ data: storeRows }, { data: syncRows }] = await Promise.all([
+    const [{ data: storeRows }, syncStatus, fallbackSync] = await Promise.all([
       supabase.from("stores").select("id,name,erp_sede,is_active").eq("is_active", true).order("name"),
+      supabase.from("erp_sync_status").select("synced_at").eq("id", "stock_general").maybeSingle(),
       supabase.from("stock_general").select("updated_at").order("updated_at", { ascending: false }).limit(1),
     ]);
     setStores((storeRows || []) as Store[]);
-    setLastSync(syncRows?.[0]?.updated_at || null);
+    setLastSync(syncStatus.data?.synced_at || fallbackSync.data?.[0]?.updated_at || null);
   }
 
   async function resolveProducts(text: string) {
@@ -238,7 +237,7 @@ export default function ConsultaStockPage() {
       const skus = foundProducts.map(product => normalizeCode(product.sku));
       const { data: stockRows, error } = await supabase
         .from("stock_general")
-        .select("sede,codsap,stock,updated_at")
+        .select("sede,codsap,stock")
         .in("codsap", skus);
       if (error) throw error;
 
@@ -251,7 +250,7 @@ export default function ConsultaStockPage() {
         const rows = stores.map(store => {
           const sede = String(store.erp_sede || store.name || "").trim();
           const stockRow = stockBySkuSede.get(`${sku}__${sede}`);
-          return { store, stock: Number(stockRow?.stock || 0), updated_at: stockRow?.updated_at || null };
+          return { store, stock: Number(stockRow?.stock || 0) };
         });
         return {
           product,
@@ -374,7 +373,6 @@ export default function ConsultaStockPage() {
                     <tr className="border-b text-left text-xs uppercase text-slate-500">
                       <th className="px-4 py-3">Tienda</th>
                       <th className="px-4 py-3 text-right">Stock</th>
-                      <th className="px-4 py-3 text-right">Actualizado</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -382,7 +380,6 @@ export default function ConsultaStockPage() {
                       <tr key={row.store.id} className="border-b last:border-0">
                         <td className="px-4 py-3 font-bold">{row.store.name}</td>
                         <td className={`px-4 py-3 text-right text-base font-black ${row.stock > 0 ? "text-green-700" : "text-slate-400"}`}>{number2(row.stock)}</td>
-                        <td className="px-4 py-3 text-right text-xs font-semibold text-slate-500">{formatDateTime(row.updated_at)}</td>
                       </tr>
                     ))}
                   </tbody>
