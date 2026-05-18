@@ -2094,8 +2094,8 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
       loadInventoryNonInventoryRows(sessionId),
-      loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
-      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at", sessionId, "sku"),
+      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
     ]);
     const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
       ...countRows.map(row => row.sku),
@@ -2109,11 +2109,23 @@ export default function InventariosPage() {
       originalCountedByProduct.set(row.product_id, (originalCountedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
+    const latestRecountTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
+    for (const row of recountCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = recountItemById.get(row.recount_item_id);
+      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
+      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
+      const current = latestRecountTypeByProduct.get(item.product_id);
+      if (!current || timestamp >= current.timestamp) {
+        latestRecountTypeByProduct.set(item.product_id, { type: item.recount_type as RecountType, timestamp });
+      }
+    }
     const recountTotalByProduct = new Map<string, number>();
     for (const row of recountCountRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = recountItemById.get(row.recount_item_id);
-      if (item?.product_id && item.status === "counted") {
+      const latestType = item?.product_id ? latestRecountTypeByProduct.get(item.product_id)?.type : null;
+      if (item?.product_id && item.status === "counted" && item.recount_type === latestType) {
         recountTotalByProduct.set(item.product_id, (recountTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
