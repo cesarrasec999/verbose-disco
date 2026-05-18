@@ -22,6 +22,16 @@ create index if not exists idx_product_locations_product
   on public.product_locations(product_id)
   where is_active = true;
 
+alter table public.product_locations add column if not exists last_source text;
+alter table public.product_locations add column if not exists last_seen_at timestamptz not null default now();
+alter table public.product_locations add column if not exists cyclic_registered boolean not null default false;
+alter table public.product_locations add column if not exists audit_registered boolean not null default false;
+alter table public.product_locations add column if not exists general_inventory_registered boolean not null default false;
+
+create index if not exists idx_product_locations_last_source
+  on public.product_locations(last_source, last_seen_at desc)
+  where is_active = true;
+
 create table if not exists public.cyclic_completed_products (
   id uuid primary key default gen_random_uuid(),
   store_id uuid not null references public.stores(id) on delete cascade,

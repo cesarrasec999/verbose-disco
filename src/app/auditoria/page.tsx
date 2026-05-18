@@ -92,6 +92,17 @@ type AuditCount = {
   unit?: string;
 };
 
+type ProductLocation = {
+  id: string;
+  store_id: string | null;
+  product_id: string;
+  sku: string;
+  location: string;
+  is_active: boolean;
+  last_source?: string | null;
+  last_seen_at?: string | null;
+};
+
 type AuditAdminSummaryRow = AuditSession & {
   item_count: number;
   count_records: number;
@@ -198,6 +209,7 @@ export default function AuditoriaPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [scanCode, setScanCode] = useState("");
   const [activeItem, setActiveItem] = useState<AuditItem | null>(null);
+  const [activeProductLocations, setActiveProductLocations] = useState<ProductLocation[]>([]);
   const [location, setLocation] = useState("");
   const [qty, setQty] = useState("");
   const [editingCount, setEditingCount] = useState<AuditCount | null>(null);
@@ -931,10 +943,64 @@ export default function AuditoriaPage() {
 
     item = await refreshAuditItemStock(item);
     setActiveItem(item);
+    setActiveProductLocations(await loadProductLocations(item.product_id, item.sku || product.sku));
     setScanCode("");
     setQty("");
     setLocation("");
     setMessage(`${item.pending_extra ? "Producto extra detectado. Se agregara al guardar. " : ""}Producto detectado: ${product.sku} - ${product.description} - UM: ${product.unit || item?.unit || "N/D"}`);
+  }
+
+  async function loadProductLocations(productId: string, sku: string, targetStoreId = session?.store_id || "") {
+    if (!productId && !sku) return [];
+    const cleanSku = fullProductCode(sku);
+    let query = supabase
+      .from("product_locations")
+      .select("*")
+      .eq("is_active", true);
+    if (productId && cleanSku) query = query.or(`product_id.eq.${productId},sku.eq.${cleanSku}`);
+    else if (productId) query = query.eq("product_id", productId);
+    else query = query.eq("sku", cleanSku);
+    const { data, error } = await query
+      .or(targetStoreId ? `store_id.eq.${targetStoreId},store_id.is.null` : "store_id.is.null")
+      .order("location");
+    if (error) {
+      console.warn("No se pudieron cargar ubicaciones:", error.message);
+      return [];
+    }
+    const byLocation = new Map<string, ProductLocation>();
+    for (const row of (data || []) as ProductLocation[]) {
+      const key = row.location.trim().toUpperCase();
+      const existing = byLocation.get(key);
+      if (!existing || (!existing.store_id && row.store_id === targetStoreId)) byLocation.set(key, row);
+    }
+    return [...byLocation.values()];
+  }
+
+  async function upsertProductLocation(productId: string, sku: string | undefined, locationValue: string) {
+    const cleanLocation = locationValue.trim().toUpperCase();
+    if (!session?.store_id || !productId || !sku || !cleanLocation || cleanLocation.startsWith("__")) return;
+    const now = new Date().toISOString();
+    const row = {
+      store_id: session.store_id,
+      product_id: productId,
+      sku: fullProductCode(sku),
+      location: cleanLocation,
+      is_active: true,
+      updated_by: user?.id || null,
+      updated_at: now,
+      last_source: "auditoria",
+      last_seen_at: now,
+      audit_registered: true,
+    };
+    let { error } = await supabase.from("product_locations").upsert(row, { onConflict: "store_id,product_id,location" });
+    if (error && /last_source|last_seen_at|audit_registered/i.test(error.message)) {
+      const fallbackRow: Partial<typeof row> = { ...row };
+      delete fallbackRow.last_source;
+      delete fallbackRow.last_seen_at;
+      delete fallbackRow.audit_registered;
+      ({ error } = await supabase.from("product_locations").upsert(fallbackRow, { onConflict: "store_id,product_id,location" }));
+    }
+    if (error) console.warn("No se pudo registrar ubicacion de auditoria:", error.message);
   }
 
   async function ensureAuditItemForCount(item: AuditItem): Promise<AuditItem> {
@@ -1024,6 +1090,7 @@ export default function AuditoriaPage() {
         setMessage("Error guardando conteo: " + error.message);
         return;
       }
+      await upsertProductLocation(currentItem.product_id, currentItem.sku, location);
       await loadSessionData(session.id);
       setActiveItem(null);
       setMessage(`Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${number2(currentItem.system_stock)}.`);
@@ -1054,6 +1121,8 @@ export default function AuditoriaPage() {
     if (!editLocation.trim() || !Number.isFinite(quantity) || quantity < 0) { setMessage("Datos de edición inválidos."); return; }
     const { error } = await supabase.from("audit_counts").update({ location: editLocation.trim().toUpperCase(), quantity }).eq("id", editingCount.id);
     if (error) { setMessage("Error actualizando registro: " + error.message); return; }
+    const item = items.find(row => row.id === editingCount.item_id || row.product_id === editingCount.product_id);
+    await upsertProductLocation(editingCount.product_id, item?.sku || editingCount.sku, editLocation);
     setEditingCount(null);
     await loadSessionData(session.id);
     setMessage("Registro actualizado.");
@@ -1759,6 +1828,21 @@ export default function AuditoriaPage() {
                         <div className="text-lg font-black">{activeItem.sku}</div>
                         <div className="line-clamp-2 text-sm text-slate-600">{activeItem.description}</div>
                         <div className="mt-1 text-xs font-semibold text-slate-400">UM: {activeItem.unit || "N/D"} - Stock sistema: {number2(activeItem.system_stock)} - Conteo: {number2(activeItemCountedTotal)} - {activeItem.source === "extra" ? "Extra encontrado" : "Lista inicial"}</div>
+                        {activeProductLocations.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {activeProductLocations.slice(0, 8).map(row => (
+                              <button
+                                key={row.id}
+                                type="button"
+                                onClick={() => setLocation(row.location)}
+                                className="rounded-full border bg-white px-2 py-1 text-[11px] font-black text-slate-700"
+                                title={`${row.last_source || "manual"}${row.last_seen_at ? ` - ${new Date(row.last_seen_at).toLocaleString("es-PE")}` : ""}`}
+                              >
+                                {row.location}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <button onClick={() => setActiveItem(null)} className="text-slate-400"><XCircle size={20} /></button>
                     </div>

@@ -226,6 +226,13 @@ type ProductLocation = {
     sku: string;
     location: string;
     is_active: boolean;
+    last_source?: string | null;
+    last_seen_at?: string | null;
+    updated_at?: string | null;
+    cyclic_registered?: boolean | null;
+    audit_registered?: boolean | null;
+    general_inventory_registered?: boolean | null;
+    cyclic_products?: Pick<Product, "sku" | "description" | "unit" | "cost"> | null;
 };
 
 // ══════════════════════════════════════════════════════════
@@ -2586,6 +2593,13 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
         }
+        await upsertProductLocations(
+            currentRecountAssignment.product_id,
+            currentRecountAssignment.sku,
+            currentRecountAssignment.store_id,
+            recountRows.map(row => row.location),
+            "ciclico"
+        );
 
         showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
         setSinStockRecount(false);
@@ -3433,9 +3447,10 @@ export default function DashboardPage() {
         return rows;
     }
 
-    async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
+    async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[], source: "ciclico" | "auditoria" | "inventario general" | "manual" = "ciclico") {
         const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
         if (!productId || !sku || cleanLocations.length === 0) return;
+        const now = new Date().toISOString();
         const rows = cleanLocations.map(location => ({
             store_id: storeId || null,
             product_id: productId,
@@ -3443,12 +3458,24 @@ export default function DashboardPage() {
             location,
             is_active: true,
             updated_by: user?.id || null,
-            updated_at: new Date().toISOString(),
+            updated_at: now,
+            last_source: source,
+            last_seen_at: now,
+            cyclic_registered: source === "ciclico",
+            audit_registered: source === "auditoria",
+            general_inventory_registered: source === "inventario general",
         }));
         for (let i = 0; i < rows.length; i += 500) {
-            const { error } = await supabase
+            const chunk = rows.slice(i, i + 500);
+            let { error } = await supabase
                 .from("product_locations")
-                .upsert(rows.slice(i, i + 500), { onConflict: "store_id,product_id,location" });
+                .upsert(chunk, { onConflict: "store_id,product_id,location" });
+            if (error && /last_source|last_seen_at|cyclic_registered|audit_registered|general_inventory_registered/i.test(error.message)) {
+                const fallbackRows = chunk.map(({ last_source, last_seen_at, cyclic_registered, audit_registered, general_inventory_registered, ...rest }) => rest);
+                ({ error } = await supabase
+                    .from("product_locations")
+                    .upsert(fallbackRows, { onConflict: "store_id,product_id,location" }));
+            }
             if (error) {
                 console.warn("No se pudieron guardar ubicaciones:", error.message);
                 return;
@@ -3472,7 +3499,7 @@ export default function DashboardPage() {
             return;
         }
 
-        await upsertProductLocations(productId, sku, storeId, cleanLocations);
+        await upsertProductLocations(productId, sku, storeId, cleanLocations, "ciclico");
     }
 
     async function assignFirst30Results() {
@@ -4406,24 +4433,61 @@ export default function DashboardPage() {
         if (!term) { setLocationResults([]); return; }
         setLocationBusy(true);
         try {
+            const normalizedTerm = term.toLowerCase();
+            const safeLikeTerm = term.replace(/[,%()]/g, " ").trim();
             const productMatches = products.filter(product => {
                 const haystack = `${product.sku} ${product.description}`.toLowerCase();
-                return haystack.includes(term.toLowerCase()) || visibleProductCode(product.sku).includes(cleanCode(term));
+                return haystack.includes(normalizedTerm) || visibleProductCode(product.sku).includes(cleanCode(term));
             }).slice(0, 80);
-            const productIds = productMatches.map(product => product.id);
-            let rows: ProductLocation[] = [];
+            const productMap = new Map<string, Product>();
+            productMatches.forEach(product => productMap.set(product.id, product));
+
+            if (safeLikeTerm) {
+                const full = fullProductCode(safeLikeTerm);
+                const barcodeLike = safeLikeTerm.replace(/\s+/g, "%");
+                const { data: dbProducts } = await supabase
+                    .from("cyclic_products")
+                    .select("id,sku,barcode,description,unit,cost,is_active")
+                    .eq("is_active", true)
+                    .or(`sku.ilike.%${full}%,barcode.ilike.%${barcodeLike}%,description.ilike.%${safeLikeTerm}%`)
+                    .limit(80);
+                (dbProducts || []).forEach(product => productMap.set(product.id, product as Product));
+            }
+
+            const mappedProduct = await findProductForLocationEntry(term);
+            if (mappedProduct) productMap.set(mappedProduct.id, mappedProduct);
+
+            const productIds = [...productMap.keys()];
+            const byId = new Map<string, ProductLocation>();
             if (productIds.length > 0) {
                 const { data, error } = await supabase
                     .from("product_locations")
-                    .select("*")
+                    .select("*, cyclic_products(sku,description,unit,cost)")
                     .in("product_id", productIds)
                     .eq("is_active", true)
                     .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
-                    .order("location");
+                    .order("updated_at", { ascending: false });
                 if (error) throw error;
-                rows = (data || []) as ProductLocation[];
+                for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
             }
-            setLocationResults(rows);
+            const locationTerm = term.toUpperCase();
+            const { data: locationRows, error: locationError } = await supabase
+                .from("product_locations")
+                .select("*, cyclic_products(sku,description,unit,cost)")
+                .eq("is_active", true)
+                .ilike("location", `%${locationTerm}%`)
+                .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
+                .order("updated_at", { ascending: false })
+                .limit(200);
+            if (locationError) throw locationError;
+            for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
+
+            setLocationResults([...byId.values()].sort((a, b) => {
+                const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
+                const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
+                if (timeA !== timeB) return timeB - timeA;
+                return a.location.localeCompare(b.location);
+            }));
         } catch (error: any) {
             showMessage("Error consultando ubicaciones: " + (error?.message || error), "error");
         } finally {
@@ -4531,7 +4595,7 @@ export default function DashboardPage() {
             if (uniqueProducts.length === 0) { showMessage("Agrega al menos un producto.", "error"); return; }
 
             for (const product of uniqueProducts) {
-                await upsertProductLocations(product.id, product.sku, locationStoreId, [location]);
+                await upsertProductLocations(product.id, product.sku, locationStoreId, [location], "manual");
             }
 
             showMessage(`Ubicacion guardada para ${uniqueProducts.length} producto${uniqueProducts.length !== 1 ? "s" : ""}.`, "success");
@@ -4546,7 +4610,7 @@ export default function DashboardPage() {
 
     async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
         if (!location.trim()) return;
-        await upsertProductLocations(product.id, product.sku, storeId || "", [location]);
+        await upsertProductLocations(product.id, product.sku, storeId || "", [location], "manual");
         showMessage("Ubicación guardada.", "success");
         await searchLocations();
     }
@@ -4856,10 +4920,17 @@ export default function DashboardPage() {
         if (!clean) return;
         setLocationBusy(true);
         try {
-            const { error } = await supabase
+            const now = new Date().toISOString();
+            let { error } = await supabase
                 .from("product_locations")
-                .update({ location: clean, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+                .update({ location: clean, updated_by: user?.id || null, updated_at: now, last_source: "manual", last_seen_at: now })
                 .eq("id", row.id);
+            if (error && /last_source|last_seen_at/i.test(error.message)) {
+                ({ error } = await supabase
+                    .from("product_locations")
+                    .update({ location: clean, updated_by: user?.id || null, updated_at: now })
+                    .eq("id", row.id));
+            }
             if (error) throw error;
             showMessage("Ubicacion actualizada.", "success");
             await searchLocations();
@@ -4871,7 +4942,7 @@ export default function DashboardPage() {
     }
 
     async function deactivateProductLocation(row: ProductLocation) {
-        if (!confirm(`Desactivar la ubicacion "${row.location}"?`)) return;
+        if (!confirm(`Eliminar la ubicacion "${row.location}" de este producto?`)) return;
         setLocationBusy(true);
         try {
             const { error } = await supabase
@@ -4879,10 +4950,10 @@ export default function DashboardPage() {
                 .update({ is_active: false, updated_by: user?.id || null, updated_at: new Date().toISOString() })
                 .eq("id", row.id);
             if (error) throw error;
-            showMessage("Ubicacion desactivada.", "success");
+            showMessage("Ubicacion eliminada.", "success");
             await searchLocations();
         } catch (error: any) {
-            showMessage("Error desactivando ubicacion: " + (error?.message || error), "error");
+            showMessage("Error eliminando ubicacion: " + (error?.message || error), "error");
         } finally {
             setLocationBusy(false);
         }
@@ -4913,6 +4984,7 @@ export default function DashboardPage() {
             }
 
             const storeId = locationStoreId || null;
+            const now = new Date().toISOString();
             const upsertRows = codeLocPairs
                 .map(row => {
                     const product = prodMap.get(row.code);
@@ -4924,13 +4996,20 @@ export default function DashboardPage() {
                         location: row.location,
                         is_active: true,
                         updated_by: user?.id || null,
-                        updated_at: new Date().toISOString(),
+                        updated_at: now,
+                        last_source: "manual",
+                        last_seen_at: now,
                     };
                 })
                 .filter(Boolean) as any[];
 
             for (let i = 0; i < upsertRows.length; i += 500) {
-                const { error } = await supabase.from("product_locations").upsert(upsertRows.slice(i, i + 500), { onConflict: "store_id,product_id,location" });
+                const chunk = upsertRows.slice(i, i + 500);
+                let { error } = await supabase.from("product_locations").upsert(chunk, { onConflict: "store_id,product_id,location" });
+                if (error && /last_source|last_seen_at/i.test(error.message)) {
+                    const fallbackRows = chunk.map(({ last_source, last_seen_at, ...rest }) => rest);
+                    ({ error } = await supabase.from("product_locations").upsert(fallbackRows, { onConflict: "store_id,product_id,location" }));
+                }
                 if (error) throw error;
             }
             setLocationsFile(null);
@@ -8416,7 +8495,7 @@ export default function DashboardPage() {
                                 <div className="flex gap-3 flex-wrap">
                                     <input
                                         className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[220px]"
-                                        placeholder="Codigo, barra o descripcion"
+                                        placeholder="Codigo, barra, descripcion o ubicacion"
                                         value={locationSearch}
                                         onChange={e => setLocationSearch(e.target.value)}
                                         onKeyDown={e => { if (e.key === "Enter") searchLocations(); }}
@@ -8446,19 +8525,26 @@ export default function DashboardPage() {
                                                 <th className="p-2 border text-left">Descripcion</th>
                                                 <th className="p-2 border">Tienda</th>
                                                 <th className="p-2 border text-left">Ubicacion</th>
+                                                <th className="p-2 border">Ultimo cambio</th>
+                                                <th className="p-2 border">Registrado en</th>
                                                 <th className="p-2 border">Accion</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {locationResults.map(row => {
                                                 const product = products.find(p => p.id === row.product_id);
+                                                const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
+                                                const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                                const changedAt = row.last_seen_at || row.updated_at;
                                                 const store = allStores.find(s => s.id === row.store_id);
                                                 return (
                                                     <tr key={row.id}>
-                                                        <td className="p-2 border font-mono text-xs">{product?.sku || row.sku}</td>
-                                                        <td className="p-2 border text-slate-600">{product?.description || "-"}</td>
+                                                        <td className="p-2 border font-mono text-xs">{productSku}</td>
+                                                        <td className="p-2 border text-slate-600">{productDescription}</td>
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                         <td className="p-2 border font-bold text-slate-900">{row.location}</td>
+                                                        <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
+                                                        <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source || "manual"}</td>
                                                         <td className="p-2 border text-center whitespace-nowrap">
                                                             {canValidateCyclic ? (
                                                             <>
@@ -8466,14 +8552,14 @@ export default function DashboardPage() {
                                                                 const next = prompt("Nueva ubicacion", row.location);
                                                                 if (next) void replaceProductLocation(row, next);
                                                             }}>Editar</button>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Desactivar</button>
+                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>
                                                             </>
                                                             ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                         </td>
                                                     </tr>
                                                 );
                                             })}
-                                            {locationResults.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-slate-400">Busca un producto o carga un Excel para ver ubicaciones.</td></tr>}
+                                            {locationResults.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-slate-400">Busca un producto o carga un Excel para ver ubicaciones.</td></tr>}
                                         </tbody>
                                     </table>
                                 </div>
@@ -8602,6 +8688,24 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="space-y-3 mb-4">
+                            {activeProductLocations.length > 0 && (
+                                <div className="rounded-2xl border bg-slate-50 p-3">
+                                    <div className="mb-2 text-xs font-black text-slate-500">Ubicaciones conocidas</div>
+                                    <div className="flex flex-wrap gap-1">
+                                        {activeProductLocations.slice(0, 10).map(row => (
+                                            <button
+                                                key={row.id}
+                                                type="button"
+                                                onClick={() => setLocationRows(prev => prev.length === 1 && !prev[0].location ? [{ ...prev[0], location: row.location }] : [...prev, { location: row.location, qty: "" }])}
+                                                className="rounded-full border bg-white px-2 py-1 text-[11px] font-black text-slate-700"
+                                                title={`${row.last_source || "manual"}${row.last_seen_at ? ` - ${new Date(row.last_seen_at).toLocaleString("es-PE")}` : ""}`}
+                                            >
+                                                {row.location}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <label className="block font-bold text-sm text-slate-800">Ubicaciones y cantidades</label>
                                 <button

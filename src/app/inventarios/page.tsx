@@ -3150,6 +3150,33 @@ export default function InventariosPage() {
     };
   }
 
+  async function upsertKnownProductLocation(product: Pick<Product, "id" | "sku">, locationValue: string) {
+    const cleanLocation = normalizeLocationCode(locationValue);
+    if (!selectedSession?.store_id || !product.id || !product.sku || !cleanLocation || cleanLocation.startsWith("__")) return;
+    const now = new Date().toISOString();
+    const row = {
+      store_id: selectedSession.store_id,
+      product_id: product.id,
+      sku: normalizeCode(product.sku).toUpperCase(),
+      location: cleanLocation,
+      is_active: true,
+      updated_by: user?.id || null,
+      updated_at: now,
+      last_source: "inventario general",
+      last_seen_at: now,
+      general_inventory_registered: true,
+    };
+    let { error } = await supabase.from("product_locations").upsert(row, { onConflict: "store_id,product_id,location" });
+    if (error && /last_source|last_seen_at|general_inventory_registered/i.test(error.message)) {
+      const fallbackRow: Partial<typeof row> = { ...row };
+      delete fallbackRow.last_source;
+      delete fallbackRow.last_seen_at;
+      delete fallbackRow.general_inventory_registered;
+      ({ error } = await supabase.from("product_locations").upsert(fallbackRow, { onConflict: "store_id,product_id,location" }));
+    }
+    if (error) console.warn("No se pudo registrar ubicacion de inventario general:", error.message);
+  }
+
   async function saveCount() {
     if (savingCountRef.current) return;
     if (!operator || !selectedSession || !canOperatorEnter(selectedSession.status)) {
@@ -3284,6 +3311,7 @@ export default function InventariosPage() {
         return;
       }
 
+      await upsertKnownProductLocation(product, loc.location_code);
       setProductCode("");
       setProductCandidates([]);
       setSelectedProduct(null);
@@ -3533,6 +3561,9 @@ export default function InventariosPage() {
         setMessage("No se pudo guardar reconteo. Ejecuta el SQL actualizado: " + error.message);
         return;
       }
+      await Promise.all(locationRows
+        .filter(({ loc }) => Boolean(loc))
+        .map(({ locationCode }) => upsertKnownProductLocation(product, locationCode)));
 
       const statusUpdate = await supabase
         .from("general_inventory_recount_items")
