@@ -159,7 +159,12 @@ export default function ConsultaStockPage() {
       supabase.from("stock_general").select("updated_at").order("updated_at", { ascending: false }).limit(1),
     ]);
     setStores((storeRows || []) as Store[]);
-    setLastSync(syncStatus.data?.synced_at || fallbackSync.data?.[0]?.updated_at || null);
+    const statusTime = syncStatus.data?.synced_at || null;
+    const fallbackTime = fallbackSync.data?.[0]?.updated_at || null;
+    const newest = [statusTime, fallbackTime]
+      .filter(Boolean)
+      .sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0] || null;
+    setLastSync(newest);
   }
 
   async function resolveProducts(text: string) {
