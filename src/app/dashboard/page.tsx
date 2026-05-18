@@ -6354,7 +6354,7 @@ export default function DashboardPage() {
                     )}
 
                     {!isAdmin && (
-                        <div className="px-3 mt-1">
+                        <div className="px-3 mt-1 space-y-0.5">
                             <button
                                 onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
                                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -6365,6 +6365,13 @@ export default function DashboardPage() {
                             >
                                 <Package size={16} />
                                 <span className="truncate">Ubicaciones</span>
+                            </button>
+                            <button
+                                onClick={() => { window.location.href = "/consulta-stock"; }}
+                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                            >
+                                <PackageSearch size={16} />
+                                <span className="truncate">Consulta de stock</span>
                             </button>
                         </div>
                     )}
