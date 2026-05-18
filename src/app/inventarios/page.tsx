@@ -2134,10 +2134,13 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
     ]);
-    const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
-      ...countRows.map(row => row.sku),
-      ...recountCountRows.map(row => row.sku),
-    ]);
+    const hasFrozenSnapshot = snapshotRows.length > 0;
+    const liveStockBySku = hasFrozenSnapshot
+      ? new Map<string, StockGeneralRow>()
+      : await loadStockGeneralBySkuForSession(sessionId, [
+        ...countRows.map(row => row.sku),
+        ...recountCountRows.map(row => row.sku),
+      ]);
 
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
     const originalCountedByProduct = new Map<string, number>();
@@ -2721,13 +2724,21 @@ export default function InventariosPage() {
   }
 
   async function freezeStock() {
+    if (selectedSession?.stock_frozen_at) {
+      setMessage("Este inventario ya tiene foto de stock. No se reemplaza automaticamente para proteger la fotografia original.");
+      return;
+    }
     await saveStockSnapshot("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.", "Stock congelado");
   }
 
   async function updateStockSnapshot() {
-    if (selectedSession?.status === "frozen") {
-      const ok = confirm("Este inventario ya tiene una foto de stock congelada. Si aceptas, se reemplazara por el stock actual y esa nueva foto quedara congelada para los reportes posteriores.");
-      if (!ok) return;
+    if (user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede reemplazar la foto de stock de una sesion.");
+      return;
+    }
+    if (selectedSession?.stock_frozen_at) {
+      const typed = window.prompt("Esto reemplaza definitivamente la foto de stock actual de esta sesion. Escribe ACTUALIZAR STOCK para continuar.");
+      if (typed !== "ACTUALIZAR STOCK") return;
     }
     await saveStockSnapshot("Actualizando stock actual y congelando nueva foto.", "Stock actualizado y congelado");
   }
@@ -5336,7 +5347,7 @@ export default function InventariosPage() {
                   <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className={`inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-black disabled:opacity-40 ${summaryHasPendingChanges ? "bg-amber-500 text-white" : "border"}`}>
                     {summaryLoading ? "Actualizando..." : summaryHasPendingChanges ? "Actualizar cambios" : "Actualizar KPIs"}
                   </button>
-                  {canManageInventory && (
+                  {user?.role === "Administrador" && (
                     <button onClick={updateStockSnapshot} disabled={loading || summaryLoading || isSelectedSessionFinished} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                       <RefreshCw size={14} /> Actualizar stock
                     </button>
