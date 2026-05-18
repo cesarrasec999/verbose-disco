@@ -512,6 +512,8 @@ export default function InventariosPage() {
     () => sessions.find(session => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
   );
+  const isSelectedSessionFinished = selectedSession?.status === "finished";
+  const canAdminReopenSelectedSession = user?.role === "Administrador" && isSelectedSessionFinished;
 
   useEffect(() => {
     setInventoryNotesDraft(selectedSession?.notes || "");
@@ -887,6 +889,33 @@ export default function InventariosPage() {
       setValidatorTab("registros");
     }
   }, [isReadOnlySupervisor, validatorTab]);
+
+  useEffect(() => {
+    if (!operator || isValidator || !selectedSession || canOperatorEnter(selectedSession.status)) return;
+    setOperator(null);
+    setOperatorMode("conteo");
+    localStorage.removeItem(OPERATOR_KEY);
+    localStorage.removeItem(OPERATOR_MODE_KEY);
+    localStorage.removeItem(SESSION_KEY);
+    setMessage("Esta sesion fue finalizada. Ya no acepta conteos ni reconteos de operarios.");
+  }, [operator?.id, isValidator, selectedSession?.id, selectedSession?.status]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+
+    const channel = supabase
+      .channel(`gi-session-${selectedSessionId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "general_inventory_sessions", filter: `id=eq.${selectedSessionId}` },
+        () => { void loadInitial(selectedSessionId); }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -1340,6 +1369,14 @@ export default function InventariosPage() {
   async function refreshCurrentView() {
     await loadInitial(selectedSessionId);
     if (selectedSessionId) await loadSessionData(selectedSessionId, validatorTab);
+  }
+
+  function ensureSelectedSessionEditable() {
+    if (selectedSession?.status === "finished") {
+      setMessage("Esta sesion esta finalizada. Solo se pueden consultar datos; para modificarla el administrador debe desfinalizarla.");
+      return false;
+    }
+    return true;
   }
 
   async function loadSessionData(sessionId: string, tab: ValidatorTab = validatorTab) {
@@ -2199,6 +2236,7 @@ export default function InventariosPage() {
   }
 
   async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !user || !recountOperatorId) {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
@@ -2262,6 +2300,7 @@ export default function InventariosPage() {
   }
 
   async function reassignRecountItem(item: RecountItem) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !user || !isValidator) {
       setMessage("Solo el validador o administrador puede reasignar reconteos.");
       return;
@@ -2296,6 +2335,7 @@ export default function InventariosPage() {
   }
 
   async function unassignRecountItem(item: RecountItem) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !user || !isValidator) {
       setMessage("Solo el validador o administrador puede quitar asignaciones.");
       return;
@@ -2331,6 +2371,7 @@ export default function InventariosPage() {
   }
 
   async function deleteAssignedRecountCounts(item: RecountItem) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !canManageInventory) {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
@@ -2355,12 +2396,14 @@ export default function InventariosPage() {
   }
 
   function openAdminEditRecountRecord(record: OperatorRecountRecord) {
+    if (!ensureSelectedSessionEditable()) return;
     setEditingAdminRecountRecord(record);
     setEditingAdminRecountLocation(record.location_code === "SIN_FISICO" ? "" : record.location_code || "");
     setEditingAdminRecountQuantity(String(record.quantity || ""));
   }
 
   async function saveAdminEditRecountRecord() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!editingAdminRecountRecord || !selectedSessionId) return;
     const qty = Number(editingAdminRecountQuantity);
     const location = normalizeLocationCode(editingAdminRecountLocation);
@@ -2412,6 +2455,7 @@ export default function InventariosPage() {
   }
 
   async function deleteAdminRecountRecord(record: OperatorRecountRecord) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !canManageInventory) {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
@@ -2449,6 +2493,7 @@ export default function InventariosPage() {
   }
 
   async function deleteAllAssignedRecountCounts() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !canManageInventory) {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
@@ -2477,6 +2522,7 @@ export default function InventariosPage() {
   }
 
   async function markLocationEmpty(location: InventoryLocation) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId || !user || !canManageInventory) {
       setMessage("Solo el validador o administrador puede marcar ubicaciones vacias.");
       return;
@@ -2548,6 +2594,7 @@ export default function InventariosPage() {
   }
 
   async function importLocations() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId || !locationsFile) {
       setMessage("Selecciona el Excel de ubicaciones.");
@@ -2608,6 +2655,7 @@ export default function InventariosPage() {
   }
 
   async function saveManualLocation() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId) {
       setMessage("Selecciona un inventario.");
@@ -2685,6 +2733,7 @@ export default function InventariosPage() {
   }
 
   async function saveStockSnapshot(progressMessage: string, successLabel: string) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
     setLoading(true);
@@ -2833,6 +2882,12 @@ export default function InventariosPage() {
   async function finishSession() {
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId) return;
+    if (selectedSession?.status === "finished") {
+      setMessage("Esta sesion ya esta finalizada.");
+      return;
+    }
+    const confirmed = window.confirm("Finalizar esta sesion? Los operarios ya no podran entrar y no se podra modificar conteo, reconteo ni stock.");
+    if (!confirmed) return;
     const { error } = await supabase
       .from("general_inventory_sessions")
       .update({ status: "finished", finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -2843,6 +2898,28 @@ export default function InventariosPage() {
     }
     setMessage("Inventario finalizado. Los operadores ya no podran entrar.");
     await loadInitial(selectedSessionId);
+  }
+
+  async function unfinishSession() {
+    if (user?.role !== "Administrador" || !selectedSessionId || !selectedSession) return;
+    if (selectedSession.status !== "finished") {
+      setMessage("La sesion no esta finalizada.");
+      return;
+    }
+    const nextStatus: SessionStatus = selectedSession.stock_frozen_at ? "frozen" : "open";
+    const confirmed = window.confirm(`Desfinalizar esta sesion? Volvera a estado ${statusLabel(nextStatus)} y se habilitaran cambios nuevamente.`);
+    if (!confirmed) return;
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({ status: nextStatus, finished_at: null, updated_at: new Date().toISOString() })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo desfinalizar: " + error.message);
+      return;
+    }
+    setMessage(`Sesion desfinalizada. Estado actual: ${statusLabel(nextStatus)}.`);
+    await loadInitial(selectedSessionId);
+    if (selectedSessionId) await loadSessionData(selectedSessionId, validatorTab);
   }
 
   async function deleteSession() {
@@ -3319,6 +3396,10 @@ export default function InventariosPage() {
 
   async function saveRecountValidation(row: RecountItem) {
     if (!operator || !selectedSessionId || savingRecountId) return;
+    if (selectedSession?.status === "finished") {
+      setMessage("Esta sesion ya fue finalizada. No se puede guardar reconteo.");
+      return;
+    }
     const draft = recountDraftFor(row);
     if (!draft.productCode.trim()) {
       setMessage("Ingresa codigo valido para el reconteo.");
@@ -3483,12 +3564,14 @@ export default function InventariosPage() {
   }
 
   function openAdminEditCount(row: CountRow) {
+    if (!ensureSelectedSessionEditable()) return;
     setEditingAdminCount(row);
     setEditingAdminLocation(row.location_code || "");
     setEditingAdminQuantity(String(row.quantity || ""));
   }
 
   async function saveAdminEditCount() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!editingAdminCount) return;
     const qty = Number(editingAdminQuantity);
     const location = editingAdminLocation.trim().toUpperCase();
@@ -3524,6 +3607,7 @@ export default function InventariosPage() {
   }
 
   async function deleteCount(row: CountRow) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     const { error } = await supabase.from("general_inventory_counts").delete().eq("id", row.id);
     if (error) {
@@ -3534,6 +3618,7 @@ export default function InventariosPage() {
   }
 
   async function saveObservation(row: SummaryRow) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
     const { error } = await supabase
@@ -3554,6 +3639,7 @@ export default function InventariosPage() {
   }
 
   async function markSummaryAsNonInventory(row: SummaryRow) {
+    if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId) return;
     const { error } = await supabase
       .from("general_inventory_non_inventory_products")
@@ -3618,6 +3704,7 @@ export default function InventariosPage() {
   }
 
   async function saveInventoryNotes() {
+    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId) return;
     const notes = inventoryNotesDraft.trim();
@@ -4082,7 +4169,7 @@ export default function InventariosPage() {
           </div>
           <button
             onClick={saveManualLocation}
-            disabled={savingManualLocation || !selectedSessionId}
+            disabled={savingManualLocation || !selectedSessionId || isSelectedSessionFinished}
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40"
           >
             <Save size={16} /> {savingManualLocation ? "Guardando" : "Guardar"}
@@ -4250,7 +4337,7 @@ export default function InventariosPage() {
                 <input value={operatorName} onChange={event => setOperatorName(event.target.value)} placeholder="Nombres completos" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <input value={operatorPhone} onChange={event => setOperatorPhone(event.target.value)} placeholder="Celular" inputMode="numeric" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <input value={operatorPassword} onChange={event => setOperatorPassword(event.target.value)} placeholder="Clave" type="password" className="w-full rounded-xl border px-3 py-3 text-sm" />
-                <button onClick={registerOperator} disabled={!selectedSessionId} className="w-full rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                <button onClick={registerOperator} disabled={!selectedSessionId || !selectedSession || !canOperatorEnter(selectedSession.status)} className="w-full rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                   Entrar al inventario
                 </button>
               </div>
@@ -4273,7 +4360,7 @@ export default function InventariosPage() {
                   <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
                     <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                   </button>
-                  <button onClick={importLocations} disabled={!locationsFile} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <button onClick={importLocations} disabled={!locationsFile || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     Subir ubicaciones
                   </button>
                 </div>
@@ -4297,12 +4384,17 @@ export default function InventariosPage() {
                   </div>
                 )}
               </div>
-              <button onClick={freezeStock} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+              <button onClick={freezeStock} disabled={loading || isSelectedSessionFinished} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 <FileLock2 size={16} /> Congelar stock
               </button>
-              <button onClick={finishSession} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white">
+              <button onClick={finishSession} disabled={isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 Finalizar inventario
               </button>
+              {canAdminReopenSelectedSession && (
+                <button onClick={unfinishSession} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
+                  Desfinalizar sesion
+                </button>
+              )}
               {user?.role === "Administrador" && (
                 <button onClick={deleteSession} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700">
                   Eliminar sesion
@@ -4315,6 +4407,11 @@ export default function InventariosPage() {
 
         <section className="min-w-0 space-y-4">
           {message && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm">{message}</div>}
+          {isValidator && isSelectedSessionFinished && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 shadow-sm">
+              Sesion finalizada: los datos estan congelados para consulta. Solo un administrador puede desfinalizarla para volver a modificar.
+            </div>
+          )}
 
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
@@ -4382,12 +4479,17 @@ export default function InventariosPage() {
 
                 <section className="space-y-2 rounded-2xl border bg-white p-4 shadow-sm">
                   <h2 className="font-black">Acciones de sesión</h2>
-                  <button onClick={freezeStock} disabled={loading || !selectedSessionId} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <button onClick={freezeStock} disabled={loading || !selectedSessionId || isSelectedSessionFinished} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     <FileLock2 size={16} /> Congelar stock
                   </button>
-                  <button onClick={finishSession} disabled={!selectedSessionId} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <button onClick={finishSession} disabled={!selectedSessionId || isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     Finalizar inventario
                   </button>
+                  {canAdminReopenSelectedSession && (
+                    <button onClick={unfinishSession} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
+                      Desfinalizar sesion
+                    </button>
+                  )}
                   {user?.role === "Administrador" && (
                     <button onClick={deleteSession} disabled={!selectedSessionId} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700 disabled:opacity-40">
                       Eliminar sesion
@@ -4421,7 +4523,7 @@ export default function InventariosPage() {
                       <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
                         <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                       </button>
-                      <button onClick={importLocations} disabled={!locationsFile || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                      <button onClick={importLocations} disabled={!locationsFile || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                         Subir ubicaciones
                       </button>
                     </div>
@@ -4457,7 +4559,7 @@ export default function InventariosPage() {
                         <div className="flex items-start justify-end">
                           <button
                             onClick={() => markLocationEmpty(location)}
-                            disabled={savingEmptyLocationId === location.id}
+                            disabled={savingEmptyLocationId === location.id || isSelectedSessionFinished}
                             className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-black text-amber-700 hover:bg-amber-100 disabled:opacity-40"
                           >
                             {savingEmptyLocationId === location.id ? "Guardando" : "Vacia"}
@@ -4739,10 +4841,10 @@ export default function InventariosPage() {
                     <p className="text-xs text-slate-500">Asigna diferencias por bloques a operadores activos.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <button onClick={() => assignRecountBlock(20)} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+                    <button onClick={() => assignRecountBlock(20)} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                       Asignar 20 primeros
                     </button>
-                    <button onClick={assignSelectedRecountRows} disabled={selectedPendingRecountRows.length === 0} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
+                    <button onClick={assignSelectedRecountRows} disabled={selectedPendingRecountRows.length === 0 || isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
                       Asignar seleccionados
                     </button>
                   </div>
@@ -4755,13 +4857,13 @@ export default function InventariosPage() {
                   </div>
 
                   <div className="grid gap-2">
-                    <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing"} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
+                    <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing" || isSelectedSessionFinished} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
                       <option value="">Selecciona ubicacion</option>
                       {recountValues.map(value => <option key={value} value={value}>{value}</option>)}
                     </select>
                   </div>
 
-                  <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} className="rounded-xl border bg-white px-3 py-3 text-sm">
+                  <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} disabled={isSelectedSessionFinished} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
                     <option value="">Operador</option>
                     {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}</option>)}
                   </select>
@@ -4895,7 +4997,7 @@ export default function InventariosPage() {
                     </button>
                     <button
                       onClick={deleteAllAssignedRecountCounts}
-                      disabled={!assignedRecountRows.some(row => row.status === "counted")}
+                      disabled={!assignedRecountRows.some(row => row.status === "counted") || isSelectedSessionFinished}
                       className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"
                     >
                       <Trash2 size={14} /> Borrar guardados
@@ -4963,7 +5065,7 @@ export default function InventariosPage() {
                             <select
                               value={reassignOperatorDrafts[row.id] || row.assigned_operator_id || ""}
                               onChange={event => setReassignOperatorDrafts(prev => ({ ...prev, [row.id]: event.target.value }))}
-                              disabled={row.status === "counted"}
+                              disabled={row.status === "counted" || isSelectedSessionFinished}
                               className="w-full min-w-[220px] rounded-xl border bg-white px-3 py-2 text-xs disabled:opacity-40"
                             >
                               <option value="">Selecciona operador</option>
@@ -4978,14 +5080,14 @@ export default function InventariosPage() {
                             <div className="flex justify-center gap-2">
                               <button
                                 onClick={() => reassignRecountItem(row)}
-                                disabled={row.status === "counted"}
+                                disabled={row.status === "counted" || isSelectedSessionFinished}
                                 className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
                               >
                                 Reasignar
                               </button>
                               <button
                                 onClick={() => unassignRecountItem(row)}
-                                disabled={row.status === "counted"}
+                                disabled={row.status === "counted" || isSelectedSessionFinished}
                                 className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-40"
                               >
                                 Quitar
@@ -4993,7 +5095,8 @@ export default function InventariosPage() {
                               {row.status === "counted" && (
                                 <button
                                   onClick={() => deleteAssignedRecountCounts(row)}
-                                  className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700"
+                                  disabled={isSelectedSessionFinished}
+                                  className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"
                                 >
                                   Borrar
                                 </button>
@@ -5073,8 +5176,8 @@ export default function InventariosPage() {
                           <td className="p-2 text-center font-black">{money(record.item.value_diff)}</td>
                           <td className="p-2">
                             <div className="flex justify-center gap-1">
-                              <button onClick={() => openAdminEditRecountRecord(record)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
-                              <button onClick={() => deleteAdminRecountRecord(record)} className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-700">Borrar</button>
+                              <button onClick={() => openAdminEditRecountRecord(record)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Editar</button>
+                              <button onClick={() => deleteAdminRecountRecord(record)} disabled={isSelectedSessionFinished} className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40">Borrar</button>
                             </div>
                           </td>
                         </tr>
@@ -5234,7 +5337,7 @@ export default function InventariosPage() {
                     {summaryLoading ? "Actualizando..." : summaryHasPendingChanges ? "Actualizar cambios" : "Actualizar KPIs"}
                   </button>
                   {canManageInventory && (
-                    <button onClick={updateStockSnapshot} disabled={loading || summaryLoading} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                    <button onClick={updateStockSnapshot} disabled={loading || summaryLoading || isSelectedSessionFinished} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                       <RefreshCw size={14} /> Actualizar stock
                     </button>
                   )}
@@ -5346,10 +5449,10 @@ export default function InventariosPage() {
                               <button onClick={() => editCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
                             )}
                             {isValidator && (
-                              <button onClick={() => openAdminEditCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
+                              <button onClick={() => openAdminEditCount(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Editar</button>
                             )}
                             {canManageInventory && (
-                              <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button>
+                              <button onClick={() => deleteCount(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-red-600 disabled:opacity-40"><Trash2 size={14} /></button>
                             )}
                           </div>
                         )}
@@ -5384,7 +5487,7 @@ export default function InventariosPage() {
                     placeholder="Escribe observaciones generales del inventario, incidencias, criterios aplicados o acuerdos con tienda."
                   />
                   <div className="mt-2 flex justify-end">
-                    <button onClick={saveInventoryNotes} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white">
+                    <button onClick={saveInventoryNotes} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white disabled:opacity-40">
                       Guardar notas
                     </button>
                   </div>
@@ -5430,8 +5533,8 @@ export default function InventariosPage() {
                         </td>
                         <td className="p-2 text-center">
                           <div className="flex justify-center gap-1">
-                            <button onClick={() => saveObservation(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Guardar</button>
-                            <button onClick={() => markSummaryAsNonInventory(row)} className="rounded-lg border border-amber-300 px-2 py-1 text-xs font-black text-amber-700">No inv.</button>
+                            <button onClick={() => saveObservation(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Guardar</button>
+                            <button onClick={() => markSummaryAsNonInventory(row)} disabled={isSelectedSessionFinished} className="rounded-lg border border-amber-300 px-2 py-1 text-xs font-black text-amber-700 disabled:opacity-40">No inv.</button>
                           </div>
                         </td>
                       </tr>
@@ -5465,7 +5568,7 @@ export default function InventariosPage() {
               />
             </div>
             <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-              <button onClick={saveAdminEditCount} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+              <button onClick={saveAdminEditCount} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 Guardar
               </button>
               <button onClick={() => setEditingAdminCount(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
@@ -5504,7 +5607,7 @@ export default function InventariosPage() {
               />
             </div>
             <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-              <button onClick={saveAdminEditRecountRecord} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
+              <button onClick={saveAdminEditRecountRecord} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 Guardar
               </button>
               <button onClick={() => setEditingAdminRecountRecord(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
