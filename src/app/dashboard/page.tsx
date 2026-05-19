@@ -415,6 +415,18 @@ function diffBadge(diff: number) {
     return <span className="text-red-600 font-semibold">{formatNumber(diff)}</span>;
 }
 
+function diffCardClass(diff: number) {
+    if (diff === 0) return "bg-green-50 border-green-300";
+    if (diff > 0) return "bg-blue-50 border-blue-300";
+    return "bg-red-50 border-red-300";
+}
+
+function diffPillClass(diff: number) {
+    if (diff === 0) return "bg-green-100 text-green-700 border-green-200";
+    if (diff > 0) return "bg-blue-100 text-blue-700 border-blue-200";
+    return "bg-red-100 text-red-700 border-red-200";
+}
+
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════
@@ -2748,7 +2760,7 @@ export default function DashboardPage() {
         .num { text-align: right; white-space: nowrap; }
         .ok { color: #15803d; font-weight: 700; }
         .bad { color: #b91c1c; font-weight: 700; }
-        .warn { color: #c2410c; font-weight: 700; }
+        .warn { color: #1d4ed8; font-weight: 700; }
         .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; margin-top: 24px; break-inside: avoid; }
         .signature { text-align: center; padding-top: 24px; border-top: 1px solid #0f172a; font-weight: 700; }
         @media print {
@@ -2789,9 +2801,9 @@ export default function DashboardPage() {
         <div class="panel">
             <h2>Diferencias</h2>
             <div class="barRow"><strong>Faltante</strong>${inlineBar((faltanteQty / qtyMax) * 100, "#dc2626")}<span>${formatNumber(faltanteQty)} und</span></div>
-            <div class="barRow"><strong>Sobrante</strong>${inlineBar((sobranteQty / qtyMax) * 100, "#f97316")}<span>${formatNumber(sobranteQty)} und</span></div>
+            <div class="barRow"><strong>Sobrante</strong>${inlineBar((sobranteQty / qtyMax) * 100, "#2563eb")}<span class="warn">${formatNumber(sobranteQty)} und</span></div>
             <div class="barRow"><strong>Val. falt.</strong>${inlineBar((faltanteValue / valueMax) * 100, "#dc2626")}<span>${formatMoney(faltanteValue)}</span></div>
-            <div class="barRow"><strong>Val. sobr.</strong>${inlineBar((sobranteValue / valueMax) * 100, "#f97316")}<span>${formatMoney(sobranteValue)}</span></div>
+            <div class="barRow"><strong>Val. sobr.</strong>${inlineBar((sobranteValue / valueMax) * 100, "#2563eb")}<span class="warn">${formatMoney(sobranteValue)}</span></div>
         </div>
     </div>
 
@@ -6820,9 +6832,10 @@ export default function DashboardPage() {
                                 {doneAssignments.map(a => {
                                     const asgCounts = counts.filter(c => c.assignment_id === a.id);
                                     const totalContado = asgCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
-                                    const hasDiff = totalContado !== Number(a.system_stock);
+                                    const diff = totalContado - Number(a.system_stock);
+                                    const hasDiff = diff !== 0;
                                     return (
-                                        <div key={a.id} className={`border-2 rounded-2xl p-4 active:scale-[0.98] transition-transform ${hasDiff ? "bg-red-50 border-red-300" : "bg-green-50 border-green-300"}`}>
+                                        <div key={a.id} className={`border-2 rounded-2xl p-4 active:scale-[0.98] transition-transform ${diffCardClass(diff)}`}>
                                             <div className="flex items-center justify-between gap-3">
                                                 <div className="flex-1 min-w-0">
                                                     <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
@@ -6832,7 +6845,7 @@ export default function DashboardPage() {
                                                         <span>·</span>
                                                         <span>Contado: <b>{formatNumber(totalContado)}</b></span>
                                                         {hasDiff
-                                                            ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">
+                                                            ? <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold text-xs border ${diffPillClass(diff)}`}>
                                                                 ⚠️ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{formatNumber(totalContado - Number(a.system_stock))}
                                                               </span>
                                                             : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-bold text-xs border border-green-200">
@@ -7017,10 +7030,12 @@ export default function DashboardPage() {
                                 const diff = totalContado - a.system_stock;
                                 const isSelected = recountAssignment?.id === a.id;
                                 const isUncounted = !a.counted;
+                                const recountTone = diffCardClass(diff);
+                                const recountHover = diff > 0 ? "hover:bg-blue-100" : diff < 0 ? "hover:bg-red-100" : "hover:bg-green-100";
                                 return (
                                     <div
                                         key={a.id}
-                                        className={`border rounded-2xl p-3 cursor-pointer transition-all ${isSelected ? "bg-orange-100 border-orange-400" : isUncounted ? "bg-amber-50 border-amber-300 hover:bg-amber-100" : "bg-red-50 border-red-200 hover:bg-red-100"}`}
+                                        className={`border rounded-2xl p-3 cursor-pointer transition-all ${isSelected ? "bg-orange-100 border-orange-400" : isUncounted ? "bg-amber-50 border-amber-300 hover:bg-amber-100" : `${recountTone} ${recountHover}`}`}
                                         onClick={() => { void openRecountItem(a); }}
                                     >
                                         <div className="flex items-center justify-between gap-3">
@@ -7034,7 +7049,7 @@ export default function DashboardPage() {
                                                     }
                                                 </div>
                                             </div>
-                                            <span className={`text-xs font-semibold px-3 py-1.5 rounded-xl border ${isSelected ? "text-orange-700 bg-orange-100 border-orange-200" : isUncounted ? "text-amber-700 bg-amber-100 border-amber-200" : "text-orange-700 bg-orange-100 border-orange-200"}`}>
+                                            <span className={`text-xs font-semibold px-3 py-1.5 rounded-xl border ${isSelected ? "text-orange-700 bg-orange-100 border-orange-200" : isUncounted ? "text-amber-700 bg-amber-100 border-amber-200" : diffPillClass(diff)}`}>
                                                 {isSelected ? "Editando" : "Recontar"}
                                             </span>
                                         </div>
