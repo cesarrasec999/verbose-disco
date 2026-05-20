@@ -112,6 +112,11 @@ type SummaryRow = {
   sku: string;
   description: string;
   unit: string;
+  brand?: string | null;
+  department?: string | null;
+  class_name?: string | null;
+  subclass_name?: string | null;
+  rotation_category?: string | null;
   system_stock: number;
   counted: number;
   counted_original: number;
@@ -2123,6 +2128,105 @@ export default function InventariosPage() {
     return stockBySku;
   }
 
+  async function loadProductCategories(productIds: string[]) {
+    const categories = new Map<string, Pick<SummaryRow, "brand" | "department" | "class_name" | "subclass_name">>();
+    const ids = [...new Set(productIds.filter(Boolean))];
+    if (ids.length === 0) return categories;
+
+    try {
+      for (let i = 0; i < ids.length; i += 500) {
+        const { data, error } = await supabase
+          .from("cyclic_products")
+          .select("id,brand,department,class_name,subclass_name")
+          .in("id", ids.slice(i, i + 500));
+        if (error) throw error;
+        for (const row of data || []) {
+          categories.set(String(row.id), {
+            brand: row.brand || null,
+            department: row.department || null,
+            class_name: row.class_name || null,
+            subclass_name: row.subclass_name || null,
+          });
+        }
+      }
+    } catch (error) {
+      console.warn("No se pudieron cargar categorias de productos:", error);
+    }
+
+    return categories;
+  }
+
+  function normalizeRotationStoreKey(value: string | null | undefined) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function rotationStoreKeysForSession(session: InventorySession | null | undefined) {
+    const aliases = [
+      "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
+      "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
+      "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
+      "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD",
+    ];
+    const keys = new Set<string>();
+    const store = session?.store_id ? stores.find(item => item.id === session.store_id) : null;
+    const sources = [session?.store_name, store?.name, store?.erp_sede, session?.store_id].filter(Boolean) as string[];
+    for (const source of sources) {
+      const normalized = normalizeRotationStoreKey(source);
+      if (!normalized) continue;
+      keys.add(normalized);
+      for (const alias of aliases) {
+        const normalizedAlias = normalizeRotationStoreKey(alias);
+        if (normalized.includes(normalizedAlias)) keys.add(normalizedAlias);
+      }
+      if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
+      if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
+    }
+    return [...keys];
+  }
+
+  function sessionRotationPeriod(session: InventorySession | null | undefined) {
+    const rawDate = session?.finished_at || session?.scheduled_date || session?.created_at || new Date().toISOString();
+    const date = new Date(rawDate);
+    if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 7) + "-01";
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    return `${year}-${month}-01`;
+  }
+
+  async function loadProductRotationsForSession(session: InventorySession | null | undefined, skus: string[]) {
+    const rotations = new Map<string, string>();
+    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+    const storeKeys = rotationStoreKeysForSession(session);
+    if (cleanSkus.length === 0 || storeKeys.length === 0) return rotations;
+
+    try {
+      for (let i = 0; i < cleanSkus.length; i += 500) {
+        const { data, error } = await supabase
+          .from("product_rotation_monthly")
+          .select("product_code,rotation_category,period_month,store_key")
+          .in("store_key", storeKeys)
+          .in("product_code", cleanSkus.slice(i, i + 500))
+          .lte("period_month", sessionRotationPeriod(session))
+          .order("period_month", { ascending: false });
+        if (error) throw error;
+        for (const row of data || []) {
+          const sku = normalizeCode(row.product_code).toUpperCase();
+          if (sku && !rotations.has(sku)) rotations.set(sku, String(row.rotation_category || "").trim().toUpperCase());
+        }
+      }
+    } catch (error) {
+      console.warn("No se pudieron cargar rotaciones mensuales:", error);
+    }
+
+    return rotations;
+  }
+
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     setSummaryLoading(true);
@@ -2172,6 +2276,20 @@ export default function InventariosPage() {
 
     const observations = new Map<string, string>();
     for (const row of observationRows) observations.set(row.product_id, row.observation || "");
+    const productIdsForSummary = [
+      ...snapshotRows.map(row => row.product_id),
+      ...countRows.map(row => row.product_id),
+    ];
+    const skusForSummary = [
+      ...snapshotRows.map(row => row.sku),
+      ...countRows.map(row => row.sku),
+      ...recountCountRows.map(row => row.sku),
+    ];
+    const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
+    const [productCategories, productRotations] = await Promise.all([
+      loadProductCategories(productIdsForSummary),
+      loadProductRotationsForSession(summarySession, skusForSummary),
+    ]);
 
     const productIdsInSnapshot = new Set<string>();
     const rows: SummaryRow[] = [];
@@ -2190,6 +2308,8 @@ export default function InventariosPage() {
         sku: snap.sku,
         description: snap.description || "",
         unit: snap.unit || "",
+        ...productCategories.get(snap.product_id),
+        rotation_category: productRotations.get(normalizeCode(snap.sku).toUpperCase()) || null,
         system_stock: systemStock,
         counted,
         counted_original: countedOriginal,
@@ -2217,6 +2337,8 @@ export default function InventariosPage() {
         sku: row.sku,
         description: row.description || "",
         unit: row.unit || "",
+        ...productCategories.get(row.product_id),
+        rotation_category: productRotations.get(normalizeCode(row.sku).toUpperCase()) || null,
         system_stock: systemStock,
         counted,
         counted_original: countedOriginal,
@@ -3743,6 +3865,287 @@ export default function InventariosPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Resumen");
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
+  }
+
+  function generateInventoryCategoryReport() {
+    if (!selectedSession) {
+      setMessage("Selecciona un inventario para generar el reporte por categoria.");
+      return;
+    }
+    if (summary.length === 0) {
+      setMessage("Carga o actualiza el resumen antes de generar el reporte por categoria.");
+      return;
+    }
+
+    type GroupRow = {
+      name: string;
+      total: number;
+      counted: number;
+      ok: number;
+      surplus: number;
+      missing: number;
+      systemValue: number;
+      countedValue: number;
+      surplusValue: number;
+      missingValue: number;
+    };
+    const emptyGroup = (name: string): GroupRow => ({
+      name,
+      total: 0,
+      counted: 0,
+      ok: 0,
+      surplus: 0,
+      missing: 0,
+      systemValue: 0,
+      countedValue: 0,
+      surplusValue: 0,
+      missingValue: 0,
+    });
+    const aggregateBy = (field: "department" | "brand" | "rotation_category") => {
+      const groups = new Map<string, GroupRow>();
+      for (const row of summary) {
+        const fallback = field === "rotation_category" ? "SIN ROTACION" : "SIN CLASIFICAR";
+        const name = String(row[field] || fallback).trim() || fallback;
+        const group = groups.get(name) || emptyGroup(name);
+        group.total += 1;
+        if (row.counted > 0) group.counted += 1;
+        if (row.counted > 0 && row.diff === 0) group.ok += 1;
+        if (row.diff > 0) {
+          group.surplus += 1;
+          group.surplusValue += row.valueDiff;
+        }
+        if (row.diff < 0) {
+          group.missing += 1;
+          group.missingValue += row.valueDiff;
+        }
+        group.systemValue += row.system_stock * row.cost;
+        group.countedValue += row.counted * row.cost;
+        groups.set(name, group);
+      }
+      return [...groups.values()].sort((a, b) =>
+        Math.abs(b.missingValue) + Math.abs(b.surplusValue) - (Math.abs(a.missingValue) + Math.abs(a.surplusValue)) ||
+        a.name.localeCompare(b.name)
+      );
+    };
+    const pct = (value: number, total: number) => total > 0 ? Math.round((value / total) * 100) : 0;
+    const valueProgress = (row: GroupRow) => row.systemValue > 0 ? Math.round((row.countedValue / row.systemValue) * 100) : 0;
+    const deptRows = aggregateBy("department");
+    const brandRows = aggregateBy("brand");
+    const rotationRows = aggregateBy("rotation_category");
+    const topDeptRows = deptRows.slice(0, 18);
+    const topRotationRows = rotationRows.slice(0, 18);
+    const maxDeptValue = Math.max(...topDeptRows.map(row => Math.max(Math.abs(row.missingValue), Math.abs(row.surplusValue))), 1);
+    const maxRotationValue = Math.max(...topRotationRows.map(row => Math.max(Math.abs(row.missingValue), Math.abs(row.surplusValue))), 1);
+    const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+    const reportStartDate = dateOnly(selectedSession.scheduled_date || selectedSession.created_at);
+    const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
+    const bar = (value: number, max: number, color: string) => {
+      const width = Math.max(2, Math.round((Math.abs(value) / max) * 130));
+      return `<span class="bar"><span style="width:${width}px;background:${color};"></span></span>`;
+    };
+    const donut = (label: string, value: number, color: string, detail: string) => `
+      <div class="donutCard">
+        <svg viewBox="0 0 64 64" width="58" height="58" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="32" cy="32" r="24" fill="#fff" stroke="#dbe4ef" stroke-width="8"/>
+          <circle cx="32" cy="32" r="24" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="${Math.max(0, Math.min(100, value)) * 1.508} 150.8" transform="rotate(-90 32 32)"/>
+          <text x="32" y="36" text-anchor="middle" font-family="Arial" font-size="12" font-weight="900">${Math.round(value)}%</text>
+        </svg>
+        <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span></div>
+      </div>`;
+    const valuedRows = (rows: GroupRow[], maxValue: number) => rows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="num bad">${money(row.missingValue)}</td>
+        <td>${bar(row.missingValue, maxValue, "#dc2626")}</td>
+        <td class="num warn">${money(row.surplusValue)}</td>
+        <td>${bar(row.surplusValue, maxValue, "#2563eb")}</td>
+      </tr>
+    `).join("");
+    const percentRows = (rows: GroupRow[]) => rows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="num ok">${pct(row.ok, row.total)}%</td>
+        <td class="num bad">${pct(row.missing, row.total)}%</td>
+        <td class="num warn">${pct(row.surplus, row.total)}%</td>
+        <td class="num">${number2(row.total)}</td>
+      </tr>
+    `).join("");
+    const valueRows = valuedRows(topDeptRows, maxDeptValue);
+    const pctRows = percentRows(topDeptRows);
+    const rotationValueRows = valuedRows(topRotationRows, maxRotationValue);
+    const rotationPctRows = percentRows(topRotationRows);
+    const tableRows = (rows: GroupRow[]) => rows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="num">${number2(row.total)}</td>
+        <td class="num">${number2(row.counted)}</td>
+        <td class="num ok">${number2(row.ok)}</td>
+        <td class="num bad">${number2(row.missing)}</td>
+        <td class="num warn">${number2(row.surplus)}</td>
+        <td class="num">${pct(row.ok, row.total)}%</td>
+        <td class="num">${valueProgress(row)}%</td>
+        <td class="num bad">${money(row.missingValue)}</td>
+        <td class="num warn">${money(row.surplusValue)}</td>
+      </tr>
+    `).join("");
+    const topMissingRows = summary
+      .filter(row => row.diff < 0)
+      .sort((a, b) => a.valueDiff - b.valueDiff)
+      .slice(0, 20);
+    const topSurplusRows = summary
+      .filter(row => row.diff > 0)
+      .sort((a, b) => b.valueDiff - a.valueDiff)
+      .slice(0, 20);
+    const topSkuRows = (rows: SummaryRow[]) => rows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.sku)}</td>
+        <td class="oneLine">${escapeHtml(row.description)}</td>
+        <td>${escapeHtml(row.unit)}</td>
+        <td>${escapeHtml(row.department || "SIN CLASIFICAR")}</td>
+        <td>${escapeHtml(row.brand || "SIN CLASIFICAR")}</td>
+        <td>${escapeHtml(row.rotation_category || "SIN ROTACION")}</td>
+        <td class="num">${number2(row.system_stock)}</td>
+        <td class="num">${number2(row.counted)}</td>
+        <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
+        <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
+      </tr>
+    `).join("");
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Reporte categoria inventario - ${escapeHtml(selectedSession.name)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
+    h1 { margin: 0; font-size: 18px; }
+    h2 { margin: 10px 0 5px; font-size: 12px; }
+    .muted { color: #64748b; }
+    .header { display: flex; justify-content: space-between; gap: 14px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
+    .meta { text-align: right; line-height: 1.35; }
+    .donuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+    .donutCard { display: flex; align-items: center; gap: 9px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 7px; background: #f8fafc; }
+    .donutCard strong { display: block; font-size: 11px; }
+    .donutCard span { display: block; color: #64748b; margin-top: 2px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 0.75fr; gap: 10px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #cbd5e1; padding: 3px 4px; vertical-align: middle; }
+    th { background: #f1f5f9; font-size: 9px; text-align: left; }
+    .oneLine { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .num { text-align: right; white-space: nowrap; }
+    .ok { color: #15803d; font-weight: 800; }
+    .bad { color: #b91c1c; font-weight: 800; }
+    .warn { color: #1d4ed8; font-weight: 800; }
+    .bar { display: inline-block; width: 136px; height: 8px; background: #e5edf5; border-radius: 999px; overflow: hidden; }
+    .bar span { display: block; height: 100%; border-radius: 999px; }
+    .pageBreak { break-before: page; }
+    button { margin-top: 8px; padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
+    @media print { button { display: none; } .donuts, .grid2 { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Reporte por departamento y marca</h1>
+      <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
+      <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
+      <div class="muted">Fecha: <strong>${escapeHtml(reportStartDate || "-")} - ${escapeHtml(reportEndDate)}</strong></div>
+    </div>
+    <div class="meta">
+      <div>Estado: <strong>${escapeHtml(statusLabel(selectedSession.status))}</strong></div>
+      <div>Generado: <strong>${escapeHtml(generatedAt)}</strong></div>
+      <button onclick="window.print()">Imprimir / guardar PDF</button>
+    </div>
+  </div>
+
+  <div class="donuts">
+    ${donut("ERI", kpis.eri, "#16a34a", `${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} codigos`)}
+    ${donut("AVANCE POR SKU", kpis.skuProgress, "#0f172a", `${kpis.countedCodes} / ${kpis.totalCodes} codigos`)}
+    ${donut("AVANCE POR VALORIZADO", kpis.valueProgress, "#1d4ed8", `${money(kpis.countedValue)} de ${money(kpis.systemValue)}`)}
+  </div>
+
+  <div class="grid2">
+    <div>
+      <h2>Faltantes / sobrantes valorizados por rotacion</h2>
+      <table>
+        <thead><tr><th>Rotacion</th><th class="num">Faltante S/</th><th>Graf.</th><th class="num">Sobrante S/</th><th>Graf.</th></tr></thead>
+        <tbody>${rotationValueRows}</tbody>
+      </table>
+    </div>
+    <div>
+      <h2>% por rotacion</h2>
+      <table>
+        <thead><tr><th>Rotacion</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Cod.</th></tr></thead>
+        <tbody>${rotationPctRows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <h2>Faltantes / sobrantes valorizados por departamento</h2>
+      <table>
+        <thead><tr><th>Dept</th><th class="num">Faltante S/</th><th>Graf.</th><th class="num">Sobrante S/</th><th>Graf.</th></tr></thead>
+        <tbody>${valueRows}</tbody>
+      </table>
+    </div>
+    <div>
+      <h2>% por departamento</h2>
+      <table>
+        <thead><tr><th>Dept</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Cod.</th></tr></thead>
+        <tbody>${pctRows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <h2>Top 20 faltantes</h2>
+      <table>
+        <thead><tr><th>Codigo</th><th>Descripcion</th><th>UM</th><th>Dept</th><th>Marca</th><th>Rot.</th><th class="num">Sistema</th><th class="num">Conteo</th><th class="num">Dif.</th><th class="num">Dif. val.</th></tr></thead>
+        <tbody>${topSkuRows(topMissingRows)}</tbody>
+      </table>
+    </div>
+    <div>
+      <h2>Top 20 sobrantes</h2>
+      <table>
+        <thead><tr><th>Codigo</th><th>Descripcion</th><th>UM</th><th>Dept</th><th>Marca</th><th>Rot.</th><th class="num">Sistema</th><th class="num">Conteo</th><th class="num">Dif.</th><th class="num">Dif. val.</th></tr></thead>
+        <tbody>${topSkuRows(topSurplusRows)}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2 class="pageBreak">Detalle por rotacion</h2>
+  <table>
+    <thead><tr><th>Rotacion</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
+    <tbody>${tableRows(rotationRows)}</tbody>
+  </table>
+
+  <h2>Detalle por departamento</h2>
+  <table>
+    <thead><tr><th>Dept</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
+    <tbody>${tableRows(deptRows)}</tbody>
+  </table>
+
+  <h2>Detalle por marca</h2>
+  <table>
+    <thead><tr><th>Marca</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
+    <tbody>${tableRows(brandRows)}</tbody>
+  </table>
+</body>
+</html>`;
+
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo la ventana del reporte. Permite ventanas emergentes e intenta otra vez.");
+      return;
+    }
+    reportWindow.document.open();
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
   }
 
   async function saveInventoryNotes() {
@@ -5389,6 +5792,7 @@ export default function InventariosPage() {
                     </button>
                   )}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
+                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte Dept/Marca/Rot.</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
