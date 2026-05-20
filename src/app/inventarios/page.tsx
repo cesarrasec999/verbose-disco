@@ -3940,15 +3940,20 @@ export default function InventariosPage() {
     const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
     const logoUrl = `${window.location.origin}/icon.png`;
     const donut = (label: string, value: number, color: string, detail: string) => `
-      <div class="donutCard">
-        <svg viewBox="0 0 64 64" width="58" height="58" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="32" cy="32" r="24" fill="#fff" stroke="#dbe4ef" stroke-width="8"/>
-          <circle cx="32" cy="32" r="24" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"
-            stroke-dasharray="${Math.max(0, Math.min(100, value)) * 1.508} 150.8" transform="rotate(-90 32 32)"/>
-          <text x="32" y="36" text-anchor="middle" font-family="Arial" font-size="12" font-weight="900">${Math.round(value)}%</text>
-        </svg>
-        <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span></div>
-      </div>`;
+      <td style="padding:4px;width:33.33%;vertical-align:top;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;border-collapse:separate;">
+          <tr>
+            <td style="padding:10px 12px;">
+              <div style="font-size:24px;line-height:1;font-weight:900;color:${color};">${Math.round(value)}%</div>
+              <div style="font-size:11px;font-weight:900;color:#0f172a;margin-top:5px;">${escapeHtml(label)}</div>
+              <div style="font-size:10px;color:#64748b;margin-top:3px;">${escapeHtml(detail)}</div>
+              <div style="height:9px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin-top:9px;">
+                <div style="height:9px;width:${Math.max(2, Math.min(100, Math.round(value)))}%;background:${color};border-radius:999px;"></div>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>`;
     const tableRows = (rows: GroupRow[]) => rows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
@@ -3966,20 +3971,28 @@ export default function InventariosPage() {
     const horizontalBar = (label: string, value: number, max: number, color: string, formatted: string) => {
       const width = max > 0 ? Math.max(4, Math.round((Math.abs(value) / max) * 100)) : 0;
       return `
-        <div class="barRow">
-          <div class="barLabel">${escapeHtml(label)}</div>
-          <div class="barTrack"><span style="width:${width}%;background:${color};"></span></div>
-          <div class="barValue" style="color:${color};">${escapeHtml(formatted)}</div>
-        </div>
+        <tr>
+          <td style="width:88px;padding:6px 0;font-weight:800;color:#334155;">${escapeHtml(label)}</td>
+          <td style="padding:6px 8px;">
+            <div style="height:12px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
+              <div style="height:12px;width:${width}%;background:${color};border-radius:999px;"></div>
+            </div>
+          </td>
+          <td style="width:110px;padding:6px 0;text-align:right;font-weight:900;color:${color};white-space:nowrap;">${escapeHtml(formatted)}</td>
+        </tr>
       `;
     };
     const maxCodeDiff = Math.max(kpis.missingCodes, kpis.surplusCodes, 1);
     const maxValueDiff = Math.max(Math.abs(kpis.missingValue), Math.abs(kpis.surplusValue), 1);
     const metricCard = (label: string, value: string | number, cls = "") => `
-      <div class="metricCard">
-        <div class="metricValue ${cls}">${escapeHtml(String(value))}</div>
-        <div class="metricLabel">${escapeHtml(label)}</div>
-      </div>
+      <td style="padding:4px;vertical-align:top;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;border-collapse:separate;">
+          <tr><td style="padding:9px 6px;text-align:center;">
+            <div style="font-size:17px;font-weight:900;line-height:1.1;color:${cls === "bad" ? "#b91c1c" : cls === "warn" ? "#1d4ed8" : cls === "ok" ? "#15803d" : "#0f172a"};">${escapeHtml(String(value))}</div>
+            <div style="color:#64748b;font-size:8.5px;font-weight:800;margin-top:3px;text-transform:uppercase;">${escapeHtml(label)}</div>
+          </td></tr>
+        </table>
+      </td>
     `;
     const topMissingRows = summary
       .filter(row => row.diff < 0)
@@ -4089,37 +4102,55 @@ export default function InventariosPage() {
     A continuacion el resumen ejecutivo del inventario general. Revisar los resultados por rotacion y categorias para priorizar acciones correctivas.
   </p>
 
-  <div class="donuts">
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
+    <tr>
     ${donut("ERI", kpis.eri, "#16a34a", `${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} codigos`)}
     ${donut("AVANCE POR SKU", kpis.skuProgress, "#0f172a", `${kpis.countedCodes} / ${kpis.totalCodes} codigos`)}
     ${donut("AVANCE POR VALORIZADO", kpis.valueProgress, "#1d4ed8", `${money(kpis.countedValue)} de ${money(kpis.systemValue)}`)}
-  </div>
+    </tr>
+  </table>
 
-  <div class="chartGrid">
-    <div>
-      <div class="chartBox">
-        <div class="chartTitle">Faltantes y sobrantes por codigo</div>
-        ${horizontalBar("Faltantes", kpis.missingCodes, maxCodeDiff, "#dc2626", number2(kpis.missingCodes))}
-        ${horizontalBar("Sobrantes", kpis.surplusCodes, maxCodeDiff, "#1d4ed8", number2(kpis.surplusCodes))}
-      </div>
-    </div>
-    <div>
-      <div class="chartBox">
-        <div class="chartTitle">Faltantes y sobrantes valorizados</div>
-        ${horizontalBar("Faltantes", kpis.missingValue, maxValueDiff, "#dc2626", money(kpis.missingValue))}
-        ${horizontalBar("Sobrantes", kpis.surplusValue, maxValueDiff, "#1d4ed8", money(kpis.surplusValue))}
-      </div>
-    </div>
-  </div>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 12px;border-collapse:collapse;">
+    <tr>
+      <td style="padding:4px;width:50%;vertical-align:top;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;border-collapse:separate;">
+          <tr><td style="padding:10px;">
+            <div style="margin:0 0 8px;color:#0f172a;font-weight:900;font-size:11px;text-transform:uppercase;">Faltantes y sobrantes por codigo</div>
+            <table width="100%" cellpadding="0" cellspacing="0">${horizontalBar("Faltantes", kpis.missingCodes, maxCodeDiff, "#dc2626", number2(kpis.missingCodes))}${horizontalBar("Sobrantes", kpis.surplusCodes, maxCodeDiff, "#1d4ed8", number2(kpis.surplusCodes))}</table>
+          </td></tr>
+        </table>
+      </td>
+      <td style="padding:4px;width:50%;vertical-align:top;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;border-collapse:separate;">
+          <tr><td style="padding:10px;">
+            <div style="margin:0 0 8px;color:#0f172a;font-weight:900;font-size:11px;text-transform:uppercase;">Faltantes y sobrantes valorizados</div>
+            <table width="100%" cellpadding="0" cellspacing="0">${horizontalBar("Faltantes", kpis.missingValue, maxValueDiff, "#dc2626", money(kpis.missingValue))}${horizontalBar("Sobrantes", kpis.surplusValue, maxValueDiff, "#1d4ed8", money(kpis.surplusValue))}</table>
+          </td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 
-  <div class="metricGrid">
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 12px;border-collapse:collapse;">
+    <tr>
     ${metricCard("Codigos totales", number2(kpis.totalCodes))}
     ${metricCard("Codigos contados", number2(kpis.countedCodes), "ok")}
     ${metricCard("Codigos OK", number2(kpis.okCodes), "ok")}
     ${metricCard("Codigos faltantes", number2(kpis.missingCodes), "bad")}
     ${metricCard("Codigos sobrantes", number2(kpis.surplusCodes), "warn")}
     ${metricCard("Codigos no contados", number2(kpis.notCountedCodes))}
-  </div>
+    </tr>
+    <tr>
+      <td colspan="6" style="padding:4px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #cbd5e1;border-radius:8px;background:#fff7ed;border-collapse:separate;">
+          <tr><td style="padding:10px 12px;text-align:center;">
+            <div style="font-size:20px;font-weight:900;color:${kpis.diffValue < 0 ? "#b91c1c" : kpis.diffValue > 0 ? "#1d4ed8" : "#15803d"};">${money(kpis.diffValue)}</div>
+            <div style="font-size:9px;color:#64748b;font-weight:900;text-transform:uppercase;">Diferencia total valorizada</div>
+          </td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 
   <div class="stack">
     <div>
