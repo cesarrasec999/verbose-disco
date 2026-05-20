@@ -592,12 +592,69 @@ export default function AuditoriaPage() {
     await loadSessionData(row.id);
   }
 
+  async function refreshAuditSessionStocks(sessionId: string) {
+    const { data: sessionRow } = await supabase
+      .from("audit_sessions")
+      .select("store_id, stores(name, erp_sede)")
+      .eq("id", sessionId)
+      .maybeSingle();
+    const store = sessionRow?.stores as { name?: string | null; erp_sede?: string | null } | null | undefined;
+    const sede = String(store?.erp_sede || store?.name || "").trim();
+    if (!sede) return 0;
+
+    const [{ data: itemRows }, { data: countRows }] = await Promise.all([
+      supabase
+        .from("audit_session_items")
+        .select("id,product_id,system_stock,cyclic_products(sku)")
+        .eq("session_id", sessionId),
+      supabase
+        .from("audit_counts")
+        .select("item_id")
+        .eq("session_id", sessionId),
+    ]);
+
+    const countedItemIds = new Set((countRows || []).map(row => String(row.item_id)));
+    const pendingItems = (itemRows || []).filter(row => !countedItemIds.has(String(row.id)));
+    const skus = [...new Set(pendingItems.map((row: any) => fullProductCode(row.cyclic_products?.sku)).filter(Boolean))];
+    if (skus.length === 0) return 0;
+
+    const stockMap = new Map<string, number>();
+    for (let i = 0; i < skus.length; i += 500) {
+      const { data } = await supabase
+        .from("stock_general")
+        .select("codsap,stock")
+        .eq("sede", sede)
+        .in("codsap", skus.slice(i, i + 500));
+      for (const row of data || []) stockMap.set(fullProductCode(row.codsap), Number(row.stock || 0));
+    }
+
+    const updates = pendingItems
+      .map((row: any) => ({
+        id: row.id,
+        stock: stockMap.get(fullProductCode(row.cyclic_products?.sku)) ?? Number(row.system_stock || 0),
+        current: Number(row.system_stock || 0),
+      }))
+      .filter(row => row.stock !== row.current);
+
+    for (let i = 0; i < updates.length; i += 50) {
+      await Promise.all(updates.slice(i, i + 50).map(row =>
+        supabase.from("audit_session_items").update({ system_stock: row.stock }).eq("id", row.id)
+      ));
+    }
+
+    return updates.length;
+  }
+
   async function refreshAuditData() {
     setLoading(true);
     await loadSessions();
-    if (session?.id) await loadSavedSession(session.id);
+    let updated = 0;
+    if (session?.id) {
+      updated = await refreshAuditSessionStocks(session.id);
+      await loadSavedSession(session.id);
+    }
     setLoading(false);
-    setMessage("Datos actualizados.");
+    setMessage(updated > 0 ? `Datos actualizados. Stock actualizado en ${updated} codigo${updated !== 1 ? "s" : ""} sin conteo guardado.` : "Datos actualizados.");
   }
 
   async function openSession(row: AuditSession) {
@@ -676,7 +733,7 @@ export default function AuditoriaPage() {
     return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
   }
 
-  async function refreshAuditItemStock(item: AuditItem): Promise<AuditItem> {
+  async function refreshAuditItemStock(item: AuditItem, options: { forcePersist?: boolean } = {}): Promise<AuditItem> {
     const store = selectedStore || stores.find(s => s.id === session?.store_id);
     const sede = String(store?.erp_sede || store?.name || "").trim();
     const codsap = fullProductCode(item.sku);
@@ -695,8 +752,9 @@ export default function AuditoriaPage() {
 
     const latestStock = Number(data?.stock || 0);
     const updatedItem = { ...item, system_stock: latestStock };
+    const hasSavedCount = counts.some(count => count.item_id === item.id || count.product_id === item.product_id);
 
-    if (!item.pending_extra && Number(item.system_stock || 0) !== latestStock) {
+    if (!item.pending_extra && (options.forcePersist || !hasSavedCount) && Number(item.system_stock || 0) !== latestStock) {
       const { error: updateError } = await supabase
         .from("audit_session_items")
         .update({ system_stock: latestStock })
@@ -1074,7 +1132,7 @@ export default function AuditoriaPage() {
     savingCountRef.current = true;
     setSavingCount(true);
     try {
-      const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem));
+      const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem, { forcePersist: true }));
       const { error } = await supabase.from("audit_counts").insert({
         session_id: session.id,
         item_id: currentItem.id,
@@ -1199,6 +1257,7 @@ export default function AuditoriaPage() {
       return;
     }
     setItems(prev => prev.map(item => item.id === itemId ? { ...item, system_stock: stock } : item));
+    setActiveItem(prev => prev?.id === itemId ? { ...prev, system_stock: stock } : prev);
     setItemStockDrafts(prev => ({ ...prev, [itemId]: String(stock) }));
     setMessage("Stock de la fotografía actualizado solo para esta auditoría.");
   }
