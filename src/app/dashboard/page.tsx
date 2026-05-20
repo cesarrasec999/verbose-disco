@@ -12,7 +12,7 @@ import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogO
 //  TIPOS
 // ══════════════════════════════════════════════════════════
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
-type TabKey = "operario" | "validador" | "ubicaciones" | "reportes" | "admin";
+type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
 type ValTabKey = "asignar"|"no_inventariables"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
 
 type CyclicUser = {
@@ -184,29 +184,6 @@ type ProductCountHistoryRow = {
     faltante: number;
     sobrante: number;
     result: string;
-};
-
-type InventoryValuationReportRow = {
-    store_id: string;
-    store_name: string;
-    sede: string;
-    codes_with_stock: number;
-    total_units: number;
-    inventory_value: number;
-    missing_cost_codes: number;
-};
-
-type InventoryValuationSnapshot = {
-    id: string;
-    snapshot_date: string;
-    snapshot_time: string;
-    source_name: string | null;
-    notes: string | null;
-    total_stores: number;
-    total_codes: number;
-    total_units: number;
-    total_value: number;
-    created_at: string;
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -600,18 +577,6 @@ export default function DashboardPage() {
         { code: "", product: null, status: "", message: "" },
     ]);
 
-    const [inventoryReportRows, setInventoryReportRows] = useState<InventoryValuationReportRow[]>([]);
-    const [inventoryReportLoading, setInventoryReportLoading] = useState(false);
-    const [inventoryReportProgress, setInventoryReportProgress] = useState("");
-    const [inventoryReportUpdatedAt, setInventoryReportUpdatedAt] = useState("");
-    const [inventorySnapshotDate, setInventorySnapshotDate] = useState(todayISO());
-    const [inventorySnapshotFile, setInventorySnapshotFile] = useState<File|null>(null);
-    const [inventorySnapshotFileName, setInventorySnapshotFileName] = useState("");
-    const [inventorySnapshots, setInventorySnapshots] = useState<InventoryValuationSnapshot[]>([]);
-    const [selectedInventorySnapshotId, setSelectedInventorySnapshotId] = useState("");
-    const [selectedInventorySnapshotRows, setSelectedInventorySnapshotRows] = useState<InventoryValuationReportRow[]>([]);
-    const inventorySnapshotInputRef = useRef<HTMLInputElement|null>(null);
-
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
     const [emailRecipients, setEmailRecipients] = useState("");
@@ -688,7 +653,6 @@ export default function DashboardPage() {
                         (savedTab === "operario" && u.role === "Operario") ||
                         (savedTab === "validador" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
                         savedTab === "ubicaciones" ||
-                        (savedTab === "reportes" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
                         (savedTab === "admin" && u.role === "Administrador");
                     if (isValid) { setActiveTab(savedTab); }
                     else {
@@ -4629,320 +4593,6 @@ export default function DashboardPage() {
         await searchLocations();
     }
 
-    async function loadInventoryValuationReport() {
-        const targetStores = (isAdmin ? allStores : stores).filter(store => store.is_active);
-        if (targetStores.length === 0) {
-            showMessage("No hay tiendas activas para reportar.", "error");
-            return;
-        }
-
-        setInventoryReportLoading(true);
-        setInventoryReportProgress("Preparando costos...");
-        try {
-            const costBySku = new Map<string, number>();
-            if (products.length > 0) {
-                for (const product of products) costBySku.set(fullProductCode(product.sku), parseCost(product.cost));
-            } else {
-                const PAGE = 1000;
-                let page = 0;
-                while (true) {
-                    const { data, error } = await supabase
-                        .from("cyclic_products")
-                        .select("sku,cost")
-                        .eq("is_active", true)
-                        .range(page * PAGE, (page + 1) * PAGE - 1);
-                    if (error) throw error;
-                    for (const product of data || []) costBySku.set(fullProductCode(product.sku), parseCost(product.cost));
-                    if (!data || data.length < PAGE) break;
-                    page++;
-                }
-            }
-
-            const rows: InventoryValuationReportRow[] = [];
-            const PAGE = 1000;
-            for (let storeIndex = 0; storeIndex < targetStores.length; storeIndex++) {
-                const store = targetStores[storeIndex];
-                const sede = String(store.erp_sede || store.name || "").trim();
-                if (!sede) continue;
-                setInventoryReportProgress(`Calculando ${storeIndex + 1}/${targetStores.length}: ${store.name}`);
-
-                const stockBySku = new Map<string, number>();
-                let page = 0;
-                while (true) {
-                    const { data, error } = await supabase
-                        .from("stock_general")
-                        .select("codsap,stock")
-                        .eq("sede", sede)
-                        .gt("stock", 0)
-                        .range(page * PAGE, (page + 1) * PAGE - 1);
-                    if (error) throw error;
-                    for (const row of data || []) {
-                        const sku = fullProductCode(row.codsap);
-                        if (!sku) continue;
-                        stockBySku.set(sku, r2((stockBySku.get(sku) || 0) + Number(row.stock || 0)));
-                    }
-                    if (!data || data.length < PAGE) break;
-                    page++;
-                }
-
-                let totalUnits = 0;
-                let inventoryValue = 0;
-                let missingCostCodes = 0;
-                for (const [sku, stock] of stockBySku.entries()) {
-                    if (nonInventorySkuSet.has(sku.toUpperCase())) continue;
-                    const cost = costBySku.get(sku) || 0;
-                    totalUnits = r2(totalUnits + stock);
-                    inventoryValue = r2(inventoryValue + r2(stock * cost));
-                    if (cost <= 0) missingCostCodes++;
-                }
-
-                rows.push({
-                    store_id: store.id,
-                    store_name: store.name,
-                    sede,
-                    codes_with_stock: stockBySku.size,
-                    total_units: totalUnits,
-                    inventory_value: inventoryValue,
-                    missing_cost_codes: missingCostCodes,
-                });
-            }
-
-            rows.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
-            setInventoryReportRows(rows);
-            setInventoryReportUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
-            setInventoryReportProgress("");
-        } catch (error: any) {
-            showMessage("Error generando valorizado: " + (error?.message || error), "error");
-        } finally {
-            setInventoryReportLoading(false);
-        }
-    }
-
-    function exportInventoryValuationReport() {
-        if (inventoryReportRows.length === 0) {
-            showMessage("Primero genera el reporte.", "error");
-            return;
-        }
-        const ws = XLSX.utils.json_to_sheet(inventoryReportRows.map(row => ({
-            Tienda: row.store_name,
-            CodigosConStock: row.codes_with_stock,
-            Unidades: row.total_units,
-            Valorizado: row.inventory_value,
-            CodigosSinCosto: row.missing_cost_codes,
-        })));
-        const wbk = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wbk, ws, "Valorizado Inventario");
-        XLSX.writeFile(wbk, `valorizado-inventario-${todayISO()}.xlsx`);
-    }
-
-    function cellByHeaders(row: any[], headers: string[], names: string[]) {
-        const wanted = names.map(name => name.toLowerCase());
-        const idx = headers.findIndex(header => wanted.some(name => header.includes(name)));
-        return idx >= 0 ? row[idx] : null;
-    }
-
-    function storeNameFromSnapshotRow(row: any[], headers: string[]) {
-        const normalized = headers.map(header => header.trim().toLowerCase());
-        const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacén", "local", "sede"].includes(header));
-        if (exactStoreIdx >= 0) return String(row[exactStoreIdx] || "").trim();
-        const nameIdx = normalized.findIndex(header =>
-            ["tienda", "store", "almacen", "almacén", "local", "sede"].some(name => header.includes(name)) &&
-            !["codigo", "código", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
-        );
-        if (nameIdx >= 0) return String(row[nameIdx] || "").trim();
-        return "";
-    }
-
-    function parseInventorySnapshotRows(rows: any[][]): InventoryValuationReportRow[] {
-        if (rows.length < 2) return [];
-        const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
-        const grouped = new Map<string, InventoryValuationReportRow>();
-        const knownStores = new Map<string, Store>();
-        for (const store of allStores) {
-            knownStores.set(String(store.name || "").trim().toLowerCase(), store);
-            knownStores.set(String(store.code || "").trim().toLowerCase(), store);
-            if (store.erp_sede) knownStores.set(String(store.erp_sede).trim().toLowerCase(), store);
-        }
-
-        for (const row of rows.slice(1)) {
-            const rawStore = storeNameFromSnapshotRow(row, headers);
-            if (!rawStore) continue;
-            const store = knownStores.get(rawStore.toLowerCase());
-            const storeName = store?.name || rawStore;
-            if (/^\d+$/.test(storeName)) continue;
-            const sede = store?.erp_sede || rawStore;
-            const key = store?.id || storeName.toLowerCase();
-            const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "codigo", "cod.sap", "codsap", "sku"]) || "").trim();
-            const fullCode = fullProductCode(code).toUpperCase();
-            if (fullCode && nonInventorySkuSet.has(fullCode)) continue;
-            const stock = parseCost(cellByHeaders(row, headers, ["unidades", "stock", "cantidad", "cant.disponible", "cant disponible"]));
-            const cost = parseCost(cellByHeaders(row, headers, ["costo prom", "costo", "ult costo", "cost"]));
-            const valueFromFile = parseCost(cellByHeaders(row, headers, ["valorizado", "valor", "total valor", "importe"]));
-            const isSummary = headers.some(header => header.includes("valorizado")) && headers.some(header => header.includes("codigos"));
-            const rowValue = valueFromFile > 0 ? valueFromFile : r2(stock * cost);
-            const existing = grouped.get(key) || {
-                store_id: store?.id || key,
-                store_name: storeName,
-                sede,
-                codes_with_stock: 0,
-                total_units: 0,
-                inventory_value: 0,
-                missing_cost_codes: 0,
-            };
-
-            existing.total_units = r2(existing.total_units + stock);
-            existing.inventory_value = r2(existing.inventory_value + rowValue);
-            if (isSummary) {
-                existing.codes_with_stock = Math.max(existing.codes_with_stock, Math.round(parseCost(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigos"]))));
-                existing.missing_cost_codes = Math.max(existing.missing_cost_codes, Math.round(parseCost(cellByHeaders(row, headers, ["sin costo", "codigos sin costo"]))));
-            } else {
-                if (code) existing.codes_with_stock += 1;
-                if (code && cost <= 0) existing.missing_cost_codes += 1;
-            }
-            grouped.set(key, existing);
-        }
-
-        return Array.from(grouped.values()).sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
-    }
-
-    async function loadInventorySnapshots() {
-        const { data, error } = await supabase
-            .from("inventory_valuation_snapshots")
-            .select("*")
-            .order("snapshot_date", { ascending: false })
-            .order("snapshot_time", { ascending: false })
-            .limit(60);
-        if (error) {
-            showMessage("Falta crear las tablas de fotografias de valorizado.", "error");
-            return;
-        }
-        setInventorySnapshots((data || []) as InventoryValuationSnapshot[]);
-    }
-
-    async function loadInventorySnapshotRows(snapshotId: string) {
-        setSelectedInventorySnapshotId(snapshotId);
-        if (!snapshotId) { setSelectedInventorySnapshotRows([]); return; }
-        const { data, error } = await supabase
-            .from("inventory_valuation_snapshot_stores")
-            .select("*")
-            .eq("snapshot_id", snapshotId)
-            .order("inventory_value", { ascending: false });
-        if (error) {
-            showMessage("No se pudo cargar la fotografia: " + error.message, "error");
-            return;
-        }
-        setSelectedInventorySnapshotRows((data || []).map((row: any) => ({
-            store_id: row.store_id || row.store_name,
-            store_name: row.store_name,
-            sede: row.sede || row.store_name,
-            codes_with_stock: Number(row.codes_with_stock || 0),
-            total_units: Number(row.total_units || 0),
-            inventory_value: Number(row.inventory_value || 0),
-            missing_cost_codes: Number(row.missing_cost_codes || 0),
-        })));
-    }
-
-    async function deleteInventorySnapshot(snapshot: InventoryValuationSnapshot) {
-        const label = `${snapshot.snapshot_date} ${String(snapshot.snapshot_time || "").slice(0, 5)}`;
-        if (!confirm(`Eliminar la fotografia ${label}? Esta accion quitara tambien el detalle por tienda.`)) return;
-        setInventoryReportLoading(true);
-        try {
-            const { error } = await supabase
-                .from("inventory_valuation_snapshots")
-                .delete()
-                .eq("id", snapshot.id);
-            if (error) throw error;
-            if (selectedInventorySnapshotId === snapshot.id) {
-                setSelectedInventorySnapshotId("");
-                setSelectedInventorySnapshotRows([]);
-            }
-            setInventorySnapshots(prev => prev.filter(row => row.id !== snapshot.id));
-            showMessage("Fotografia eliminada.", "success");
-        } catch (error: any) {
-            showMessage("Error eliminando fotografia: " + (error?.message || error), "error");
-        } finally {
-            setInventoryReportLoading(false);
-        }
-    }
-
-    async function uploadInventorySnapshotExcel() {
-        if (!inventorySnapshotFile) { showMessage("Selecciona el Excel de valorizado.", "error"); return; }
-        setInventoryReportLoading(true);
-        setInventoryReportProgress("Leyendo fotografia...");
-        try {
-            const data = await inventorySnapshotFile.arrayBuffer();
-            const wbk = XLSX.read(data);
-            const sheet = wbk.Sheets[wbk.SheetNames[0]];
-            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as any[][];
-            const parsed = parseInventorySnapshotRows(rows);
-            if (parsed.length === 0) { showMessage("No pude leer tiendas/valorizado del Excel.", "error"); return; }
-
-            const totals = parsed.reduce((acc, row) => ({
-                stores: acc.stores + 1,
-                codes: acc.codes + row.codes_with_stock,
-                units: r2(acc.units + row.total_units),
-                value: r2(acc.value + row.inventory_value),
-            }), { stores: 0, codes: 0, units: 0, value: 0 });
-
-            const { data: existingSnapshots, error: existingError } = await supabase
-                .from("inventory_valuation_snapshots")
-                .select("id")
-                .eq("snapshot_date", inventorySnapshotDate)
-                .eq("snapshot_time", "08:00");
-            if (existingError) throw existingError;
-            if ((existingSnapshots || []).length > 0) {
-                const { error: deleteError } = await supabase
-                    .from("inventory_valuation_snapshots")
-                    .delete()
-                    .in("id", (existingSnapshots || []).map(row => row.id));
-                if (deleteError) throw deleteError;
-            }
-
-            const { data: snapshot, error: snapshotError } = await supabase
-                .from("inventory_valuation_snapshots")
-                .insert({
-                    snapshot_date: inventorySnapshotDate,
-                    snapshot_time: "08:00",
-                    source_name: inventorySnapshotFileName,
-                    total_stores: totals.stores,
-                    total_codes: totals.codes,
-                    total_units: totals.units,
-                    total_value: totals.value,
-                    uploaded_by: user?.id || null,
-                })
-                .select("id")
-                .single();
-            if (snapshotError) throw snapshotError;
-
-            const insertRows = parsed.map(row => ({
-                snapshot_id: snapshot.id,
-                store_id: allStores.find(store => store.id === row.store_id)?.id || null,
-                store_name: row.store_name,
-                sede: row.sede,
-                codes_with_stock: row.codes_with_stock,
-                total_units: row.total_units,
-                inventory_value: row.inventory_value,
-                missing_cost_codes: row.missing_cost_codes,
-            }));
-            for (let i = 0; i < insertRows.length; i += 500) {
-                const { error } = await supabase.from("inventory_valuation_snapshot_stores").insert(insertRows.slice(i, i + 500));
-                if (error) throw error;
-            }
-
-            setInventorySnapshotFile(null);
-            setInventorySnapshotFileName("");
-            if (inventorySnapshotInputRef.current) inventorySnapshotInputRef.current.value = "";
-            showMessage(`Fotografia guardada: ${parsed.length} tiendas. ${existingSnapshots?.length ? "Se reemplazo la fotografia anterior de esa fecha." : ""}`, "success");
-            await loadInventorySnapshots();
-            await loadInventorySnapshotRows(snapshot.id);
-        } catch (error: any) {
-            showMessage("Error guardando fotografia: " + (error?.message || error), "error");
-        } finally {
-            setInventoryReportLoading(false);
-            setInventoryReportProgress("");
-        }
-    }
-
     async function replaceProductLocation(row: ProductLocation, location: string) {
         const clean = location.trim().toUpperCase();
         if (!clean) return;
@@ -6229,16 +5879,6 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     //  RENDER
     // ════════════════════════════════════════════════════════
-    const inventoryReportTotals = useMemo(() => {
-        return inventoryReportRows.reduce((acc, row) => ({
-            stores: acc.stores + 1,
-            codes: acc.codes + row.codes_with_stock,
-            units: r2(acc.units + row.total_units),
-            value: r2(acc.value + row.inventory_value),
-            missingCost: acc.missingCost + row.missing_cost_codes,
-        }), { stores: 0, codes: 0, units: 0, value: 0, missingCost: 0 });
-    }, [inventoryReportRows]);
-
     if (loading) {
         return (
             <main className="min-h-screen bg-slate-100 flex items-center justify-center">
@@ -6405,12 +6045,8 @@ export default function DashboardPage() {
                     {isValOrAdm && (
                         <div className="px-3 mt-1">
                             <button
-                                onClick={() => { setActiveTab("reportes"); setSidebarOpen(false); void loadInventorySnapshots(); }}
-                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                                    activeTab === "reportes"
-                                        ? "bg-cyan-600 text-white shadow-lg"
-                                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                                }`}
+                                onClick={() => { window.location.href = "/reportes"; }}
+                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                             >
                                 <FileText size={16} />
                                 <span className="truncate">Reportes</span>
@@ -6558,7 +6194,6 @@ export default function DashboardPage() {
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "ubicaciones" ? "Ubicaciones" :
-                             activeTab === "reportes" ? "Reportes" :
                              activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
                              activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
@@ -6651,7 +6286,7 @@ export default function DashboardPage() {
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className={`flex-1 w-full ${activeTab === "reportes" ? "max-w-7xl" : "max-w-5xl"} mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
+                <div className={`flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -8181,172 +7816,6 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB ADMIN
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "reportes" && isValOrAdm && (
-                <section className="bg-white rounded-2xl p-4 shadow space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                            <h2 className="text-lg font-bold text-slate-900">Valorizado de inventario actualizado</h2>
-                            <p className="text-xs text-slate-500 mt-0.5">Resumen por tienda con stock actual y costo del maestro.</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                            <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" onClick={loadInventoryValuationReport} disabled={inventoryReportLoading}>
-                                <RefreshCw size={16} className={`inline mr-1 ${inventoryReportLoading ? "animate-spin" : ""}`} />
-                                {inventoryReportLoading ? "Actualizando..." : "Actualizar"}
-                            </button>
-                            <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700 disabled:opacity-40" onClick={exportInventoryValuationReport} disabled={inventoryReportLoading || inventoryReportRows.length === 0}>
-                                Excel
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="rounded-2xl border bg-slate-50 p-3 space-y-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div>
-                                <p className="text-sm font-bold text-slate-800">Fotografias de las 8 am</p>
-                                <p className="text-xs text-slate-500 mt-1">Sube el Excel diario para conservar el historico y consultarlo despues.</p>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                                <input
-                                    className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
-                                    type="date"
-                                    value={inventorySnapshotDate}
-                                    onChange={e => setInventorySnapshotDate(e.target.value)}
-                                />
-                                <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => inventorySnapshotInputRef.current?.click()}>
-                                    {inventorySnapshotFileName || "Seleccionar Excel"}
-                                </button>
-                                <input
-                                    ref={inventorySnapshotInputRef}
-                                    type="file"
-                                    accept=".xlsx,.xls"
-                                    className="hidden"
-                                    onChange={e => { const f = e.target.files?.[0] || null; setInventorySnapshotFile(f); setInventorySnapshotFileName(f?.name || ""); e.target.value = ""; }}
-                                />
-                                <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40" disabled={inventoryReportLoading || !inventorySnapshotFile} onClick={uploadInventorySnapshotExcel}>
-                                    Guardar fotografia
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[310px_1fr]">
-                            <div className="rounded-2xl border bg-white overflow-hidden">
-                                <div className="max-h-72 overflow-auto">
-                                    {inventorySnapshots.map(snapshot => (
-                                        <div
-                                            key={snapshot.id}
-                                            className={`flex w-full items-center gap-2 px-3 py-2 border-b text-sm ${selectedInventorySnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
-                                            onClick={() => loadInventorySnapshotRows(snapshot.id)}
-                                        >
-                                            <div className="min-w-0 flex-1 text-left">
-                                                <span className="block font-bold">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
-                                            <span className="block text-xs text-slate-500">{formatMoney(Number(snapshot.total_value || 0))} · {formatNumber(snapshot.total_stores)} tiendas</span>
-                                            </div>
-                                            <button
-                                                className="rounded-lg border border-red-200 px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 disabled:opacity-40"
-                                                disabled={inventoryReportLoading}
-                                                onClick={e => { e.stopPropagation(); deleteInventorySnapshot(snapshot); }}
-                                            >
-                                                Quitar
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {inventorySnapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografias guardadas.</div>}
-                                </div>
-                            </div>
-
-                            <div className="rounded-2xl border bg-white overflow-hidden">
-                                <div className="max-h-72 overflow-auto">
-                                    <table className="w-full text-xs">
-                                        <thead className="bg-slate-100 sticky top-0">
-                                            <tr>
-                                                <th className="p-2 border text-left">Tienda</th>
-                                                <th className="p-2 border text-right">Codigos</th>
-                                                <th className="p-2 border text-right">Unidades</th>
-                                                <th className="p-2 border text-right">Valorizado</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {selectedInventorySnapshotRows.map(row => (
-                                                <tr key={row.store_id}>
-                                                    <td className="p-2 border font-semibold">{row.store_name}</td>
-                                                    <td className="p-2 border text-right">{formatNumber(row.codes_with_stock)}</td>
-                                                    <td className="p-2 border text-right">{formatNumber(row.total_units)}</td>
-                                                    <td className="p-2 border text-right font-bold">{formatMoney(row.inventory_value)}</td>
-                                                </tr>
-                                            ))}
-                                            {selectedInventorySnapshotRows.length === 0 && (
-                                                <tr><td colSpan={4} className="p-6 text-center text-slate-400">Selecciona una fotografia para ver el resumen.</td></tr>
-                                            )}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {inventoryReportProgress && (
-                        <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-800">
-                            {inventoryReportProgress}
-                        </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                        <div className="rounded-2xl bg-slate-900 text-white p-3">
-                            <p className="text-xs font-bold text-slate-300">Valorizado total</p>
-                            <p className="text-xl font-black mt-1">{formatMoney(inventoryReportTotals.value)}</p>
-                        </div>
-                        <div className="rounded-2xl bg-slate-50 border p-3">
-                            <p className="text-xs font-bold text-slate-500">Tiendas</p>
-                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.stores)}</p>
-                        </div>
-                        <div className="rounded-2xl bg-slate-50 border p-3">
-                            <p className="text-xs font-bold text-slate-500">Codigos con stock</p>
-                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.codes)}</p>
-                        </div>
-                        <div className="rounded-2xl bg-slate-50 border p-3">
-                            <p className="text-xs font-bold text-slate-500">Unidades</p>
-                            <p className="text-xl font-black mt-1">{formatNumber(inventoryReportTotals.units)}</p>
-                        </div>
-                    </div>
-
-                    {inventoryReportUpdatedAt && <p className="text-xs text-slate-400">Ultima consulta: {inventoryReportUpdatedAt}</p>}
-
-                    <div className="border rounded-2xl overflow-hidden">
-                        <div className="max-h-[560px] overflow-auto">
-                            <table className="w-full text-sm">
-                                <thead className="bg-slate-100 sticky top-0">
-                                    <tr>
-                                        <th className="p-2 border text-left">Tienda</th>
-                                        <th className="p-2 border text-right">Codigos</th>
-                                        <th className="p-2 border text-right">Unidades</th>
-                                        <th className="p-2 border text-right">Valorizado</th>
-                                        <th className="p-2 border text-right">Sin costo</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {inventoryReportRows.map(row => (
-                                        <tr key={row.store_id} className="hover:bg-slate-50">
-                                            <td className="p-2 border font-bold text-slate-900">{row.store_name}</td>
-                                            <td className="p-2 border text-right font-semibold">{formatNumber(row.codes_with_stock)}</td>
-                                            <td className="p-2 border text-right font-semibold">{formatNumber(row.total_units)}</td>
-                                            <td className="p-2 border text-right font-black text-slate-900">{formatMoney(row.inventory_value)}</td>
-                                            <td className={`p-2 border text-right font-semibold ${row.missing_cost_codes > 0 ? "text-amber-700" : "text-slate-400"}`}>{formatNumber(row.missing_cost_codes)}</td>
-                                        </tr>
-                                    ))}
-                                    {inventoryReportRows.length === 0 && (
-                                        <tr>
-                                            <td colSpan={5} className="p-8 text-center text-slate-400">
-                                                {inventoryReportLoading ? "Generando reporte..." : "Actualiza el reporte para ver el valorizado por tienda."}
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </section>
-            )}
-
             {((activeTab === "admin" && isAdmin) || activeTab === "ubicaciones") && (
                 <>
 
