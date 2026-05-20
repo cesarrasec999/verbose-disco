@@ -2184,6 +2184,9 @@ export default function InventariosPage() {
         const normalizedAlias = normalizeRotationStoreKey(alias);
         if (normalized.includes(normalizedAlias)) keys.add(normalizedAlias);
       }
+      if (normalized.includes("EVITAMIENTO")) keys.add("AREQUIPA NEW K 21");
+      if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) keys.add("AREQUIPA MIRAFLORES");
+      if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
       if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
       if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
     }
@@ -3930,19 +3933,12 @@ export default function InventariosPage() {
     const pct = (value: number, total: number) => total > 0 ? Math.round((value / total) * 100) : 0;
     const valueProgress = (row: GroupRow) => row.systemValue > 0 ? Math.round((row.countedValue / row.systemValue) * 100) : 0;
     const deptRows = aggregateBy("department");
-    const brandRows = aggregateBy("brand");
     const rotationRows = aggregateBy("rotation_category");
     const topDeptRows = deptRows.slice(0, 18);
     const topRotationRows = rotationRows.slice(0, 18);
-    const maxDeptValue = Math.max(...topDeptRows.map(row => Math.max(Math.abs(row.missingValue), Math.abs(row.surplusValue))), 1);
-    const maxRotationValue = Math.max(...topRotationRows.map(row => Math.max(Math.abs(row.missingValue), Math.abs(row.surplusValue))), 1);
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const reportStartDate = dateOnly(selectedSession.scheduled_date || selectedSession.created_at);
     const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
-    const bar = (value: number, max: number, color: string) => {
-      const width = Math.max(2, Math.round((Math.abs(value) / max) * 130));
-      return `<span class="bar"><span style="width:${width}px;background:${color};"></span></span>`;
-    };
     const donut = (label: string, value: number, color: string, detail: string) => `
       <div class="donutCard">
         <svg viewBox="0 0 64 64" width="58" height="58" xmlns="http://www.w3.org/2000/svg">
@@ -3953,28 +3949,17 @@ export default function InventariosPage() {
         </svg>
         <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(detail)}</span></div>
       </div>`;
-    const valuedRows = (rows: GroupRow[], maxValue: number) => rows.map(row => `
-      <tr>
-        <td>${escapeHtml(row.name)}</td>
-        <td class="num bad">${money(row.missingValue)}</td>
-        <td>${bar(row.missingValue, maxValue, "#dc2626")}</td>
-        <td class="num warn">${money(row.surplusValue)}</td>
-        <td>${bar(row.surplusValue, maxValue, "#2563eb")}</td>
-      </tr>
-    `).join("");
-    const percentRows = (rows: GroupRow[]) => rows.map(row => `
+    const summaryGroupRows = (rows: GroupRow[]) => rows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
         <td class="num ok">${pct(row.ok, row.total)}%</td>
         <td class="num bad">${pct(row.missing, row.total)}%</td>
         <td class="num warn">${pct(row.surplus, row.total)}%</td>
+        <td class="num bad">${money(row.missingValue)}</td>
+        <td class="num warn">${money(row.surplusValue)}</td>
         <td class="num">${number2(row.total)}</td>
       </tr>
     `).join("");
-    const valueRows = valuedRows(topDeptRows, maxDeptValue);
-    const pctRows = percentRows(topDeptRows);
-    const rotationValueRows = valuedRows(topRotationRows, maxRotationValue);
-    const rotationPctRows = percentRows(topRotationRows);
     const tableRows = (rows: GroupRow[]) => rows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
@@ -4019,12 +4004,15 @@ export default function InventariosPage() {
   <style>
     @page { size: A4 landscape; margin: 8mm; }
     * { box-sizing: border-box; }
-    body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
-    h1 { margin: 0; font-size: 18px; }
-    h2 { margin: 10px 0 5px; font-size: 12px; }
+    body { margin: 0; background: #f1f5f9; color: #0f172a; font-family: Arial, sans-serif; font-size: 10px; }
+    .shell { max-width: 1180px; margin: 0 auto; background: #ffffff; }
+    h1 { margin: 0; font-size: 21px; color: #ffffff; }
+    h2 { margin: 12px 0 7px; font-size: 12px; border-left: 3px solid #1d4ed8; padding-left: 9px; text-transform: uppercase; letter-spacing: .3px; }
     .muted { color: #64748b; }
-    .header { display: flex; justify-content: space-between; gap: 14px; border-bottom: 1px solid #0f172a; padding-bottom: 8px; }
-    .meta { text-align: right; line-height: 1.35; }
+    .header { display: flex; justify-content: space-between; gap: 14px; padding: 24px 28px 22px; background: linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%); }
+    .header .muted { color: #bfdbfe; }
+    .meta { text-align: right; line-height: 1.45; color: #dbeafe; }
+    .content { padding: 18px 28px 24px; }
     .donuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
     .donutCard { display: flex; align-items: center; gap: 9px; border: 1px solid #cbd5e1; border-radius: 7px; padding: 7px; background: #f8fafc; }
     .donutCard strong { display: block; font-size: 11px; }
@@ -4038,17 +4026,22 @@ export default function InventariosPage() {
     .ok { color: #15803d; font-weight: 800; }
     .bad { color: #b91c1c; font-weight: 800; }
     .warn { color: #1d4ed8; font-weight: 800; }
-    .bar { display: inline-block; width: 136px; height: 8px; background: #e5edf5; border-radius: 999px; overflow: hidden; }
-    .bar span { display: block; height: 100%; border-radius: 999px; }
     .pageBreak { break-before: page; }
+    .noteBox { margin: 12px 0; border: 1px solid #fde68a; background: #fffbeb; color: #92400e; border-radius: 9px; padding: 10px 12px; line-height: 1.55; }
+    .signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 26px; break-inside: avoid; }
+    .signature { border-top: 1px solid #0f172a; padding-top: 20px; text-align: center; font-weight: 800; }
+    .footer { background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 10px 28px; text-align: center; color: #94a3b8; }
     button { margin-top: 8px; padding: 7px 10px; border: 1px solid #0f172a; border-radius: 8px; background: #0f172a; color: white; font-weight: 800; }
     @media print { button { display: none; } .donuts, .grid2 { break-inside: avoid; } }
   </style>
 </head>
 <body>
+<div class="shell">
   <div class="header">
     <div>
-      <h1>Reporte por departamento y marca</h1>
+      <div style="font-size:12px;font-weight:900;color:#93c5fd;letter-spacing:1.4px;">AUDITORIA Y CONTROL DE INVENTARIOS</div>
+      <div style="font-size:10px;color:#64748b;letter-spacing:1px;margin-bottom:12px;">SISTEMA DE INVENTARIOS GENERALES</div>
+      <h1>Informe ejecutivo de inventario general</h1>
       <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
       <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
       <div class="muted">Fecha: <strong>${escapeHtml(reportStartDate || "-")} - ${escapeHtml(reportEndDate)}</strong></div>
@@ -4060,6 +4053,12 @@ export default function InventariosPage() {
     </div>
   </div>
 
+  <div class="content">
+  <p style="margin:0 0 12px;font-size:12px;color:#334155;line-height:1.55;">
+    Estimado equipo,<br>
+    A continuacion el resumen ejecutivo del inventario general. Revisar los resultados por rotacion y departamento para priorizar acciones correctivas.
+  </p>
+
   <div class="donuts">
     ${donut("ERI", kpis.eri, "#16a34a", `${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} codigos`)}
     ${donut("AVANCE POR SKU", kpis.skuProgress, "#0f172a", `${kpis.countedCodes} / ${kpis.totalCodes} codigos`)}
@@ -4068,34 +4067,17 @@ export default function InventariosPage() {
 
   <div class="grid2">
     <div>
-      <h2>Faltantes / sobrantes valorizados por rotacion</h2>
+      <h2>Resumen por rotacion</h2>
       <table>
-        <thead><tr><th>Rotacion</th><th class="num">Faltante S/</th><th>Graf.</th><th class="num">Sobrante S/</th><th>Graf.</th></tr></thead>
-        <tbody>${rotationValueRows}</tbody>
+        <thead><tr><th>Rotacion</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th><th class="num">Cod.</th></tr></thead>
+        <tbody>${summaryGroupRows(topRotationRows)}</tbody>
       </table>
     </div>
     <div>
-      <h2>% por rotacion</h2>
+      <h2>Resumen por departamento</h2>
       <table>
-        <thead><tr><th>Rotacion</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Cod.</th></tr></thead>
-        <tbody>${rotationPctRows}</tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div>
-      <h2>Faltantes / sobrantes valorizados por departamento</h2>
-      <table>
-        <thead><tr><th>Dept</th><th class="num">Faltante S/</th><th>Graf.</th><th class="num">Sobrante S/</th><th>Graf.</th></tr></thead>
-        <tbody>${valueRows}</tbody>
-      </table>
-    </div>
-    <div>
-      <h2>% por departamento</h2>
-      <table>
-        <thead><tr><th>Dept</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Cod.</th></tr></thead>
-        <tbody>${pctRows}</tbody>
+        <thead><tr><th>Dept</th><th class="num">ERI OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th><th class="num">Cod.</th></tr></thead>
+        <tbody>${summaryGroupRows(topDeptRows)}</tbody>
       </table>
     </div>
   </div>
@@ -4117,6 +4099,10 @@ export default function InventariosPage() {
     </div>
   </div>
 
+  <div class="noteBox">
+    <strong>Acciones sugeridas:</strong> priorizar revision de los top faltantes valorizados, validar sobrantes de mayor impacto y cruzar las diferencias por rotacion para enfocar la investigacion.
+  </div>
+
   <h2 class="pageBreak">Detalle por rotacion</h2>
   <table>
     <thead><tr><th>Rotacion</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
@@ -4129,11 +4115,14 @@ export default function InventariosPage() {
     <tbody>${tableRows(deptRows)}</tbody>
   </table>
 
-  <h2>Detalle por marca</h2>
-  <table>
-    <thead><tr><th>Marca</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
-    <tbody>${tableRows(brandRows)}</tbody>
-  </table>
+  <div class="signatures">
+    <div class="signature">Firma lider de tienda</div>
+    <div class="signature">Firma validador de inventario</div>
+    <div class="signature">Firma auditoria y control</div>
+  </div>
+  </div>
+  <div class="footer">Generado automaticamente por el Sistema de Inventarios Generales</div>
+</div>
 </body>
 </html>`;
 
@@ -5792,7 +5781,7 @@ export default function InventariosPage() {
                     </button>
                   )}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
-                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte Dept/Marca/Rot.</button>
+                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte Dept/Rot.</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
