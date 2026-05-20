@@ -34,6 +34,9 @@ create table if not exists public.inventory_valuation_snapshot_stores (
 create index if not exists idx_inventory_valuation_snapshots_date
   on public.inventory_valuation_snapshots(snapshot_date desc, snapshot_time desc);
 
+create unique index if not exists uq_inventory_valuation_snapshots_date_time
+  on public.inventory_valuation_snapshots(snapshot_date, snapshot_time);
+
 create index if not exists idx_inventory_valuation_snapshot_stores_snapshot
   on public.inventory_valuation_snapshot_stores(snapshot_id);
 

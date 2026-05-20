@@ -4884,6 +4884,20 @@ export default function DashboardPage() {
                 value: r2(acc.value + row.inventory_value),
             }), { stores: 0, codes: 0, units: 0, value: 0 });
 
+            const { data: existingSnapshots, error: existingError } = await supabase
+                .from("inventory_valuation_snapshots")
+                .select("id")
+                .eq("snapshot_date", inventorySnapshotDate)
+                .eq("snapshot_time", "08:00");
+            if (existingError) throw existingError;
+            if ((existingSnapshots || []).length > 0) {
+                const { error: deleteError } = await supabase
+                    .from("inventory_valuation_snapshots")
+                    .delete()
+                    .in("id", (existingSnapshots || []).map(row => row.id));
+                if (deleteError) throw deleteError;
+            }
+
             const { data: snapshot, error: snapshotError } = await supabase
                 .from("inventory_valuation_snapshots")
                 .insert({
@@ -4918,7 +4932,7 @@ export default function DashboardPage() {
             setInventorySnapshotFile(null);
             setInventorySnapshotFileName("");
             if (inventorySnapshotInputRef.current) inventorySnapshotInputRef.current.value = "";
-            showMessage(`Fotografia guardada: ${parsed.length} tiendas.`, "success");
+            showMessage(`Fotografia guardada: ${parsed.length} tiendas. ${existingSnapshots?.length ? "Se reemplazo la fotografia anterior de esa fecha." : ""}`, "success");
             await loadInventorySnapshots();
             await loadInventorySnapshotRows(snapshot.id);
         } catch (error: any) {
