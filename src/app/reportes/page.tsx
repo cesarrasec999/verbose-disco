@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Download, FileText, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
@@ -41,6 +41,18 @@ type RotationRow = {
   missing_cost_codes: number;
 };
 
+type InventorySnapshot = {
+  id: string;
+  snapshot_date: string;
+  snapshot_time: string;
+  source_name: string | null;
+  total_stores: number;
+  total_codes: number;
+  total_units: number;
+  total_value: number;
+  created_at: string;
+};
+
 const USER_KEY = "cyclic_user";
 
 function r2(value: number) {
@@ -63,6 +75,27 @@ function parseCost(value: unknown) {
   const raw = String(value ?? "0").replace(/S\/|\s|,/gi, "");
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function cellByHeaders(row: unknown[], headers: string[], names: string[]) {
+  const wanted = names.map(name => name.toLowerCase());
+  const idx = headers.findIndex(header => wanted.some(name => header.includes(name)));
+  return idx >= 0 ? row[idx] : null;
+}
+
+function storeNameFromSnapshotRow(row: unknown[], headers: string[]) {
+  const normalized = headers.map(header => header.trim().toLowerCase());
+  const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacén", "local", "sede"].includes(header));
+  if (exactStoreIdx >= 0) return String(row[exactStoreIdx] || "").trim();
+  const nameIdx = normalized.findIndex(header =>
+    ["tienda", "store", "almacen", "almacén", "local", "sede"].some(name => header.includes(name)) &&
+    !["codigo", "código", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
+  );
+  return nameIdx >= 0 ? String(row[nameIdx] || "").trim() : "";
 }
 
 function normalizeRotationStoreKey(value: string | null | undefined) {
@@ -124,6 +157,14 @@ export default function ReportesPage() {
   const [valuationRows, setValuationRows] = useState<ValuationRow[]>([]);
   const [rotationRows, setRotationRows] = useState<RotationRow[]>([]);
   const [updatedAt, setUpdatedAt] = useState("");
+  const [selectedStoreId, setSelectedStoreId] = useState("all");
+  const [snapshotDate, setSnapshotDate] = useState(todayISO());
+  const [snapshotFile, setSnapshotFile] = useState<File | null>(null);
+  const [snapshotFileName, setSnapshotFileName] = useState("");
+  const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
+  const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
+  const snapshotInputRef = useRef<HTMLInputElement | null>(null);
 
   const canView = user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador";
 
@@ -137,9 +178,35 @@ export default function ReportesPage() {
       }
       const rows = (data || []) as Store[];
       setStores(user?.can_access_all_stores ? rows : rows.filter(store => store.id === user?.store_id));
+      if (!user?.can_access_all_stores && user?.store_id) setSelectedStoreId(user.store_id);
     }
     void loadStores();
   }, [user]);
+
+  useEffect(() => {
+    if (!canView) return;
+    async function loadSnapshots() {
+      const { data, error } = await supabase
+        .from("inventory_valuation_snapshots")
+        .select("*")
+        .order("snapshot_date", { ascending: false })
+        .order("snapshot_time", { ascending: false })
+        .limit(80);
+      if (error) {
+        setMessage("Falta crear las tablas de historial de valorizado.");
+        return;
+      }
+      setSnapshots((data || []) as InventorySnapshot[]);
+    }
+    void loadSnapshots();
+  }, [canView]);
+
+  useEffect(() => {
+    if (selectedSnapshotId) void loadSnapshotRows(selectedSnapshotId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStoreId]);
+
+  const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
 
   async function loadCostMap() {
     const costBySku = new Map<string, number>();
@@ -185,12 +252,201 @@ export default function ReportesPage() {
     return rotations;
   }
 
+  function parseSnapshotRows(rows: unknown[][]): ValuationRow[] {
+    if (rows.length < 2) return [];
+    const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
+    const grouped = new Map<string, ValuationRow>();
+    const knownStores = new Map<string, Store>();
+    for (const store of stores) {
+      knownStores.set(String(store.name || "").trim().toLowerCase(), store);
+      knownStores.set(String(store.code || "").trim().toLowerCase(), store);
+      if (store.erp_sede) knownStores.set(String(store.erp_sede).trim().toLowerCase(), store);
+    }
+
+    for (const row of rows.slice(1)) {
+      const rawStore = storeNameFromSnapshotRow(row, headers);
+      if (!rawStore) continue;
+      const store = knownStores.get(rawStore.toLowerCase());
+      const storeName = store?.name || rawStore;
+      if (/^\d+$/.test(storeName)) continue;
+      const key = store?.id || storeName.toLowerCase();
+      const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "código", "cod.sap", "codsap", "sku"]) || "").trim();
+      const stock = parseCost(cellByHeaders(row, headers, ["unidades", "stock", "cantidad", "cant.disponible", "cant disponible"]));
+      const cost = parseCost(cellByHeaders(row, headers, ["costo prom", "costo", "ult costo", "cost"]));
+      const valueFromFile = parseCost(cellByHeaders(row, headers, ["valorizado", "valor", "total valor", "importe"]));
+      const isSummary = headers.some(header => header.includes("valorizado")) && headers.some(header => header.includes("codigos"));
+      const rowValue = valueFromFile > 0 ? valueFromFile : r2(stock * cost);
+      const existing = grouped.get(key) || {
+        store_id: store?.id || key,
+        store_name: storeName,
+        sede: store?.erp_sede || rawStore,
+        codes_with_stock: 0,
+        total_units: 0,
+        inventory_value: 0,
+        missing_cost_codes: 0,
+      };
+      existing.total_units = r2(existing.total_units + stock);
+      existing.inventory_value = r2(existing.inventory_value + rowValue);
+      if (isSummary) {
+        existing.codes_with_stock = Math.max(existing.codes_with_stock, Math.round(parseCost(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigos"]))));
+      } else if (code) {
+        existing.codes_with_stock += 1;
+      }
+      grouped.set(key, existing);
+    }
+    return [...grouped.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
+  }
+
+  async function reloadSnapshots(selectId?: string) {
+    const { data, error } = await supabase
+      .from("inventory_valuation_snapshots")
+      .select("*")
+      .order("snapshot_date", { ascending: false })
+      .order("snapshot_time", { ascending: false })
+      .limit(80);
+    if (error) throw error;
+    setSnapshots((data || []) as InventorySnapshot[]);
+    if (selectId) await loadSnapshotRows(selectId);
+  }
+
+  async function loadSnapshotRows(snapshotId: string) {
+    setSelectedSnapshotId(snapshotId);
+    if (!snapshotId) {
+      setSelectedSnapshotRows([]);
+      return;
+    }
+    const query = supabase
+      .from("inventory_valuation_snapshot_stores")
+      .select("*")
+      .eq("snapshot_id", snapshotId)
+      .order("inventory_value", { ascending: false });
+    const { data, error } = await query;
+    if (error) {
+      setMessage("No se pudo cargar el historial: " + error.message);
+      return;
+    }
+    const rows = (data || [])
+      .filter(row => {
+        if (selectedStoreId === "all") return true;
+        const store = stores.find(item => item.id === selectedStoreId);
+        if (!store) return false;
+        const candidates = [row.store_id, row.store_name, row.sede].map(value => normalizeRotationStoreKey(String(value || "")));
+        const storeKeys = [store.id, store.name, store.erp_sede, store.code].map(value => normalizeRotationStoreKey(String(value || "")));
+        return candidates.some(candidate => storeKeys.includes(candidate));
+      })
+      .map(row => ({
+      store_id: row.store_id || row.store_name,
+      store_name: row.store_name,
+      sede: row.sede || row.store_name,
+      codes_with_stock: Number(row.codes_with_stock || 0),
+      total_units: Number(row.total_units || 0),
+      inventory_value: Number(row.inventory_value || 0),
+      missing_cost_codes: Number(row.missing_cost_codes || 0),
+    }));
+    setSelectedSnapshotRows(rows);
+  }
+
+  async function deleteSnapshot(snapshot: InventorySnapshot) {
+    const label = `${snapshot.snapshot_date} ${String(snapshot.snapshot_time || "").slice(0, 5)}`;
+    if (!confirm(`Eliminar la fotografía ${label}?`)) return;
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("inventory_valuation_snapshots").delete().eq("id", snapshot.id);
+      if (error) throw error;
+      if (selectedSnapshotId === snapshot.id) {
+        setSelectedSnapshotId("");
+        setSelectedSnapshotRows([]);
+      }
+      await reloadSnapshots();
+      setMessage("Fotografía eliminada.");
+    } catch (error: unknown) {
+      setMessage("Error eliminando fotografía: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function uploadSnapshotExcel() {
+    if (!snapshotFile) {
+      setMessage("Selecciona el Excel de valorizado.");
+      return;
+    }
+    setLoading(true);
+    setProgress("Leyendo fotografía...");
+    try {
+      const data = await snapshotFile.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
+      const parsed = parseSnapshotRows(rows);
+      if (parsed.length === 0) {
+        setMessage("No pude leer tiendas/valorizado del Excel.");
+        return;
+      }
+      const totals = parsed.reduce((acc, row) => ({
+        stores: acc.stores + 1,
+        codes: acc.codes + row.codes_with_stock,
+        units: r2(acc.units + row.total_units),
+        value: r2(acc.value + row.inventory_value),
+      }), { stores: 0, codes: 0, units: 0, value: 0 });
+      const { data: existing, error: existingError } = await supabase
+        .from("inventory_valuation_snapshots")
+        .select("id")
+        .eq("snapshot_date", snapshotDate)
+        .eq("snapshot_time", "08:00");
+      if (existingError) throw existingError;
+      if ((existing || []).length > 0) {
+        const { error } = await supabase.from("inventory_valuation_snapshots").delete().in("id", (existing || []).map(row => row.id));
+        if (error) throw error;
+      }
+      const { data: snapshot, error: snapshotError } = await supabase
+        .from("inventory_valuation_snapshots")
+        .insert({
+          snapshot_date: snapshotDate,
+          snapshot_time: "08:00",
+          source_name: snapshotFileName,
+          total_stores: totals.stores,
+          total_codes: totals.codes,
+          total_units: totals.units,
+          total_value: totals.value,
+          uploaded_by: user?.id || null,
+        })
+        .select("id")
+        .single();
+      if (snapshotError) throw snapshotError;
+      const insertRows = parsed.map(row => ({
+        snapshot_id: snapshot.id,
+        store_id: stores.find(store => store.id === row.store_id)?.id || null,
+        store_name: row.store_name,
+        sede: row.sede,
+        codes_with_stock: row.codes_with_stock,
+        total_units: row.total_units,
+        inventory_value: row.inventory_value,
+        missing_cost_codes: row.missing_cost_codes,
+      }));
+      for (let i = 0; i < insertRows.length; i += 500) {
+        const { error } = await supabase.from("inventory_valuation_snapshot_stores").insert(insertRows.slice(i, i + 500));
+        if (error) throw error;
+      }
+      setSnapshotFile(null);
+      setSnapshotFileName("");
+      if (snapshotInputRef.current) snapshotInputRef.current.value = "";
+      setMessage(`Fotografía guardada: ${parsed.length} tienda(s).`);
+      await reloadSnapshots(snapshot.id);
+    } catch (error: unknown) {
+      setMessage("Error guardando fotografía: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setLoading(false);
+      setProgress("");
+    }
+  }
+
   async function loadReport() {
     if (!canView) {
       setMessage("Tu usuario no tiene acceso a reportes.");
       return;
     }
-    const targetStores = stores.filter(store => store.is_active);
+    const targetStores = stores.filter(store => store.is_active && (selectedStoreId === "all" || store.id === selectedStoreId));
     if (targetStores.length === 0) {
       setMessage("No hay tiendas activas para reportar.");
       return;
@@ -290,14 +546,12 @@ export default function ReportesPage() {
       CodigosConStock: row.codes_with_stock,
       Unidades: row.total_units,
       Valorizado: row.inventory_value,
-      CodigosSinCosto: row.missing_cost_codes,
     }))), "Valorizado por tienda");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rotationRows.map(row => ({
       Rotacion: row.rotation,
       CodigosConStock: row.codes_with_stock,
       Unidades: row.total_units,
       Valorizado: row.inventory_value,
-      CodigosSinCosto: row.missing_cost_codes,
     }))), "Valorizado por rotacion");
     XLSX.writeFile(wb, `reportes-inventario-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
@@ -307,8 +561,7 @@ export default function ReportesPage() {
     codes: acc.codes + row.codes_with_stock,
     units: r2(acc.units + row.total_units),
     value: r2(acc.value + row.inventory_value),
-    missingCost: acc.missingCost + row.missing_cost_codes,
-  }), { stores: 0, codes: 0, units: 0, value: 0, missingCost: 0 }), [valuationRows]);
+  }), { stores: 0, codes: 0, units: 0, value: 0 }), [valuationRows]);
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -339,18 +592,130 @@ export default function ReportesPage() {
       </header>
 
       <section className="mx-auto max-w-7xl space-y-4 p-4">
+        <div className="rounded-2xl border bg-white p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <div>
+              <p className="text-sm font-black text-slate-900">Filtro de tienda</p>
+              <p className="text-xs text-slate-500">El reporte y el historial se calculan con la tienda seleccionada.</p>
+            </div>
+            <select
+              value={selectedStoreId}
+              onChange={e => {
+                setSelectedStoreId(e.target.value);
+                setValuationRows([]);
+                setRotationRows([]);
+                setUpdatedAt("");
+              }}
+              className="min-w-72 rounded-xl border px-3 py-2 text-sm font-bold text-slate-900"
+              disabled={!user?.can_access_all_stores || loading}
+            >
+              {user?.can_access_all_stores && <option value="all">Todas las tiendas</option>}
+              {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+            </select>
+          </div>
+        </div>
+
         {message && <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">{message}</div>}
         {progress && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700">{progress}</div>}
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado total</p><p className="mt-1 text-xl font-black">{money(totals.value)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Tiendas</p><p className="mt-1 text-xl font-black">{number2(totals.stores)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Codigos con stock</p><p className="mt-1 text-xl font-black">{number2(totals.codes)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Unidades</p><p className="mt-1 text-xl font-black">{number2(totals.units)}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Sin costo</p><p className="mt-1 text-xl font-black text-amber-700">{number2(totals.missingCost)}</p></div>
         </div>
 
         {updatedAt && <p className="text-xs font-semibold text-slate-400">Ultima consulta: {updatedAt}</p>}
+
+        <div className="rounded-2xl border bg-white p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-black text-slate-900">Historial de valorizados</h2>
+              <p className="text-xs text-slate-500">Fotografías guardadas para revisar valorizados anteriores.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
+                type="date"
+                value={snapshotDate}
+                onChange={e => setSnapshotDate(e.target.value)}
+              />
+              <button className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700" onClick={() => snapshotInputRef.current?.click()}>
+                {snapshotFileName || "Seleccionar Excel"}
+              </button>
+              <input
+                ref={snapshotInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={e => {
+                  const file = e.target.files?.[0] || null;
+                  setSnapshotFile(file);
+                  setSnapshotFileName(file?.name || "");
+                  e.target.value = "";
+                }}
+              />
+              <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40" disabled={loading || !snapshotFile} onClick={uploadSnapshotExcel}>
+                Guardar fotografía
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-[330px_1fr]">
+            <div className="overflow-hidden rounded-2xl border bg-white">
+              <div className="max-h-72 overflow-auto">
+                {snapshots.map(snapshot => (
+                  <div
+                    key={snapshot.id}
+                    className={`flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm ${selectedSnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
+                    onClick={() => loadSnapshotRows(snapshot.id)}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="block font-black">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
+                      <span className="block text-xs text-slate-500">{money(Number(snapshot.total_value || 0))} · {number2(snapshot.total_stores)} tiendas</span>
+                    </div>
+                    <button
+                      className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
+                      disabled={loading}
+                      onClick={e => { e.stopPropagation(); void deleteSnapshot(snapshot); }}
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                ))}
+                {snapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografías guardadas.</div>}
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border bg-white">
+              <div className="max-h-72 overflow-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-slate-100">
+                    <tr>
+                      <th className="border p-2 text-left">Tienda</th>
+                      <th className="border p-2 text-right">Codigos</th>
+                      <th className="border p-2 text-right">Unidades</th>
+                      <th className="border p-2 text-right">Valorizado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedSnapshotRows.map(row => (
+                      <tr key={row.store_id}>
+                        <td className="border p-2 font-bold">{row.store_name}</td>
+                        <td className="border p-2 text-right">{number2(row.codes_with_stock)}</td>
+                        <td className="border p-2 text-right">{number2(row.total_units)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                      </tr>
+                    ))}
+                    {selectedSnapshotRows.length === 0 && (
+                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStore ? "Selecciona una fotografía para ver esa tienda." : "Selecciona una fotografía para ver el resumen."}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
@@ -359,7 +724,7 @@ export default function ReportesPage() {
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                <tr><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th><th className="border p-2 text-right">Sin costo</th></tr>
+                <tr><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
               </thead>
               <tbody>
                 {rotationRows.map(row => (
@@ -368,10 +733,9 @@ export default function ReportesPage() {
                     <td className="border p-2 text-right font-semibold">{number2(row.codes_with_stock)}</td>
                     <td className="border p-2 text-right font-semibold">{number2(row.total_units)}</td>
                     <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                    <td className="border p-2 text-right font-semibold text-amber-700">{number2(row.missing_cost_codes)}</td>
                   </tr>
                 ))}
-                {rotationRows.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por rotacion.</td></tr>}
+                {rotationRows.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por rotacion.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -384,7 +748,7 @@ export default function ReportesPage() {
           <div className="max-h-[560px] overflow-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th><th className="border p-2 text-right">Sin costo</th></tr>
+                <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
               </thead>
               <tbody>
                 {valuationRows.map(row => (
@@ -393,10 +757,9 @@ export default function ReportesPage() {
                     <td className="border p-2 text-right font-semibold">{number2(row.codes_with_stock)}</td>
                     <td className="border p-2 text-right font-semibold">{number2(row.total_units)}</td>
                     <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                    <td className="border p-2 text-right font-semibold text-amber-700">{number2(row.missing_cost_codes)}</td>
                   </tr>
                 ))}
-                {valuationRows.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por tienda.</td></tr>}
+                {valuationRows.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por tienda.</td></tr>}
               </tbody>
             </table>
           </div>
