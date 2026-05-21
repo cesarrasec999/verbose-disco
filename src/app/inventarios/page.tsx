@@ -3826,7 +3826,84 @@ export default function InventariosPage() {
     await loadSummary(selectedSessionId, true);
   }
 
-  function exportRecords() {
+  async function loadRecountRecordsForExport(sessionId: string) {
+    const { data, error } = await supabase
+      .from("general_inventory_recount_counts")
+      .select("*, general_inventory_operators(full_name)")
+      .eq("session_id", sessionId)
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .order("counted_at", { ascending: false });
+    if (error) throw error;
+
+    const countRows = (data || []) as Array<Record<string, unknown>>;
+    const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
+    const itemRows: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < itemIds.length; i += 100) {
+      const { data: itemsData, error: itemsError } = await supabase
+        .from("general_inventory_recount_items")
+        .select("*")
+        .in("id", itemIds.slice(i, i + 100));
+      if (itemsError) throw itemsError;
+      itemRows.push(...((itemsData || []) as Array<Record<string, unknown>>));
+    }
+
+    const productIds = [...new Set([
+      ...countRows.map(row => String(row.product_id || "")).filter(Boolean),
+      ...itemRows.map(row => String(row.product_id || "")).filter(Boolean),
+    ])];
+    const originalByLocation = await loadOriginalCountedByProductLocation(sessionId, productIds);
+    const itemById = new Map(itemRows.map(row => [String(row.id || ""), row]));
+
+    return countRows.map(countRow => {
+      const item = itemById.get(String(countRow.recount_item_id || "")) || {};
+      const locationId = String(countRow.location_id || "");
+      const locationCode = normalizeLocationCode(String(countRow.location_code || ""));
+      const productIdsToCheck = [...new Set([String(countRow.product_id || ""), String(item.product_id || "")].filter(Boolean))];
+      const skusToCheck = [...new Set([String(countRow.sku || ""), String(item.sku || "")].map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+      let originalQuantity = 0;
+      for (const productId of productIdsToCheck) {
+        const byId = locationId ? originalByLocation.get(`${productId}__id__${locationId}`) : undefined;
+        const byCode = locationCode ? originalByLocation.get(`${productId}__code__${locationCode}`) : undefined;
+        if (byId !== undefined || byCode !== undefined) {
+          originalQuantity = byId ?? byCode ?? 0;
+          break;
+        }
+      }
+      if (originalQuantity === 0) {
+        for (const sku of skusToCheck) {
+          const byId = locationId ? originalByLocation.get(`sku__${sku}__id__${locationId}`) : undefined;
+          const byCode = locationCode ? originalByLocation.get(`sku__${sku}__code__${locationCode}`) : undefined;
+          if (byId !== undefined || byCode !== undefined) {
+            originalQuantity = byId ?? byCode ?? 0;
+            break;
+          }
+        }
+      }
+      const operator = countRow.general_inventory_operators as { full_name?: string | null } | null | undefined;
+      const recountType = String(item.recount_type || "");
+      const quantity = Number(countRow.quantity || 0);
+      const cost = Number(countRow.cost_snapshot || item.cost_snapshot || 0);
+      return {
+        FECHA: countRow.counted_at ? new Date(String(countRow.counted_at)).toLocaleString("es-PE") : "",
+        ULTIMA_EDICION: (countRow.updated_at || countRow.counted_at) ? new Date(String(countRow.updated_at || countRow.counted_at)).toLocaleString("es-PE") : "",
+        RECONTADOR: operator?.full_name || "",
+        TIPO: recountType === "missing" ? "Faltante" : recountType === "surplus" ? "Sobrante" : "",
+        UBICACION: String(countRow.location_code || ""),
+        CODIGO: String(countRow.sku || item.sku || ""),
+        DESCRIPCION: String(countRow.description || item.description || ""),
+        UM: String(countRow.unit || item.unit || ""),
+        SISTEMA: Number(item.system_stock || 0),
+        CONTEO: originalQuantity,
+        RECONTEO: quantity,
+        DIF: quantity - originalQuantity,
+        COSTO: cost,
+        VALOR_RECONTEO: quantity * cost,
+      };
+    });
+  }
+
+  async function exportRecords() {
+    if (!selectedSessionId) return;
     const rows = filteredCounts.map(row => ({
       FECHA: new Date(row.counted_at).toLocaleString("es-PE"),
       CONTADOR: row.operator_name || "",
@@ -3846,8 +3923,16 @@ export default function InventariosPage() {
       MINUTOS: Number(row.minutes.toFixed(2)),
       REGISTROS_POR_MINUTO: Number(row.perMinute.toFixed(2)),
     }));
+    let recountRows: Awaited<ReturnType<typeof loadRecountRecordsForExport>> = [];
+    try {
+      recountRows = await loadRecountRecordsForExport(selectedSessionId);
+    } catch (error: unknown) {
+      setMessage("No se pudieron leer los registros de reconteo para el Excel: " + (error instanceof Error ? error.message : String(error)));
+      return;
+    }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Registros");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recountRows), "Reconteo");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), "Resumen contadores");
     XLSX.writeFile(wb, `inventario_registros_${selectedSession?.name || "sesion"}.xlsx`);
   }

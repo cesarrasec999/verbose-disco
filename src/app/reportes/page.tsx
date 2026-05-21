@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
+type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
 
 type CyclicUser = {
   id: string;
@@ -20,6 +21,7 @@ type Store = {
   code?: string | null;
   name: string;
   erp_sede?: string | null;
+  erp_store_no?: string | null;
   is_active: boolean;
 };
 
@@ -53,6 +55,23 @@ type InventorySnapshot = {
   created_at: string;
 };
 
+type SalesDailyRow = {
+  store_id: string;
+  store_name: string;
+  sales_amount: number;
+  cost_amount: number;
+  quantity: number;
+  documents: number;
+};
+
+type SalesReportRow = SalesDailyRow & {
+  margin: number;
+  projected_sales: number;
+  projected_cost: number;
+  inventory_value: number;
+  inventory_vs_budget: number;
+};
+
 const USER_KEY = "cyclic_user";
 
 function r2(value: number) {
@@ -67,6 +86,10 @@ function number2(value: number) {
   return Number(value || 0).toLocaleString("es-PE", { maximumFractionDigits: 2 });
 }
 
+function percent(value: number) {
+  return `${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
 function fullProductCode(value: unknown) {
   return String(value || "").trim().toUpperCase();
 }
@@ -79,6 +102,26 @@ function parseCost(value: unknown) {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function monthStartISO(value = new Date()) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+function monthEndISO(value = new Date()) {
+  return new Date(value.getFullYear(), value.getMonth() + 1, 0).toISOString().slice(0, 10);
+}
+
+function businessDays(startISO: string, endISO: string, holidays: Set<string>) {
+  const start = new Date(`${startISO}T00:00:00`);
+  const end = new Date(`${endISO}T00:00:00`);
+  let days = 0;
+  while (start <= end) {
+    const iso = start.toISOString().slice(0, 10);
+    if (start.getDay() !== 0 && !holidays.has(iso)) days += 1;
+    start.setDate(start.getDate() + 1);
+  }
+  return days;
 }
 
 function cellByHeaders(row: unknown[], headers: string[], names: string[]) {
@@ -150,14 +193,19 @@ export default function ReportesPage() {
       return null;
     }
   });
+  const [activeTab, setActiveTab] = useState<ReportTab>("stock");
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState("");
   const [valuationRows, setValuationRows] = useState<ValuationRow[]>([]);
   const [rotationRows, setRotationRows] = useState<RotationRow[]>([]);
+  const [salesRows, setSalesRows] = useState<SalesReportRow[]>([]);
   const [updatedAt, setUpdatedAt] = useState("");
+  const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
   const [selectedStoreId, setSelectedStoreId] = useState("all");
+  const [salesStartDate, setSalesStartDate] = useState(monthStartISO());
+  const [salesEndDate, setSalesEndDate] = useState(todayISO());
   const [snapshotDate, setSnapshotDate] = useState(todayISO());
   const [snapshotFile, setSnapshotFile] = useState<File | null>(null);
   const [snapshotFileName, setSnapshotFileName] = useState("");
@@ -535,6 +583,92 @@ export default function ReportesPage() {
     }
   }
 
+  async function loadSalesReport() {
+    if (!canView) {
+      setMessage("Tu usuario no tiene acceso a reportes.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    setProgress("Leyendo ventas sincronizadas...");
+    try {
+      if (valuationRows.length === 0) await loadReport();
+      const periodDate = new Date(`${salesStartDate}T00:00:00`);
+      const monthStart = monthStartISO(periodDate);
+      const monthEnd = monthEndISO(periodDate);
+      const today = todayISO();
+      const elapsedEnd = salesEndDate > today ? today : salesEndDate;
+      const holidayRes = await supabase
+        .from("business_holidays")
+        .select("holiday_date")
+        .gte("holiday_date", monthStart)
+        .lte("holiday_date", monthEnd);
+      const holidays = new Set((holidayRes.data || []).map(row => String(row.holiday_date)));
+      const totalBusinessDays = Math.max(1, businessDays(monthStart, monthEnd, holidays));
+      const elapsedBusinessDays = Math.max(1, businessDays(monthStart, elapsedEnd, holidays));
+
+      let query = supabase
+        .from("erp_store_sales_daily")
+        .select("store_key,store_name,sales_amount,cost_amount,quantity,documents")
+        .gte("sales_date", salesStartDate)
+        .lte("sales_date", salesEndDate);
+      if (selectedStore) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const storeByKey = new Map<string, Store>();
+      for (const store of stores) {
+        for (const key of rotationStoreKeysForStore(store)) storeByKey.set(normalizeRotationStoreKey(key), store);
+      }
+      const grouped = new Map<string, SalesDailyRow>();
+      for (const row of data || []) {
+        const key = normalizeRotationStoreKey(String(row.store_key || row.store_name || ""));
+        const store = storeByKey.get(key);
+        const groupKey = store?.id || key;
+        const current = grouped.get(groupKey) || {
+          store_id: store?.id || groupKey,
+          store_name: store?.name || String(row.store_name || row.store_key || ""),
+          sales_amount: 0,
+          cost_amount: 0,
+          quantity: 0,
+          documents: 0,
+        };
+        current.sales_amount = r2(current.sales_amount + Number(row.sales_amount || 0));
+        current.cost_amount = r2(current.cost_amount + Number(row.cost_amount || 0));
+        current.quantity = r2(current.quantity + Number(row.quantity || 0));
+        current.documents += Number(row.documents || 0);
+        grouped.set(groupKey, current);
+      }
+      const valuationByStore = new Map(valuationRows.map(row => [row.store_id, row.inventory_value]));
+      const rows = [...grouped.values()].map(row => {
+        const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
+        const projectedSales = r2(row.sales_amount * totalBusinessDays / elapsedBusinessDays);
+        const projectedCost = r2(projectedSales * (1 - margin));
+        const inventoryValue = valuationByStore.get(row.store_id) || 0;
+        return {
+          ...row,
+          margin,
+          projected_sales: projectedSales,
+          projected_cost: projectedCost,
+          inventory_value: inventoryValue,
+          inventory_vs_budget: r2(inventoryValue - projectedCost),
+        };
+      }).sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
+      setSalesRows(rows);
+      setSalesUpdatedAt(`Dias habiles: ${elapsedBusinessDays}/${totalBusinessDays}`);
+      setProgress("");
+    } catch (error: unknown) {
+      setMessage("No se pudo leer ventas. Primero ejecuta el SQL y alimenta erp_store_sales_daily desde el sync del servidor. Detalle: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function refreshActiveTab() {
+    if (activeTab === "ventas" || activeTab === "presupuesto") void loadSalesReport();
+    else void loadReport();
+  }
+
   function exportExcel() {
     if (valuationRows.length === 0 && rotationRows.length === 0) {
       setMessage("Primero actualiza el reporte.");
@@ -553,6 +687,16 @@ export default function ReportesPage() {
       Unidades: row.total_units,
       Valorizado: row.inventory_value,
     }))), "Valorizado por rotacion");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows.map(row => ({
+      Tienda: row.store_name,
+      Venta: row.sales_amount,
+      CostoVenta: row.cost_amount,
+      Margen: row.margin,
+      VentaProyectada: row.projected_sales,
+      CostoVentaProyectado: row.projected_cost,
+      ValorizadoInventario: row.inventory_value,
+      InventarioVsPresupuesto: row.inventory_vs_budget,
+    }))), "Ventas presupuesto");
     XLSX.writeFile(wb, `reportes-inventario-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
@@ -562,6 +706,17 @@ export default function ReportesPage() {
     units: r2(acc.units + row.total_units),
     value: r2(acc.value + row.inventory_value),
   }), { stores: 0, codes: 0, units: 0, value: 0 }), [valuationRows]);
+
+  const salesTotals = useMemo(() => salesRows.reduce((acc, row) => ({
+    sales: r2(acc.sales + row.sales_amount),
+    cost: r2(acc.cost + row.cost_amount),
+    projectedSales: r2(acc.projectedSales + row.projected_sales),
+    projectedCost: r2(acc.projectedCost + row.projected_cost),
+    inventory: r2(acc.inventory + row.inventory_value),
+  }), { sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, inventory: 0 }), [salesRows]);
+
+  const salesMargin = salesTotals.sales > 0 ? ((salesTotals.sales - salesTotals.cost) / salesTotals.sales) * 100 : 0;
+  const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.projectedCost);
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -576,15 +731,15 @@ export default function ReportesPage() {
             </div>
             <div className="min-w-0">
               <h1 className="truncate text-xl font-black">Reportes de inventario</h1>
-              <p className="truncate text-xs text-slate-500">{user?.full_name || "Usuario"} · valorizado por tienda y rotacion</p>
+              <p className="truncate text-xs text-slate-500">{user?.full_name || "Usuario"} - stock, rotaciones, ventas y presupuesto</p>
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={loadReport} disabled={loading || !canView} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
+            <button onClick={refreshActiveTab} disabled={loading || !canView} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
               <RefreshCw className={`mr-2 inline ${loading ? "animate-spin" : ""}`} size={16} />
               {loading ? "Actualizando..." : "Actualizar"}
             </button>
-            <button onClick={exportExcel} disabled={loading || (valuationRows.length === 0 && rotationRows.length === 0)} className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700 disabled:opacity-40">
+            <button onClick={exportExcel} disabled={loading} className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700 disabled:opacity-40">
               <Download className="mr-2 inline" size={16} /> Excel
             </button>
           </div>
@@ -592,8 +747,25 @@ export default function ReportesPage() {
       </header>
 
       <section className="mx-auto max-w-7xl space-y-4 p-4">
+        <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-4">
+          {[
+            ["stock", "Valorizado stock"],
+            ["rotaciones", "Valorizado por rotaciones"],
+            ["ventas", "Ventas y margen"],
+            ["presupuesto", "Presupuesto de inventario"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key as ReportTab)}
+              className={`rounded-xl px-4 py-3 text-sm font-black ${activeTab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <div className="rounded-2xl border bg-white p-4">
-          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
             <div>
               <p className="text-sm font-black text-slate-900">Filtro de tienda</p>
               <p className="text-xs text-slate-500">El reporte y el historial se calculan con la tienda seleccionada.</p>
@@ -612,22 +784,28 @@ export default function ReportesPage() {
               {user?.can_access_all_stores && <option value="all">Todas las tiendas</option>}
               {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
             </select>
+            {(activeTab === "ventas" || activeTab === "presupuesto") && (
+              <input type="date" value={salesStartDate} onChange={event => setSalesStartDate(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-900" />
+            )}
+            {(activeTab === "ventas" || activeTab === "presupuesto") && (
+              <input type="date" value={salesEndDate} onChange={event => setSalesEndDate(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-900" />
+            )}
           </div>
         </div>
 
         {message && <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">{message}</div>}
         {progress && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700">{progress}</div>}
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {(activeTab === "stock" || activeTab === "rotaciones") && <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado total</p><p className="mt-1 text-xl font-black">{money(totals.value)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Tiendas</p><p className="mt-1 text-xl font-black">{number2(totals.stores)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Codigos con stock</p><p className="mt-1 text-xl font-black">{number2(totals.codes)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Unidades</p><p className="mt-1 text-xl font-black">{number2(totals.units)}</p></div>
-        </div>
+        </div>}
 
-        {updatedAt && <p className="text-xs font-semibold text-slate-400">Ultima consulta: {updatedAt}</p>}
+        {updatedAt && (activeTab === "stock" || activeTab === "rotaciones") && <p className="text-xs font-semibold text-slate-400">Ultima consulta: {updatedAt}</p>}
 
-        <div className="rounded-2xl border bg-white p-4">
+        {activeTab === "stock" && <div className="rounded-2xl border bg-white p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="font-black text-slate-900">Historial de valorizados</h2>
@@ -715,9 +893,9 @@ export default function ReportesPage() {
               </div>
             </div>
           </div>
-        </div>
+        </div>}
 
-        <div className="rounded-2xl border bg-white">
+        {activeTab === "rotaciones" && <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por rotacion</h2>
           </div>
@@ -739,9 +917,9 @@ export default function ReportesPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </div>}
 
-        <div className="rounded-2xl border bg-white">
+        {activeTab === "stock" && <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por tienda</h2>
           </div>
@@ -763,7 +941,76 @@ export default function ReportesPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </div>}
+
+        {activeTab === "ventas" && (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Venta acumulada</p><p className="mt-1 text-xl font-black">{money(salesTotals.sales)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo de venta</p><p className="mt-1 text-xl font-black">{money(salesTotals.cost)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesMargin)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Venta proyectada</p><p className="mt-1 text-xl font-black">{money(salesTotals.projectedSales)}</p></div>
+            </div>
+            {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
+            <div className="rounded-2xl border bg-white">
+              <div className="border-b bg-slate-50 px-4 py-3"><h2 className="font-black">Ventas totales por tienda</h2></div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead className="bg-slate-100 text-xs text-slate-600">
+                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Venta</th><th className="border p-2 text-right">Costo venta</th><th className="border p-2 text-right">Margen</th><th className="border p-2 text-right">Venta proyectada</th><th className="border p-2 text-right">Costo proyectado</th></tr>
+                  </thead>
+                  <tbody>
+                    {salesRows.map(row => (
+                      <tr key={row.store_id}>
+                        <td className="border p-2 font-black">{row.store_name}</td>
+                        <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
+                        <td className="border p-2 text-right">{money(row.cost_amount)}</td>
+                        <td className="border p-2 text-right font-black text-green-700">{percent(row.margin * 100)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.projected_sales)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.projected_cost)}</td>
+                      </tr>
+                    ))}
+                    {salesRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">Actualiza para ver ventas sincronizadas.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === "presupuesto" && (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventory || totals.value)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo venta proyectado</p><p className="mt-1 text-xl font-black">{money(salesTotals.projectedCost)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen promedio</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesMargin)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Inventario vs presupuesto</p><p className={`mt-1 text-xl font-black ${inventoryBudgetDiff >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(inventoryBudgetDiff)}</p></div>
+            </div>
+            {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
+            <div className="rounded-2xl border bg-white">
+              <div className="border-b bg-slate-50 px-4 py-3"><h2 className="font-black">Presupuesto de inventario por tienda</h2></div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead className="bg-slate-100 text-xs text-slate-600">
+                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Valorizado actual</th><th className="border p-2 text-right">Costo venta proyectado</th><th className="border p-2 text-right">Diferencia</th><th className="border p-2 text-right">Margen</th></tr>
+                  </thead>
+                  <tbody>
+                    {salesRows.map(row => (
+                      <tr key={row.store_id}>
+                        <td className="border p-2 font-black">{row.store_name}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.projected_cost)}</td>
+                        <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
+                        <td className="border p-2 text-right">{percent(row.margin * 100)}</td>
+                      </tr>
+                    ))}
+                    {salesRows.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
       </section>
     </main>
   );
