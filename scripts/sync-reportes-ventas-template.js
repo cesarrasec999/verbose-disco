@@ -61,8 +61,8 @@ async function syncSales() {
   const pool = await sql.connect(sqlConfig);
 
   /*
-    Si tu ERP no tiene rl.Price, cambia sales_amount por el campo neto correcto.
-    cost_amount usa rl.AvgCost; si prefieres costo sincronizado actual, reemplaza por p.LastCost.
+    Venta usa ExtRetailPriceWTax porque es el total de la linea con impuesto.
+    Costo de venta usa ExtCost del ERP.
   */
   const result = await pool.request()
     .input("startDate", sql.DateTime, new Date(`${start}T00:00:00`))
@@ -72,8 +72,8 @@ async function syncSales() {
         cast(s.StoreNo as varchar(30)) as store_key,
         s.StoreName as store_name,
         cast(r.SalesDate as date) as sales_date,
-        sum(cast(rl.Qty as decimal(18,6)) * cast(isnull(rl.Price, 0) as decimal(18,6))) as sales_amount,
-        sum(cast(rl.Qty as decimal(18,6)) * cast(isnull(rl.AvgCost, p.LastCost) as decimal(18,6))) as cost_amount,
+        sum(cast(isnull(rl.ExtRetailPriceWTax, 0) as decimal(18,6))) as sales_amount,
+        sum(cast(isnull(rl.ExtCost, rl.Qty * isnull(rl.AvgCost, p.LastCost)) as decimal(18,6))) as cost_amount,
         sum(cast(rl.Qty as decimal(18,6))) as quantity,
         count(distinct r.ReceiptId) as documents
       from RECEIPT r

@@ -68,6 +68,7 @@ type SalesReportRow = SalesDailyRow & {
   margin: number;
   projected_sales: number;
   projected_cost: number;
+  inventory_budget: number;
   inventory_value: number;
   inventory_vs_budget: number;
 };
@@ -88,6 +89,10 @@ function number2(value: number) {
 
 function percent(value: number) {
   return `${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
+function Formula({ children }: { children: string }) {
+  return <p className="mt-1 text-xs font-semibold text-slate-500">Formula: {children}</p>;
 }
 
 function fullProductCode(value: unknown) {
@@ -204,8 +209,7 @@ export default function ReportesPage() {
   const [updatedAt, setUpdatedAt] = useState("");
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
   const [selectedStoreId, setSelectedStoreId] = useState("all");
-  const [salesStartDate, setSalesStartDate] = useState(monthStartISO());
-  const [salesEndDate, setSalesEndDate] = useState(todayISO());
+  const [reportDate, setReportDate] = useState(todayISO());
   const [snapshotDate, setSnapshotDate] = useState(todayISO());
   const [snapshotFile, setSnapshotFile] = useState<File | null>(null);
   const [snapshotFileName, setSnapshotFileName] = useState("");
@@ -593,11 +597,12 @@ export default function ReportesPage() {
     setProgress("Leyendo ventas sincronizadas...");
     try {
       if (valuationRows.length === 0) await loadReport();
-      const periodDate = new Date(`${salesStartDate}T00:00:00`);
+      const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
+      const salesEndDate = reportDate;
+      const periodDate = new Date(`${reportDate}T00:00:00`);
       const monthStart = monthStartISO(periodDate);
       const monthEnd = monthEndISO(periodDate);
-      const today = todayISO();
-      const elapsedEnd = salesEndDate > today ? today : salesEndDate;
+      const elapsedEnd = salesEndDate;
       const holidayRes = await supabase
         .from("business_holidays")
         .select("holiday_date")
@@ -644,14 +649,16 @@ export default function ReportesPage() {
         const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
         const projectedSales = r2(row.sales_amount * totalBusinessDays / elapsedBusinessDays);
         const projectedCost = r2(projectedSales * (1 - margin));
+        const inventoryBudget = r2(projectedCost * 1.2);
         const inventoryValue = valuationByStore.get(row.store_id) || 0;
         return {
           ...row,
           margin,
           projected_sales: projectedSales,
           projected_cost: projectedCost,
+          inventory_budget: inventoryBudget,
           inventory_value: inventoryValue,
-          inventory_vs_budget: r2(inventoryValue - projectedCost),
+          inventory_vs_budget: r2(inventoryValue - inventoryBudget),
         };
       }).sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
       setSalesRows(rows);
@@ -694,6 +701,7 @@ export default function ReportesPage() {
       Margen: row.margin,
       VentaProyectada: row.projected_sales,
       CostoVentaProyectado: row.projected_cost,
+      PresupuestoInventario: row.inventory_budget,
       ValorizadoInventario: row.inventory_value,
       InventarioVsPresupuesto: row.inventory_vs_budget,
     }))), "Ventas presupuesto");
@@ -712,11 +720,13 @@ export default function ReportesPage() {
     cost: r2(acc.cost + row.cost_amount),
     projectedSales: r2(acc.projectedSales + row.projected_sales),
     projectedCost: r2(acc.projectedCost + row.projected_cost),
+    budget: r2(acc.budget + row.inventory_budget),
     inventory: r2(acc.inventory + row.inventory_value),
-  }), { sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, inventory: 0 }), [salesRows]);
+  }), { sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0 }), [salesRows]);
 
   const salesMargin = salesTotals.sales > 0 ? ((salesTotals.sales - salesTotals.cost) / salesTotals.sales) * 100 : 0;
-  const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.projectedCost);
+  const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.budget);
+  const budgetCompliance = salesTotals.budget > 0 ? (salesTotals.inventory / salesTotals.budget) * 100 : 0;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -765,7 +775,7 @@ export default function ReportesPage() {
         </div>
 
         <div className="rounded-2xl border bg-white p-4">
-          <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
             <div>
               <p className="text-sm font-black text-slate-900">Filtro de tienda</p>
               <p className="text-xs text-slate-500">El reporte y el historial se calculan con la tienda seleccionada.</p>
@@ -785,10 +795,10 @@ export default function ReportesPage() {
               {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
             </select>
             {(activeTab === "ventas" || activeTab === "presupuesto") && (
-              <input type="date" value={salesStartDate} onChange={event => setSalesStartDate(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-900" />
-            )}
-            {(activeTab === "ventas" || activeTab === "presupuesto") && (
-              <input type="date" value={salesEndDate} onChange={event => setSalesEndDate(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-900" />
+              <div className="grid gap-1">
+                <span className="text-xs font-black text-slate-500">Fecha de corte</span>
+                <input type="date" value={reportDate} onChange={event => setReportDate(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-900" />
+              </div>
             )}
           </div>
         </div>
@@ -809,6 +819,7 @@ export default function ReportesPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="font-black text-slate-900">Historial de valorizados</h2>
+              <Formula>fotografia diaria = valorizado guardado a las 8:00 a. m. para comparar el stock historico.</Formula>
               <p className="text-xs text-slate-500">Fotografías guardadas para revisar valorizados anteriores.</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -898,6 +909,7 @@ export default function ReportesPage() {
         {activeTab === "rotaciones" && <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por rotacion</h2>
+            <Formula>valorizado por rotacion = sumatoria del stock actual x costo ERP, agrupado por rotacion mensual.</Formula>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -922,6 +934,7 @@ export default function ReportesPage() {
         {activeTab === "stock" && <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por tienda</h2>
+            <Formula>valorizado por tienda = sumatoria del stock actual x costo ERP por tienda.</Formula>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -953,7 +966,10 @@ export default function ReportesPage() {
             </div>
             {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
             <div className="rounded-2xl border bg-white">
-              <div className="border-b bg-slate-50 px-4 py-3"><h2 className="font-black">Ventas totales por tienda</h2></div>
+              <div className="border-b bg-slate-50 px-4 py-3">
+                <h2 className="font-black">Ventas totales por tienda</h2>
+                <Formula>venta proyectada = venta acumulada x dias habiles del mes / dias habiles transcurridos. Margen = (venta - costo venta) / venta.</Formula>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
@@ -982,17 +998,20 @@ export default function ReportesPage() {
           <>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventory || totals.value)}</p></div>
-              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo venta proyectado</p><p className="mt-1 text-xl font-black">{money(salesTotals.projectedCost)}</p></div>
-              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen promedio</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesMargin)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Presupuesto inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.budget)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Cumplimiento</p><p className={`mt-1 text-xl font-black ${budgetCompliance >= 100 ? "text-blue-700" : "text-red-600"}`}>{percent(budgetCompliance)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Inventario vs presupuesto</p><p className={`mt-1 text-xl font-black ${inventoryBudgetDiff >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(inventoryBudgetDiff)}</p></div>
             </div>
             {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
             <div className="rounded-2xl border bg-white">
-              <div className="border-b bg-slate-50 px-4 py-3"><h2 className="font-black">Presupuesto de inventario por tienda</h2></div>
+              <div className="border-b bg-slate-50 px-4 py-3">
+                <h2 className="font-black">Presupuesto de inventario por tienda</h2>
+                <Formula>presupuesto de inventario = costo venta proyectado x 1.2. Cumplimiento = valorizado inventario / presupuesto inventario x 100.</Formula>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
-                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Valorizado actual</th><th className="border p-2 text-right">Costo venta proyectado</th><th className="border p-2 text-right">Diferencia</th><th className="border p-2 text-right">Margen</th></tr>
+                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Valorizado actual</th><th className="border p-2 text-right">Costo venta proyectado</th><th className="border p-2 text-right">Presupuesto inv.</th><th className="border p-2 text-right">Cumplimiento</th><th className="border p-2 text-right">Diferencia</th></tr>
                   </thead>
                   <tbody>
                     {salesRows.map(row => (
@@ -1000,11 +1019,12 @@ export default function ReportesPage() {
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
                         <td className="border p-2 text-right font-black">{money(row.projected_cost)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
+                        <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
-                        <td className="border p-2 text-right">{percent(row.margin * 100)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
                   </tbody>
                 </table>
               </div>
