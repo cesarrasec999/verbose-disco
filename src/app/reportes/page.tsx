@@ -43,6 +43,27 @@ type RotationRow = {
   missing_cost_codes: number;
 };
 
+type RotationHistoryRow = {
+  snapshot_date: string;
+  store_key: string;
+  store_name: string;
+  rotation_category: string;
+  codes_with_stock: number;
+  total_units: number;
+  inventory_value: number;
+};
+
+type RotationBreakRow = {
+  store_id: string;
+  store_name: string;
+  rotation: string;
+  sku: string;
+  description: string;
+  unit: string;
+  stock: number;
+  cost: number;
+};
+
 type InventorySnapshot = {
   id: string;
   snapshot_date: string;
@@ -65,6 +86,10 @@ type SalesDailyRow = {
 };
 
 type SalesReportRow = SalesDailyRow & {
+  day_sales_amount: number;
+  day_cost_amount: number;
+  day_quantity: number;
+  day_documents: number;
   margin: number;
   projected_sales: number;
   projected_cost: number;
@@ -205,6 +230,8 @@ export default function ReportesPage() {
   const [progress, setProgress] = useState("");
   const [valuationRows, setValuationRows] = useState<ValuationRow[]>([]);
   const [rotationRows, setRotationRows] = useState<RotationRow[]>([]);
+  const [rotationHistoryRows, setRotationHistoryRows] = useState<RotationHistoryRow[]>([]);
+  const [rotationBreakRows, setRotationBreakRows] = useState<RotationBreakRow[]>([]);
   const [salesRows, setSalesRows] = useState<SalesReportRow[]>([]);
   const [updatedAt, setUpdatedAt] = useState("");
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
@@ -302,6 +329,100 @@ export default function ReportesPage() {
       }
     }
     return rotations;
+  }
+
+  async function loadRotationBreaks(targetStores: Store[]) {
+    const breakRows: RotationBreakRow[] = [];
+    const PAGE = 1000;
+    const productCache = new Map<string, { description: string; unit: string; cost: number }>();
+
+    async function loadProducts(skus: string[]) {
+      const missing = [...new Set(skus.map(fullProductCode).filter(sku => sku && !productCache.has(sku)))];
+      for (let i = 0; i < missing.length; i += 500) {
+        const { data, error } = await supabase
+          .from("cyclic_products")
+          .select("sku,description,unit,cost")
+          .in("sku", missing.slice(i, i + 500))
+          .eq("is_active", true);
+        if (error) throw error;
+        for (const row of data || []) {
+          productCache.set(fullProductCode(row.sku), {
+            description: String(row.description || ""),
+            unit: String(row.unit || ""),
+            cost: parseCost(row.cost),
+          });
+        }
+      }
+    }
+
+    for (const store of targetStores) {
+      const storeKeys = rotationStoreKeysForStore(store);
+      const sede = String(store.erp_sede || store.name || "").trim();
+      if (storeKeys.length === 0 || !sede) continue;
+      setProgress(`Buscando quiebres A/B/C: ${store.name}`);
+
+      const latestRotationBySku = new Map<string, string>();
+      let page = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("product_rotation_monthly")
+          .select("product_code,rotation_category,period_month")
+          .in("store_key", storeKeys)
+          .in("rotation_category", ["A", "B", "C"])
+          .lte("period_month", currentRotationPeriod())
+          .order("period_month", { ascending: false })
+          .range(page * PAGE, (page + 1) * PAGE - 1);
+        if (error) throw error;
+        for (const row of data || []) {
+          const sku = fullProductCode(row.product_code);
+          const rotation = String(row.rotation_category || "").trim().toUpperCase();
+          if (sku && ["A", "B", "C"].includes(rotation) && !latestRotationBySku.has(sku)) latestRotationBySku.set(sku, rotation);
+        }
+        if (!data || data.length < PAGE) break;
+        page += 1;
+      }
+
+      const skus = [...latestRotationBySku.keys()];
+      if (skus.length === 0) continue;
+      await loadProducts(skus);
+
+      const stockBySku = new Map<string, number>();
+      for (let i = 0; i < skus.length; i += 500) {
+        const { data, error } = await supabase
+          .from("stock_general")
+          .select("codsap,stock")
+          .eq("sede", sede)
+          .in("codsap", skus.slice(i, i + 500));
+        if (error) throw error;
+        for (const row of data || []) {
+          const sku = fullProductCode(row.codsap);
+          stockBySku.set(sku, r2((stockBySku.get(sku) || 0) + Number(row.stock || 0)));
+        }
+      }
+
+      for (const [sku, rotation] of latestRotationBySku.entries()) {
+        const stock = stockBySku.get(sku) || 0;
+        if (stock > 0) continue;
+        const product = productCache.get(sku);
+        breakRows.push({
+          store_id: store.id,
+          store_name: store.name,
+          rotation,
+          sku,
+          description: product?.description || "",
+          unit: product?.unit || "",
+          stock,
+          cost: product?.cost || 0,
+        });
+      }
+    }
+
+    setRotationBreakRows(breakRows.sort((a, b) =>
+      a.store_name.localeCompare(b.store_name) ||
+      a.rotation.localeCompare(b.rotation) ||
+      b.cost - a.cost ||
+      a.sku.localeCompare(b.sku, "es", { numeric: true, sensitivity: "base" })
+    ));
   }
 
   function parseSnapshotRows(rows: unknown[][]): ValuationRow[] {
@@ -579,11 +700,76 @@ export default function ReportesPage() {
       setValuationRows(valuation.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name)));
       setRotationRows([...rotationTotals.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.rotation.localeCompare(b.rotation)));
       setUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
+      await loadRotationBreaks(targetStores);
+      await loadRotationHistory();
       setProgress("");
     } catch (error: unknown) {
       setMessage("Error generando reporte: " + (error instanceof Error ? error.message : String(error)));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadInventoryValueByStoreForDate(date: string) {
+    const { data: snapshotData, error: snapshotError } = await supabase
+      .from("inventory_valuation_snapshots")
+      .select("id")
+      .eq("snapshot_date", date)
+      .order("snapshot_time", { ascending: false })
+      .limit(1);
+    if (snapshotError) throw snapshotError;
+    const snapshotId = snapshotData?.[0]?.id;
+    if (!snapshotId) return new Map(valuationRows.map(row => [row.store_id, row.inventory_value]));
+
+    const { data, error } = await supabase
+      .from("inventory_valuation_snapshot_stores")
+      .select("store_id,store_name,sede,inventory_value")
+      .eq("snapshot_id", snapshotId);
+    if (error) throw error;
+
+    const byStore = new Map<string, number>();
+    for (const row of data || []) {
+      const candidates = [row.store_id, row.store_name, row.sede].map(value => normalizeRotationStoreKey(String(value || "")));
+      const store = stores.find(item => {
+        const storeKeys = [item.id, item.name, item.erp_sede, item.code].map(value => normalizeRotationStoreKey(String(value || "")));
+        return candidates.some(candidate => storeKeys.includes(candidate));
+      });
+      if (store) byStore.set(store.id, Number(row.inventory_value || 0));
+    }
+    return byStore;
+  }
+
+  async function loadRotationHistory() {
+    try {
+      const periodDate = new Date(`${reportDate}T00:00:00`);
+      const from = monthStartISO(periodDate);
+      let query = supabase
+        .from("inventory_rotation_valuation_daily")
+        .select("snapshot_date,store_key,store_name,rotation_category,codes_with_stock,total_units,inventory_value")
+        .gte("snapshot_date", from)
+        .lte("snapshot_date", reportDate)
+        .order("snapshot_date", { ascending: false })
+        .order("inventory_value", { ascending: false })
+        .limit(800);
+      if (selectedStore) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
+      const { data, error } = await query;
+      if (error) {
+        console.warn("No se pudo cargar historico por rotacion:", error.message);
+        setRotationHistoryRows([]);
+        return;
+      }
+      setRotationHistoryRows((data || []).map(row => ({
+        snapshot_date: String(row.snapshot_date),
+        store_key: String(row.store_key || ""),
+        store_name: String(row.store_name || ""),
+        rotation_category: String(row.rotation_category || "SIN ROTACION"),
+        codes_with_stock: Number(row.codes_with_stock || 0),
+        total_units: Number(row.total_units || 0),
+        inventory_value: Number(row.inventory_value || 0),
+      })));
+    } catch (error) {
+      console.warn("No se pudo cargar historico por rotacion:", error);
+      setRotationHistoryRows([]);
     }
   }
 
@@ -614,7 +800,7 @@ export default function ReportesPage() {
 
       let query = supabase
         .from("erp_store_sales_daily")
-        .select("store_key,store_name,sales_amount,cost_amount,quantity,documents")
+        .select("sales_date,store_key,store_name,sales_amount,cost_amount,quantity,documents")
         .gte("sales_date", salesStartDate)
         .lte("sales_date", salesEndDate);
       if (selectedStore) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
@@ -626,6 +812,7 @@ export default function ReportesPage() {
         for (const key of rotationStoreKeysForStore(store)) storeByKey.set(normalizeRotationStoreKey(key), store);
       }
       const grouped = new Map<string, SalesDailyRow>();
+      const dayGrouped = new Map<string, SalesDailyRow>();
       for (const row of data || []) {
         const key = normalizeRotationStoreKey(String(row.store_key || row.store_name || ""));
         const store = storeByKey.get(key);
@@ -643,9 +830,26 @@ export default function ReportesPage() {
         current.quantity = r2(current.quantity + Number(row.quantity || 0));
         current.documents += Number(row.documents || 0);
         grouped.set(groupKey, current);
+
+        if (String(row.sales_date || "") === salesEndDate) {
+          const dayCurrent = dayGrouped.get(groupKey) || {
+            store_id: store?.id || groupKey,
+            store_name: store?.name || String(row.store_name || row.store_key || ""),
+            sales_amount: 0,
+            cost_amount: 0,
+            quantity: 0,
+            documents: 0,
+          };
+          dayCurrent.sales_amount = r2(dayCurrent.sales_amount + Number(row.sales_amount || 0));
+          dayCurrent.cost_amount = r2(dayCurrent.cost_amount + Number(row.cost_amount || 0));
+          dayCurrent.quantity = r2(dayCurrent.quantity + Number(row.quantity || 0));
+          dayCurrent.documents += Number(row.documents || 0);
+          dayGrouped.set(groupKey, dayCurrent);
+        }
       }
-      const valuationByStore = new Map(valuationRows.map(row => [row.store_id, row.inventory_value]));
+      const valuationByStore = await loadInventoryValueByStoreForDate(reportDate);
       const rows = [...grouped.values()].map(row => {
+        const day = dayGrouped.get(row.store_id);
         const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
         const projectedSales = r2(row.sales_amount * totalBusinessDays / elapsedBusinessDays);
         const projectedCost = r2(projectedSales * (1 - margin));
@@ -653,6 +857,10 @@ export default function ReportesPage() {
         const inventoryValue = valuationByStore.get(row.store_id) || 0;
         return {
           ...row,
+          day_sales_amount: day?.sales_amount || 0,
+          day_cost_amount: day?.cost_amount || 0,
+          day_quantity: day?.quantity || 0,
+          day_documents: day?.documents || 0,
           margin,
           projected_sales: projectedSales,
           projected_cost: projectedCost,
@@ -696,8 +904,10 @@ export default function ReportesPage() {
     }))), "Valorizado por rotacion");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows.map(row => ({
       Tienda: row.store_name,
-      Venta: row.sales_amount,
-      CostoVenta: row.cost_amount,
+      VentaDia: row.day_sales_amount,
+      VentaAcumulada: row.sales_amount,
+      CostoVentaDia: row.day_cost_amount,
+      CostoVentaAcumulado: row.cost_amount,
       Margen: row.margin,
       VentaProyectada: row.projected_sales,
       CostoVentaProyectado: row.projected_cost,
@@ -716,17 +926,26 @@ export default function ReportesPage() {
   }), { stores: 0, codes: 0, units: 0, value: 0 }), [valuationRows]);
 
   const salesTotals = useMemo(() => salesRows.reduce((acc, row) => ({
+    daySales: r2(acc.daySales + row.day_sales_amount),
+    dayCost: r2(acc.dayCost + row.day_cost_amount),
     sales: r2(acc.sales + row.sales_amount),
     cost: r2(acc.cost + row.cost_amount),
     projectedSales: r2(acc.projectedSales + row.projected_sales),
     projectedCost: r2(acc.projectedCost + row.projected_cost),
     budget: r2(acc.budget + row.inventory_budget),
     inventory: r2(acc.inventory + row.inventory_value),
-  }), { sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0 }), [salesRows]);
+  }), { daySales: 0, dayCost: 0, sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0 }), [salesRows]);
 
   const salesMargin = salesTotals.sales > 0 ? ((salesTotals.sales - salesTotals.cost) / salesTotals.sales) * 100 : 0;
   const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.budget);
   const budgetCompliance = salesTotals.budget > 0 ? (salesTotals.inventory / salesTotals.budget) * 100 : 0;
+  const breakTotals = useMemo(() => rotationBreakRows.reduce((acc, row) => {
+    if (row.rotation === "A") acc.a += 1;
+    if (row.rotation === "B") acc.b += 1;
+    if (row.rotation === "C") acc.c += 1;
+    acc.value = r2(acc.value + row.cost);
+    return acc;
+  }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -906,30 +1125,103 @@ export default function ReportesPage() {
           </div>
         </div>}
 
-        {activeTab === "rotaciones" && <div className="rounded-2xl border bg-white">
-          <div className="border-b bg-slate-50 px-4 py-3">
-            <h2 className="font-black">Valorizado por rotacion</h2>
-            <Formula>valorizado por rotacion = sumatoria del stock actual x costo ERP, agrupado por rotacion mensual.</Formula>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                <tr><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
-              </thead>
-              <tbody>
-                {rotationRows.map(row => (
-                  <tr key={row.rotation} className="hover:bg-slate-50">
-                    <td className="border p-2 font-black">{row.rotation}</td>
-                    <td className="border p-2 text-right font-semibold">{number2(row.codes_with_stock)}</td>
-                    <td className="border p-2 text-right font-semibold">{number2(row.total_units)}</td>
-                    <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                  </tr>
-                ))}
-                {rotationRows.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por rotacion.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </div>}
+        {activeTab === "rotaciones" && (
+          <>
+            <div className="rounded-2xl border bg-white">
+              <div className="border-b bg-slate-50 px-4 py-3">
+                <h2 className="font-black">Valorizado por rotacion</h2>
+                <Formula>valorizado por rotacion = sumatoria del stock actual x costo ERP, agrupado por rotacion mensual.</Formula>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
+                    <tr><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
+                  </thead>
+                  <tbody>
+                    {rotationRows.map(row => (
+                      <tr key={row.rotation} className="hover:bg-slate-50">
+                        <td className="border p-2 font-black">{row.rotation}</td>
+                        <td className="border p-2 text-right font-semibold">{number2(row.codes_with_stock)}</td>
+                        <td className="border p-2 text-right font-semibold">{number2(row.total_units)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                      </tr>
+                    ))}
+                    {rotationRows.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por rotacion.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white">
+              <div className="border-b bg-slate-50 px-4 py-3">
+                <h2 className="font-black">Quiebres A/B/C sin stock</h2>
+                <Formula>quiebres = productos con rotacion A, B o C cuyo stock actual en tienda es 0.</Formula>
+              </div>
+              <div className="grid grid-cols-2 gap-3 border-b p-4 lg:grid-cols-4">
+                <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Total quiebres</p><p className="mt-1 text-xl font-black">{number2(rotationBreakRows.length)}</p></div>
+                <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Rotacion A</p><p className="mt-1 text-xl font-black text-red-600">{number2(breakTotals.a)}</p></div>
+                <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Rotacion B</p><p className="mt-1 text-xl font-black text-orange-600">{number2(breakTotals.b)}</p></div>
+                <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Rotacion C</p><p className="mt-1 text-xl font-black text-blue-700">{number2(breakTotals.c)}</p></div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
+                    <tr>
+                      <th className="border p-2 text-left">Tienda</th>
+                      <th className="border p-2 text-left">Rotacion</th>
+                      <th className="border p-2 text-left">Codigo</th>
+                      <th className="border p-2 text-left">Descripcion</th>
+                      <th className="border p-2 text-center">UM</th>
+                      <th className="border p-2 text-right">Stock</th>
+                      <th className="border p-2 text-right">Costo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rotationBreakRows.map(row => (
+                      <tr key={`${row.store_id}-${row.sku}`} className="hover:bg-red-50/50">
+                        <td className="border p-2 font-bold">{row.store_name}</td>
+                        <td className={`border p-2 font-black ${row.rotation === "A" ? "text-red-600" : row.rotation === "B" ? "text-orange-600" : "text-blue-700"}`}>{row.rotation}</td>
+                        <td className="border p-2 font-black">{row.sku}</td>
+                        <td className="border p-2">{row.description || "-"}</td>
+                        <td className="border p-2 text-center font-semibold">{row.unit || "-"}</td>
+                        <td className="border p-2 text-right font-black text-red-600">{number2(row.stock)}</td>
+                        <td className="border p-2 text-right">{money(row.cost)}</td>
+                      </tr>
+                    ))}
+                    {rotationBreakRows.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-slate-400">Actualiza para ver quiebres A/B/C sin stock.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white">
+              <div className="border-b bg-slate-50 px-4 py-3">
+                <h2 className="font-black">Historico de valorizado por rotacion</h2>
+                <Formula>historico = fotografias diarias de stock por codigo agrupadas por rotacion y fecha.</Formula>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-sm">
+                  <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
+                    <tr><th className="border p-2 text-left">Fecha</th><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
+                  </thead>
+                  <tbody>
+                    {rotationHistoryRows.slice(0, 80).map(row => (
+                      <tr key={`${row.snapshot_date}-${row.store_key}-${row.rotation_category}`} className="hover:bg-slate-50">
+                        <td className="border p-2 font-bold">{row.snapshot_date}</td>
+                        <td className="border p-2">{row.store_name}</td>
+                        <td className="border p-2 font-black">{row.rotation_category}</td>
+                        <td className="border p-2 text-right">{number2(row.codes_with_stock)}</td>
+                        <td className="border p-2 text-right">{number2(row.total_units)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                      </tr>
+                    ))}
+                    {rotationHistoryRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">Sin historico cargado. Importa fotografias diarias por codigo para ver esta tabla.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
 
         {activeTab === "stock" && <div className="rounded-2xl border bg-white">
           <div className="border-b bg-slate-50 px-4 py-3">
@@ -968,7 +1260,7 @@ export default function ReportesPage() {
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
                 <h2 className="font-black">Ventas totales por tienda</h2>
-                <Formula>venta proyectada = venta acumulada x dias habiles del mes / dias habiles transcurridos. Margen = (venta - costo venta) / venta.</Formula>
+                <Formula>venta neta = ventas - notas de credito. Venta proyectada = venta neta acumulada x dias habiles del mes / dias habiles transcurridos. Margen = (venta neta - costo venta) / venta neta.</Formula>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] text-sm">

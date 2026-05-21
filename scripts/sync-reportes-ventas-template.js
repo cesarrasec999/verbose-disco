@@ -61,10 +61,11 @@ async function syncSales() {
   const pool = await sql.connect(sqlConfig);
 
   /*
-    Venta usa ExtRetailPriceWTax porque es el total de la linea con impuesto.
+    Venta neta usa ExtRetailPriceWTax porque es el total de la linea con impuesto.
+    Las notas de credito/devoluciones entran como SalesCode = 'R' y ya vienen con importes negativos.
     Costo de venta usa ExtCost del ERP.
   */
-  const result = await pool.request()
+  const storeResult = await pool.request()
     .input("startDate", sql.DateTime, new Date(`${start}T00:00:00`))
     .input("endExclusive", sql.DateTime, new Date(`${endExclusive}T00:00:00`))
     .query(`
@@ -82,14 +83,47 @@ async function syncSales() {
       join PRODUCT p on rl.SKU = p.SKU
       where r.SalesDate >= @startDate
         and r.SalesDate < @endExclusive
-        and r.SalesCode = 'S'
+        and r.SalesCode in ('S', 'R')
         and r.StatusCode = 'A'
         and rl.StatusCode = 'A'
+        and rl.SalesCode in ('S', 'R')
       group by cast(s.StoreNo as varchar(30)), s.StoreName, cast(r.SalesDate as date)
     `);
 
+  const productResult = await pool.request()
+    .input("startDate", sql.DateTime, new Date(`${start}T00:00:00`))
+    .input("endExclusive", sql.DateTime, new Date(`${endExclusive}T00:00:00`))
+    .query(`
+      select
+        cast(s.StoreNo as varchar(30)) as store_key,
+        s.StoreName as store_name,
+        cast(r.SalesDate as date) as sales_date,
+        upper(ltrim(rtrim(coalesce(nullif(p.ALU, ''), cast(p.SKU as varchar(30)))))) as product_code,
+        max(coalesce(nullif(rl.LineDescription, ''), nullif(p.ALU, ''), cast(p.SKU as varchar(30)))) as description,
+        max(nullif(rl.UOMCode, '')) as unit,
+        sum(cast(isnull(rl.ExtRetailPriceWTax, 0) as decimal(18,6))) as sales_amount,
+        sum(cast(isnull(rl.ExtCost, rl.Qty * isnull(rl.AvgCost, p.LastCost)) as decimal(18,6))) as cost_amount,
+        sum(cast(rl.Qty as decimal(18,6))) as quantity,
+        count(distinct r.ReceiptId) as documents
+      from RECEIPT r
+      join RECEIPT_LINE rl on r.ReceiptId = rl.ReceiptId
+      join STORE s on r.StoreNo = s.StoreNo
+      join PRODUCT p on rl.SKU = p.SKU
+      where r.SalesDate >= @startDate
+        and r.SalesDate < @endExclusive
+        and r.SalesCode in ('S', 'R')
+        and r.StatusCode = 'A'
+        and rl.StatusCode = 'A'
+        and rl.SalesCode in ('S', 'R')
+      group by
+        cast(s.StoreNo as varchar(30)),
+        s.StoreName,
+        cast(r.SalesDate as date),
+        upper(ltrim(rtrim(coalesce(nullif(p.ALU, ''), cast(p.SKU as varchar(30))))))
+    `);
+
   const now = new Date().toISOString();
-  const rows = result.recordset.map(row => ({
+  const rows = storeResult.recordset.map(row => ({
     sales_date: new Date(row.sales_date).toISOString().slice(0, 10),
     store_key: String(row.store_key || "").trim(),
     store_name: String(row.store_name || "").trim(),
@@ -102,6 +136,23 @@ async function syncSales() {
     updated_at: now,
   })).filter(row => row.sales_date && row.store_key);
 
+  const productRows = productResult.recordset.map(row => ({
+    sales_date: new Date(row.sales_date).toISOString().slice(0, 10),
+    store_key: String(row.store_key || "").trim(),
+    store_name: String(row.store_name || "").trim(),
+    product_code: String(row.product_code || "").trim().toUpperCase(),
+    description: String(row.description || "").trim() || null,
+    unit: String(row.unit || "").trim() || null,
+    sales_amount: normalizeNumber(row.sales_amount),
+    cost_amount: normalizeNumber(row.cost_amount),
+    quantity: normalizeNumber(row.quantity),
+    documents: Number(row.documents || 0),
+    source_name: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    synced_at: now,
+    updated_at: now,
+  })).filter(row => row.sales_date && row.store_key && row.product_code);
+
+  await supabase.from("erp_store_sales_daily").delete().gte("sales_date", start).lte("sales_date", end);
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     const { error } = await supabase
@@ -111,6 +162,16 @@ async function syncSales() {
     console.log(`Ventas: ${Math.min(i + BATCH_SIZE, rows.length)}/${rows.length}`);
   }
 
+  await supabase.from("erp_product_sales_daily").delete().gte("sales_date", start).lte("sales_date", end);
+  for (let i = 0; i < productRows.length; i += BATCH_SIZE) {
+    const batch = productRows.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase
+      .from("erp_product_sales_daily")
+      .upsert(batch, { onConflict: "sales_date,store_key,product_code" });
+    if (error) throw error;
+    console.log(`Ventas por codigo: ${Math.min(i + BATCH_SIZE, productRows.length)}/${productRows.length}`);
+  }
+
   await supabase.from("erp_sync_status").upsert({
     id: "erp_store_sales_daily",
     source_path: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
@@ -118,8 +179,15 @@ async function syncSales() {
     updated_at: now,
   }, { onConflict: "id" });
 
+  await supabase.from("erp_sync_status").upsert({
+    id: "erp_product_sales_daily",
+    source_path: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    synced_at: now,
+    updated_at: now,
+  }, { onConflict: "id" });
+
   await pool.close();
-  console.log(`Ventas sincronizadas: ${rows.length} filas (${start} a ${end})`);
+  console.log(`Ventas sincronizadas: ${rows.length} tiendas/dia y ${productRows.length} codigos/dia (${start} a ${end})`);
 }
 
 syncSales().catch(error => {
