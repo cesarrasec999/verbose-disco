@@ -721,7 +721,7 @@ export default function ReportesPage() {
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por rotacion</h2>
           </div>
-          <div className="max-h-96 overflow-auto">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
                 <tr><th className="border p-2 text-left">Rotacion</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
@@ -745,7 +745,7 @@ export default function ReportesPage() {
           <div className="border-b bg-slate-50 px-4 py-3">
             <h2 className="font-black">Valorizado por tienda</h2>
           </div>
-          <div className="max-h-[560px] overflow-auto">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
                 <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
