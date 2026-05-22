@@ -14,7 +14,7 @@ type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
-type RecountManagerTab = "pendientes" | "asignados" | "registros";
+type RecountManagerTab = "pendientes" | "asignados" | "manual" | "registros";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "diff" | "cost" | "valueDiff" | "observation";
@@ -44,6 +44,7 @@ type InventorySession = {
   status: SessionStatus;
   scheduled_date: string | null;
   stock_frozen_at: string | null;
+  location_lock_enabled?: boolean | null;
   finished_at?: string | null;
   created_at?: string | null;
   frozen_total_value: number;
@@ -201,6 +202,11 @@ type OperatorRecountRecord = {
   counted_at: string;
   updated_at?: string | null;
   item: RecountItem;
+};
+
+type ManualRecountDraft = {
+  locationCode: string;
+  quantity: string;
 };
 
 type RecountDraft = {
@@ -492,6 +498,7 @@ export default function InventariosPage() {
   const [recountOperatorId, setRecountOperatorId] = useState("");
   const [recountPrintOperatorId, setRecountPrintOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
+  const [manualRecountDrafts, setManualRecountDrafts] = useState<Record<string, ManualRecountDraft>>({});
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
   const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
   const [adminRecountRecords, setAdminRecountRecords] = useState<OperatorRecountRecord[]>([]);
@@ -685,6 +692,38 @@ export default function InventariosPage() {
     return sortRecountAssignmentLines([...surplusGroups.values(), ...missingRows]);
   }, [counts, locations, summary]);
 
+  const countLocationLinesByProduct = useMemo(() => {
+    const locationById = new Map(locations.map(row => [row.id, row]));
+    const grouped = new Map<string, RecountLocationLine[]>();
+    for (const row of counts) {
+      const location = locationById.get(row.location_id) || null;
+      const locationCode = normalizeLocationCode(row.location_code || location?.location_code || "");
+      if (!row.product_id || !locationCode) continue;
+      const lines = grouped.get(row.product_id) || [];
+      const existing = lines.find(item => normalizeLocationCode(item.location_code) === locationCode);
+      if (existing) {
+        existing.counted_qty += Number(row.quantity || 0);
+      } else {
+        lines.push({
+          id: `${row.product_id}__${locationCode}`,
+          location_id: row.location_id || location?.id || null,
+          location_code: row.location_code || location?.location_code || locationCode,
+          full_location: location?.full_location || location?.description || null,
+          zone: location?.zone || null,
+          zone_ref: location?.zone_ref || null,
+          lineal: location?.lineal || null,
+          ticket: location?.ticket || row.location_code,
+          counted_qty: Number(row.quantity || 0),
+        });
+      }
+      grouped.set(row.product_id, lines);
+    }
+    for (const [productId, lines] of grouped) {
+      grouped.set(productId, lines.sort((a, b) => String(a.full_location || a.location_code).localeCompare(String(b.full_location || b.location_code), "es", { numeric: true, sensitivity: "base" })));
+    }
+    return grouped;
+  }, [counts, locations]);
+
   const recountValues = useMemo(() => {
     const values = locations
       .map(location => String(location[recountColumn] || "").trim())
@@ -755,6 +794,10 @@ export default function InventariosPage() {
     () => recountItems.filter(row => row.status !== "cancelled" && row.recount_type === recountType).length,
     [recountItems, recountType]
   );
+
+  const manualRecountRows = useMemo(() => {
+    return assignedRecountRows.filter(row => !recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId);
+  }, [assignedRecountRows, recountPrintOperatorId]);
 
   const filteredAdminRecountRecords = useMemo(() => {
     const q = recountRecordsQuery.trim().toLowerCase();
@@ -2551,9 +2594,9 @@ export default function InventariosPage() {
         return;
       }
     } else {
-      loc = findInventoryLocation(locations, locationCode);
+      loc = await resolveInventoryLocation(locationCode, { allowCreate: true, sourceLabel: locationCode });
       if (!loc) {
-        setMessage("La ubicacion no esta cargada para esta sesion.");
+        setMessage(selectedSession?.location_lock_enabled ? "La ubicacion no esta cargada para esta sesion." : "No se pudo registrar la ubicacion.");
         return;
       }
       locationCode = loc.location_code;
@@ -3303,6 +3346,82 @@ export default function InventariosPage() {
     if (error) console.warn("No se pudo registrar ubicacion de inventario general:", error.message);
   }
 
+  async function resolveInventoryLocation(locationValue: string, options: { allowCreate: boolean; sourceLabel?: string }) {
+    const cleanLocation = normalizeLocationCode(locationValue);
+    if (!selectedSessionId || !cleanLocation) return null;
+
+    let loc = findInventoryLocation(locations, cleanLocation);
+    if (!loc && navigator.onLine) {
+      const freshLocationsRes = await supabase
+        .from("general_inventory_locations")
+        .select("*")
+        .eq("session_id", selectedSessionId)
+        .eq("is_active", true)
+        .order("location_code");
+      if (!freshLocationsRes.error) {
+        const freshLocations = (freshLocationsRes.data || []) as InventoryLocation[];
+        setLocations(freshLocations);
+        loc = findInventoryLocation(freshLocations, cleanLocation);
+      }
+    }
+
+    if (loc || !options.allowCreate || selectedSession?.location_lock_enabled) return loc || null;
+
+    const fullLocation = options.sourceLabel || cleanLocation;
+    const row = {
+      session_id: selectedSessionId,
+      location_code: cleanLocation,
+      ticket: cleanLocation,
+      zone: null,
+      zone_ref: null,
+      lineal: null,
+      reference: null,
+      full_location: fullLocation,
+      description: fullLocation,
+      is_active: true,
+    };
+    const { data, error } = await supabase
+      .from("general_inventory_locations")
+      .upsert(row, { onConflict: "session_id,location_code" })
+      .select("*")
+      .single();
+    if (error) {
+      setMessage("No se pudo registrar la ubicacion nueva: " + error.message);
+      return null;
+    }
+    const nextLocation = data as InventoryLocation;
+    setLocations(prev => {
+      const exists = prev.some(item => item.id === nextLocation.id || normalizeLocationCode(item.location_code) === cleanLocation);
+      const rows = exists
+        ? prev.map(item => item.id === nextLocation.id || normalizeLocationCode(item.location_code) === cleanLocation ? nextLocation : item)
+        : [...prev, nextLocation];
+      return rows.sort((a, b) => String(a.location_code).localeCompare(String(b.location_code), "es", { numeric: true, sensitivity: "base" }));
+    });
+    return nextLocation;
+  }
+
+  async function toggleLocationLock() {
+    if (!ensureSelectedSessionEditable()) return;
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede cambiar el seguro de ubicaciones.");
+      return;
+    }
+    const nextValue = !Boolean(selectedSession?.location_lock_enabled);
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({ location_lock_enabled: nextValue, updated_at: new Date().toISOString() })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo cambiar el seguro de ubicaciones. Ejecuta el SQL actualizado: " + error.message);
+      return;
+    }
+    setSessions(prev => prev.map(session => session.id === selectedSessionId ? { ...session, location_lock_enabled: nextValue } : session));
+    setMessage(nextValue
+      ? "Seguro de ubicaciones activado. Solo se aceptan ubicaciones cargadas por Excel o registradas en preparacion."
+      : "Seguro de ubicaciones desactivado. Se permitira registrar ubicaciones nuevas al contar o recontar."
+    );
+  }
+
   async function saveCount() {
     if (savingCountRef.current) return;
     if (!operator || !selectedSession || !canOperatorEnter(selectedSession.status)) {
@@ -3311,22 +3430,12 @@ export default function InventariosPage() {
     }
 
     const locCode = normalizeLocationCode(locationCode);
-    let loc = findInventoryLocation(locations, locCode);
-    if (!loc && navigator.onLine) {
-      const freshLocationsRes = await supabase
-        .from("general_inventory_locations")
-        .select("*")
-        .eq("session_id", selectedSession.id)
-        .eq("is_active", true)
-        .order("location_code");
-      if (!freshLocationsRes.error) {
-        const freshLocations = (freshLocationsRes.data || []) as InventoryLocation[];
-        setLocations(freshLocations);
-        loc = findInventoryLocation(freshLocations, locCode);
-      }
-    }
+    const loc = await resolveInventoryLocation(locCode, { allowCreate: true, sourceLabel: locCode });
     if (!loc) {
-      setMessage("Ubicacion no autorizada para esta sesion.");
+      setMessage(selectedSession.location_lock_enabled
+        ? "Ubicacion no autorizada para esta sesion. Desactiva el seguro o carga la ubicacion por Excel."
+        : "Ingresa una ubicacion valida."
+      );
       return;
     }
 
@@ -3584,7 +3693,6 @@ export default function InventariosPage() {
       return;
     }
 
-    let availableLocations = locations;
     const locationRows: Array<{ loc: InventoryLocation | null; locationCode: string; quantity: number }> = [];
     for (const line of lines) {
       if (!line.locationCode) {
@@ -3595,22 +3703,12 @@ export default function InventariosPage() {
         setMessage("Completa la ubicacion en todas las lineas del reconteo.");
         return;
       }
-      let loc = findInventoryLocation(availableLocations, line.locationCode);
-      if (!loc && navigator.onLine) {
-        const freshLocationsRes = await supabase
-          .from("general_inventory_locations")
-          .select("*")
-          .eq("session_id", selectedSessionId)
-          .eq("is_active", true)
-          .order("location_code");
-        if (!freshLocationsRes.error) {
-          availableLocations = (freshLocationsRes.data || []) as InventoryLocation[];
-          setLocations(availableLocations);
-          loc = findInventoryLocation(availableLocations, line.locationCode);
-        }
-      }
+      const loc = await resolveInventoryLocation(line.locationCode, { allowCreate: true, sourceLabel: line.locationCode });
       if (!loc) {
-        setMessage(`Ubicacion ${line.locationCode} no autorizada para esta sesion.`);
+        setMessage(selectedSession?.location_lock_enabled
+          ? `Ubicacion ${line.locationCode} no autorizada para esta sesion.`
+          : `Ubicacion ${line.locationCode} no valida.`
+        );
         return;
       }
       if (!Number.isFinite(line.quantity) || line.quantity < 0) {
@@ -3713,6 +3811,263 @@ export default function InventariosPage() {
     }
   }
 
+  function updateManualRecountDraft(rowId: string, field: keyof ManualRecountDraft, value: string) {
+    setManualRecountDrafts(prev => ({
+      ...prev,
+      [rowId]: {
+        locationCode: prev[rowId]?.locationCode || "",
+        quantity: prev[rowId]?.quantity || "",
+        [field]: value,
+      },
+    }));
+  }
+
+  function parseManualRecountLines(locationText: string, totalQuantity: number) {
+    const rawParts = locationText
+      .split(/\n|;/)
+      .map(part => part.trim())
+      .filter(Boolean);
+    if (rawParts.length <= 1) {
+      return [{ locationCode: normalizeLocationCode(locationText), quantity: totalQuantity }];
+    }
+    const rows = rawParts.map(part => {
+      const match = part.match(/^(.+?)[=:,]\s*(-?\d+(?:[.,]\d+)?)$/);
+      if (!match) return { locationCode: normalizeLocationCode(part), quantity: NaN };
+      return {
+        locationCode: normalizeLocationCode(match[1]),
+        quantity: Number(match[2].replace(",", ".")),
+      };
+    });
+    if (rows.some(line => !Number.isFinite(line.quantity))) {
+      return rawParts.map(part => ({ locationCode: normalizeLocationCode(part), quantity: totalQuantity }));
+    }
+    return rows;
+  }
+
+  async function saveManualRecountValidation(row: RecountItem) {
+    if (!ensureSelectedSessionEditable()) return;
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede registrar reconteos manuales.");
+      return;
+    }
+    if (!row.assigned_operator_id) {
+      setMessage("Este reconteo no tiene recontador asignado.");
+      return;
+    }
+    const draft = manualRecountDrafts[row.id] || { locationCode: "", quantity: "" };
+    const totalQuantity = Number(String(draft.quantity).replace(",", "."));
+    if (!Number.isFinite(totalQuantity) || totalQuantity < 0) {
+      setMessage("Ingresa una cantidad de reconteo valida.");
+      return;
+    }
+
+    const parsedLines = parseManualRecountLines(draft.locationCode, totalQuantity)
+      .filter(line => line.locationCode || totalQuantity === 0);
+    if (parsedLines.length === 0) {
+      setMessage("Ingresa al menos una ubicacion para el reconteo manual.");
+      return;
+    }
+
+    const locationRows: Array<{ loc: InventoryLocation | null; locationCode: string; quantity: number }> = [];
+    for (const line of parsedLines) {
+      if (!line.locationCode) {
+        if (row.recount_type === "missing" && totalQuantity === 0) {
+          locationRows.push({ loc: null, locationCode: "SIN_FISICO", quantity: 0 });
+          continue;
+        }
+        setMessage("Completa la ubicacion del reconteo manual.");
+        return;
+      }
+      if (!Number.isFinite(line.quantity) || line.quantity < 0) {
+        setMessage("Si ingresas varias ubicaciones usa el formato UBICACION:CANTIDAD por linea.");
+        return;
+      }
+      const loc = await resolveInventoryLocation(line.locationCode, { allowCreate: true, sourceLabel: line.locationCode });
+      if (!loc) {
+        setMessage(selectedSession?.location_lock_enabled
+          ? `Ubicacion ${line.locationCode} no autorizada para esta sesion.`
+          : `No se pudo registrar la ubicacion ${line.locationCode}.`
+        );
+        return;
+      }
+      locationRows.push({ loc, locationCode: loc.location_code, quantity: line.quantity });
+    }
+
+    setSavingRecountId(row.id);
+    try {
+      const cost = Number(row.cost_snapshot || 0);
+      const deleteExisting = await supabase
+        .from("general_inventory_recount_counts")
+        .delete()
+        .eq("recount_item_id", row.id);
+      if (deleteExisting.error) {
+        setMessage("No se pudo reemplazar el reconteo manual anterior: " + deleteExisting.error.message);
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const rows = locationRows.map(({ loc, locationCode, quantity }) => ({
+        recount_item_id: row.id,
+        session_id: selectedSessionId,
+        operator_id: row.assigned_operator_id,
+        location_id: loc?.id || null,
+        location_code: loc?.location_code || locationCode,
+        product_id: row.product_id,
+        sku: row.sku,
+        description: row.description,
+        unit: row.unit,
+        quantity,
+        cost_snapshot: cost,
+        client_uuid: createClientUuid("gi-manual-recount"),
+        client_device_id: getOrCreateDeviceId(),
+        sync_origin: "manual_sheet",
+        counted_at: now,
+        updated_at: now,
+      }));
+      const { error } = await supabase.from("general_inventory_recount_counts").insert(rows);
+      if (error) {
+        setMessage("No se pudo guardar reconteo manual. Ejecuta el SQL actualizado: " + error.message);
+        return;
+      }
+      await Promise.all(locationRows
+        .filter(({ loc }) => Boolean(loc))
+        .map(({ locationCode }) => upsertKnownProductLocation({ id: row.product_id, sku: row.sku }, locationCode)));
+
+      const statusUpdate = await supabase
+        .from("general_inventory_recount_items")
+        .update({ status: "counted", updated_at: now })
+        .eq("id", row.id);
+      if (statusUpdate.error) {
+        setMessage("Reconteo manual guardado, pero no se pudo cerrar la linea: " + statusUpdate.error.message);
+        return;
+      }
+      setManualRecountDrafts(prev => {
+        const next = { ...prev };
+        delete next[row.id];
+        return next;
+      });
+      setMessage("Reconteo manual guardado y aplicado al resumen.");
+      await Promise.all([
+        loadRecountAssignments(selectedSessionId),
+        loadAdminRecountRecords(selectedSessionId),
+        loadSummary(selectedSessionId, true),
+      ]);
+    } finally {
+      setSavingRecountId(null);
+    }
+  }
+
+  function generateManualRecountSheet() {
+    if (!selectedSession) return;
+    const rows = manualRecountRows;
+    if (rows.length === 0) {
+      setMessage("No hay reconteos manuales para imprimir con ese filtro.");
+      return;
+    }
+    const operatorName = recountPrintOperatorId
+      ? sessionOperators.find(item => item.id === recountPrintOperatorId)?.full_name || "Recontador"
+      : "Todos los recontadores";
+    const generatedAt = new Date().toLocaleString("es-PE");
+    const title = `Reconteo manual de ${recountType === "missing" ? "faltantes" : "sobrantes"} - tienda ${selectedSession.store_name || selectedSession.name}`;
+    const bodyRows = rows.map((row, index) => {
+      const locationLines = (countLocationLinesByProduct.get(row.product_id) || row.original_locations || [])
+        .slice(0, 4)
+        .map(line => `${line.full_location || line.location_code} (${number2(line.counted_qty)} ${row.unit})`)
+        .join("<br>");
+      return `
+        <tr>
+          <td class="num">${index + 1}</td>
+          <td class="code">${escapeHtml(row.sku)}</td>
+          <td>${escapeHtml(row.description)}</td>
+          <td class="center">${escapeHtml(row.unit)}</td>
+          <td class="num">${number2(row.system_stock)}</td>
+          <td class="num">${number2(row.counted_qty)}</td>
+          <td class="num ${row.diff_qty < 0 ? "red" : "blue"}">${number2(row.diff_qty)}</td>
+          <td class="num ${row.value_diff < 0 ? "red" : "blue"}">${money(row.value_diff)}</td>
+          <td class="blank"></td>
+          <td class="blank"></td>
+          <td class="locations">${locationLines || "SIN UBICACION REGISTRADA"}</td>
+        </tr>`;
+    }).join("");
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; color: #071126; margin: 0; font-size: 10px; }
+    h1 { margin: 0 0 4px; font-size: 19px; }
+    .header { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1.5px solid #071126; padding-bottom: 8px; margin-bottom: 8px; }
+    .meta { font-size: 10px; line-height: 1.35; color: #334155; }
+    .fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+    .field { border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; min-height: 34px; }
+    .field span { display: block; color: #64748b; font-size: 8px; font-weight: 700; text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; page-break-inside: auto; }
+    th, td { border: 1px solid #b9c6d6; padding: 3px 4px; vertical-align: top; }
+    th { background: #eef3f8; text-align: left; font-size: 8px; }
+    td { height: 48px; }
+    .num { text-align: right; font-weight: 700; }
+    .center { text-align: center; }
+    .code { font-weight: 700; width: 72px; }
+    .blank { background: #fff; }
+    .locations { font-size: 8px; line-height: 1.25; }
+    .red { color: #d00; }
+    .blue { color: #0647e8; }
+    .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 42px; margin-top: 18px; page-break-inside: avoid; }
+    .signature { border-top: 1.5px solid #071126; padding-top: 6px; text-align: center; font-weight: 700; }
+    @media print { .page-break { page-break-after: always; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>${escapeHtml(title)}</h1>
+      <div class="meta">Inventario: ${escapeHtml(selectedSession.name)}<br>Tienda: ${escapeHtml(selectedSession.store_name || selectedSession.store_id)}<br>Recontador: ${escapeHtml(operatorName)}</div>
+    </div>
+    <div class="meta" style="text-align:right">Generado: ${escapeHtml(generatedAt)}<br>Registros: ${rows.length}<br>Tipo: ${recountType === "missing" ? "Faltantes" : "Sobrantes"}</div>
+  </div>
+  <div class="fields">
+    <div class="field"><span>Nombre del recontador</span><strong>${escapeHtml(operatorName)}</strong></div>
+    <div class="field"><span>Fecha de reconteo</span></div>
+    <div class="field"><span>Hoja / validacion</span></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:30px">#</th>
+        <th style="width:76px">Codigo</th>
+        <th>Descripcion</th>
+        <th style="width:42px">UM</th>
+        <th style="width:58px">Stock</th>
+        <th style="width:58px">Conteo</th>
+        <th style="width:58px">Dif.</th>
+        <th style="width:72px">Dif. val.</th>
+        <th style="width:78px">Reconteo</th>
+        <th style="width:78px">Validacion</th>
+        <th style="width:210px">Ubicaciones y cantidades</th>
+      </tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+  </table>
+  <div class="signatures">
+    <div class="signature">Firma jefe de almacen</div>
+    <div class="signature">Firma asesor que recuenta</div>
+  </div>
+</body>
+</html>`;
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo la hoja de reconteo manual. Permite ventanas emergentes.");
+      return;
+    }
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    setTimeout(() => reportWindow.print(), 500);
+  }
+
   async function editCount(row: CountRow) {
     setEditingCountId(row.id);
     setLocationCode(row.location_code);
@@ -3748,9 +4103,9 @@ export default function InventariosPage() {
       return;
     }
 
-    const locationRow = locations.find(row => row.location_code.toUpperCase() === location);
+    const locationRow = await resolveInventoryLocation(location, { allowCreate: true, sourceLabel: location });
     if (!locationRow) {
-      setMessage("La ubicacion no esta cargada para esta sesion.");
+      setMessage(selectedSession?.location_lock_enabled ? "La ubicacion no esta cargada para esta sesion." : "No se pudo registrar la ubicacion.");
       return;
     }
 
@@ -4957,6 +5312,13 @@ export default function InventariosPage() {
                     Subir ubicaciones
                   </button>
                 </div>
+                <button
+                  onClick={toggleLocationLock}
+                  disabled={!selectedSessionId || isSelectedSessionFinished}
+                  className={`mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40 ${selectedSession?.location_lock_enabled ? "border-green-200 bg-green-50 text-green-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+                >
+                  Seguro de ubicaciones: {selectedSession?.location_lock_enabled ? "Activo" : "Libre"}
+                </button>
               </div>
               {renderManualLocationForm()}
               <div className="rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
@@ -5120,6 +5482,16 @@ export default function InventariosPage() {
                         Subir ubicaciones
                       </button>
                     </div>
+                    <button
+                      onClick={toggleLocationLock}
+                      disabled={!selectedSessionId || isSelectedSessionFinished}
+                      className={`mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40 ${selectedSession?.location_lock_enabled ? "border-green-200 bg-green-50 text-green-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+                    >
+                      Seguro de ubicaciones: {selectedSession?.location_lock_enabled ? "Activo" : "Libre"}
+                    </button>
+                    <p className="mt-2 text-xs font-bold text-slate-500">
+                      Activo: solo acepta ubicaciones cargadas/registradas. Libre: permite crear ubicaciones al contar o recontar.
+                    </p>
                   </div>
 
                   {renderManualLocationForm()}
@@ -5468,7 +5840,7 @@ export default function InventariosPage() {
                 <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
               </section>
 
-              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-3">
+              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-4">
                 <button
                   onClick={() => setRecountManagerTab("pendientes")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "pendientes" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
@@ -5480,6 +5852,12 @@ export default function InventariosPage() {
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
                   Reconteos asignados ({assignedRecountRows.length})
+                </button>
+                <button
+                  onClick={() => setRecountManagerTab("manual")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "manual" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >
+                  Reconteo manual ({manualRecountRows.length})
                 </button>
                 <button
                   onClick={() => setRecountManagerTab("registros")}
@@ -5702,6 +6080,121 @@ export default function InventariosPage() {
                         <tr>
                           <td colSpan={12} className="p-8 text-center text-sm text-slate-400">
                             No hay reconteos asignados con ese filtro.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              )}
+
+              {recountManagerTab === "manual" && (
+              <section className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-black">Reconteo manual</h3>
+                    <p className="text-xs text-slate-500">Imprime hojas A4 horizontal y registra aqui la validacion escrita por los recontadores.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      value={recountPrintOperatorId}
+                      onChange={event => setRecountPrintOperatorId(event.target.value)}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
+                    >
+                      <option value="">Todos los recontadores</option>
+                      {sessionOperators.map(operatorRow => (
+                        <option key={operatorRow.id} value={operatorRow.id}>{operatorRow.full_name}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={generateManualRecountSheet}
+                      disabled={manualRecountRows.length === 0}
+                      className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                    >
+                      <Download size={15} /> Imprimir hoja manual
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-auto rounded-xl border">
+                  <table className="w-full min-w-[1520px] text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="p-2 text-center">#</th>
+                        <th className="p-2 text-left">Recontador</th>
+                        <th className="p-2 text-left">Codigo</th>
+                        <th className="p-2 text-left">Descripcion</th>
+                        <th className="p-2 text-center">UM</th>
+                        <th className="p-2 text-center">Stock</th>
+                        <th className="p-2 text-center">Conteo</th>
+                        <th className="p-2 text-center">Dif.</th>
+                        <th className="p-2 text-center">Dif. val.</th>
+                        <th className="p-2 text-left">Ubicaciones conteo</th>
+                        <th className="p-2 text-left">Ubicacion validada</th>
+                        <th className="p-2 text-center">Reconteo</th>
+                        <th className="p-2 text-center">Accion</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualRecountRows.map((row, index) => {
+                        const draft = manualRecountDrafts[row.id] || { locationCode: "", quantity: "" };
+                        const originalLines = countLocationLinesByProduct.get(row.product_id) || row.original_locations || [];
+                        return (
+                          <tr key={row.id} className="border-t align-top">
+                            <td className="p-2 text-center font-black">{index + 1}</td>
+                            <td className="p-2 font-bold">{row.assigned_operator_name || "-"}</td>
+                            <td className="p-2 font-black text-slate-950">{row.sku}</td>
+                            <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
+                            <td className="p-2 text-center">{row.unit}</td>
+                            <td className="p-2 text-center font-bold">{number2(row.system_stock)}</td>
+                            <td className="p-2 text-center font-bold">{number2(row.counted_qty)}</td>
+                            <td className={`p-2 text-center font-black ${row.diff_qty < 0 ? "text-red-600" : "text-blue-700"}`}>{number2(row.diff_qty)}</td>
+                            <td className={`p-2 text-center font-black ${row.value_diff < 0 ? "text-red-600" : "text-blue-700"}`}>{money(row.value_diff)}</td>
+                            <td className="p-2">
+                              <div className="max-w-[260px] space-y-1">
+                                {originalLines.length > 0 ? originalLines.slice(0, 4).map(line => (
+                                  <div key={line.id} className="rounded-lg border bg-slate-50 px-2 py-1">
+                                    <div className="font-black">{line.full_location || line.location_code}</div>
+                                    <div className="text-[10px] font-bold text-slate-500">{number2(line.counted_qty)} {row.unit}</div>
+                                  </div>
+                                )) : <span className="text-slate-400">Sin ubicacion registrada</span>}
+                              </div>
+                            </td>
+                            <td className="p-2">
+                              <textarea
+                                value={draft.locationCode}
+                                onChange={event => updateManualRecountDraft(row.id, "locationCode", event.target.value.toUpperCase())}
+                                disabled={isSelectedSessionFinished}
+                                placeholder="Ubicacion o UBI:CANT por linea"
+                                className="h-20 w-full min-w-[190px] rounded-xl border px-3 py-2 text-xs font-bold uppercase disabled:opacity-40"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <input
+                                value={draft.quantity}
+                                onChange={event => updateManualRecountDraft(row.id, "quantity", event.target.value)}
+                                disabled={isSelectedSessionFinished}
+                                placeholder="Cant."
+                                className="w-24 rounded-xl border px-3 py-2 text-center text-xs font-black disabled:opacity-40"
+                              />
+                            </td>
+                            <td className="p-2 text-center">
+                              <button
+                                onClick={() => saveManualRecountValidation(row)}
+                                disabled={savingRecountId === row.id || isSelectedSessionFinished}
+                                className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                              >
+                                {savingRecountId === row.id ? "Guardando" : row.status === "counted" ? "Reemplazar" : "Guardar"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {manualRecountRows.length === 0 && (
+                        <tr>
+                          <td colSpan={13} className="p-8 text-center text-sm text-slate-400">
+                            No hay reconteos asignados para imprimir o validar con ese filtro.
                           </td>
                         </tr>
                       )}
