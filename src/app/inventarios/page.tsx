@@ -3995,6 +3995,8 @@ export default function InventariosPage() {
       ? sessionOperators.find(item => item.id === recountPrintOperatorId)?.full_name || "Recontador"
       : "Todos los recontadores";
     const generatedAt = new Date().toLocaleString("es-PE");
+    const recountDate = new Date().toLocaleDateString("es-PE");
+    const recountTypeLabel = recountType === "missing" ? "Faltante" : "Sobrante";
     const title = `Reconteo manual de ${recountType === "missing" ? "faltantes" : "sobrantes"} - tienda ${selectedSession.store_name || selectedSession.name}`;
     const bodyRows = rows.map((row, index) => {
       const locationLines = (countLocationLinesByProduct.get(row.product_id) || row.original_locations || [])
@@ -4057,8 +4059,8 @@ export default function InventariosPage() {
   </div>
   <div class="fields">
     <div class="field"><span>Nombre del recontador</span><strong>${escapeHtml(operatorName)}</strong></div>
-    <div class="field"><span>Fecha de reconteo</span></div>
-    <div class="field"><span>Hoja / validacion</span></div>
+    <div class="field"><span>Fecha de reconteo</span><strong>${escapeHtml(recountDate)}</strong></div>
+    <div class="field"><span>Hoja / validacion</span><strong>${escapeHtml(recountTypeLabel)}</strong></div>
   </div>
   <table>
     <thead>
