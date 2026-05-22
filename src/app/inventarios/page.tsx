@@ -45,6 +45,7 @@ type InventorySession = {
   scheduled_date: string | null;
   stock_frozen_at: string | null;
   location_lock_enabled?: boolean | null;
+  manual_recount_enabled?: boolean | null;
   finished_at?: string | null;
   created_at?: string | null;
   frozen_total_value: number;
@@ -1765,6 +1766,32 @@ export default function InventariosPage() {
     })) as RecountItem[]);
     setRecountItems(rows);
     setReassignOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, row.assigned_operator_id || ""])));
+  }
+
+  async function toggleManualRecountMode() {
+    if (!ensureSelectedSessionEditable()) return;
+    if (!selectedSessionId || !canManageInventory) {
+      setMessage("Solo el validador o administrador puede cambiar el modo de reconteo manual.");
+      return;
+    }
+    const nextValue = !Boolean(selectedSession?.manual_recount_enabled);
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({ manual_recount_enabled: nextValue, updated_at: new Date().toISOString() })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo cambiar el seguro de reconteo manual. Ejecuta el SQL actualizado: " + error.message);
+      return;
+    }
+    setSessions(prev => prev.map(session => session.id === selectedSessionId ? { ...session, manual_recount_enabled: nextValue } : session));
+    if (nextValue && operatorMode === "reconteo") {
+      setOperatorMode("conteo");
+      localStorage.setItem(OPERATOR_MODE_KEY, "conteo");
+    }
+    setMessage(nextValue
+      ? "Reconteo manual activado. Los operarios ya no veran reconteos asignados en la app."
+      : "Reconteo manual desactivado. Los operarios podran ver sus reconteos asignados en la app."
+    );
   }
 
   async function loadInventoryOperators(sessionId = selectedSessionId) {
@@ -5077,6 +5104,10 @@ export default function InventariosPage() {
   }
 
   async function openOperatorRecountMode() {
+    if (selectedSession?.manual_recount_enabled) {
+      setMessage("Esta sesion usa reconteo manual impreso. Los reconteos no se muestran en la app del operario.");
+      return;
+    }
     setOperatorMode("reconteo");
     localStorage.setItem(OPERATOR_MODE_KEY, "reconteo");
     if (selectedSessionId && operator) await loadOperatorRecountItems(selectedSessionId, operator.id);
@@ -5220,7 +5251,7 @@ export default function InventariosPage() {
               <span className="hidden sm:inline">Cerrar sesión</span>
             </button>
           )}
-          {operator && !user && (
+          {operator && !user && !selectedSession?.manual_recount_enabled && (
             <button onClick={operatorMode === "reconteo" ? openOperatorCountMode : openOperatorRecountMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "reconteo" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "reconteo" ? "Volver a conteo" : "Modo reconteo"}>
               {operatorMode === "reconteo" ? <ClipboardList size={18} /> : <PackageSearch size={18} />}
               <span className="hidden sm:inline">{operatorMode === "reconteo" ? "Conteo" : "Reconteo"}</span>
@@ -5365,6 +5396,11 @@ export default function InventariosPage() {
           {isValidator && isSelectedSessionFinished && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 shadow-sm">
               Sesion finalizada: los datos estan congelados para consulta. Solo un administrador puede desfinalizarla para volver a modificar.
+            </div>
+          )}
+          {operator && !user && selectedSession?.manual_recount_enabled && (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800 shadow-sm">
+              Esta sesion usa reconteo manual impreso. Los reconteos asignados no se muestran en la app.
             </div>
           )}
 
@@ -5643,7 +5679,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && operatorMode === "reconteo" && (
+          {operator && !isValidator && operatorMode === "reconteo" && !selectedSession?.manual_recount_enabled && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="font-black">Mis reconteos asignados</h2>
@@ -6113,6 +6149,22 @@ export default function InventariosPage() {
                       className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
                     >
                       <Download size={15} /> Imprimir hoja manual
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-3 rounded-2xl border bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="font-black text-slate-900">Seguro de reconteo manual</div>
+                      <p className="text-xs font-bold text-slate-500">Cuando esta activo, los operarios no ven ni guardan reconteos desde la app.</p>
+                    </div>
+                    <button
+                      onClick={toggleManualRecountMode}
+                      disabled={!selectedSessionId || isSelectedSessionFinished}
+                      className={`rounded-xl border px-4 py-2 text-xs font-black disabled:opacity-40 ${selectedSession?.manual_recount_enabled ? "border-green-200 bg-green-50 text-green-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+                    >
+                      {selectedSession?.manual_recount_enabled ? "Manual activo" : "App activa"}
                     </button>
                   </div>
                 </div>

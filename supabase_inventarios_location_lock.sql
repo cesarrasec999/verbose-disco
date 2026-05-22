@@ -4,3 +4,6 @@
 
 alter table public.general_inventory_sessions
   add column if not exists location_lock_enabled boolean not null default false;
+
+alter table public.general_inventory_sessions
+  add column if not exists manual_recount_enabled boolean not null default false;

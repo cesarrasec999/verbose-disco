@@ -27,6 +27,9 @@ create index if not exists idx_gi_sessions_store on general_inventory_sessions(s
 alter table general_inventory_sessions
   add column if not exists location_lock_enabled boolean not null default false;
 
+alter table general_inventory_sessions
+  add column if not exists manual_recount_enabled boolean not null default false;
+
 create table if not exists general_inventory_operators (
   id uuid primary key default gen_random_uuid(),
   full_name text not null,
