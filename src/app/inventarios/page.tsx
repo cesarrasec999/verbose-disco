@@ -462,6 +462,7 @@ export default function InventariosPage() {
   const [counts, setCounts] = useState<CountRow[]>([]);
   const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
+  const [recordsOperatorFilter, setRecordsOperatorFilter] = useState("");
   const [locationCode, setLocationCode] = useState("");
   const [productCode, setProductCode] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -540,6 +541,10 @@ export default function InventariosPage() {
     setInventoryNotesDraft(selectedSession?.notes || "");
   }, [selectedSession?.id, selectedSession?.notes]);
 
+  useEffect(() => {
+    setRecordsOperatorFilter("");
+  }, [selectedSessionId]);
+
   const activeSessions = useMemo(
     () => sessions.filter(session => canOperatorEnter(session.status)),
     [sessions]
@@ -548,16 +553,28 @@ export default function InventariosPage() {
   const isOperatorView = !!operator && !isValidator;
   const showSidePanel = false;
 
+  const recordsOperatorOptions = useMemo(() => {
+    const options = new Map<string, string>();
+    for (const row of counts) {
+      if (!row.operator_id) continue;
+      options.set(row.operator_id, row.operator_name || "Sin usuario");
+    }
+    return [...options.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [counts]);
+
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
     const rows = counts.filter(row =>
-      !q ||
-      row.sku.toLowerCase().includes(q) ||
-      row.description.toLowerCase().includes(q) ||
-      row.location_code.toLowerCase().includes(q) ||
-      String(row.operator_name || "").toLowerCase().includes(q)
+      (!recordsOperatorFilter || row.operator_id === recordsOperatorFilter) &&
+      (!q ||
+        row.sku.toLowerCase().includes(q) ||
+        row.description.toLowerCase().includes(q) ||
+        row.location_code.toLowerCase().includes(q) ||
+        String(row.operator_name || "").toLowerCase().includes(q))
     );
-    return rows.sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const left = recordsSort.key === "value" ? Number(a.quantity || 0) * Number(a.cost_snapshot || 0) :
         recordsSort.key === "counted_at" ? new Date(a.counted_at).getTime() :
         a[recordsSort.key];
@@ -566,7 +583,7 @@ export default function InventariosPage() {
         b[recordsSort.key];
       return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
-  }, [counts, recordsQuery, recordsSort]);
+  }, [counts, recordsOperatorFilter, recordsQuery, recordsSort]);
 
   const counterStats = useMemo(() => {
     const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number }>();
@@ -5664,7 +5681,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="divide-y">
-                {filteredCounts.slice(0, 40).map(row => (
+                {filteredCounts.map(row => (
                   <div key={row.id} className="p-3">
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -6557,6 +6574,18 @@ export default function InventariosPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
                 <div className="flex flex-wrap items-center gap-2">
+                  {isValidator && (
+                    <select
+                      value={recordsOperatorFilter}
+                      onChange={event => setRecordsOperatorFilter(event.target.value)}
+                      className="min-h-10 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700"
+                    >
+                      <option value="">Todos los operadores</option>
+                      {recordsOperatorOptions.map(row => (
+                        <option key={row.id} value={row.id}>{row.name}</option>
+                      ))}
+                    </select>
+                  )}
                   <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
                     <Search size={16} className="text-slate-400" />
                     <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar cÃ³digo, descripciÃ³n o ubicaciÃ³n" className="min-w-0 flex-1 px-2 text-sm outline-none" />
