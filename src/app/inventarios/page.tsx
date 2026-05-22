@@ -1209,7 +1209,7 @@ export default function InventariosPage() {
           resizeMode: "none",
         } as MediaTrackConstraints);
       } catch {
-        // Safari puede rechazar 4K en algunos iPhone; en ese caso mantiene la mejor resoluciÃ³n disponible.
+        // Safari puede rechazar 4K en algunos iPhone; en ese caso mantiene la mejor resolución disponible.
       }
       startIosFrameScanner();
     }
@@ -1310,7 +1310,7 @@ export default function InventariosPage() {
     const clean = decodedText.trim();
     if (target === "location") {
       setLocationCode(clean.toUpperCase());
-      setMessage("UbicaciÃ³n escaneada.");
+      setMessage("Ubicación escaneada.");
       setTimeout(() => productInputRef.current?.focus(), 50);
     }
     if (target === "product") {
@@ -1337,7 +1337,7 @@ export default function InventariosPage() {
     setSelectedProduct(null);
     setProductCandidates([]);
     setProductLookupMessage("");
-    setMessage("CÃ³digo escaneado. Buscando en maestro...");
+    setMessage("Código escaneado. Buscando en maestro...");
     try {
       const result = await findProductCandidates(code, "scan");
       if (requestId !== productLookupRequestRef.current) return;
@@ -1349,12 +1349,12 @@ export default function InventariosPage() {
         setTimeout(() => qtyInputRef.current?.focus(), 50);
         return;
       }
-      setMessage(result.products.length > 1 ? "El cÃ³digo escaneado coincide con varios productos. Elige el correcto." : "El cÃ³digo escaneado no estÃ¡ en el maestro de productos.");
+      setMessage(result.products.length > 1 ? "El código escaneado coincide con varios productos. Elige el correcto." : "El código escaneado no está en el maestro de productos.");
     } catch {
       if (requestId !== productLookupRequestRef.current) return;
       setProductCandidates([]);
       setProductLookupMessage("");
-      setMessage("No se pudo validar el cÃ³digo escaneado. Intenta nuevamente.");
+      setMessage("No se pudo validar el código escaneado. Intenta nuevamente.");
     }
   }
 
@@ -1403,14 +1403,14 @@ export default function InventariosPage() {
       const next = !torchOn;
       const scanner = scannerRef.current;
       if (!scanner?.applyVideoConstraints) {
-        setMessage("La linterna no estÃ¡ disponible en este dispositivo.");
+        setMessage("La linterna no está disponible en este dispositivo.");
         return;
       }
       await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
       setTorchOn(next);
       torchOnRef.current = next;
     } catch {
-      setMessage("La linterna no estÃ¡ disponible en este dispositivo.");
+      setMessage("La linterna no está disponible en este dispositivo.");
     }
   }
 
@@ -2840,12 +2840,12 @@ export default function InventariosPage() {
       const ticket = firstColumnValue(row);
       const locationCode = normalizeLocationCode(ticket);
       if (!locationCode) continue;
-      const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÃ“N", "UBICACION"]);
+      const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
       const zona = pickColumn(row, ["ZONA"]);
       const zonaRef = pickColumn(row, ["ZONA REF"]) || zona;
       const lineal = pickColumn(row, ["LINEAL"]);
       const referencia = pickColumn(row, ["REFERENCIA"]);
-      const fullLocation = pickColumn(row, ["UBICACIÃ“N CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÃ“N", "UBICACION"]);
+      const fullLocation = pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
       uniqueRows.set(locationCode, {
         session_id: selectedSessionId,
         location_code: locationCode,
@@ -5243,7 +5243,7 @@ export default function InventariosPage() {
           <button
             onClick={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
             className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
-            title={operator && !user ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesiÃ³n") : "Volver"}
+            title={operator && !user ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesión") : "Volver"}
           >
             {operator && !user ? (operatorMode === "reconteo" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <ArrowLeft size={18} />}
           </button>
@@ -5273,9 +5273,9 @@ export default function InventariosPage() {
             </select>
           )}
           {user && (
-            <button onClick={logoutUser} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesiÃ³n">
+            <button onClick={logoutUser} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
               <LogOut size={18} />
-              <span className="hidden sm:inline">Cerrar sesiÃ³n</span>
+              <span className="hidden sm:inline">Cerrar sesión</span>
             </button>
           )}
           {operator && !user && !selectedSession?.manual_recount_enabled && (
@@ -5285,9 +5285,9 @@ export default function InventariosPage() {
             </button>
           )}
           {!user && !operator && (
-            <button onClick={goLogin} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesiÃ³n">
+            <button onClick={goLogin} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesión">
               <LogIn size={18} />
-              <span className="hidden sm:inline">Iniciar sesiÃ³n</span>
+              <span className="hidden sm:inline">Iniciar sesión</span>
             </button>
           )}
         </div>
@@ -5352,7 +5352,7 @@ export default function InventariosPage() {
 
           {canManageInventory && selectedSessionId && (
             <section className="space-y-3 rounded-2xl border bg-white p-4 shadow-sm">
-              <h2 className="font-black">PreparaciÃ³n</h2>
+              <h2 className="font-black">Preparación</h2>
               <div>
                 <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
                 <input
@@ -5496,7 +5496,7 @@ export default function InventariosPage() {
                 </section>
 
                 <section className="space-y-2 rounded-2xl border bg-white p-4 shadow-sm">
-                  <h2 className="font-black">Acciones de sesiÃ³n</h2>
+                  <h2 className="font-black">Acciones de sesión</h2>
                   <button onClick={freezeStock} disabled={loading || !selectedSessionId || isSelectedSessionFinished} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     <FileLock2 size={16} /> Congelar stock
                   </button>
@@ -5519,8 +5519,8 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h2 className="font-black">PreparaciÃ³n</h2>
-                    <p className="text-xs text-slate-500">Carga ubicaciones autorizadas y productos no inventariables para esta sesiÃ³n.</p>
+                    <h2 className="font-black">Preparación</h2>
+                    <p className="text-xs text-slate-500">Carga ubicaciones autorizadas y productos no inventariables para esta sesión.</p>
                   </div>
                   <div className="rounded-xl bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">
                     Ubicaciones: {locations.length} | Pendientes: {pendingLocations.length} | Vacias: {emptyLocations.length}
@@ -5568,7 +5568,7 @@ export default function InventariosPage() {
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <div className="font-black text-slate-900">Ubicaciones pendientes</div>
-                      <div className="text-xs text-slate-500">Ubicaciones cargadas que todavÃ­a no tienen registros.</div>
+                      <div className="text-xs text-slate-500">Ubicaciones cargadas que todavía no tienen registros.</div>
                     </div>
                     <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes | {emptyLocations.length} vacias</div>
                   </div>
@@ -5577,7 +5577,7 @@ export default function InventariosPage() {
                       <div key={location.id} className="grid gap-2 border-b p-3 last:border-b-0 md:grid-cols-[140px_1fr_auto]">
                         <div className="font-black text-slate-900">{location.location_code}</div>
                         <div className="min-w-0 text-slate-600">
-                          <div className="truncate">{location.full_location || location.description || "Sin descripciÃ³n"}</div>
+                          <div className="truncate">{location.full_location || location.description || "Sin descripción"}</div>
                           {(location.zone || location.lineal || location.zone_ref) && (
                             <div className="mt-1 text-xs text-slate-400">
                               {[location.zone, location.lineal, location.zone_ref].filter(Boolean).join(" | ")}
@@ -5607,10 +5607,10 @@ export default function InventariosPage() {
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
-                  <h2 className="font-black">Conteo por ubicaciÃ³n</h2>
-                  <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` Â· ${selectedSession.name}` : ""}</p>
+                  <h2 className="font-black">Conteo por ubicación</h2>
+                  <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
                 </div>
-                {editingCountId && <button onClick={() => { setEditingCountId(null); setProductCode(""); setQuantity(""); }} className="rounded-xl border px-3 py-2 text-xs font-black">Cancelar ediciÃ³n</button>}
+                {editingCountId && <button onClick={() => { setEditingCountId(null); setProductCode(""); setQuantity(""); }} className="rounded-xl border px-3 py-2 text-xs font-black">Cancelar edición</button>}
               </div>
               <div className="space-y-2">
                 {selectedSession ? (
@@ -5623,8 +5623,8 @@ export default function InventariosPage() {
                   </div>
                 )}
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
-                  <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="UbicaciÃ³n / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
-                  <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicaciÃ³n">
+                  <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
+                  <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicación">
                     <QrCode size={22} />
                   </button>
                 </div>
@@ -5648,7 +5648,7 @@ export default function InventariosPage() {
                           <div className="min-w-0">
                             <div className="font-black text-slate-950">{product.sku}</div>
                             <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{product.description}</div>
-                            <div className="mt-1 text-xs text-slate-500">UM: {product.unit || "N/D"} Â· Costo: {money(Number(product.cost || 0))}</div>
+                            <div className="mt-1 text-xs text-slate-500">UM: {product.unit || "N/D"} · Costo: {money(Number(product.cost || 0))}</div>
                           </div>
                           <span className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-black ${selectedProduct?.id === product.id ? "bg-green-700 text-white" : "bg-slate-100 text-slate-600"}`}>
                             {selectedProduct?.id === product.id ? "Elegido" : "Elegir"}
@@ -5677,7 +5677,7 @@ export default function InventariosPage() {
                 </div>
                 <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
-                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar cÃ³digo o ubicaciÃ³n" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
                 </div>
               </div>
               <div className="divide-y">
@@ -5690,7 +5690,7 @@ export default function InventariosPage() {
                           <span className="font-black text-blue-700">{row.sku}</span>
                         </div>
                         <div className="max-w-full whitespace-normal break-words text-sm text-slate-600">{row.description}</div>
-                        <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} Â· {row.unit}</div>
+                        <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
                       </div>
                       <div className="text-right">
                         <div className="text-xl font-black text-slate-950">{number2(row.quantity)}</div>
@@ -5710,7 +5710,7 @@ export default function InventariosPage() {
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3">
                 <h2 className="font-black">Mis reconteos asignados</h2>
-                <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` Â· ${selectedSession.name}` : ""}</p>
+                <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 {recountItems.map(row => {
@@ -5733,8 +5733,8 @@ export default function InventariosPage() {
                         Ubicaciones contadas: {row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)}
                       </div>
                       <div className="hidden">
-                        <div className="font-black text-slate-900">{row.location_code || "Sin ubicaciÃ³n"}</div>
-                        <div className="truncate">{row.full_location || "Reconteo por cÃ³digo"}</div>
+                        <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
+                        <div className="truncate">{row.full_location || "Reconteo por código"}</div>
                         {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                       </div>
                       <div className="grid grid-cols-5 gap-1 rounded-xl border bg-white p-2 text-center">
@@ -5811,7 +5811,7 @@ export default function InventariosPage() {
                             </button>
                           )}
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar ediciÃ³n" : "Guardar reconteo"}
+                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : "Guardar reconteo"}
                           </button>
                         </div>
                       </div>
@@ -5821,7 +5821,7 @@ export default function InventariosPage() {
                 })}
                 {recountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                    No tienes cÃ³digos asignados para reconteo en este inventario.
+                    No tienes códigos asignados para reconteo en este inventario.
                   </div>
                 )}
               </div>
@@ -5829,7 +5829,7 @@ export default function InventariosPage() {
                 <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                   <div>
                     <h3 className="font-black text-slate-900">Reconteos guardados</h3>
-                    <p className="text-xs text-slate-500">Registro de lo que vas guardando en esta sesiÃ³n.</p>
+                    <p className="text-xs text-slate-500">Registro de lo que vas guardando en esta sesión.</p>
                   </div>
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{operatorRecountRecords.length}</span>
                 </div>
@@ -5839,11 +5839,11 @@ export default function InventariosPage() {
                       <div className="flex min-w-0 items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-black text-slate-900">{record.location_code || "Sin ubicaciÃ³n"}</span>
+                            <span className="font-black text-slate-900">{record.location_code || "Sin ubicación"}</span>
                             <span className="font-black text-blue-700">{record.sku}</span>
                           </div>
                           <div className="max-w-full whitespace-normal break-words text-sm text-slate-600">{record.description}</div>
-                          <div className="mt-1 text-xs text-slate-400">{record.counted_at ? new Date(record.counted_at).toLocaleString("es-PE") : "-"} Â· {record.unit}</div>
+                          <div className="mt-1 text-xs text-slate-400">{record.counted_at ? new Date(record.counted_at).toLocaleString("es-PE") : "-"} · {record.unit}</div>
                         </div>
                         <div className="shrink-0 text-right">
                           <div className="text-xl font-black text-slate-950">{number2(record.quantity)}</div>
@@ -5853,7 +5853,7 @@ export default function InventariosPage() {
                     </div>
                   ))}
                   {operatorRecountRecords.length === 0 && (
-                    <div className="p-8 text-center text-sm font-semibold text-slate-400">AÃºn no tienes reconteos guardados.</div>
+                    <div className="p-8 text-center text-sm font-semibold text-slate-400">Aún no tienes reconteos guardados.</div>
                   )}
                 </div>
               </div>
@@ -6080,7 +6080,7 @@ export default function InventariosPage() {
                                 <div key={location.id} className="rounded-lg border bg-slate-50 px-2 py-1">
                                   <div className="font-black text-slate-900">{location.full_location || location.location_code}</div>
                                   <div className="text-[10px] font-bold text-slate-500">
-                                    {location.ticket || location.location_code} Â· {number2(location.counted_qty)} {row.unit}
+                                    {location.ticket || location.location_code} · {number2(location.counted_qty)} {row.unit}
                                   </div>
                                 </div>
                               )) : (
@@ -6378,8 +6378,8 @@ export default function InventariosPage() {
 
                       <div className="space-y-2 text-xs text-slate-600">
                         <div className="rounded-xl border bg-white p-3">
-                          <div className="font-black text-slate-900">{row.location_code || "Sin ubicaciÃ³n"}</div>
-                          <div className="truncate">{row.full_location || "Reconteo por cÃ³digo"}</div>
+                          <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
+                          <div className="truncate">{row.full_location || "Reconteo por código"}</div>
                           {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                         </div>
                         <div className="grid grid-cols-3 gap-2">
@@ -6531,8 +6531,8 @@ export default function InventariosPage() {
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
-                <Kpi label="CÃ³digos sobrantes" value={kpis.surplusCodes} tone="blue" />
-                <Kpi label="CÃ³digos faltantes" value={kpis.missingCodes} tone="red" />
+                <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
+                <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
                 <Kpi label="Diferencia valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
               </div>
             </section>
@@ -6588,7 +6588,7 @@ export default function InventariosPage() {
                   )}
                   <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
                     <Search size={16} className="text-slate-400" />
-                    <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar cÃ³digo, descripciÃ³n o ubicaciÃ³n" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                    <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
                   </div>
                   <button onClick={exportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                     <Download size={15} /> Descargar Excel
@@ -6651,8 +6651,8 @@ export default function InventariosPage() {
             <section className="rounded-2xl border bg-white shadow-sm">
               <div className="border-b p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por cÃ³digo</h2>
-                  <input value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} placeholder="Buscar cÃ³digo, descripciÃ³n u observaciÃ³n" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
+                  <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por código</h2>
+                  <input value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} placeholder="Buscar código, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
                 </div>
               </div>
               <div className="border-b px-4 pb-4">
@@ -6675,8 +6675,8 @@ export default function InventariosPage() {
                 <table className="w-full min-w-[1320px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
-                      <SortHeader label="CÃ³digo" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
-                      <SortHeader label="DescripciÃ³n" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => toggleSummarySort("description")} align="left" />
+                      <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
+                      <SortHeader label="Descripción" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => toggleSummarySort("description")} align="left" />
                       <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
@@ -6685,7 +6685,7 @@ export default function InventariosPage() {
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
                       <th className="p-2 text-center">Recontado</th>
-                      <SortHeader label="ObservaciÃ³n" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
+                      <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
                       <th className="p-2">Acciones</th>
                     </tr>
                   </thead>
@@ -6801,8 +6801,8 @@ export default function InventariosPage() {
           <div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicaciÃ³n"}</h3>
-                <p className="text-xs text-slate-500">Apunta al cÃ³digo con la cÃ¡mara.</p>
+                <h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3>
+                <p className="text-xs text-slate-500">Apunta al código con la cámara.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Linterna">
@@ -6825,7 +6825,7 @@ export default function InventariosPage() {
               )}
             </div>
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
-              Cerrar cÃ¡mara
+              Cerrar cámara
             </button>
           </div>
         </div>
@@ -6843,7 +6843,7 @@ function SortHeader({ label, active, direction, onClick, align = "center" }: { l
         className={`flex w-full items-center gap-1 px-2 py-2 text-xs font-black ${align === "left" ? "justify-start" : "justify-center"} ${active ? "text-slate-950" : "text-slate-600 hover:text-slate-950"}`}
       >
         <span>{label}</span>
-        <span className="text-[10px]">{active ? (direction === "desc" ? "â†“" : "â†‘") : "â†•"}</span>
+        <span className="text-[10px]">{active ? (direction === "desc" ? "↓" : "↑") : "↕"}</span>
       </button>
     </th>
   );
