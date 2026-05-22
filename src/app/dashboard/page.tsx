@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-unused-expressions, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
@@ -7,10 +7,17 @@ import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+function scannerPermissionMessage(error: unknown) {
+    const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
+    if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
+        return "Permiso de camara denegado. Para volver a solicitarlo, abre los permisos del sitio o de la PWA, habilita Camara y vuelve a tocar Escanear.";
+    }
+    return "No se pudo iniciar la camara: " + (error instanceof Error ? error.message : text);
+}
 
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  TIPOS
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
 type ValTabKey = "asignar"|"no_inventariables"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
@@ -122,7 +129,7 @@ type ResumenRow = {
     dif_valorizada: number;
 };
 
-// Dashboard: datos por tienda para el período
+// Dashboard: datos por tienda para el perÃ­odo
 type DashboardRow = {
     store_id: string;
     store_name: string;
@@ -136,7 +143,7 @@ type DashboardRow = {
     dif_valorizada: number;
     eri: number;
     cumplio: boolean;
-    cumplimiento_pct: number; // % días cumplidos sobre total días con asignación (para vista mes)
+    cumplimiento_pct: number; // % dÃ­as cumplidos sobre total dÃ­as con asignaciÃ³n (para vista mes)
     dias_cumplidos: number;
     dias_totales: number;
     hora_inicio: string | null;
@@ -186,7 +193,7 @@ type ProductCountHistoryRow = {
     result: string;
 };
 
-// Fila de ubicación + cantidad en el modal del operario
+// Fila de ubicaciÃ³n + cantidad en el modal del operario
 type LocationRow = { location: string; qty: string };
 
 type LocationEntryProductRow = {
@@ -212,9 +219,9 @@ type ProductLocation = {
     cyclic_products?: Pick<Product, "sku" | "description" | "unit" | "cost"> | null;
 };
 
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  HELPERS
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 function todayISO(): string {
     return new Date().toISOString().split("T")[0];
 }
@@ -298,24 +305,24 @@ function normalizeText(v: string | null | undefined) {
     return String(v || "").trim().toLowerCase();
 }
 
-/** Parsea costos con miles: "1,140.95" → 1140.95; "1140.95" → 1140.95 */
+/** Parsea costos con miles: "1,140.95" â†’ 1140.95; "1140.95" â†’ 1140.95 */
 function parseCost(raw: any): number {
     if (raw === null || raw === undefined || raw === "") return 0;
     if (typeof raw === "number") return isNaN(raw) ? 0 : raw;
-    // Convertir a string y quitar separador de miles (coma o punto según locale)
+    // Convertir a string y quitar separador de miles (coma o punto segÃºn locale)
     let s = String(raw).trim().replace(/\s/g, "");
     // Si tiene tanto coma como punto, la coma es separador de miles
     if (s.includes(",") && s.includes(".")) {
-        // e.g. "1,140.95" → "1140.95"
+        // e.g. "1,140.95" â†’ "1140.95"
         s = s.replace(/,/g, "");
     } else if (s.includes(",")) {
-        // Podría ser separador decimal (europeo) o de miles
+        // PodrÃ­a ser separador decimal (europeo) o de miles
         const parts = s.split(",");
         if (parts.length === 2 && parts[1].length <= 2) {
-            // "1140,95" → decimal europeo → "1140.95"
+            // "1140,95" â†’ decimal europeo â†’ "1140.95"
             s = s.replace(",", ".");
         } else {
-            // "1,140" → miles → "1140"
+            // "1,140" â†’ miles â†’ "1140"
             s = s.replace(/,/g, "");
         }
     }
@@ -368,7 +375,7 @@ function isSessionFlagLocation(location: string | null | undefined): boolean {
 }
 
 function formatDuration(minutes: number | null): string {
-    if (minutes === null || minutes < 0) return "—";
+    if (minutes === null || minutes < 0) return "â€”";
     const h = Math.floor(minutes / 60);
     const m = minutes % 60;
     if (h === 0) return `${m} min`;
@@ -404,50 +411,50 @@ function diffPillClass(diff: number) {
     return "bg-red-100 text-red-700 border-red-200";
 }
 
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  COMPONENTE PRINCIPAL
-// ══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 export default function DashboardPage() {
-    // ─── Auth ───────────────────────────────────────────────
+    // â”€â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [user, setUser]         = useState<CyclicUser | null>(null);
     const [activeTab, setActiveTab] = useState<TabKey>("operario");
 
-    // ─── Datos globales ─────────────────────────────────────
+    // â”€â”€â”€ Datos globales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [stores, setStores]         = useState<Store[]>([]);
     const [allStores, setAllStores]   = useState<Store[]>([]);
     const [products, setProducts]     = useState<Product[]>([]);
     const [allUsers, setAllUsers]     = useState<CyclicUser[]>([]);
 
-    // ─── Selector de tienda / fecha ─────────────────────────
+    // â”€â”€â”€ Selector de tienda / fecha â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [selectedStoreId, setSelectedStoreId] = useState("");
     const [selectedDate, setSelectedDate]       = useState(todayISO());
 
-    // ─── Asignaciones y conteos ─────────────────────────────
+    // â”€â”€â”€ Asignaciones y conteos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [assignments, setAssignments] = useState<Assignment[]>([]);
     const [counts, setCounts]           = useState<CountRecord[]>([]);
 
-    // ─── UI / mensajes ──────────────────────────────────────
+    // â”€â”€â”€ UI / mensajes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [message, setMessage]         = useState("");
     const [messageType, setMessageType] = useState<"info"|"success"|"error">("info");
     const [loading, setLoading]         = useState(true);
     const messageTimerRef               = useRef<ReturnType<typeof setTimeout>|null>(null);
 
-    // ─── Operario: conteo activo — múltiples filas ─
+    // â”€â”€â”€ Operario: conteo activo â€” mÃºltiples filas â”€
     const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
     const [refreshingStockId, setRefreshingStockId] = useState<string | null>(null);
     const [bulkRefreshingStocks, setBulkRefreshingStocks] = useState(false);
     const [locationRows, setLocationRows]         = useState<LocationRow[]>([{ location: "", qty: "" }]);
     const [activeProductLocations, setActiveProductLocations] = useState<ProductLocation[]>([]);
-    const [sinStock, setSinStock]                 = useState(false); // marcar "sin stock físico"
+    const [sinStock, setSinStock]                 = useState(false); // marcar "sin stock fÃ­sico"
 
-    // ─── Operario: reconteo ──────────────────────────────────
+    // â”€â”€â”€ Operario: reconteo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [showRecount, setShowRecount]           = useState(false);
     const [recountAssignment, setRecountAssignment] = useState<Assignment | null>(null);
     const [recountRows, setRecountRows]           = useState<LocationRow[]>([{ location: "", qty: "" }]);
     const [sinStockRecount, setSinStockRecount]   = useState(false);
     const startingRecountRef = useRef(false);
 
-    // ─── Escáner ─────────────────────────────────────────────
+    // â”€â”€â”€ EscÃ¡ner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [scannerTarget, setScannerTarget]   = useState<"product"|"location"|"recount_location"|"location_lookup"|"location_entry_location"|"location_entry_product"|null>(null);
     const [scannerRunning, setScannerRunning] = useState(false);
     const [torchAvailable, setTorchAvailable] = useState(false);
@@ -458,7 +465,7 @@ export default function DashboardPage() {
     const overlayOpenedRef   = useRef(false);
     const scannerContainerId = "cyclic-scanner";
 
-    // ─── Validador: filtros ──────────────────────────────────
+    // â”€â”€â”€ Validador: filtros â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [valTab, setValTab]               = useState<ValTabKey>("asignar");
     const [valStoreId, setValStoreId]       = useState("");
     const [valDate, setValDate]             = useState(todayISO());
@@ -466,7 +473,7 @@ export default function DashboardPage() {
     const [valStatusFilter, setValStatusFilter] = useState("todos");
     const [resumenSearch, setResumenSearch] = useState("");
 
-    // ─── Validador: asignación ───────────────────────────────
+    // â”€â”€â”€ Validador: asignaciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
     const [assignUnitFilter, setAssignUnitFilter] = useState("");
@@ -491,14 +498,14 @@ export default function DashboardPage() {
     const [nonInventoryExcelBusy, setNonInventoryExcelBusy] = useState(false);
     const [nonInventoryExcelFileName, setNonInventoryExcelFileName] = useState("");
 
-    // ─── Validador: editar conteo ────────────────────────────
+    // â”€â”€â”€ Validador: editar conteo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [editingCount, setEditingCount]   = useState<CountRecord|null>(null);
     const [editQty, setEditQty]             = useState("");
     const [editLocation, setEditLocation]   = useState("");
     const [editStatus, setEditStatus]       = useState<CountRecord["status"]>("Pendiente");
     const [editNote, setEditNote]           = useState("");
 
-    // ─── Admin: maestro productos ────────────────────────────
+    // â”€â”€â”€ Admin: maestro productos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
@@ -506,13 +513,13 @@ export default function DashboardPage() {
     const [uploadProgress, setUploadProgress] = useState<{step:string;pct:number}|null>(null);
     const masterInputRef = useRef<HTMLInputElement|null>(null);
 
-    // ─── Admin: códigos de barra ─────────────────────────────
+    // â”€â”€â”€ Admin: cÃ³digos de barra â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [barcodesFile, setBarcodesFile]         = useState<File|null>(null);
     const [barcodesFileName, setBarcodesFileName] = useState("");
     const [barcodesProgress, setBarcodesProgress] = useState<{step:string;pct:number}|null>(null);
     const barcodesInputRef = useRef<HTMLInputElement|null>(null);
 
-    // ─── Admin: editar producto ──────────────────────────────
+    // â”€â”€â”€ Admin: editar producto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [editingProduct, setEditingProduct] = useState<Product|null>(null);
     const [editProdSku, setEditProdSku]       = useState("");
     const [editProdBarcode, setEditProdBarcode] = useState("");
@@ -520,11 +527,11 @@ export default function DashboardPage() {
     const [editProdUnit, setEditProdUnit]     = useState("");
     const [editProdCost, setEditProdCost]     = useState("");
 
-    // ─── Admin: tiendas ──────────────────────────────────────
+    // â”€â”€â”€ Admin: tiendas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [newStoreName, setNewStoreName] = useState("");
     const [newStoreCode, setNewStoreCode] = useState("");
 
-    // ─── Admin: usuarios ─────────────────────────────────────
+    // â”€â”€â”€ Admin: usuarios â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [newUsername, setNewUsername]       = useState("");
     const [newPassword, setNewPassword]       = useState("");
     const [newFullName, setNewFullName]       = useState("");
@@ -538,21 +545,21 @@ export default function DashboardPage() {
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
     const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
 
-    // ─── WhatsApp masivo post-carga ──────────────────────────
+    // â”€â”€â”€ WhatsApp masivo post-carga â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [showBulkWspModal, setShowBulkWspModal] = useState(false);
     const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string; username: string; password: string } | null }[]>([]);
     const [bulkWspSelected, setBulkWspSelected] = useState<Set<string>>(new Set());
     const [bulkWspDate, setBulkWspDate] = useState("");
-    const [bulkWspSendingIdx, setBulkWspSendingIdx] = useState(-1); // -1 = no enviando, 0+ = índice actual
+    const [bulkWspSendingIdx, setBulkWspSendingIdx] = useState(-1); // -1 = no enviando, 0+ = Ã­ndice actual
 
-    // ─── Protección anti-doble clic en guardados ─────────────
+    // â”€â”€â”€ ProtecciÃ³n anti-doble clic en guardados â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [savingCount, setSavingCount]         = useState(false);
     const [savingRecount, setSavingRecount]     = useState(false);
     const savingCountRef = useRef(false);
     const savingRecountRef = useRef(false);
     const [savingAnalysis, setSavingAnalysis]   = useState(false);
 
-    // ─── Terminar sesión de conteo ───────────────────────────
+    // â”€â”€â”€ Terminar sesiÃ³n de conteo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [showFinishModal, setShowFinishModal] = useState(false);
     const [showRecountConfirmModal, setShowRecountConfirmModal] = useState(false);
     const [sessionFinished, setSessionFinished] = useState(false);
@@ -584,7 +591,7 @@ export default function DashboardPage() {
     const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
     const [manualProductCodePending, setManualProductCodePending] = useState("");
 
-    // ─── Dashboard ───────────────────────────────────────────
+    // â”€â”€â”€ Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [dashPeriod, setDashPeriod] = useState<"dia"|"mes"|"rango">("dia");
     const [dashDate, setDashDate]     = useState(todayISO());
     const [dashMonth, setDashMonth]   = useState(todayISO().slice(0, 7));
@@ -596,16 +603,16 @@ export default function DashboardPage() {
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
-    // ─── Dashboard en validador: progreso por tienda ─────────
+    // â”€â”€â”€ Dashboard en validador: progreso por tienda â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
     const [storeProgressLoading, setStoreProgressLoading] = useState(false);
     const [globalStockProgress, setGlobalStockProgress] = useState<GlobalStockProgress|null>(null);
     const [globalStockProgressLoading, setGlobalStockProgressLoading] = useState(false);
 
-    // ─── Dashboard drill-down: tienda clickeada en vista día ─
+    // â”€â”€â”€ Dashboard drill-down: tienda clickeada en vista dÃ­a â”€
     const [dashDrillSource, setDashDrillSource] = useState(false); // true = venimos del dashboard
 
-    // ─── Resumen análisis: overrides de stock y cantidad contada
+    // â”€â”€â”€ Resumen anÃ¡lisis: overrides de stock y cantidad contada
     // key = product_id, value = { system_stock?: number, total_counted?: number }
     const [resumenOverrides, setResumenOverrides] = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
     const [resumenDraft,     setResumenDraft]     = useState<Record<string, { system_stock?: number; total_counted?: number }>>({});
@@ -630,9 +637,9 @@ export default function DashboardPage() {
         return rows.sort((a, b) => fullProductCode(a.sku).localeCompare(fullProductCode(b.sku), "es", { numeric: true, sensitivity: "base" }));
     }, [nonInventoryProducts, nonInventorySearch]);
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  INIT
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     useEffect(() => {
         const raw = localStorage.getItem("cyclic_user");
         if (!raw) { window.location.replace("/"); return; }
@@ -833,7 +840,7 @@ export default function DashboardPage() {
                     setTorchAvailable(!!caps?.torch);
                 } catch { setTorchAvailable(false); }
             } catch (err: any) {
-                showMessage("No se pudo iniciar la cámara: " + (err?.message || ""), "error");
+                showMessage(scannerPermissionMessage(err), "error");
                 setScannerRunning(false);
                 setScannerTarget(null);
             }
@@ -842,7 +849,7 @@ export default function DashboardPage() {
         return () => { cancelled = true; stopScanner(); };
     }, [scannerTarget]);
 
-    // Botón atrás del celular cierra overlays
+    // BotÃ³n atrÃ¡s del celular cierra overlays
     useEffect(() => {
         const anyOpen = !!scannerTarget || !!editingCount || !!editingProduct || !!activeAssignment || !!editingUser || showRecount;
         if (anyOpen && !overlayOpenedRef.current) {
@@ -863,9 +870,9 @@ export default function DashboardPage() {
         return () => window.removeEventListener("popstate", handler);
     }, [scannerTarget, editingCount, editingProduct, activeAssignment, editingUser, showRecount]);
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  HELPERS UI
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     function showMessage(msg: string, type: "info"|"success"|"error" = "info") {
         if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
         setMessage(msg);
@@ -875,7 +882,7 @@ export default function DashboardPage() {
     function clearMessage() { setMessage(""); }
     function requireOnlineForStockPhoto() {
         if (typeof navigator !== "undefined" && !navigator.onLine) {
-            showMessage("Verifica tu conexión a internet. No se puede contar sin actualizar la fotografía de stock.", "error");
+            showMessage("Verifica tu conexiÃ³n a internet. No se puede contar sin actualizar la fotografÃ­a de stock.", "error");
             return false;
         }
         return true;
@@ -901,8 +908,8 @@ export default function DashboardPage() {
         }
     }
 
-    // ── Helper: escribir/borrar flags de sesión en BD ────────
-    // Siempre usamos el assignment con ID mínimo (orden estable) como anchor.
+    // â”€â”€ Helper: escribir/borrar flags de sesiÃ³n en BD â”€â”€â”€â”€â”€â”€â”€â”€
+    // Siempre usamos el assignment con ID mÃ­nimo (orden estable) como anchor.
     async function getSessionAnchor(storeId: string, date: string): Promise<string | null> {
         const { data: asgns } = await supabase
             .from("cyclic_assignments").select("id")
@@ -938,7 +945,7 @@ export default function DashboardPage() {
 
     async function clearSessionFlags(storeId: string, date: string) {
         // Limpia flags de TODOS los assignments de la tienda+fecha (no solo el anchor)
-        // para asegurarse que no queden huérfanos de sesiones previas
+        // para asegurarse que no queden huÃ©rfanos de sesiones previas
         const { data: asgns } = await supabase
             .from("cyclic_assignments").select("id")
             .eq("store_id", storeId).eq("assigned_date", date);
@@ -967,12 +974,12 @@ export default function DashboardPage() {
         setShowRecount(false);
         setRecountAssignment(null);
         await registerCompletedAssignments(selectedStoreId, selectedDate);
-        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
+        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES âœ…", "success");
     }
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  CARGA DE DATOS
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function loadStores() {
         if (!user) return;
         const { data: all } = await supabase.from("stores").select("*").order("name");
@@ -1058,10 +1065,10 @@ export default function DashboardPage() {
         const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
         const cRows = (cnts || []) as CountRecord[];
 
-        // Leer flags de sesión guardados como registros especiales en cyclic_counts
-        // location = '__session_finished__'  → conteo terminado
-        // location = '__recount_started__'   → reconteo iniciado
-        // location = '__recount_done__'      → reconteo finalizado
+        // Leer flags de sesiÃ³n guardados como registros especiales en cyclic_counts
+        // location = '__session_finished__'  â†’ conteo terminado
+        // location = '__recount_started__'   â†’ reconteo iniciado
+        // location = '__recount_done__'      â†’ reconteo finalizado
         const sessionFlags = cRows.filter(c => isSessionFlagLocation(c.location));
         const keepRecountOpen = startingRecountRef.current && storeId === selectedStoreId && date === selectedDate;
         const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
@@ -1209,13 +1216,13 @@ export default function DashboardPage() {
         }
     }
 
-    // ════════════════════════════════════════════════════════
-    //  VALIDADOR — PROGRESO POR TIENDA
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  VALIDADOR â€” PROGRESO POR TIENDA
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function loadStoreProgress(date: string) {
         setStoreProgressLoading(true);
         try {
-            // 1. Traer TODAS las asignaciones del día paginado (Supabase limita 1000 por request)
+            // 1. Traer TODAS las asignaciones del dÃ­a paginado (Supabase limita 1000 por request)
             const PAGE = 1000;
             let asgnData: any[] = [];
             let page = 0;
@@ -1233,7 +1240,7 @@ export default function DashboardPage() {
 
             if (asgnData.length === 0) { setStoreProgressData([]); return; }
 
-            // 2. Obtener IDs únicos de tiendas que tienen asignación ese día
+            // 2. Obtener IDs Ãºnicos de tiendas que tienen asignaciÃ³n ese dÃ­a
             const storeIdsWithAsgn: string[] = Array.from(new Set<string>(asgnData.map((a: any) => a.store_id as string)));
 
             // 3. Traer nombres de esas tiendas directamente desde BD
@@ -1255,7 +1262,7 @@ export default function DashboardPage() {
                 asgnByStore.get(a.store_id)!.push(a.id);
             }
 
-            // 5. Traer conteos del día (filtrando flags de sesión)
+            // 5. Traer conteos del dÃ­a (filtrando flags de sesiÃ³n)
             const asgnIds = asgnData.map((a: any) => a.id);
             const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
             let allCountsRaw: any[] = [];
@@ -1274,7 +1281,7 @@ export default function DashboardPage() {
             // 6. Conteos reales por assignment_id
             const countedAsgns = new Set(realCounts.map((c: any) => c.assignment_id));
 
-            // 7. Construir progreso para TODAS las tiendas con asignación ese día
+            // 7. Construir progreso para TODAS las tiendas con asignaciÃ³n ese dÃ­a
             const result: StoreProgress[] = [];
             for (const storeId of storeIdsWithAsgn) {
                 const storeAsgns = asgnByStore.get(storeId) || [];
@@ -1304,9 +1311,9 @@ export default function DashboardPage() {
         }
     }
 
-    // ════════════════════════════════════════════════════════
-    //  DASHBOARD — CARGA
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  DASHBOARD â€” CARGA
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function loadGlobalStockProgress() {
         if (!isAdmin) return;
         setGlobalStockProgressLoading(true);
@@ -1387,7 +1394,7 @@ export default function DashboardPage() {
                 dateFilter = { from, to };
             }
 
-            // ── Paso 1: traer assignments paginado (sin join) ──────────
+            // â”€â”€ Paso 1: traer assignments paginado (sin join) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const DASH_PAGE = 1000;
             let asgnRaw: any[] = [];
             let dashP = 0;
@@ -1407,9 +1414,9 @@ export default function DashboardPage() {
                 dashP++;
             }
 
-            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
+            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} â†’ ${dateFilter.to}`, "error"); return; }
 
-            // ── Paso 2: traer stores y products por IDs únicos ────────
+            // â”€â”€ Paso 2: traer stores y products por IDs Ãºnicos â”€â”€â”€â”€â”€â”€â”€â”€
             const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
             const uniqueProdIds  = [...new Set(asgnRaw.map((a: any) => a.product_id))];
 
@@ -1435,7 +1442,7 @@ export default function DashboardPage() {
                 cyclic_products: { cost: prodCostMap.get(a.product_id) || 0 },
             }));
 
-            // ── Paso 3: traer counts por assignment_id del período ─────────
+            // â”€â”€ Paso 3: traer counts por assignment_id del perÃ­odo â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSet = new Set<string>(asgnIds);
             let cntAll: CountRecord[] = [];
@@ -1447,15 +1454,15 @@ export default function DashboardPage() {
                 if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
             }
 
-            // ── Paso 3b: separar flags de conteos reales y construir storeDateFlags ──
+            // â”€â”€ Paso 3b: separar flags de conteos reales y construir storeDateFlags â”€â”€
             const SESSION_FLAG_VALUES = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
 
-            // Resolver anchorId → { store_id, date } usando asgnData del período
+            // Resolver anchorId â†’ { store_id, date } usando asgnData del perÃ­odo
             const anchorToMeta = new Map<string, { store_id: string; date: string }>();
             for (const a of asgnData as any[]) {
                 anchorToMeta.set(a.id, { store_id: a.store_id, date: a.assigned_date });
             }
-            // Flags que sí están en cntAll (cuando el bug esté corregido, estarán aquí)
+            // Flags que sÃ­ estÃ¡n en cntAll (cuando el bug estÃ© corregido, estarÃ¡n aquÃ­)
             const storeDateFlags = new Map<string, Set<string>>();
             for (const c of cntAll as any[]) {
                 if (!SESSION_FLAG_VALUES.has(c.location)) continue;
@@ -1470,11 +1477,11 @@ export default function DashboardPage() {
                 (c: any) => !SESSION_FLAG_VALUES.has(c.location) && asgnIdSet.has(c.assignment_id)
             );
 
-            // Agrupar SIEMPRE por tienda+día para calcular cumplimiento por día
+            // Agrupar SIEMPRE por tienda+dÃ­a para calcular cumplimiento por dÃ­a
             const dayKeyFn = (a: any): string => `${a.store_id}__${a.assigned_date}`;
             const monthKeyFn = (a: any): string => `${a.store_id}__${(a.assigned_date as string).slice(0,7)}`;
 
-            // Construir grupos por día
+            // Construir grupos por dÃ­a
             const dayGroups = new Map<string, { store_id: string; store_name: string; date: string; asgns: any[]; cnts: CountRecord[] }>();
 
             for (const a of asgnData as any[]) {
@@ -1491,11 +1498,11 @@ export default function DashboardPage() {
                 dayGroups.get(k)!.asgns.push(a);
             }
 
-            // Construir mapa de assignment_id → asignación para lookups O(1)
+            // Construir mapa de assignment_id â†’ asignaciÃ³n para lookups O(1)
             const asgnById = new Map<string, any>();
             for (const a of asgnData as any[]) asgnById.set(a.id, a);
 
-            // Asignar conteos a sus grupos por día
+            // Asignar conteos a sus grupos por dÃ­a
             for (const c of counts) {
                 const asgn = asgnById.get(c.assignment_id);
                 if (!asgn) continue;
@@ -1503,7 +1510,7 @@ export default function DashboardPage() {
                 dayGroups.get(k)?.cnts.push(c);
             }
 
-            // Calcular métricas por día
+            // Calcular mÃ©tricas por dÃ­a
             type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; difVal: number; };
             const dayMetrics: DayMetrics[] = [];
 
@@ -1511,7 +1518,7 @@ export default function DashboardPage() {
                 const groupKey = `${g.store_id}__${g.date}`;
                 const flagsForGroup = storeDateFlags.get(groupKey) || new Set<string>();
 
-                // Para cada assignment del día, ¿tiene al menos un conteo real?
+                // Para cada assignment del dÃ­a, Â¿tiene al menos un conteo real?
                 const countedAsgIds = new Set(g.cnts.map((c: any) => c.assignment_id));
 
                 // Agrupar por product_id para calcular totales (puede haber >1 assignment por producto)
@@ -1520,7 +1527,7 @@ export default function DashboardPage() {
                     if (!prodMap.has(a.product_id)) {
                         prodMap.set(a.product_id, { system_stock: a.system_stock, total_counted: 0, contado: false });
                     }
-                    // Si cualquier assignment de este producto fue contado, el producto cumplió
+                    // Si cualquier assignment de este producto fue contado, el producto cumpliÃ³
                     if (countedAsgIds.has(a.id)) {
                         prodMap.get(a.product_id)!.contado = true;
                     }
@@ -1561,8 +1568,8 @@ export default function DashboardPage() {
                 const duracion = horaInicio && horaFin ? Math.round((new Date(horaFin).getTime() - new Date(horaInicio).getTime()) / 60000) : null;
 
                 // REGLA DE CUMPLIMIENTO:
-                // 1. Principal: presionó "Finalizar Reconteo" (__recount_done__ flag en BD)
-                // 2. Fallback para datos históricos antes del fix del bug: contó todos los productos
+                // 1. Principal: presionÃ³ "Finalizar Reconteo" (__recount_done__ flag en BD)
+                // 2. Fallback para datos histÃ³ricos antes del fix del bug: contÃ³ todos los productos
                 const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
                 const cumplio = cumplioPorReconteo || (noContados === 0 && total > 0);
                 dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
@@ -1571,7 +1578,7 @@ export default function DashboardPage() {
             const rows: DashboardRow[] = [];
 
             if (dashPeriod === "dia") {
-                // Vista día: una fila por tienda, con hora inicio/fin/duración
+                // Vista dÃ­a: una fila por tienda, con hora inicio/fin/duraciÃ³n
                 for (const d of dayMetrics) {
                     const eriExacto = (d.ok + d.sobrantes + d.faltantes) > 0 ? Math.round((d.ok / (d.ok + d.sobrantes + d.faltantes)) * 100) : 0;
                     rows.push({
@@ -1598,7 +1605,7 @@ export default function DashboardPage() {
             } else {
                 // Vista mes o rango: una fila por tienda.
                 // Totales, ERI y dif. valorizada usan todo el periodo.
-                // Cumplimiento % = diasCumplidos / diasTotales con asignación.
+                // Cumplimiento % = diasCumplidos / diasTotales con asignaciÃ³n.
                 const storeGroups = new Map<string, DayMetrics[]>();
                 for (const d of dayMetrics) {
                     if (!storeGroups.has(d.store_id)) storeGroups.set(d.store_id, []);
@@ -1612,7 +1619,7 @@ export default function DashboardPage() {
                     const totalAsignadosPeriodo = days.reduce((s, d) => s + d.total, 0);
                     const totalAsignados  = totalAsignadosPeriodo;
                     const daysCumplidos   = days.filter(d => d.cumplio);
-                    // OK, sobrantes, faltantes, dif_valorizada: solo días que cumplieron
+                    // OK, sobrantes, faltantes, dif_valorizada: solo dÃ­as que cumplieron
                     const totalOk         = daysCumplidos.reduce((s, d) => s + d.ok, 0);
                     const totalSobrantes  = daysCumplidos.reduce((s, d) => s + d.sobrantes, 0);
                     const totalFaltantes  = daysCumplidos.reduce((s, d) => s + d.faltantes, 0);
@@ -1651,9 +1658,9 @@ export default function DashboardPage() {
         }
     }
 
-    // ════════════════════════════════════════════════════════
-    //  OPERARIO — CONTEO (múltiples ubicaciones)
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  OPERARIO â€” CONTEO (mÃºltiples ubicaciones)
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function openCount(asgn: Assignment) {
         if (!requireOnlineForStockPhoto()) return;
         const existing = counts.filter(c => c.assignment_id === asgn.id);
@@ -1768,9 +1775,9 @@ export default function DashboardPage() {
             return;
         }
 
-        // ── Modo "Sin stock físico" ──────────────────────────
+        // â”€â”€ Modo "Sin stock fÃ­sico" â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (sinStock) {
-            // Registrar un único conteo con qty=0 y ubicación especial "__sin_stock__"
+            // Registrar un Ãºnico conteo con qty=0 y ubicaciÃ³n especial "__sin_stock__"
             await supabase.from("cyclic_counts").delete().eq("assignment_id", currentAssignment.id);
             const { error } = await supabase.from("cyclic_counts").insert({
                 assignment_id: currentAssignment.id,
@@ -1781,7 +1788,7 @@ export default function DashboardPage() {
                 user_id: user.id,
                 user_name: user.full_name,
                 status: "Diferencia" as CountRecord["status"],
-                note: "Sin stock físico en tienda",
+                note: "Sin stock fÃ­sico en tienda",
                 stock_snapshot: Number(currentAssignment.system_stock || 0),
                 client_uuid: createClientUuid("cyclic-count"),
                 client_device_id: getOrCreateDeviceId(),
@@ -1791,7 +1798,7 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar: " + error.message, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
-            showMessage(`✅ "${activeAssignment.sku}" marcado como sin stock.`, "success");
+            showMessage(`âœ… "${activeAssignment.sku}" marcado como sin stock.`, "success");
             setSinStock(false);
             setActiveAssignment(null);
             loadOperarioData(selectedStoreId, selectedDate);
@@ -1800,16 +1807,16 @@ export default function DashboardPage() {
             return;
         }
 
-        // ── Validación normal ────────────────────────────────
+        // â”€â”€ ValidaciÃ³n normal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for (let i = 0; i < locationRows.length; i++) {
             const row = locationRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicaciÃ³n.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
-            // ⛔ No se permite cantidad 0 con ubicación — usar "Sin stock" para eso
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad invÃ¡lida.`, "error"); savingCountRef.current = false; setSavingCount(false); return; }
+            // â›” No se permite cantidad 0 con ubicaciÃ³n â€” usar "Sin stock" para eso
             if (qty === 0) {
-                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Si no hay stock físico, usa el botón "Sin stock".`, "error");
+                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Si no hay stock fÃ­sico, usa el botÃ³n "Sin stock".`, "error");
                 savingCountRef.current = false;
                 setSavingCount(false); return;
             }
@@ -1846,7 +1853,7 @@ export default function DashboardPage() {
         // Marcar que hay conteo activo en BD (para que admin/validador lo vean)
         await setSessionFlag(currentAssignment.store_id, selectedDate, "__session_counting__", true);
 
-        showMessage(`✅ ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
+        showMessage(`âœ… ${locationRows.length === 1 ? "Conteo guardado" : `${locationRows.length} ubicaciones guardadas`}.`, "success");
         setSinStock(false);
         setActiveAssignment(null);
         loadOperarioData(selectedStoreId, selectedDate);
@@ -1854,9 +1861,9 @@ export default function DashboardPage() {
         setSavingCount(false);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  OPERARIO — RECONTEO
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  OPERARIO â€” RECONTEO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function openRecountPanel() {
         startingRecountRef.current = true;
         setShowRecount(true);
@@ -2028,10 +2035,10 @@ export default function DashboardPage() {
         const latestStock = await getSystemStockForStore(asgn.sku, asgn.store_id);
         const updated = { ...asgn, system_stock: latestStock };
 
-        // Si el código ya tiene conteo guardado, el snapshot queda intacto en la BD
-        // (foto del momento en que el operario contó). Solo se actualiza en memoria
-        // para no alterar el histórico.
-        // Si aún no tiene conteo, sí se actualiza en BD para que el snapshot que
+        // Si el cÃ³digo ya tiene conteo guardado, el snapshot queda intacto en la BD
+        // (foto del momento en que el operario contÃ³). Solo se actualiza en memoria
+        // para no alterar el histÃ³rico.
+        // Si aÃºn no tiene conteo, sÃ­ se actualiza en BD para que el snapshot que
         // se grabe al guardar refleje el stock real de ese momento.
         const yaContado = counts.some(c => c.assignment_id === asgn.id);
         if ((forcePersist || !yaContado) && Number(asgn.system_stock || 0) !== latestStock) {
@@ -2053,7 +2060,7 @@ export default function DashboardPage() {
 
         if (notify) {
             const changed = Number(asgn.system_stock || 0) !== latestStock;
-            showMessage(changed ? `Stock actualizado de ${formatNumber(asgn.system_stock)} a ${formatNumber(latestStock)}.` : "Stock sistema ya está actualizado.", "success");
+            showMessage(changed ? `Stock actualizado de ${formatNumber(asgn.system_stock)} a ${formatNumber(latestStock)}.` : "Stock sistema ya estÃ¡ actualizado.", "success");
         }
         return updated;
     }
@@ -2063,7 +2070,7 @@ export default function DashboardPage() {
         const store = allStores.find(s => s.id === selectedStoreId) || stores.find(s => s.id === selectedStoreId);
         const sede = String(store?.erp_sede || store?.name || "").trim();
         if (!sede) {
-            showMessage("No se encontró sede ERP para actualizar stock.", "error");
+            showMessage("No se encontrÃ³ sede ERP para actualizar stock.", "error");
             return;
         }
 
@@ -2093,8 +2100,8 @@ export default function DashboardPage() {
             .filter(row => Number(row.assignment.system_stock || 0) !== row.stock);
 
         if (updates.length > 0) {
-            // Solo escribe en BD los que aún no tienen conteo guardado (snapshot no sellado).
-            // Los ya contados se actualizan solo en memoria para no alterar su histórico.
+            // Solo escribe en BD los que aÃºn no tienen conteo guardado (snapshot no sellado).
+            // Los ya contados se actualizan solo en memoria para no alterar su histÃ³rico.
             const toWriteDB = updates.filter(row => !countedIds.has(row.assignment.id));
             for (let i = 0; i < toWriteDB.length; i += 100) {
                 const batch = toWriteDB.slice(i, i + 100);
@@ -2116,7 +2123,7 @@ export default function DashboardPage() {
         }
 
         setBulkRefreshingStocks(false);
-        showMessage(updates.length > 0 ? `${updates.length} stock${updates.length !== 1 ? "s" : ""} actualizado${updates.length !== 1 ? "s" : ""}.` : "Todos los stocks asignados ya están actualizados.", "success");
+        showMessage(updates.length > 0 ? `${updates.length} stock${updates.length !== 1 ? "s" : ""} actualizado${updates.length !== 1 ? "s" : ""}.` : "Todos los stocks asignados ya estÃ¡n actualizados.", "success");
     }
 
     async function refreshValidatorAssignedStocksForDate() {
@@ -2498,7 +2505,7 @@ export default function DashboardPage() {
         setSavingRecount(true);
         const currentRecountAssignment = await refreshAssignmentStock(recountAssignment, false, true);
 
-        // ── Modo "Sin stock físico" en reconteo ──────────────
+        // â”€â”€ Modo "Sin stock fÃ­sico" en reconteo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (sinStockRecount) {
             await supabase.from("cyclic_counts").delete().eq("assignment_id", currentRecountAssignment.id);
             const { error } = await supabase.from("cyclic_counts").insert({
@@ -2510,7 +2517,7 @@ export default function DashboardPage() {
                 user_id: user.id,
                 user_name: user.full_name,
                 status: "Diferencia" as CountRecord["status"],
-                note: "Sin stock físico en tienda",
+                note: "Sin stock fÃ­sico en tienda",
                 stock_snapshot: Number(currentRecountAssignment.system_stock || 0),
                 client_uuid: createClientUuid("cyclic-recount"),
                 client_device_id: getOrCreateDeviceId(),
@@ -2519,7 +2526,7 @@ export default function DashboardPage() {
                 updated_at: new Date().toISOString(),
             });
             if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
-            showMessage(`✅ "${recountAssignment.sku}" marcado como sin stock.`, "success");
+            showMessage(`âœ… "${recountAssignment.sku}" marcado como sin stock.`, "success");
             setSinStockRecount(false);
             setRecountAssignment(null);
             setRecountRows([{ location: "", qty: "" }]);
@@ -2529,15 +2536,15 @@ export default function DashboardPage() {
             return;
         }
 
-        // ── Validación normal ────────────────────────────────
+        // â”€â”€ ValidaciÃ³n normal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for (let i = 0; i < recountRows.length; i++) {
             const row = recountRows[i];
-            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicación.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
+            if (!row.location.trim()) { showMessage(`Fila ${i + 1}: ingresa la ubicaciÃ³n.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             if (row.qty === "") { showMessage(`Fila ${i + 1}: ingresa la cantidad.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             const qty = Number(row.qty);
-            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad inválida.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
+            if (isNaN(qty) || qty < 0) { showMessage(`Fila ${i + 1}: cantidad invÃ¡lida.`, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
             if (qty === 0) {
-                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Usa el botón "Sin stock" si no hay producto físico.`, "error");
+                showMessage(`Fila ${i + 1}: cantidad 0 no permitida. Usa el botÃ³n "Sin stock" si no hay producto fÃ­sico.`, "error");
                 savingRecountRef.current = false;
                 setSavingRecount(false); return;
             }
@@ -2577,7 +2584,7 @@ export default function DashboardPage() {
             "ciclico"
         );
 
-        showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
+        showMessage(`âœ… Reconteo guardado para ${recountAssignment.sku}.`, "success");
         setSinStockRecount(false);
         setRecountAssignment(null);
         setRecountRows([{ location: "", qty: "" }]);
@@ -2588,7 +2595,7 @@ export default function DashboardPage() {
 
     async function finalizeRecount() {
         const currentDiffs = difAssignments.length;
-        if (currentDiffs > 2 && !confirm(`¿Estás segura de culminar reconteo? Tenemos ${currentDiffs} códigos con diferencia.`)) {
+        if (currentDiffs > 2 && !confirm(`Â¿EstÃ¡s segura de culminar reconteo? Tenemos ${currentDiffs} cÃ³digos con diferencia.`)) {
             return;
         }
 
@@ -2607,13 +2614,13 @@ export default function DashboardPage() {
         setShowRecount(false);
         setRecountFinished(true);
         setRecountAssignment(null);
-        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES ✅", "success");
+        showMessage("GENIAL, CULMINASTE CON TUS ASIGNACIONES âœ…", "success");
         loadOperarioData(selectedStoreId, selectedDate);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  OPERARIO — REPORTE DE RECONTEO
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  OPERARIO â€” REPORTE DE RECONTEO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     function generateRecountReport() {
         if (myAssignments.length === 0) {
             showMessage("No hay codigos asignados para generar el reporte.", "error");
@@ -2808,9 +2815,9 @@ export default function DashboardPage() {
         setTimeout(() => reportWindow.print(), 500);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  WHATSAPP — ALERTA AL OPERARIO
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  WHATSAPP â€” ALERTA AL OPERARIO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function sendWhatsappAlert(storeId: string, date: string, codigosCount: number) {
         // Buscar el operario activo asignado a esa tienda
         const { data: operario } = await supabase
@@ -2820,16 +2827,16 @@ export default function DashboardPage() {
             .eq("role", "Operario")
             .eq("is_active", true)
             .maybeSingle();
-        if (!operario || !operario.whatsapp) return; // sin número, no hacer nada
+        if (!operario || !operario.whatsapp) return; // sin nÃºmero, no hacer nada
         const storeName = allStores.find(s => s.id === storeId)?.name || "tu tienda";
-        const mensaje = `Hola ${operario.full_name} 👋, se te han asignado *${codigosCount} código${codigosCount !== 1 ? "s" : ""}* para contar en *${storeName}* el día *${date}*. Por favor ingresa a la app para realizar el conteo cíclico. ¡Gracias!`;
+        const mensaje = `Hola ${operario.full_name} ðŸ‘‹, se te han asignado *${codigosCount} cÃ³digo${codigosCount !== 1 ? "s" : ""}* para contar en *${storeName}* el dÃ­a *${date}*. Por favor ingresa a la app para realizar el conteo cÃ­clico. Â¡Gracias!`;
         const url = `https://wa.me/${operario.whatsapp}?text=${encodeURIComponent(mensaje)}`;
         window.open(url, "_blank");
     }
 
-    // ════════════════════════════════════════════════════════
-    //  VALIDADOR — ASIGNAR PRODUCTOS
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  VALIDADOR â€” ASIGNAR PRODUCTOS
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     function isNonInventoryProduct(product: Product | null | undefined): boolean {
         if (!product) return false;
         return nonInventorySkuSet.has(fullProductCode(product.sku).toUpperCase());
@@ -3053,7 +3060,7 @@ export default function DashboardPage() {
             }
 
             const skipped = (targetStores.length * cleanProducts.length) - inserted;
-            showMessage(`✅ ${inserted} asignaciones creadas (${modeLabel}). ${skipped > 0 ? `${skipped} ya existian o fueron omitidas.` : ""}`, inserted > 0 ? "success" : "info");
+            showMessage(`âœ… ${inserted} asignaciones creadas (${modeLabel}). ${skipped > 0 ? `${skipped} ya existian o fueron omitidas.` : ""}`, inserted > 0 ? "success" : "info");
             if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
             else { setAssignments([]); setCounts([]); loadAllStoreAssignmentSummary(valDate); }
         } catch (error: any) {
@@ -3525,7 +3532,7 @@ export default function DashboardPage() {
         await loadNonInventoryProducts();
         setAssignResults(prev => prev.filter(product => !uniqueCodes.includes(fullProductCode(product.sku))));
         setAssignSelectedIds(prev => new Set([...prev].filter(id => !assignResults.some(product => product.id === id && uniqueCodes.includes(fullProductCode(product.sku))))));
-        showMessage(`✅ ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable${sourceLabel === "excel" ? " desde Excel" : ""}.`, "success");
+        showMessage(`âœ… ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable${sourceLabel === "excel" ? " desde Excel" : ""}.`, "success");
         return rows.length;
     }
 
@@ -3547,7 +3554,7 @@ export default function DashboardPage() {
                 .map(row => String(row?.[0] ?? "").trim())
                 .filter(Boolean);
             const header = firstCol[0]?.toLowerCase() || "";
-            const hasHeader = ["codigo", "código", "codsap", "cod.sap", "sku", "producto"].some(label => header.includes(label));
+            const hasHeader = ["codigo", "cÃ³digo", "codsap", "cod.sap", "sku", "producto"].some(label => header.includes(label));
             const codes = hasHeader ? firstCol.slice(1) : firstCol;
             await saveNonInventoryCodes(codes, "excel");
         } catch (error: any) {
@@ -3586,38 +3593,38 @@ export default function DashboardPage() {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_assignments")
             .select("id").eq("store_id", valStoreId).eq("product_id", product.id).eq("assigned_date", valDate).maybeSingle();
-        if (existing) { showMessage("Este producto ya está asignado para esa tienda y fecha.", "error"); return; }
+        if (existing) { showMessage("Este producto ya estÃ¡ asignado para esa tienda y fecha.", "error"); return; }
         const stock = await getSystemStockForStore(product.sku, valStoreId);
         const { error } = await supabase.from("cyclic_assignments").insert({
             store_id: valStoreId, product_id: product.id, system_stock: stock,
             assigned_date: valDate, assigned_by: user?.id,
         });
         if (error) { showMessage("Error al asignar: " + error.message, "error"); return; }
-        showMessage("✅ \"" + product.sku + "\" asignado con stock sistema " + stock + ".", "success");
+        showMessage("âœ… \"" + product.sku + "\" asignado con stock sistema " + stock + ".", "success");
         loadValidadorData(valStoreId, valDate);
     }
 
     async function removeAssignment(asgn: Assignment) {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
-        if (!confirm(`¿Eliminar asignación de "${asgn.sku}"? Si ya fue contado, el conteo también se eliminará.`)) return;
+        if (!confirm(`Â¿Eliminar asignaciÃ³n de "${asgn.sku}"? Si ya fue contado, el conteo tambiÃ©n se eliminarÃ¡.`)) return;
         await supabase.from("cyclic_counts").delete().eq("assignment_id", asgn.id);
         const { error } = await supabase.from("cyclic_assignments").delete().eq("id", asgn.id);
         if (error) { showMessage("Error al eliminar: " + error.message, "error"); return; }
-        showMessage("✅ Asignación eliminada.", "success");
+        showMessage("âœ… AsignaciÃ³n eliminada.", "success");
         loadValidadorData(valStoreId, valDate);
     }
 
     async function removeAllAssignments() {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (assignments.length === 0) return;
-        if (!confirm(`¿Eliminar TODAS las ${assignments.length} asignaciones de este día? También se eliminarán todos los conteos asociados.`)) return;
+        if (!confirm(`Â¿Eliminar TODAS las ${assignments.length} asignaciones de este dÃ­a? TambiÃ©n se eliminarÃ¡n todos los conteos asociados.`)) return;
         const ids = assignments.map(a => a.id);
         const CHUNK = 400;
         for (let i = 0; i < ids.length; i += CHUNK) {
             await supabase.from("cyclic_counts").delete().in("assignment_id", ids.slice(i, i + CHUNK));
             await supabase.from("cyclic_assignments").delete().in("id", ids.slice(i, i + CHUNK));
         }
-        showMessage(`✅ ${ids.length} asignaciones eliminadas.`, "success");
+        showMessage(`âœ… ${ids.length} asignaciones eliminadas.`, "success");
         loadValidadorData(valStoreId, valDate);
     }
 
@@ -3661,20 +3668,20 @@ export default function DashboardPage() {
                 return idx >= 0 ? idx : -1;
             };
 
-            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "almacén", "local", "tda", "sede"].some(n => String(h || "").toLowerCase().includes(n)));
+            const hasStoreCol = headerRow.some((h: any) => ["tienda", "store", "almacen", "almacÃ©n", "local", "tda", "sede"].some(n => String(h || "").toLowerCase().includes(n)));
             let colTienda = -1;
             let colCodigo: number;
             let colCosto = -1;
             let colStock = -1;
 
             if (hasStoreCol) {
-                colTienda = findCol(["tienda", "store", "almacen", "almacén", "local", "tda", "sede"]);
-                const detectedCodigo = findCol(["codigo", "código", "code", "sku", "cod", "codsap", "barra", "barcode"]);
+                colTienda = findCol(["tienda", "store", "almacen", "almacÃ©n", "local", "tda", "sede"]);
+                const detectedCodigo = findCol(["codigo", "cÃ³digo", "code", "sku", "cod", "codsap", "barra", "barcode"]);
                 colCodigo = detectedCodigo >= 0 ? detectedCodigo : (colTienda >= 0 ? colTienda + 1 : 1);
                 colCosto = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]);
                 colStock = findCol(["stock", "cantidad", "qty", "saldo", "existencia"]);
             } else {
-                const detectedCodigo = findCol(["codigo", "código", "code", "sku", "cod", "codsap", "barra", "barcode"]);
+                const detectedCodigo = findCol(["codigo", "cÃ³digo", "code", "sku", "cod", "codsap", "barra", "barcode"]);
                 colCodigo = detectedCodigo >= 0 ? detectedCodigo : 0;
                 colCosto = findCol(["cost", "costo", "precio", "price", "ult.cost", "ult cost"]);
                 colStock = findCol(["stock", "cantidad", "qty", "saldo", "existencia"]);
@@ -3682,7 +3689,7 @@ export default function DashboardPage() {
 
             const dataRows = allRows.slice(1).filter(r => r.some((v: any) => String(v || "").trim()));
 
-            // ── PASO 1: Construir mapa de tiendas ────────────────────────
+            // â”€â”€ PASO 1: Construir mapa de tiendas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const normalizeStoreKey = (value: string | null | undefined) => String(value || "").trim().toLowerCase();
             const storeNameMap = new Map<string, string>();
             const storeById = new Map<string, Store>();
@@ -3694,7 +3701,7 @@ export default function DashboardPage() {
                 }
             }
 
-            // ── PASO 2: Extraer códigos únicos del archivo ────────────────
+            // â”€â”€ PASO 2: Extraer cÃ³digos Ãºnicos del archivo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Leyendo archivo y buscando productos...", pct: 5 });
             const codigosEnArchivo = new Set<string>();
             for (const row of dataRows) {
@@ -3702,7 +3709,7 @@ export default function DashboardPage() {
                 if (rawCode) codigosEnArchivo.add(rawCode);
             }
 
-            // ── PASO 3: Traer productos relevantes de una vez ────────────
+            // â”€â”€ PASO 3: Traer productos relevantes de una vez â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Cargando productos del maestro...", pct: 15 });
             const codeArr = [...codigosEnArchivo];
             const prodBySkuMap = new Map<string, Product>();
@@ -3757,7 +3764,7 @@ export default function DashboardPage() {
                 return (mappedSku ? prodBySkuMap.get(mappedSku) : null) || prodByBarcodeMap.get(clean) || prodBySkuMap.get(clean) || null;
             };
 
-            // ── PASO 4: Tiendas y stock sincronizado por tienda/código ───
+            // â”€â”€ PASO 4: Tiendas y stock sincronizado por tienda/cÃ³digo â”€â”€â”€
             setBulkAssignProgress({ step: "Cargando stock sincronizado por tienda...", pct: 30 });
             const storeIdsDelArchivo = new Set<string>();
             if (hasStoreCol && colTienda >= 0) {
@@ -3785,7 +3792,7 @@ export default function DashboardPage() {
                 stockBySedeSku.set(String(row.sede || "").trim() + "__" + fullProductCode(row.codsap), Number(row.stock || 0));
             }
 
-            // ── PASO 5: Traer asignaciones existentes para la fecha ──────
+            // â”€â”€ PASO 5: Traer asignaciones existentes para la fecha â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Revisando asignaciones existentes...", pct: 45 });
             type ExistingAssignment = { id: string; store_id: string; product_id: string; system_stock: number };
             let existingAsgns: ExistingAssignment[] = [];
@@ -3800,8 +3807,8 @@ export default function DashboardPage() {
             const existingMap = new Map<string, ExistingAssignment>();
             for (const ea of existingAsgns) existingMap.set(ea.store_id + "__" + ea.product_id, ea);
 
-            // ── PASO 6: Procesar filas y construir lotes ────────────────
-            setBulkAssignProgress({ step: "Preparando datos para inserción...", pct: 60 });
+            // â”€â”€ PASO 6: Procesar filas y construir lotes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            setBulkAssignProgress({ step: "Preparando datos para inserciÃ³n...", pct: 60 });
             let skip = 0, notFound = 0, storeNotFound = 0, stockNotFound = 0;
             const assignmentDrafts = new Map<string, { store_id: string; product_id: string; system_stock: number }>();
             const costUpdates: { id: string; cost: number }[] = [];
@@ -3859,7 +3866,7 @@ export default function DashboardPage() {
                 }
             }
 
-            // ── PASO 7: Actualizar costos opcionales ────────────────────
+            // â”€â”€ PASO 7: Actualizar costos opcionales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Actualizando costos opcionales...", pct: 70 });
             const now = new Date().toISOString();
             for (let i = 0; i < costUpdates.length; i += 200) {
@@ -3869,7 +3876,7 @@ export default function DashboardPage() {
                 ));
             }
 
-            // ── PASO 8: Actualizaciones de stock en lote ────────────────
+            // â”€â”€ PASO 8: Actualizaciones de stock en lote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Actualizando " + toUpdate.length + " asignaciones...", pct: 78 });
             for (let i = 0; i < toUpdate.length; i += 200) {
                 const chunk = toUpdate.slice(i, i + 200);
@@ -3878,7 +3885,7 @@ export default function DashboardPage() {
                 ));
             }
 
-            // ── PASO 9: Insertar nuevas asignaciones en lote ────────────
+            // â”€â”€ PASO 9: Insertar nuevas asignaciones en lote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             setBulkAssignProgress({ step: "Insertando " + toInsert.length + " nuevas asignaciones...", pct: 88 });
             const INSERT_BATCH = 200;
             let insertOk = 0;
@@ -3893,12 +3900,12 @@ export default function DashboardPage() {
             setBulkAssignProgress(null);
             const storeMsg = storeNotFound > 0 ? " " + storeNotFound + " tiendas no encontradas." : "";
             const stockMsg = stockNotFound > 0 ? " " + stockNotFound + " sin stock sincronizado; se omitieron salvo que el Excel tenga stock manual mayor a 0." : "";
-            showMessage("✅ " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacíos. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
+            showMessage("âœ… " + insertOk + " nuevos asignados, " + toUpdate.length + " actualizados. " + skip + " vacÃ­os. " + notFound + " no encontrados en maestro." + storeMsg + stockMsg, insertOk > 0 || toUpdate.length > 0 ? "success" : "error");
             setBulkAssignFile(null); setBulkAssignFileName("");
             if (valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
             if (valStoreId === ALL_STORES_VALUE) loadAllStoreAssignmentSummary(valDate);
 
-            // ── PASO 10: Modal WhatsApp masivo ──────────────────────────
+            // â”€â”€ PASO 10: Modal WhatsApp masivo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if (insertOk > 0 || toUpdate.length > 0) {
                 const wspStoreIds = [...storeIdsDelArchivo];
                 const allOps: any[] = [];
@@ -3944,13 +3951,13 @@ export default function DashboardPage() {
         }
     }
 
-    // Construye la lista ordenada de tiendas seleccionadas para el envío
+    // Construye la lista ordenada de tiendas seleccionadas para el envÃ­o
     const bulkWspQueue = bulkWspStores.filter(s => bulkWspSelected.has(s.id) && s.operario?.whatsapp);
 
     function buildWspMessage(store: typeof bulkWspStores[0]) {
         const op = store.operario!;
         const appUrl = typeof window !== "undefined" ? window.location.origin : "";
-        return `Hola ${op.full_name} 👋\n\nSe te han asignado *${store.count} código${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el día *${bulkWspDate}*.\n\nPor favor ingresa a la app para realizar el conteo cíclico:\n🔗 ${appUrl}\n👤 Usuario: *${op.username}*\n🔑 Contraseña: *${op.password}*\n\n¡Gracias!`;
+        return `Hola ${op.full_name} ðŸ‘‹\n\nSe te han asignado *${store.count} cÃ³digo${store.count !== 1 ? "s" : ""}* para contar en *${store.name}* el dÃ­a *${bulkWspDate}*.\n\nPor favor ingresa a la app para realizar el conteo cÃ­clico:\nðŸ”— ${appUrl}\nðŸ‘¤ Usuario: *${op.username}*\nðŸ”‘ ContraseÃ±a: *${op.password}*\n\nÂ¡Gracias!`;
     }
 
     function startBulkSend() {
@@ -3966,7 +3973,7 @@ export default function DashboardPage() {
         if (next >= bulkWspQueue.length) {
             setBulkWspSendingIdx(-1);
             setShowBulkWspModal(false);
-            showMessage(`✅ WhatsApp enviado a ${bulkWspQueue.length} tienda${bulkWspQueue.length !== 1 ? "s" : ""}.`, "success");
+            showMessage(`âœ… WhatsApp enviado a ${bulkWspQueue.length} tienda${bulkWspQueue.length !== 1 ? "s" : ""}.`, "success");
             return;
         }
         setBulkWspSendingIdx(next);
@@ -4017,12 +4024,12 @@ export default function DashboardPage() {
             allOperarios.push(...(ops || []));
         }
 
-        // Agrupar operarios por store_id — preferir el que tiene WhatsApp
+        // Agrupar operarios por store_id â€” preferir el que tiene WhatsApp
         const operarioByStore = new Map<string, { full_name: string; whatsapp: string; username: string; password: string }>();
         for (const op of allOperarios) {
             const wsp = String(op.whatsapp || "").trim();
             if (!wsp) continue;
-            // Si ya hay uno para esta tienda, quedarse con el primero que tenga número (lider*)
+            // Si ya hay uno para esta tienda, quedarse con el primero que tenga nÃºmero (lider*)
             if (!operarioByStore.has(op.store_id)) {
                 operarioByStore.set(op.store_id, { full_name: op.full_name, whatsapp: wsp, username: op.username || "", password: op.password || "" });
             }
@@ -4044,9 +4051,9 @@ export default function DashboardPage() {
         setShowBulkWspModal(true);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  VALIDADOR — EDITAR CONTEO
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  VALIDADOR â€” EDITAR CONTEO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     function openEditCount(c: CountRecord) {
         setEditingCount(c);
         setEditQty(String(c.counted_quantity));
@@ -4059,7 +4066,7 @@ export default function DashboardPage() {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!editingCount || !user) return;
         const qty = Number(editQty);
-        if (isNaN(qty) || qty < 0) { showMessage("Cantidad inválida.", "error"); return; }
+        if (isNaN(qty) || qty < 0) { showMessage("Cantidad invÃ¡lida.", "error"); return; }
         const asg = assignments.find(a => a.id === editingCount.assignment_id);
         const diff = qty - Number(asg?.system_stock || 0);
         const { error } = await supabase.from("cyclic_counts").update({
@@ -4070,26 +4077,26 @@ export default function DashboardPage() {
         }).eq("id", editingCount.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         if (asg) await upsertProductLocations(asg.product_id, asg.sku, asg.store_id, [editLocation]);
-        showMessage("✅ Registro actualizado.", "success");
+        showMessage("âœ… Registro actualizado.", "success");
         setEditingCount(null);
         loadValidadorData(valStoreId, valDate);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  RESUMEN ANÁLISIS — GUARDAR EN BD
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  RESUMEN ANÃLISIS â€” GUARDAR EN BD
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function saveResumenAnalysis(overridesToSave?: Record<string, { system_stock?: number; total_counted?: number }>) {
         const effectiveOverrides = overridesToSave ?? resumenOverrides;
         const entries = Object.entries(effectiveOverrides);
         if (entries.length === 0) { showMessage("No hay cambios para guardar.", "info"); return; }
-        if (!confirm(`¿Guardar ${entries.length} cambio${entries.length !== 1 ? "s" : ""} en la base de datos? Esta acción modifica el stock sistema y/o los conteos reales.`)) return;
+        if (!confirm(`Â¿Guardar ${entries.length} cambio${entries.length !== 1 ? "s" : ""} en la base de datos? Esta acciÃ³n modifica el stock sistema y/o los conteos reales.`)) return;
 
         setSavingAnalysis(true);
         let errores = 0;
         const now = new Date().toISOString();
 
         for (const [product_id, ov] of entries) {
-            // ── 1. Actualizar system_stock en todas las asignaciones de este producto/tienda/fecha ──
+            // â”€â”€ 1. Actualizar system_stock en todas las asignaciones de este producto/tienda/fecha â”€â”€
             if (ov.system_stock !== undefined) {
                 const asgnsDelProducto = assignments.filter(a => a.product_id === product_id);
                 for (const asg of asgnsDelProducto) {
@@ -4101,19 +4108,19 @@ export default function DashboardPage() {
                 }
             }
 
-            // ── 2. Actualizar counted_quantity en cyclic_counts ──────────────────────────────────
+            // â”€â”€ 2. Actualizar counted_quantity en cyclic_counts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             // Estrategia: obtener todos los conteos reales del producto, sumar, y distribuir el nuevo total
-            // en el primer conteo (el más reciente). Los demás se ponen en 0 para que la suma sea correcta.
+            // en el primer conteo (el mÃ¡s reciente). Los demÃ¡s se ponen en 0 para que la suma sea correcta.
             if (ov.total_counted !== undefined) {
                 const cntsDeProd = counts.filter(c => c.product_id === product_id);
                 if (cntsDeProd.length === 0) continue;
 
-                // Ordenar por fecha más reciente primero
+                // Ordenar por fecha mÃ¡s reciente primero
                 const sorted = [...cntsDeProd].sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime());
                 const nuevoTotal = ov.total_counted;
                 const stockSnapshot = Number(ov.system_stock ?? assignments.find(a => a.product_id === product_id)?.system_stock ?? 0);
 
-                // El primer conteo (más reciente) toma el total completo
+                // El primer conteo (mÃ¡s reciente) toma el total completo
                 const { error: e1 } = await supabase
                     .from("cyclic_counts")
                     .update({
@@ -4131,7 +4138,7 @@ export default function DashboardPage() {
                     .eq("id", sorted[0].id);
                 if (e1) { errores++; console.error("Error actualizando conteo principal:", e1); }
 
-                // Los demás conteos se ponen en 0 para no duplicar la suma
+                // Los demÃ¡s conteos se ponen en 0 para no duplicar la suma
                 for (let i = 1; i < sorted.length; i++) {
                     const { error: ei } = await supabase
                         .from("cyclic_counts")
@@ -4145,42 +4152,42 @@ export default function DashboardPage() {
         setSavingAnalysis(false);
 
         if (errores === 0) {
-            showMessage(`✅ ${entries.length} cambio${entries.length !== 1 ? "s" : ""} guardado${entries.length !== 1 ? "s" : ""} correctamente.`, "success");
+            showMessage(`âœ… ${entries.length} cambio${entries.length !== 1 ? "s" : ""} guardado${entries.length !== 1 ? "s" : ""} correctamente.`, "success");
             setResumenOverrides({}); setResumenDraft({});
             setResumenDraft({});
             // Recargar datos para reflejar lo guardado
             loadValidadorData(valStoreId, valDate);
         } else {
-            showMessage(`⚠️ Se guardaron con ${errores} error${errores !== 1 ? "es" : ""}. Revisa la consola.`, "error");
+            showMessage(`âš ï¸ Se guardaron con ${errores} error${errores !== 1 ? "es" : ""}. Revisa la consola.`, "error");
             loadValidadorData(valStoreId, valDate);
         }
     }
 
     async function deleteCount(c: CountRecord) {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
-        if (!confirm(`¿Eliminar conteo de "${c.sku}"?`)) return;
+        if (!confirm(`Â¿Eliminar conteo de "${c.sku}"?`)) return;
         const { error } = await supabase.from("cyclic_counts").delete().eq("id", c.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Conteo eliminado.", "success");
+        showMessage("âœ… Conteo eliminado.", "success");
         if (user?.role === "Operario") loadOperarioData(selectedStoreId, selectedDate);
         else loadValidadorData(valStoreId, valDate);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  VALIDADOR / ADMIN — REVERSAR CUMPLIMIENTO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  VALIDADOR / ADMIN â€” REVERSAR CUMPLIMIENTO
     //  Elimina TODOS los conteos reales de la tienda+fecha para
     //  que el operario vuelva a tener acceso a contar.
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function reversarCumplimiento() {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
         const storeName = allStores.find(s => s.id === valStoreId)?.name || valStoreId;
-        if (!confirm(`¿Reversar el cumplimiento de ${storeName} en ${valDate}?\n\nEsto eliminará TODOS los conteos del día para que el operario pueda volver a registrarlos. Esta acción no se puede deshacer.`)) return;
+        if (!confirm(`Â¿Reversar el cumplimiento de ${storeName} en ${valDate}?\n\nEsto eliminarÃ¡ TODOS los conteos del dÃ­a para que el operario pueda volver a registrarlos. Esta acciÃ³n no se puede deshacer.`)) return;
 
         // 1. Obtener todas las asignaciones de la tienda+fecha
         const asgIds = assignments.map(a => a.id);
         if (asgIds.length === 0) { showMessage("No hay asignaciones para reversar.", "error"); return; }
 
-        // 2. Eliminar todos los conteos reales (incluyendo flags de sesión)
+        // 2. Eliminar todos los conteos reales (incluyendo flags de sesiÃ³n)
         const CHUNK = 400;
         let errores = 0;
         for (let i = 0; i < asgIds.length; i += CHUNK) {
@@ -4192,24 +4199,24 @@ export default function DashboardPage() {
         }
 
         if (errores > 0) {
-            showMessage(`⚠️ Reversado con ${errores} error(es). Algunos conteos podrían no haberse eliminado.`, "error");
+            showMessage(`âš ï¸ Reversado con ${errores} error(es). Algunos conteos podrÃ­an no haberse eliminado.`, "error");
         } else {
-            showMessage(`✅ Cumplimiento reversado para ${storeName} — ${valDate}. El operario puede volver a contar.`, "success");
+            showMessage(`âœ… Cumplimiento reversado para ${storeName} â€” ${valDate}. El operario puede volver a contar.`, "success");
         }
         loadValidadorData(valStoreId, valDate);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  ADMIN — MAESTRO PRODUCTOS
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  ADMIN â€” MAESTRO PRODUCTOS
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function uploadMaster() {
         if (!masterFile) { showMessage("Selecciona un archivo.", "error"); return; }
-        if (!confirm("¿Seguro? Esto actualizará o insertará productos en el maestro global.")) return;
+        if (!confirm("Â¿Seguro? Esto actualizarÃ¡ o insertarÃ¡ productos en el maestro global.")) return;
         try {
             const data = await masterFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
             const sheet = wb.Sheets[wb.SheetNames[0]];
-            // Leer como array de arrays para ignorar la fila 1 y leer por posición de columna
+            // Leer como array de arrays para ignorar la fila 1 y leer por posiciÃ³n de columna
             // Col A=0: codigo, Col B=1: descripcion, Col C=2: unidad, Col D=3: costo, Col E=4: stock
             const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
             const dataRows = allRows.slice(1); // ignorar fila 1 (encabezado)
@@ -4238,14 +4245,14 @@ export default function DashboardPage() {
                 if (!desc) continue;
                 const unit = String(row[2] || "NIU").trim() || "NIU";
                 const cost = parseCost(row[3]);
-                // Col E (índice 4) es stock - lo guardamos en system_stock si existe, pero en maestro no se usa stock
+                // Col E (Ã­ndice 4) es stock - lo guardamos en system_stock si existe, pero en maestro no se usa stock
                 const barcode: string | null = null; // barcode viene del archivo separado
                 map.set(normalizeText(rawSku), {
                     sku: rawSku, barcode, description: desc, unit, cost, is_active: true,
                     updated_at: new Date().toISOString(),
                 });
             }
-            if (map.size === 0) { showMessage("Archivo sin filas válidas. Verifica que tenga datos desde la fila 2.", "error"); return; }
+            if (map.size === 0) { showMessage("Archivo sin filas vÃ¡lidas. Verifica que tenga datos desde la fila 2.", "error"); return; }
             const items = Array.from(map.values());
             let ok = 0;
             const BATCH = 500;
@@ -4256,7 +4263,7 @@ export default function DashboardPage() {
                 if (!error) ok += batch.length;
             }
             setUploadProgress(null);
-            showMessage(`✅ ${ok} productos procesados en el maestro global.`, "success");
+            showMessage(`âœ… ${ok} productos procesados en el maestro global.`, "success");
             setMasterFile(null); setMasterFileName("");
             loadProducts();
         } catch (e: any) {
@@ -4266,8 +4273,8 @@ export default function DashboardPage() {
     }
 
     async function uploadBarcodes() {
-        if (!barcodesFile) { showMessage("Selecciona un archivo de códigos de barra.", "error"); return; }
-        if (!confirm("¿Seguro? Esto actualizará los códigos de barra del maestro global.")) return;
+        if (!barcodesFile) { showMessage("Selecciona un archivo de cÃ³digos de barra.", "error"); return; }
+        if (!confirm("Â¿Seguro? Esto actualizarÃ¡ los cÃ³digos de barra del maestro global.")) return;
         try {
             const data = await barcodesFile.arrayBuffer();
             const wb = XLSX.read(data, { type: "array" });
@@ -4292,7 +4299,7 @@ export default function DashboardPage() {
                 else notFound++;
             }
             setBarcodesProgress(null);
-            showMessage(`✅ ${ok} códigos de barra actualizados. ${notFound} SKUs no encontrados.`, ok > 0 ? "success" : "error");
+            showMessage(`âœ… ${ok} cÃ³digos de barra actualizados. ${notFound} SKUs no encontrados.`, ok > 0 ? "success" : "error");
             setBarcodesFile(null); setBarcodesFileName("");
             loadProducts();
         } catch (e: any) {
@@ -4305,23 +4312,23 @@ export default function DashboardPage() {
         if (!editingProduct || !user) return;
         const sku = editProdSku.trim();
         const desc = editProdDesc.trim();
-        if (!sku || !desc) { showMessage("SKU y descripción son obligatorios.", "error"); return; }
+        if (!sku || !desc) { showMessage("SKU y descripciÃ³n son obligatorios.", "error"); return; }
         const cost = Number(editProdCost);
-        if (isNaN(cost) || cost < 0) { showMessage("Costo inválido.", "error"); return; }
+        if (isNaN(cost) || cost < 0) { showMessage("Costo invÃ¡lido.", "error"); return; }
         const { error } = await supabase.from("cyclic_products").update({
             sku, barcode: editProdBarcode.trim() || null, description: desc,
             unit: editProdUnit.trim() || "NIU", cost,
             updated_at: new Date().toISOString(),
         }).eq("id", editingProduct.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Producto actualizado.", "success");
+        showMessage("âœ… Producto actualizado.", "success");
         setEditingProduct(null);
         loadProducts();
     }
 
-    // ════════════════════════════════════════════════════════
-    //  ADMIN — TIENDAS
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  ADMIN â€” TIENDAS
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function createStore() {
         if (!newStoreName.trim()) { showMessage("Nombre de tienda requerido.", "error"); return; }
         const { error } = await supabase.from("stores").insert({
@@ -4329,7 +4336,7 @@ export default function DashboardPage() {
             is_active: true,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Tienda creada.", "success");
+        showMessage("âœ… Tienda creada.", "success");
         setNewStoreName(""); setNewStoreCode("");
         loadStores();
     }
@@ -4340,11 +4347,11 @@ export default function DashboardPage() {
         loadStores();
     }
 
-    // ════════════════════════════════════════════════════════
-    //  ADMIN — USUARIOS
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  ADMIN â€” USUARIOS
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function createUser() {
-        if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
+        if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseÃ±a y nombre son obligatorios.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
         if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
         const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
@@ -4358,7 +4365,7 @@ export default function DashboardPage() {
             whatsapp: wsp || null,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario creado.", "success");
+        showMessage("âœ… Usuario creado.", "success");
         setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false);
         loadAllUsers();
     }
@@ -4391,16 +4398,16 @@ export default function DashboardPage() {
         if (editUserPassword.trim()) updates.password = editUserPassword.trim();
         const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario actualizado.", "success");
+        showMessage("âœ… Usuario actualizado.", "success");
         setEditingUser(null);
         loadAllUsers();
     }
 
     async function deleteUser(u: CyclicUser) {
-        if (!confirm(`¿Eliminar usuario "${u.username}"? Esta acción no se puede deshacer.`)) return;
+        if (!confirm(`Â¿Eliminar usuario "${u.username}"? Esta acciÃ³n no se puede deshacer.`)) return;
         const { error } = await supabase.from("cyclic_users").delete().eq("id", u.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario eliminado.", "success");
+        showMessage("âœ… Usuario eliminado.", "success");
         loadAllUsers();
     }
 
@@ -4589,7 +4596,7 @@ export default function DashboardPage() {
     async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
         if (!location.trim()) return;
         await upsertProductLocations(product.id, product.sku, storeId || "", [location], "manual");
-        showMessage("Ubicación guardada.", "success");
+        showMessage("UbicaciÃ³n guardada.", "success");
         await searchLocations();
     }
 
@@ -4647,7 +4654,7 @@ export default function DashboardPage() {
             const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
             const body = rows.filter(row => row.some(value => String(value || "").trim()));
             const first = body[0]?.map(value => String(value || "").trim().toLowerCase()) || [];
-            const hasHeader = first.some(cell => ["codigo", "código", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
+            const hasHeader = first.some(cell => ["codigo", "cÃ³digo", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
             const dataRows = hasHeader ? body.slice(1) : body;
             const codeLocPairs = dataRows.map(row => ({
                 code: fullProductCode(row[0]),
@@ -4701,9 +4708,9 @@ export default function DashboardPage() {
         }
     }
 
-    // ════════════════════════════════════════════════════════
-    //  ESCÁNER
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  ESCÃNER
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function stopScanner() {
         try {
             if (scannerRef.current) { await scannerRef.current.stop(); await scannerRef.current.clear(); scannerRef.current = null; }
@@ -4737,13 +4744,13 @@ export default function DashboardPage() {
 
         if (scannerTarget === "location") {
             setLocationRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
-            showMessage("Ubicación escaneada.", "success");
+            showMessage("UbicaciÃ³n escaneada.", "success");
             closeScanner();
         }
 
         if (scannerTarget === "recount_location") {
             setRecountRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
-            showMessage("Ubicación escaneada.", "success");
+            showMessage("UbicaciÃ³n escaneada.", "success");
             closeScanner();
         }
 
@@ -4776,9 +4783,9 @@ export default function DashboardPage() {
         setScannerTarget(target);
     }
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  EXPORT
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     function exportCounts() {
         const storeName = allStores.find(s => s.id === valStoreId)?.name || "tienda";
         const rows = filteredCounts.map(c => ({
@@ -4812,9 +4819,9 @@ export default function DashboardPage() {
         XLSX.writeFile(wbk, `resumen_ciclico_${storeName}_${valDate}.xlsx`);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  GENERAR CORREO HTML — INFORME GERENCIAL CONTEO CÍCLICO
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  GENERAR CORREO HTML â€” INFORME GERENCIAL CONTEO CÃCLICO
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function generateEmailHTML() {
         if (filteredDashData.length === 0) { showMessage("Primero consulta el dashboard.", "error"); return; }
 
@@ -4824,7 +4831,7 @@ export default function DashboardPage() {
             ? dashMonth
             : `${dashRangeFrom} al ${dashRangeTo}`;
 
-        // ── Métricas globales ──────────────────────────────
+        // â”€â”€ MÃ©tricas globales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         const emailKpiRows = filteredDashData;
         // Cumplimiento: usa TODAS las tiendas
         const cumplidos     = dashPeriod === "dia"
@@ -4848,8 +4855,8 @@ export default function DashboardPage() {
         const totalFaltantes = faltTotal;
         const totalSobrantes = sobTotal;
 
-        // ── Top 10 por código: consultar BD con el rango del período ──
-        showMessage("⏳ Calculando top por código...", "info");
+        // â”€â”€ Top 10 por cÃ³digo: consultar BD con el rango del perÃ­odo â”€â”€
+        showMessage("â³ Calculando top por cÃ³digo...", "info");
         let dateFrom = dashDate, dateTo = dashDate;
         if (dashPeriod === "mes") {
             const [yr, mo] = dashMonth.split("-").map(Number);
@@ -4866,7 +4873,7 @@ export default function DashboardPage() {
         const storeNameById = new Map(filteredDashData.map(row => [row.store_id, row.store_name]));
 
         try {
-            // 1. Traer assignments del período
+            // 1. Traer assignments del perÃ­odo
             const PAGE = 1000;
             let asgnRows: any[] = [];
             let pg = 0;
@@ -4897,7 +4904,7 @@ export default function DashboardPage() {
                 const prodMap = new Map(prodRows.map((p: any) => [p.id, p]));
                 const asgnById = new Map(asgnRows.map((a: any) => [a.id, a]));
 
-                // 3. Traer counts del período
+                // 3. Traer counts del perÃ­odo
                 const asgnIds = asgnRows.map((a: any) => a.id);
                 let cntRows: any[] = [];
                 const CHUNK = 500;
@@ -4917,7 +4924,7 @@ export default function DashboardPage() {
                     cntByAsgn.set(c.assignment_id, r2((cntByAsgn.get(c.assignment_id) || 0) + Number(c.counted_quantity)));
                 }
 
-                // 5. Agrupar por product_id → diferencia valorizada
+                // 5. Agrupar por product_id â†’ diferencia valorizada
                 const asgnsByDay = new Map<string, any[]>();
                 for (const asgn of asgnRows) {
                     const key = `${asgn.store_id}__${asgn.assigned_date}`;
@@ -4944,7 +4951,7 @@ export default function DashboardPage() {
                 for (const asgn of asgnRows) {
                     const prod = prodMap.get(asgn.product_id);
                     if (!prod) continue;
-                    // Solo considerar assignments de días que cumplieron
+                    // Solo considerar assignments de dÃ­as que cumplieron
                     const dayKey = `${asgn.store_id}__${asgn.assigned_date}`;
                     if (!fulfilledDayKeys.has(dayKey)) continue;
                     const aggKey = `${asgn.store_id}__${asgn.product_id}`;
@@ -4977,18 +4984,18 @@ export default function DashboardPage() {
                 }
             }
         } catch (e: any) {
-            console.error("Error calculando top por código:", e);
+            console.error("Error calculando top por cÃ³digo:", e);
         }
 
         const topFaltantes = [...skuFaltMap.values()].sort((a, b) => a.totalDifVal - b.totalDifVal).slice(0, 10);
         const topSobrantes = [...skuSobMap.values()].sort((a, b) => b.totalDifVal - a.totalDifVal).slice(0, 10);
 
-        // ── Colores helper ──
+        // â”€â”€ Colores helper â”€â”€
         const eriColor = (v: number) => v >= 90 ? "#16a34a" : v >= 70 ? "#d97706" : "#dc2626";
         const pctColor = (v: number) => v >= 90 ? "#16a34a" : v >= 70 ? "#d97706" : "#dc2626";
         const difColor = (v: number) => v < 0 ? "#dc2626" : v > 0 ? "#2563eb" : "#16a34a";
 
-        // ── Helper: convierte SVG string a PNG base64 via Canvas ──
+        // â”€â”€ Helper: convierte SVG string a PNG base64 via Canvas â”€â”€
         async function svgToPng(svgStr: string, width: number, height: number): Promise<string> {
             return new Promise((resolve) => {
                 try {
@@ -5013,13 +5020,13 @@ export default function DashboardPage() {
             });
         }
 
-        // ── Dimensiones base ──
+        // â”€â”€ Dimensiones base â”€â”€
         const barH     = 26;
         const gap      = 8;
         const svgFullW = 820;
         const eriLabelW = 260; // espacio suficiente para nombres completos de tienda
 
-        // ── SVG helper: barra simple (ERI / Cumplimiento / Diferencia) ──
+        // â”€â”€ SVG helper: barra simple (ERI / Cumplimiento / Diferencia) â”€â”€
         const makeSingleBarSVG = (
             rows: { name: string; pct: number; color: string }[],
             svgWidth: number,
@@ -5047,12 +5054,12 @@ export default function DashboardPage() {
         </svg>`, h };
         };
 
-        // ── Gráfico ERI por tienda (ancho completo) ──
+        // â”€â”€ GrÃ¡fico ERI por tienda (ancho completo) â”€â”€
         const storesERI = [...emailFilasQueComplieron].sort((a, b) => a.eri - b.eri);
         const eriRows   = storesERI.map(r => ({ name: r.store_name, pct: r.eri, color: eriColor(r.eri) }));
         const { svg: svgERI, h: svgEriH } = makeSingleBarSVG(eriRows, svgFullW, eriLabelW);
 
-        // ── Gráfico Cumplimiento por tienda (ancho completo) ──
+        // â”€â”€ GrÃ¡fico Cumplimiento por tienda (ancho completo) â”€â”€
         const complianceStores = [...filteredDashData].sort((a, b) => {
             const ap = dashPeriod === "dia" ? (a.cumplio ? 100 : 0) : a.cumplimiento_pct;
             const bp = dashPeriod === "dia" ? (b.cumplio ? 100 : 0) : b.cumplimiento_pct;
@@ -5064,7 +5071,7 @@ export default function DashboardPage() {
         });
         const { svg: svgCumpl, h: svgCumplH } = makeSingleBarSVG(cumplRows, svgFullW, eriLabelW);
 
-        // ── Gráfico Diferencia Valorizada (ancho completo, solo con diferencias) ──
+        // â”€â”€ GrÃ¡fico Diferencia Valorizada (ancho completo, solo con diferencias) â”€â”€
         const storesDif = [...emailFilasQueComplieron]
             .filter(r => (r.dif_valorizada || 0) !== 0)
             .sort((a, b) => (a.dif_valorizada || 0) - (b.dif_valorizada || 0));
@@ -5091,8 +5098,8 @@ export default function DashboardPage() {
             ? `<svg width="${svgFullW}" height="${svgDifH}" xmlns="http://www.w3.org/2000/svg">
           <rect width="${svgFullW}" height="${svgDifH}" fill="#f8fafc"/>
           <text x="${difCenterX}" y="14" font-size="9" fill="#94a3b8" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">0</text>
-          <text x="${eriLabelW + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#dc2626" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">← Faltante</text>
-          <text x="${difCenterX + difHalfArea + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#2563eb" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">Sobrante →</text>
+          <text x="${eriLabelW + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#dc2626" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">â† Faltante</text>
+          <text x="${difCenterX + difHalfArea + Math.round(difValueW / 2)}" y="14" font-size="9" fill="#2563eb" font-weight="700" font-family="Arial,sans-serif" text-anchor="middle">Sobrante â†’</text>
           ${difBarsInner}
         </svg>`
             : "";
@@ -5104,13 +5111,13 @@ export default function DashboardPage() {
             svgDif ? svgToPng(svgDif, svgFullW, svgDifH) : Promise.resolve(""),
         ]);
 
-        // ── Tabla detalle por tienda ──
+        // â”€â”€ Tabla detalle por tienda â”€â”€
         const storeRows = [...emailFilasQueComplieron]
             .sort((a, b) => a.eri - b.eri)
             .map(r => {
                 const cumpl = dashPeriod === "dia"
-                    ? (r.cumplio ? "✓ Sí" : "✗ No")
-                    : `${r.dias_cumplidos}/${r.dias_totales} días`;
+                    ? (r.cumplio ? "âœ“ SÃ­" : "âœ— No")
+                    : `${r.dias_cumplidos}/${r.dias_totales} dÃ­as`;
                 const cumplColor = r.cumplio || r.dias_cumplidos > 0 ? "#16a34a" : "#dc2626";
                 return `
                 <tr style="border-bottom:1px solid #f1f5f9;">
@@ -5125,9 +5132,9 @@ export default function DashboardPage() {
                 </tr>`;
             }).join("");
 
-        // ── Tabla top faltantes por código ──
+        // â”€â”€ Tabla top faltantes por cÃ³digo â”€â”€
         const faltantesRows = topFaltantes.length === 0
-            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el período</td></tr>`
+            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias negativas en el perÃ­odo</td></tr>`
             : topFaltantes.map(r => `
                 <tr style="border-bottom:1px solid #fef2f2;">
                   <td style="padding:5px 8px;font-size:10px;font-weight:700;color:#1e293b;">${r.store_name}</td>
@@ -5137,9 +5144,9 @@ export default function DashboardPage() {
                   <td style="padding:5px;text-align:center;font-size:10px;color:#dc2626;font-weight:800;">${formatMoney(r.totalDifVal)}</td>
                 </tr>`).join("");
 
-        // ── Tabla top sobrantes por código ──
+        // â”€â”€ Tabla top sobrantes por cÃ³digo â”€â”€
         const sobrantesRows = topSobrantes.length === 0
-            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el período</td></tr>`
+            ? `<tr><td colspan="5" style="padding:12px;text-align:center;color:#94a3b8;font-size:13px;">Sin diferencias positivas en el perÃ­odo</td></tr>`
             : topSobrantes.map(r => `
                 <tr style="border-bottom:1px solid #eff6ff;">
                   <td style="padding:5px 8px;font-size:10px;font-weight:700;color:#1e293b;">${r.store_name}</td>
@@ -5154,7 +5161,7 @@ export default function DashboardPage() {
         const html = `<!DOCTYPE html>
 <html lang="es">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Informe Conteo Cíclico — ${periodoLabel}</title></head>
+<title>Informe Conteo CÃ­clico â€” ${periodoLabel}</title></head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
 <div style="max-width:900px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
 
@@ -5162,16 +5169,16 @@ export default function DashboardPage() {
   <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%);padding:28px 32px 22px;">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
       <div style="background:rgba(255,255,255,0.12);border-radius:10px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <span style="color:white;font-size:20px;line-height:1;">📦</span>
+        <span style="color:white;font-size:20px;line-height:1;">ðŸ“¦</span>
       </div>
       <div>
-        <p style="margin:0;color:#93c5fd;font-weight:900;font-size:13px;letter-spacing:1.5px;">AUDITORÍA Y CONTROL DE INVENTARIOS</p>
-        <p style="margin:2px 0 0;color:#64748b;font-size:10px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
+        <p style="margin:0;color:#93c5fd;font-weight:900;font-size:13px;letter-spacing:1.5px;">AUDITORÃA Y CONTROL DE INVENTARIOS</p>
+        <p style="margin:2px 0 0;color:#64748b;font-size:10px;letter-spacing:1px;">SISTEMA DE CONTEO CÃCLICO</p>
       </div>
     </div>
-    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
-    <p style="margin:0;color:#93c5fd;font-size:13px;">Período: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
-    <p style="margin:5px 0 0;color:#475569;font-size:11px;">Generado el ${today} · Área de Auditoría y Control de Inventarios</p>
+    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de Conteo CÃ­clico</h1>
+    <p style="margin:0;color:#93c5fd;font-size:13px;">PerÃ­odo: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
+    <p style="margin:5px 0 0;color:#475569;font-size:11px;">Generado el ${today} Â· Ãrea de AuditorÃ­a y Control de Inventarios</p>
   </div>
 
   <!-- BODY -->
@@ -5180,7 +5187,7 @@ export default function DashboardPage() {
     <!-- Saludo -->
     <p style="margin:0 0 20px;font-size:13px;color:#334155;line-height:1.6;">
       Estimado equipo,<br>
-      A continuación el <strong>resumen ejecutivo del conteo cíclico</strong> del período <strong>${periodoLabel}</strong>.
+      A continuaciÃ³n el <strong>resumen ejecutivo del conteo cÃ­clico</strong> del perÃ­odo <strong>${periodoLabel}</strong>.
       Revisar los resultados con los equipos de tienda y tomar acciones correctivas ante las diferencias identificadas.
     </p>
 
@@ -5206,25 +5213,25 @@ export default function DashboardPage() {
           <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center;">
             <div style="font-size:17px;font-weight:900;color:${difColor(totalDifVal)};line-height:1;">${formatMoney(totalDifVal)}</div>
             <div style="font-size:10px;color:#64748b;font-weight:700;margin-top:3px;">DIF. VALORIZADA</div>
-            <div style="font-size:9px;color:#94a3b8;">${totalFaltantes} falt. · ${totalSobrantes} sob.</div>
+            <div style="font-size:9px;color:#94a3b8;">${totalFaltantes} falt. Â· ${totalSobrantes} sob.</div>
           </div>
         </td>
       </tr>
     </table>
 
-    <!-- Gráfico ERI por tienda -->
+    <!-- GrÃ¡fico ERI por tienda -->
     <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #16a34a;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ERI por Tienda (%)</h2>
     <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:20px;overflow:hidden;">
       ${pngERI ? `<img src="${pngERI}" width="100%" style="display:block;max-width:100%;" alt="ERI"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
     </div>
 
-    <!-- Gráfico Cumplimiento por tienda -->
+    <!-- GrÃ¡fico Cumplimiento por tienda -->
     <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #7c3aed;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Cumplimiento por Tienda (%)</h2>
     <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:20px;overflow:hidden;">
       ${pngCumpl ? `<img src="${pngCumpl}" width="100%" style="display:block;max-width:100%;" alt="Cumplimiento"/>` : "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>"}
     </div>
 
-    <!-- Gráfico Dif Valorizada (solo si hay diferencias) -->
+    <!-- GrÃ¡fico Dif Valorizada (solo si hay diferencias) -->
     ${pngDif ? `
     <h2 style="margin:0 0 8px;font-size:12px;color:#0f172a;font-weight:800;border-left:3px solid #dc2626;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">Diferencia Valorizada por Tienda (S/)</h2>
     <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;margin-bottom:20px;overflow:hidden;">
@@ -5255,13 +5262,13 @@ export default function DashboardPage() {
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
       <tr>
         <td style="padding-right:6px;vertical-align:top;width:50%;">
-          <h2 style="margin:0 0 8px;font-size:12px;color:#dc2626;font-weight:800;border-left:3px solid #dc2626;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">🔴 Top 10 Faltantes</h2>
+          <h2 style="margin:0 0 8px;font-size:12px;color:#dc2626;font-weight:800;border-left:3px solid #dc2626;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ðŸ”´ Top 10 Faltantes</h2>
           <div style="border:1.5px solid #fee2e2;border-radius:10px;overflow:hidden;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:10px;">
               <thead><tr style="background:#fef2f2;">
                 <th style="padding:6px 8px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">TIENDA</th>
                 <th style="padding:6px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">SKU</th>
-                <th style="padding:6px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">DESCRIPCIÓN</th>
+                <th style="padding:6px;text-align:left;color:#dc2626;font-size:9px;font-weight:700;">DESCRIPCIÃ“N</th>
                 <th style="padding:6px;text-align:center;color:#dc2626;font-size:9px;font-weight:700;">DIF.</th>
                 <th style="padding:6px;text-align:center;color:#dc2626;font-size:9px;font-weight:700;">S/</th>
               </tr></thead>
@@ -5270,13 +5277,13 @@ export default function DashboardPage() {
           </div>
         </td>
         <td style="padding-left:6px;vertical-align:top;width:50%;">
-          <h2 style="margin:0 0 8px;font-size:12px;color:#2563eb;font-weight:800;border-left:3px solid #2563eb;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">🔵 Top 10 Sobrantes</h2>
+          <h2 style="margin:0 0 8px;font-size:12px;color:#2563eb;font-weight:800;border-left:3px solid #2563eb;padding-left:10px;text-transform:uppercase;letter-spacing:.5px;">ðŸ”µ Top 10 Sobrantes</h2>
           <div style="border:1.5px solid #dbeafe;border-radius:10px;overflow:hidden;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:10px;">
               <thead><tr style="background:#eff6ff;">
                 <th style="padding:6px 8px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">TIENDA</th>
                 <th style="padding:6px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">SKU</th>
-                <th style="padding:6px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">DESCRIPCIÓN</th>
+                <th style="padding:6px;text-align:left;color:#2563eb;font-size:9px;font-weight:700;">DESCRIPCIÃ“N</th>
                 <th style="padding:6px;text-align:center;color:#2563eb;font-size:9px;font-weight:700;">DIF.</th>
                 <th style="padding:6px;text-align:center;color:#2563eb;font-size:9px;font-weight:700;">S/</th>
               </tr></thead>
@@ -5287,13 +5294,13 @@ export default function DashboardPage() {
       </tr>
     </table>
 
-    <!-- Mensaje de acción -->
+    <!-- Mensaje de acciÃ³n -->
     <div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;padding:12px 16px;margin-bottom:20px;">
       <p style="margin:0;font-size:11px;color:#92400e;line-height:1.7;">
-        <strong>📋 Acciones requeridas:</strong><br>
-        • Revisar con los jefes de tienda las diferencias de faltantes más significativas.<br>
-        • Verificar ubicaciones en tiendas con ERI menor al 80%.<br>
-        • Tiendas que no cumplieron deben reprogramar el conteo a la brevedad.
+        <strong>ðŸ“‹ Acciones requeridas:</strong><br>
+        â€¢ Revisar con los jefes de tienda las diferencias de faltantes mÃ¡s significativas.<br>
+        â€¢ Verificar ubicaciones en tiendas con ERI menor al 80%.<br>
+        â€¢ Tiendas que no cumplieron deben reprogramar el conteo a la brevedad.
       </p>
     </div>
 
@@ -5302,7 +5309,7 @@ export default function DashboardPage() {
       <p style="margin:0;font-size:12px;color:#475569;line-height:1.7;">
         Atentamente,<br>
         <strong style="color:#0f172a;">Analista de Inventarios</strong><br>
-        <span style="color:#94a3b8;font-size:11px;">Área de Auditoría y Control de Inventarios · ${today}</span>
+        <span style="color:#94a3b8;font-size:11px;">Ãrea de AuditorÃ­a y Control de Inventarios Â· ${today}</span>
       </p>
     </div>
 
@@ -5311,7 +5318,7 @@ export default function DashboardPage() {
   <!-- FOOTER -->
   <div style="background:#f8fafc;border-top:1.5px solid #e2e8f0;padding:12px 32px;text-align:center;">
     <p style="margin:0;font-size:10px;color:#94a3b8;">
-      Generado automáticamente por el Sistema de Conteo Cíclico · Área de Auditoría y Control de Inventarios
+      Generado automÃ¡ticamente por el Sistema de Conteo CÃ­clico Â· Ãrea de AuditorÃ­a y Control de Inventarios
     </p>
   </div>
 
@@ -5327,19 +5334,19 @@ export default function DashboardPage() {
         const rows = filteredDashData.map(r => {
             const base: any = { TIENDA: r.store_name };
             if (dashPeriod === "dia") {
-                // Vista día: incluye hora inicio/fin/duración, sin días_cumplidos
+                // Vista dÃ­a: incluye hora inicio/fin/duraciÃ³n, sin dÃ­as_cumplidos
                 base.ASIGNADOS      = r.total_asignados;
                 base.OK             = r.total_ok;
                 base.SOBRANTES      = r.total_sobrantes;
                 base.FALTANTES      = r.total_faltantes;
                 base.DIF_VALORIZADA = r.dif_valorizada || 0;
                 base.ERI_PCT        = r.eri;
-                base.CUMPLIMIENTO   = r.cumplio ? "Sí" : "No";
-                base.HORA_INICIO    = r.hora_inicio ? formatDateTime(r.hora_inicio) : "—";
-                base.HORA_FIN       = r.hora_fin ? formatDateTime(r.hora_fin) : "—";
-                base.DURACION       = r.duracion_min !== null ? formatDuration(r.duracion_min) : "—";
+                base.CUMPLIMIENTO   = r.cumplio ? "SÃ­" : "No";
+                base.HORA_INICIO    = r.hora_inicio ? formatDateTime(r.hora_inicio) : "â€”";
+                base.HORA_FIN       = r.hora_fin ? formatDateTime(r.hora_fin) : "â€”";
+                base.DURACION       = r.duracion_min !== null ? formatDuration(r.duracion_min) : "â€”";
             } else {
-                // Vista mes/rango: todo el periodo, sin hora/duración
+                // Vista mes/rango: todo el periodo, sin hora/duraciÃ³n
                 base.ASIGNADOS_PERIODO = r.total_asignados_periodo ?? r.total_asignados;
                 base.ASIGNADOS         = r.total_asignados;
                 base.OK                = r.total_ok;
@@ -5359,9 +5366,9 @@ export default function DashboardPage() {
         XLSX.writeFile(wbk, `dashboard_ciclicos_${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom}_${dashRangeTo}`}.xlsx`);
     }
 
-    // ════════════════════════════════════════════════════════
-    //  EXPORT GLOBAL — todas las tiendas con rango
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    //  EXPORT GLOBAL â€” todas las tiendas con rango
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     async function exportGlobal() {
         setGlobalExportLoading(true);
         try {
@@ -5375,7 +5382,7 @@ export default function DashboardPage() {
                 from = dashRangeFrom; to = dashRangeTo;
             }
 
-            // ── Paso 1: assignments paginado sin joins ────────────────
+            // â”€â”€ Paso 1: assignments paginado sin joins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const EXP_PAGE = 1000;
             let asgnRaw2: any[] = [];
             let expPage = 0;
@@ -5396,11 +5403,11 @@ export default function DashboardPage() {
             }
 
             if (asgnRaw2.length === 0) {
-                showMessage(`No hay asignaciones: ${from} → ${to}. Ver consola F12.`, "error");
+                showMessage(`No hay asignaciones: ${from} â†’ ${to}. Ver consola F12.`, "error");
                 setGlobalExportLoading(false); return;
             }
 
-            // ── Paso 2: stores y products por IDs únicos ─────────────
+            // â”€â”€ Paso 2: stores y products por IDs Ãºnicos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const expStoreIds = [...new Set(asgnRaw2.map((a: any) => a.store_id))];
             const expProdIds  = [...new Set(asgnRaw2.map((a: any) => a.product_id))];
 
@@ -5429,7 +5436,7 @@ export default function DashboardPage() {
                 };
             });
 
-            // Traer counts por store_id + rango de fechas (evita límite de .in() con miles de IDs)
+            // Traer counts por store_id + rango de fechas (evita lÃ­mite de .in() con miles de IDs)
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSetExp = new Set<string>(asgnIds);
             let allCounts: CountRecord[] = [];
@@ -5448,8 +5455,8 @@ export default function DashboardPage() {
                 countMap.get(c.assignment_id)!.push(c);
             }
 
-            // ── Paso 3b: determinar qué tienda-días cumplieron (flags de sesión) ──
-            // Necesario para marcar CUMPLIO a nivel tienda-día, no producto individual
+            // â”€â”€ Paso 3b: determinar quÃ© tienda-dÃ­as cumplieron (flags de sesiÃ³n) â”€â”€
+            // Necesario para marcar CUMPLIO a nivel tienda-dÃ­a, no producto individual
             const expAsgnById2 = new Map<string, any>();
             for (const a of asgnData as any[]) expAsgnById2.set(a.id, a);
             const recountDoneKeys2 = new Set<string>();
@@ -5468,8 +5475,8 @@ export default function DashboardPage() {
                     if (flag.location === "__session_finished__") sessionFinishedKeys2.add(dk);
                 }
             }
-            // Determinar si cada tienda-día cumplió: contó todos sus productos O tiene flag recount_done
-            // Agrupar products por tienda-día para verificar cobertura
+            // Determinar si cada tienda-dÃ­a cumpliÃ³: contÃ³ todos sus productos O tiene flag recount_done
+            // Agrupar products por tienda-dÃ­a para verificar cobertura
             const dayProdCounted2 = new Map<string, { total: number; counted: number }>();
             for (const asg of asgnData as any[]) {
                 const dk = `${asg.store_id}__${asg.assigned_date}`;
@@ -5496,7 +5503,7 @@ export default function DashboardPage() {
                 }
             }
 
-            // Agrupar por tienda + fecha + producto (suma múltiples ubicaciones)
+            // Agrupar por tienda + fecha + producto (suma mÃºltiples ubicaciones)
             type ExportKey = string;
             const resMap = new Map<ExportKey, {
                 tienda: string; fecha: string; sku: string; descripcion: string; unidad: string;
@@ -5514,7 +5521,7 @@ export default function DashboardPage() {
                 const stock = Number(asg.system_stock || 0);
                 const cnts = countMap.get(asg.id) || [];
                 const totalContado = cnts.reduce((s: number, c: any) => s + Number(c.counted_quantity), 0);
-                // CUMPLIO refleja si la TIENDA-DÍA completa cumplió, no el producto individual
+                // CUMPLIO refleja si la TIENDA-DÃA completa cumpliÃ³, no el producto individual
                 const cumplioStr = cumplioByDayKey.has(dayKey2) ? "SI" : "NO";
 
                 if (!resMap.has(key)) {
@@ -5558,16 +5565,16 @@ export default function DashboardPage() {
 
             exportRows.sort((a, b) => (a.TIENDA + a.FECHA_ASIGNACION + a.SKU).localeCompare(b.TIENDA + b.FECHA_ASIGNACION + b.SKU));
 
-            // Hoja 2: Resumen por tienda+día (igual que el dashboard)
-            // Primero agrupar por tienda+día+producto para sumar todas las ubicaciones antes de comparar con stock
+            // Hoja 2: Resumen por tienda+dÃ­a (igual que el dashboard)
+            // Primero agrupar por tienda+dÃ­a+producto para sumar todas las ubicaciones antes de comparar con stock
             type DaySum = { tienda: string; fecha: string; asignados: number; ok: number; sobrantes: number; faltantes: number; difVal: number; cumplio: boolean; duracion: number | null; horaInicio: string | null; horaFin: string | null; };
             const daySumMap = new Map<string, DaySum>();
 
-            // Agrupar assignments por tienda+día+producto
+            // Agrupar assignments por tienda+dÃ­a+producto
             type DayProdEntry = { stock: number; costo: number; totalContado: number; tienConteo: boolean; };
             const dayProdMap = new Map<string, DayProdEntry>();
 
-            // Construir mapa de assignment_id → asignación para exportGlobal
+            // Construir mapa de assignment_id â†’ asignaciÃ³n para exportGlobal
             const expAsgnById = new Map<string, any>();
             for (const a of asgnData as any[]) expAsgnById.set(a.id, a);
             const recountDoneDayKeys = new Set<string>();
@@ -5622,9 +5629,9 @@ export default function DashboardPage() {
                 }
             }
 
-            // Ahora calcular métricas por día usando los totales agrupados por producto
-            // Primero identificar qué productos pertenecen a cada día
-            const dayKeySet = new Map<string, Set<string>>(); // dayKey → set of prodKeys
+            // Ahora calcular mÃ©tricas por dÃ­a usando los totales agrupados por producto
+            // Primero identificar quÃ© productos pertenecen a cada dÃ­a
+            const dayKeySet = new Map<string, Set<string>>(); // dayKey â†’ set of prodKeys
             for (const prodKey of dayProdMap.keys()) {
                 // prodKey = "storeId__date__productId"
                 const parts = prodKey.split("__");
@@ -5649,7 +5656,7 @@ export default function DashboardPage() {
             }
 
             for (const [dayKey, ds] of daySumMap.entries()) {
-                // Cumplió = reconteo completo, O terminó sesión sin productos sin contar.
+                // CumpliÃ³ = reconteo completo, O terminÃ³ sesiÃ³n sin productos sin contar.
                 const noContadosDia = ds.asignados - ds.ok - ds.sobrantes - ds.faltantes;
                 const noContadosRealDia = Array.from(dayKeySet.get(dayKey) || []).filter(pk => !dayProdMap.get(pk)?.tienConteo).length;
                 ds.cumplio = recountDoneDayKeys.has(dayKey) || (sessionFinishedDayKeys.has(dayKey) && noContadosRealDia === 0);
@@ -5668,17 +5675,17 @@ export default function DashboardPage() {
                 DIF_VALORIZADA: ds.difVal,
                 ERI_PCT: (ds.ok + ds.sobrantes + ds.faltantes) > 0 ? Math.round((ds.ok / (ds.ok + ds.sobrantes + ds.faltantes)) * 100) : 0,
                 CUMPLIMIENTO: ds.cumplio ? "SI" : "NO",
-                HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "—",
-                HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "—",
-                DURACION: ds.duracion !== null ? formatDuration(ds.duracion) : "—",
+                HORA_INICIO: ds.horaInicio ? formatDateTime(ds.horaInicio) : "â€”",
+                HORA_FIN: ds.horaFin ? formatDateTime(ds.horaFin) : "â€”",
+                DURACION: ds.duracion !== null ? formatDuration(ds.duracion) : "â€”",
             }));
 
             const ws = XLSX.utils.json_to_sheet(exportRows);
             const wbk = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wbk, ws, "Detalle Códigos");
+            XLSX.utils.book_append_sheet(wbk, ws, "Detalle CÃ³digos");
             const fname = `ciclicos_global_${from}_${to}.xlsx`;
             XLSX.writeFile(wbk, fname);
-            showMessage(`✅ Excel global descargado: ${exportRows.length} filas.`, "success");
+            showMessage(`âœ… Excel global descargado: ${exportRows.length} filas.`, "success");
         } catch (e: any) {
             showMessage("Error exportando: " + e.message, "error");
         } finally {
@@ -5686,9 +5693,9 @@ export default function DashboardPage() {
         }
     }
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  COMPUTED
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const myAssignments = useMemo(() => {
         const myCountIds = new Set(counts.map(c => c.assignment_id));
         return assignments.map(a => ({ ...a, counted: myCountIds.has(a.id), count_id: counts.find(c => c.assignment_id === a.id)?.id }));
@@ -5705,7 +5712,7 @@ export default function DashboardPage() {
             const totalContado = aCounts.reduce((s, c) => s + Number(c.counted_quantity), 0);
             return totalContado !== Number(a.system_stock);
         });
-        // No contados (tienen diferencia implícita ya que el contado = 0 vs stock)
+        // No contados (tienen diferencia implÃ­cita ya que el contado = 0 vs stock)
         const uncounted = pendingAssignments.filter(a => a.system_stock > 0);
         // Combinar, evitando duplicados
         const seen = new Set(withDiff.map(a => a.id));
@@ -5737,7 +5744,7 @@ export default function DashboardPage() {
                     dif_valorizada: 0,
                 });
             } else {
-                // Si hay múltiples asignaciones del mismo producto, usar el costo más reciente (no 0)
+                // Si hay mÃºltiples asignaciones del mismo producto, usar el costo mÃ¡s reciente (no 0)
                 const existing = map.get(asg.product_id)!;
                 if ((asg.cost || 0) > 0 && existing.cost === 0) existing.cost = asg.cost || 0;
             }
@@ -5747,7 +5754,7 @@ export default function DashboardPage() {
             const entry = map.get(c.product_id);
             if (entry) {
                 entry.total_counted += Number(c.counted_quantity);
-                // Usar el costo del conteo si está disponible y es mayor a 0
+                // Usar el costo del conteo si estÃ¡ disponible y es mayor a 0
                 if ((c.cost || 0) > 0) entry.cost = c.cost || 0;
                 else if ((asg?.cost || 0) > 0) entry.cost = asg!.cost || 0;
             }
@@ -5759,7 +5766,7 @@ export default function DashboardPage() {
         return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
     }, [assignments, counts]);
 
-    // Resumen con overrides aplicados para el modo análisis
+    // Resumen con overrides aplicados para el modo anÃ¡lisis
     const resumenConOverrides = useMemo((): ResumenRow[] => {
         if (Object.keys(resumenOverrides).length === 0) return resumenPorCodigo;
         return resumenPorCodigo.map(r => {
@@ -5858,7 +5865,7 @@ export default function DashboardPage() {
         const totalContadosKpi = okTotal + sobrantesTotal + faltantesTotal2;
         const avgEri = totalContadosKpi > 0 ? Math.round((okTotal / totalContadosKpi) * 100) : 0;
 
-        // Duración promedio: solo aplica en vista día (de las que cumplieron con duración)
+        // DuraciÃ³n promedio: solo aplica en vista dÃ­a (de las que cumplieron con duraciÃ³n)
         const filasConDuracion = dashPeriod === "dia"
             ? filasQueComplieron.filter(r => r.duracion_min !== null)
             : [];
@@ -5876,9 +5883,9 @@ export default function DashboardPage() {
         return { avgEri, cumplidos, total, avgDurMin, totalDifVal, totalSobrantes, totalFaltantes, totalAsignacionesPeriodo };
     }, [filteredDashData, kpiDashData, dashPeriod]);
 
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     //  RENDER
-    // ════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     if (loading) {
         return (
             <main className="min-h-screen bg-slate-100 flex items-center justify-center">
@@ -5895,9 +5902,9 @@ export default function DashboardPage() {
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
 
-            {/* ══════════════════════════════════════════════════════
-                SIDEBAR — NAVEGACIÓN PRINCIPAL (tipo WMS)
-            ══════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                SIDEBAR â€” NAVEGACIÃ“N PRINCIPAL (tipo WMS)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {/* Overlay oscuro en mobile cuando sidebar abierto */}
             {sidebarOpen && (
                 <div
@@ -5928,7 +5935,7 @@ export default function DashboardPage() {
                             <p className="font-black text-sm leading-none tracking-wider">
                                 RASE<span style={{ color: "#f97316" }}>CORP</span>
                             </p>
-                            <p className="text-slate-400 text-[10px] leading-none mt-1 tracking-widest">CÍCLICOS</p>
+                            <p className="text-slate-400 text-[10px] leading-none mt-1 tracking-widest">CÃCLICOS</p>
                         </div>
                     </div>
                 </div>
@@ -5943,10 +5950,10 @@ export default function DashboardPage() {
                     }`}>{user?.role}</span>
                 </div>
 
-                {/* Menú de navegación */}
+                {/* MenÃº de navegaciÃ³n */}
                 <nav className="flex-1 py-3 overflow-y-auto">
 
-                    {/* MÓDULO OPERARIO */}
+                    {/* MÃ“DULO OPERARIO */}
                     {(user?.role === "Operario" || isAdmin) && (
                         <div className="px-3 mb-1">
                             <button
@@ -5971,10 +5978,10 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {/* MÓDULO VALIDADOR */}
+                    {/* MÃ“DULO VALIDADOR */}
                     {isValOrAdm && (
                         <>
-                            {/* Header de sección */}
+                            {/* Header de secciÃ³n */}
                             <div className="px-5 pt-3 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Validador</p>
                             </div>
@@ -6117,11 +6124,11 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* MÓDULO ADMIN */}
+                    {/* MÃ“DULO ADMIN */}
                     {isAdmin && (
                         <>
                             <div className="px-5 pt-4 pb-1">
-                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">AdministraciÃ³n</p>
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
@@ -6159,23 +6166,23 @@ export default function DashboardPage() {
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-red-600/20 hover:text-red-300 transition-all"
                     >
                         <LogOut size={16} />
-                        <span>Cerrar sesión</span>
+                        <span>Cerrar sesiÃ³n</span>
                     </button>
                 </div>
             </aside>
 
-            {/* ══════════════════════════════════════════════════════
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
                 CONTENIDO PRINCIPAL (desplazado por sidebar)
-            ══════════════════════════════════════════════════════ */}
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="flex-1 flex flex-col h-screen overflow-hidden md:ml-56">
 
-                {/* ── HEADER DE CONTEXTO ──────────────────────────── */}
+                {/* â”€â”€ HEADER DE CONTEXTO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                 <header className="bg-white border-b sticky top-0 z-30 px-3 md:px-6 py-3 flex items-center justify-between gap-3">
-                    {/* Botón hamburguesa — solo mobile */}
+                    {/* BotÃ³n hamburguesa â€” solo mobile */}
                     <button
                         className="md:hidden flex-shrink-0 p-2 rounded-xl text-slate-600 hover:bg-slate-100 transition"
                         onClick={() => setSidebarOpen(prev => !prev)}
-                        aria-label="Abrir menú"
+                        aria-label="Abrir menÃº"
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                             <line x1="3" y1="6" x2="21" y2="6"/>
@@ -6200,9 +6207,9 @@ export default function DashboardPage() {
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
                             {activeTab === "validador" && valTab !== "dashboard" && valStoreId
-                                ? `${valStoreId === ALL_STORES_VALUE ? "Todas las tiendas" : stores.find(s => s.id === valStoreId)?.name || ""} · ${valDate}`
+                                ? `${valStoreId === ALL_STORES_VALUE ? "Todas las tiendas" : stores.find(s => s.id === valStoreId)?.name || ""} Â· ${valDate}`
                                 : activeTab === "operario"
-                                ? `${allStores.find(s => s.id === selectedStoreId)?.name || "—"} · ${selectedDate}`
+                                ? `${allStores.find(s => s.id === selectedStoreId)?.name || "â€”"} Â· ${selectedDate}`
                                 : ""}
                         </p>
                     </div>
@@ -6220,7 +6227,7 @@ export default function DashboardPage() {
                                     else { setAssignments([]); setCounts([]); }
                                 }}
                             >
-                                <option value="">— Tienda —</option>
+                                <option value="">â€” Tienda â€”</option>
                                 {((canValidateCyclic && valTab === "asignar") || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
@@ -6236,13 +6243,13 @@ export default function DashboardPage() {
                                         <button
                                             className="px-3 py-2 rounded-xl border text-sm font-semibold text-slate-700 bg-white hover:bg-slate-50 transition disabled:opacity-40"
                                             onClick={refreshValidatorAssignedStocksForDate}
-                                        >🔄</button>
+                                        >ðŸ”„</button>
                                     )}
                                     <button
                                         className="px-3 py-2 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition"
                                         onClick={() => openBulkWspModal(valDate)}
                                         title="WhatsApp masivo"
-                                    >📲</button>
+                                    >ðŸ“²</button>
                                 </>
                             )}
                         </div>
@@ -6277,27 +6284,27 @@ export default function DashboardPage() {
                     )}
                 </header>
 
-                {/* ── MENSAJE GLOBAL ────────────────────────────────── */}
+                {/* â”€â”€ MENSAJE GLOBAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                 {message && (
                     <div className={`mx-6 mt-4 rounded-2xl px-4 py-3 text-sm font-medium flex items-center justify-between gap-3 ${messageType === "success" ? "bg-green-50 text-green-800 border border-green-200" : messageType === "error" ? "bg-red-50 text-red-800 border border-red-200" : "bg-blue-50 text-blue-800 border border-blue-200"}`}>
                         <span>{message}</span>
-                        <button className="text-lg leading-none opacity-60 hover:opacity-100" onClick={clearMessage}>×</button>
+                        <button className="text-lg leading-none opacity-60 hover:opacity-100" onClick={clearMessage}>Ã—</button>
                     </div>
                 )}
 
-                {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
+                {/* â”€â”€ ÃREA DE CONTENIDO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                 <div className={`flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
 
-            {/* ════════════════════════════════════════════════════════
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
                 TAB OPERARIO
-            ════════════════════════════════════════════════════════ */}
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && !showRecount && (
                 <>
                     <section className="bg-white rounded-2xl p-4 shadow space-y-3 md:rounded-3xl md:p-5">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:flex-wrap">
                             <div className="min-w-0">
-                                <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
-                                <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "—"} · {selectedDate}</p>
+                                <h2 className="text-xl font-bold text-slate-900">Conteos del dÃ­a</h2>
+                                <p className="text-slate-500 text-sm">{allStores.find(s => s.id === selectedStoreId)?.name || "â€”"} Â· {selectedDate}</p>
                                 {countingStatus !== "idle" && isAdmin && (
                                     <span className={`inline-block mt-1 text-xs font-bold px-2 py-0.5 rounded-full ${
                                         countingStatus === "recount_done" ? "bg-green-100 text-green-700" :
@@ -6305,10 +6312,10 @@ export default function DashboardPage() {
                                         countingStatus === "finished"     ? "bg-blue-100 text-blue-700" :
                                         "bg-indigo-100 text-indigo-700"
                                     }`}>
-                                        {countingStatus === "recount_done" ? "✅ Reconteo completado" :
-                                         countingStatus === "recounting"   ? "🔄 En reconteo" :
-                                         countingStatus === "finished"     ? "🏁 Conteo finalizado" :
-                                         "📝 Contando..."}
+                                        {countingStatus === "recount_done" ? "âœ… Reconteo completado" :
+                                         countingStatus === "recounting"   ? "ðŸ”„ En reconteo" :
+                                         countingStatus === "finished"     ? "ðŸ Conteo finalizado" :
+                                         "ðŸ“ Contando..."}
                                     </span>
                                 )}
                             </div>
@@ -6319,7 +6326,7 @@ export default function DashboardPage() {
                                         value={selectedStoreId}
                                         onChange={e => { setSelectedStoreId(e.target.value); if (e.target.value) loadOperarioData(e.target.value, selectedDate); }}
                                     >
-                                        <option value="">— Selecciona tienda —</option>
+                                        <option value="">â€” Selecciona tienda â€”</option>
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 )}
@@ -6354,32 +6361,32 @@ export default function DashboardPage() {
                         {/* Progreso */}
                         <div className="rounded-2xl bg-slate-50 border p-4 space-y-2">
                             <div className="flex justify-between text-sm font-medium text-slate-700">
-                                <span>Progreso del día</span>
+                                <span>Progreso del dÃ­a</span>
                                 <span>{doneAssignments.length} / {myAssignments.length}</span>
                             </div>
                             <div className="h-3 bg-slate-200 rounded-full overflow-hidden">
                                 <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: myAssignments.length > 0 ? `${(doneAssignments.length / myAssignments.length) * 100}%` : "0%" }} />
                             </div>
                             <div className="flex gap-4 text-xs text-slate-500 pt-1">
-                                <span className="text-amber-600 font-semibold">⏳ {pendingAssignments.length} pendientes</span>
-                                <span className="text-green-600 font-semibold">✅ {doneAssignments.length} contados</span>
+                                <span className="text-amber-600 font-semibold">â³ {pendingAssignments.length} pendientes</span>
+                                <span className="text-green-600 font-semibold">âœ… {doneAssignments.length} contados</span>
                             </div>
 
-                            {/* Botones de estado: Terminar conteo / Reconteo / Sesión finalizada */}
+                            {/* Botones de estado: Terminar conteo / Reconteo / SesiÃ³n finalizada */}
                             {!sessionFinished ? (
                                 <div className="flex gap-2 mt-2">
                                     <button
                                         onClick={handleFinishSessionClick}
                                         className="flex-1 py-3 rounded-2xl font-bold text-sm border-2 border-slate-700 text-slate-800 bg-slate-100 hover:bg-slate-200 transition-colors flex items-center justify-center gap-2"
                                     >
-                                        <span>🏁</span> Terminar conteo
+                                        <span>ðŸ</span> Terminar conteo
                                     </button>
                                 </div>
                             ) : recountFinished ? (
                                 /* Estado: reconteo ya finalizado */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
-                                        <span>✅</span> Sesión finalizada — reconteo completado
+                                        <span>âœ…</span> SesiÃ³n finalizada â€” reconteo completado
                                     </div>
                                     <button
                                         onClick={generateRecountReport}
@@ -6389,7 +6396,7 @@ export default function DashboardPage() {
                                     </button>
                                     <button
                                         onClick={async () => {
-                                            if (confirm("¿Deseas volver a modificar el reconteo?")) {
+                                            if (confirm("Â¿Deseas volver a modificar el reconteo?")) {
                                                 await setSessionFlag(selectedStoreId, selectedDate, "__recount_done__", false);
                                                 await setSessionFlag(selectedStoreId, selectedDate, "__recount_started__", true);
                                                 setRecountFinished(false);
@@ -6400,14 +6407,14 @@ export default function DashboardPage() {
                                         }}
                                         className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
                                     >
-                                        ✏️ ¿Deseas modificar?
+                                        âœï¸ Â¿Deseas modificar?
                                     </button>
                                 </div>
                             ) : (
                                 /* Estado: conteo finalizado, puede iniciar reconteo */
                                 <div className="space-y-2 mt-2">
                                     <div className="w-full py-3 rounded-2xl font-bold text-sm bg-green-100 text-green-800 text-center flex items-center justify-center gap-2 border border-green-300">
-                                        <span>✅</span> Conteo finalizado — {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
+                                        <span>âœ…</span> Conteo finalizado â€” {doneAssignments.length} producto{doneAssignments.length !== 1 ? "s" : ""} contado{doneAssignments.length !== 1 ? "s" : ""}
                                     </div>
                                     <button
                                         onClick={generateRecountReport}
@@ -6420,22 +6427,22 @@ export default function DashboardPage() {
                                             onClick={() => setShowRecountConfirmModal(true)}
                                             className="w-full py-3 rounded-2xl font-bold text-sm border-2 border-orange-500 text-orange-700 bg-orange-50 hover:bg-orange-100 transition-colors flex items-center justify-center gap-2"
                                         >
-                                            <span>🔄</span> Iniciar reconteo ({difAssignments.length} con diferencia)
+                                            <span>ðŸ”„</span> Iniciar reconteo ({difAssignments.length} con diferencia)
                                         </button>
                                     ) : (
                                         <button
                                             onClick={async () => {
-                                                if (confirm("¿Estás seguro de que deseas modificar el conteo finalizado?")) {
+                                                if (confirm("Â¿EstÃ¡s seguro de que deseas modificar el conteo finalizado?")) {
                                                     await clearSessionFlags(selectedStoreId, selectedDate);
                                                     setSessionFinished(false);
                                                     setRecountFinished(false);
-                                                    showMessage("Conteo reabierto para modificación.", "info");
+                                                    showMessage("Conteo reabierto para modificaciÃ³n.", "info");
                                                     loadOperarioData(selectedStoreId, selectedDate);
                                                 }
                                             }}
                                             className="w-full py-2.5 rounded-2xl font-semibold text-sm border border-slate-400 text-slate-700 bg-white hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
                                         >
-                                            ✏️ ¿Deseas modificar algo?
+                                            âœï¸ Â¿Deseas modificar algo?
                                         </button>
                                     )}
                                 </div>
@@ -6456,13 +6463,13 @@ export default function DashboardPage() {
                                         <div className="flex-1 min-w-0">
                                             <div className="font-bold text-slate-900 text-base truncate">{a.sku}</div>
                                             <div className="whitespace-normal break-words text-sm text-slate-600">{a.description}</div>
-                                            <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} · Stock: <b>{formatNumber(a.system_stock)}</b></div>
+                                            <div className="text-xs text-slate-400 mt-0.5">UM: {a.unit} Â· Stock: <b>{formatNumber(a.system_stock)}</b></div>
                                         </div>
                                         <button
                                             className="px-5 py-3 rounded-2xl bg-amber-500 text-white text-sm font-bold whitespace-nowrap shadow active:bg-amber-600 active:scale-95 transition-all"
                                                                                     onClick={() => { void openCount(a); }}
                                         >
-                                            ➕ Contar
+                                            âž• Contar
                                         </button>
                                     </div>
                                 ))}
@@ -6491,14 +6498,14 @@ export default function DashboardPage() {
                                                     <div className="whitespace-normal break-words text-sm text-slate-600">{a.description}</div>
                                                     <div className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
                                                         <span>Stock: <b>{formatNumber(a.system_stock)}</b></span>
-                                                        <span>·</span>
+                                                        <span>Â·</span>
                                                         <span>Contado: <b>{formatNumber(totalContado)}</b></span>
                                                         {hasDiff
                                                             ? <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold text-xs border ${diffPillClass(diff)}`}>
-                                                                ⚠️ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{formatNumber(totalContado - Number(a.system_stock))}
+                                                                âš ï¸ Dif: {totalContado - Number(a.system_stock) > 0 ? "+" : ""}{formatNumber(totalContado - Number(a.system_stock))}
                                                               </span>
                                                             : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-bold text-xs border border-green-200">
-                                                                ✓ OK
+                                                                âœ“ OK
                                                               </span>
                                                         }
                                                     </div>
@@ -6507,7 +6514,7 @@ export default function DashboardPage() {
                                                     className="px-4 py-2.5 rounded-2xl border-2 border-slate-300 text-sm font-semibold bg-white active:bg-slate-100 active:scale-95 transition-all"
                                                                                 onClick={() => { void openCount(a); }}
                                                 >
-                                                    ✏️ Editar
+                                                    âœï¸ Editar
                                                 </button>
                                             </div>
                                             {asgCounts.length > 0 && (
@@ -6515,7 +6522,7 @@ export default function DashboardPage() {
                                                     {asgCounts.map((c, i) => (
                                                         <div key={c.id} className="text-xs text-slate-600 flex gap-2 items-center bg-white rounded-xl px-3 py-2 border border-slate-200">
                                                             <span className="font-bold text-slate-400 w-14 flex-shrink-0">Ubic {i + 1}</span>
-                                                            <span className="font-mono text-slate-700 truncate flex-1">{c.location || <em className="text-slate-400">—</em>}</span>
+                                                            <span className="font-mono text-slate-700 truncate flex-1">{c.location || <em className="text-slate-400">â€”</em>}</span>
                                                             <span className="font-bold text-slate-800 flex-shrink-0">{formatNumber(c.counted_quantity)} {a.unit}</span>
                                                         </div>
                                                     ))}
@@ -6537,15 +6544,15 @@ export default function DashboardPage() {
                 </>
             )}
 
-            {/* ════════════════════════════════════════════════════════
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
                 PANEL RECONTEO (Operario)
-            ════════════════════════════════════════════════════════ */}
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3">
                             <div>
-                                <h2 className="text-xl font-bold text-slate-900">🔄 Reconteo</h2>
+                                <h2 className="text-xl font-bold text-slate-900">ðŸ”„ Reconteo</h2>
                                 <p className="text-slate-500 text-sm">{difAssignments.length} producto{difAssignments.length !== 1 ? "s" : ""} con diferencia para recontar</p>
                             </div>
                             <div className="flex items-center gap-2">
@@ -6576,52 +6583,52 @@ export default function DashboardPage() {
                                     }}
                                     className="px-4 py-2 rounded-2xl border text-sm font-semibold"
                                 >
-                                    ← Volver
+                                    â† Volver
                                 </button>
                             </div>
                         </div>
 
-                        {/* Panel de edición de producto seleccionado */}
+                        {/* Panel de ediciÃ³n de producto seleccionado */}
                         {recountAssignment ? (
                             <div className="rounded-2xl border bg-orange-50 border-orange-200 p-4 space-y-3">
                                 <div className="flex items-start justify-between gap-3">
                                     <div>
                                         <p className="font-bold text-slate-900">{recountAssignment.sku}</p>
                                         <p className="text-xs text-slate-600">{recountAssignment.description}</p>
-                                        <p className="text-xs text-slate-400">UM: {recountAssignment.unit} · Stock sistema: <b>{formatNumber(recountAssignment.system_stock)}</b></p>
+                                        <p className="text-xs text-slate-400">UM: {recountAssignment.unit} Â· Stock sistema: <b>{formatNumber(recountAssignment.system_stock)}</b></p>
                                     </div>
-                                    <button onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }} className="text-slate-400 text-xl">×</button>
+                                    <button onClick={() => { setRecountAssignment(null); setRecountRows([{ location: "", qty: "" }]); }} className="text-slate-400 text-xl">Ã—</button>
                                 </div>
 
                                 <div className="space-y-2">
                                     <div className="flex items-center justify-between">
                                         <label className="block font-semibold text-sm text-slate-700">Ubicaciones y cantidades</label>
-                                        <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addRecountRow} disabled={sinStockRecount}>+ Agregar ubicación</button>
+                                        <button className="text-xs px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700 font-semibold border" onClick={addRecountRow} disabled={sinStockRecount}>+ Agregar ubicaciÃ³n</button>
                                     </div>
 
-                                    {/* Botón Sin stock en reconteo */}
+                                    {/* BotÃ³n Sin stock en reconteo */}
                                     <button
                                         className={`w-full py-2.5 rounded-2xl font-bold text-sm border-2 transition-all ${sinStockRecount ? "bg-red-600 text-white border-red-600" : "bg-white text-red-600 border-red-300 hover:bg-red-50"}`}
                                         onClick={() => setSinStockRecount(prev => !prev)}
                                     >
-                                        {sinStockRecount ? "🚫 Sin stock — toca para cancelar" : "🚫 Sin stock físico"}
+                                        {sinStockRecount ? "ðŸš« Sin stock â€” toca para cancelar" : "ðŸš« Sin stock fÃ­sico"}
                                     </button>
                                     {sinStockRecount && (
                                         <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 font-medium">
-                                            Se registrará cantidad 0 para <b>{recountAssignment.sku}</b>. Quedará contado con diferencia.
+                                            Se registrarÃ¡ cantidad 0 para <b>{recountAssignment.sku}</b>. QuedarÃ¡ contado con diferencia.
                                         </div>
                                     )}
 
                                     {!sinStockRecount && recountRows.map((row, i) => (
                                         <div key={i} className="rounded-2xl border bg-white p-3 space-y-2">
                                             <div className="flex items-center justify-between gap-2">
-                                                <span className="text-xs font-semibold text-slate-500">Ubicación {recountRows.length > 1 ? i + 1 : ""}</span>
+                                                <span className="text-xs font-semibold text-slate-500">UbicaciÃ³n {recountRows.length > 1 ? i + 1 : ""}</span>
                                                 {recountRows.length > 1 && (
                                                     <button className="text-xs text-red-500 font-semibold" onClick={() => removeRecountRow(i)}>Quitar</button>
                                                 )}
                                             </div>
                                             <div>
-                                                <label className="text-xs text-slate-500 block mb-1">Ubicación</label>
+                                                <label className="text-xs text-slate-500 block mb-1">UbicaciÃ³n</label>
                                                 <div className="flex gap-1">
                                                     <input
                                                         className="flex-1 border rounded-xl p-2.5 text-sm text-slate-900 bg-white"
@@ -6629,7 +6636,7 @@ export default function DashboardPage() {
                                                         value={row.location}
                                                         onChange={e => updateRecountRow(i, "location", e.target.value)}
                                                     />
-                                                    <button className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs" onClick={() => openScanner("recount_location", i)} title="Escanear ubicación">
+                                                    <button className="px-3 py-2 rounded-xl bg-slate-200 text-slate-700 text-xs" onClick={() => openScanner("recount_location", i)} title="Escanear ubicaciÃ³n">
                                                         <QrCode size={14} />
                                                     </button>
                                                 </div>
@@ -6653,7 +6660,7 @@ export default function DashboardPage() {
                                         onClick={saveRecount}
                                         disabled={savingRecount}
                                     >
-                                        {savingRecount ? "Guardando..." : "💾 Guardar reconteo"}
+                                        {savingRecount ? "Guardando..." : "ðŸ’¾ Guardar reconteo"}
                                     </button>
                                     <button
                                         className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm active:bg-slate-100 active:scale-95 transition-all"
@@ -6693,8 +6700,8 @@ export default function DashboardPage() {
                                                 <div className="whitespace-normal break-words text-xs text-slate-600">{a.description}</div>
                                                 <div className="text-xs text-slate-400 mt-0.5">
                                                     {isUncounted
-                                                        ? <span className="text-amber-700 font-semibold">⏳ No contado · Stock: <b>{formatNumber(a.system_stock)}</b></span>
-                                                        : <>Stock: <b>{formatNumber(a.system_stock)}</b> · Contado: <b>{formatNumber(totalContado)}</b> · Dif: {diffBadge(diff)}</>
+                                                        ? <span className="text-amber-700 font-semibold">â³ No contado Â· Stock: <b>{formatNumber(a.system_stock)}</b></span>
+                                                        : <>Stock: <b>{formatNumber(a.system_stock)}</b> Â· Contado: <b>{formatNumber(totalContado)}</b> Â· Dif: {diffBadge(diff)}</>
                                                     }
                                                 </div>
                                             </div>
@@ -6708,36 +6715,36 @@ export default function DashboardPage() {
                         </div>
                     </section>
 
-                    {/* Botón finalizar reconteo */}
+                    {/* BotÃ³n finalizar reconteo */}
                     <button
                         onClick={() => {
                             const noContados = difAssignments.filter(a => !a.counted).length;
                             if (noContados > 0) {
-                                if (!confirm(`Tienes ${noContados} código${noContados !== 1 ? "s" : ""} aún sin contar. ¿Deseas finalizar el reconteo de todas formas?`)) return;
+                                if (!confirm(`Tienes ${noContados} cÃ³digo${noContados !== 1 ? "s" : ""} aÃºn sin contar. Â¿Deseas finalizar el reconteo de todas formas?`)) return;
                             }
                             finalizeRecount();
                         }}
                         className="w-full py-4 rounded-2xl font-bold text-base bg-green-600 text-white shadow hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
                     >
-                        ✅ Finalizar reconteo
+                        âœ… Finalizar reconteo
                     </button>
                 </>
             )}
 
-            {/* ════════════════════════════════════════════════════════
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
                 TAB VALIDADOR
-            ════════════════════════════════════════════════════════ */}
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === "validador" && isValOrAdm && (
                 <>
 
-                    {/* ── SUB-TAB: PROGRESO POR TIENDA ─────────────────── */}
+                    {/* â”€â”€ SUB-TAB: PROGRESO POR TIENDA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {valTab === "progreso" && (
                         <>
-                            {/* ── Progreso por tienda hoy ───────────────────── */}
+                            {/* â”€â”€ Progreso por tienda hoy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div className="flex items-center justify-between flex-wrap gap-3">
                                     <div>
-                                        <h2 className="text-xl font-bold text-slate-900">🏪 Progreso de conteo por tienda</h2>
+                                        <h2 className="text-xl font-bold text-slate-900">ðŸª Progreso de conteo por tienda</h2>
                                         <p className="text-slate-500 text-sm mt-0.5">Avance en tiempo real de cada tienda para la fecha seleccionada.</p>
                                     </div>
                                     <div className="flex items-center gap-3 flex-wrap">
@@ -6750,7 +6757,7 @@ export default function DashboardPage() {
                                             disabled={storeProgressLoading}
                                             className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-50"
                                         >
-                                            {storeProgressLoading ? "Cargando..." : "🔄 Actualizar"}
+                                            {storeProgressLoading ? "Cargando..." : "ðŸ”„ Actualizar"}
                                         </button>
                                     </div>
                                 </div>
@@ -6797,11 +6804,11 @@ export default function DashboardPage() {
                                     </div>
                                 ) : (
                                     <>
-                                        {/* Resumen global rápido */}
+                                        {/* Resumen global rÃ¡pido */}
                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                                             <div className="rounded-2xl bg-slate-50 border p-4 text-center">
                                                 <div className="text-2xl font-bold text-slate-900">{storeProgressData.length}</div>
-                                                <div className="text-xs text-slate-500 mt-1">Tiendas con asignación</div>
+                                                <div className="text-xs text-slate-500 mt-1">Tiendas con asignaciÃ³n</div>
                                             </div>
                                             <div className="rounded-2xl bg-green-50 border border-green-200 p-4 text-center">
                                                 <div className="text-2xl font-bold text-green-700">{storeProgressData.filter(s => s.pct === 100).length}</div>
@@ -6831,13 +6838,13 @@ export default function DashboardPage() {
                                                                 <span className="font-semibold text-slate-900 text-sm">{sp.store_name}</span>
                                                             </div>
                                                             <div className="flex items-center gap-3 flex-shrink-0">
-                                                                <span className="text-xs text-slate-500">{sp.total_contados} / {sp.total_asignados} códigos</span>
+                                                                <span className="text-xs text-slate-500">{sp.total_contados} / {sp.total_asignados} cÃ³digos</span>
                                                                 <span className={`text-sm font-bold w-12 text-right ${isComplete ? "text-green-700" : isStarted ? "text-amber-600" : "text-slate-400"}`}>
                                                                     {sp.pct}%
                                                                 </span>
-                                                                {isComplete && <span className="text-green-600 text-base">✅</span>}
-                                                                {!isComplete && sp.pct === 0 && <span className="text-slate-300 text-base">⏳</span>}
-                                                                {isStarted && <span className="text-amber-500 text-base">🔄</span>}
+                                                                {isComplete && <span className="text-green-600 text-base">âœ…</span>}
+                                                                {!isComplete && sp.pct === 0 && <span className="text-slate-300 text-base">â³</span>}
+                                                                {isStarted && <span className="text-amber-500 text-base">ðŸ”„</span>}
                                                             </div>
                                                         </div>
                                                         <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
@@ -6856,21 +6863,21 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* ── SUB-TAB: DASHBOARD ───────────────────────────── */}
+                    {/* â”€â”€ SUB-TAB: DASHBOARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {valTab === "dashboard" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
-                                    <h2 className="text-xl font-bold text-slate-900">📊 Dashboard histórico por tienda</h2>
-                                    <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cíclico por período.</p>
+                                    <h2 className="text-xl font-bold text-slate-900">ðŸ“Š Dashboard histÃ³rico por tienda</h2>
+                                    <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cÃ­clico por perÃ­odo.</p>
                                 </div>
 
                                 {/* Controles */}
                                 <div className="flex gap-3 flex-wrap items-end">
                                     <div>
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Período</label>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">PerÃ­odo</label>
                                         <div className="flex gap-1 flex-wrap">
-                                            <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por día</button>
+                                            <button onClick={() => setDashPeriod("dia")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "dia" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por dÃ­a</button>
                                             <button onClick={() => setDashPeriod("mes")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "mes" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Por mes</button>
                                             <button onClick={() => setDashPeriod("rango")} className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition ${dashPeriod === "rango" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-300"}`}>Rango</button>
                                         </div>
@@ -6905,32 +6912,32 @@ export default function DashboardPage() {
                                         </select>
                                     </div>
                                     <button onClick={loadDashboard} className="px-6 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" disabled={dashLoading}>
-                                        {dashLoading ? "Cargando..." : "🔍 Consultar"}
+                                        {dashLoading ? "Cargando..." : "ðŸ” Consultar"}
                                     </button>
                                     {dashData.length > 0 && (
                                         <button onClick={loadDashboard} disabled={dashLoading} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700 flex items-center gap-2 disabled:opacity-50">
-                                            🔄 Actualizar
+                                            ðŸ”„ Actualizar
                                         </button>
                                     )}
                                     {dashData.length > 0 && (
-                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">↓ Excel resumen</button>
+                                        <button onClick={exportDashboard} className="px-4 py-3 rounded-2xl border text-sm font-semibold text-slate-700">â†“ Excel resumen</button>
                                     )}
                                     {dashData.length > 0 && (
                                         <button
                                             onClick={generateEmailHTML}
                                             className="px-4 py-3 rounded-2xl bg-indigo-700 text-white text-sm font-semibold hover:bg-indigo-800 transition-colors flex items-center gap-2"
-                                            title="Genera un correo HTML profesional con gráficos para enviar a gerencia"
+                                            title="Genera un correo HTML profesional con grÃ¡ficos para enviar a gerencia"
                                         >
-                                            ✉️ Generar correo
+                                            âœ‰ï¸ Generar correo
                                         </button>
                                     )}
                                     <button
                                         onClick={exportGlobal}
                                         disabled={globalExportLoading}
                                         className="px-4 py-3 rounded-2xl bg-green-700 text-white text-sm font-semibold disabled:opacity-50"
-                                        title="Descarga todos los códigos asignados con su estado, de todas las tiendas, en el período seleccionado"
+                                        title="Descarga todos los cÃ³digos asignados con su estado, de todas las tiendas, en el perÃ­odo seleccionado"
                                     >
-                                        {globalExportLoading ? "Generando..." : "↓ Excel global (todos los códigos)"}
+                                        {globalExportLoading ? "Generando..." : "â†“ Excel global (todos los cÃ³digos)"}
                                     </button>
                                 </div>
                             </section>
@@ -6946,7 +6953,7 @@ export default function DashboardPage() {
                                         <div className="text-3xl font-bold text-green-700">
                                             {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
                                         </div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
+                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento dÃ­a"}</div>
                                         <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
                                     </div>
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
@@ -6962,7 +6969,7 @@ export default function DashboardPage() {
                                     {dashPeriod === "dia" && (
                                         <div className="bg-white rounded-2xl p-4 shadow text-center">
                                             <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                            <div className="text-xs text-slate-500 mt-1">Duración</div>
+                                            <div className="text-xs text-slate-500 mt-1">DuraciÃ³n</div>
                                         </div>
                                     )}
                                     <div className="bg-white rounded-2xl p-4 shadow text-center">
@@ -6999,7 +7006,7 @@ export default function DashboardPage() {
                                                         {dashPeriod === "dia" && <>
                                                             <th className="p-2 border">Hora inicio</th>
                                                             <th className="p-2 border">Hora fin</th>
-                                                            <th className="p-2 border">Duración</th>
+                                                            <th className="p-2 border">DuraciÃ³n</th>
                                                         </>}
                                                     </tr>
                                                 </thead>
@@ -7010,7 +7017,7 @@ export default function DashboardPage() {
                                                                 {dashPeriod === "dia" ? (
                                                                     <button
                                                                         className="text-left text-blue-700 underline underline-offset-2 hover:text-blue-900 font-semibold transition-colors"
-                                                                        title="Ver resumen por código de esta tienda"
+                                                                        title="Ver resumen por cÃ³digo de esta tienda"
                                                                         onClick={() => {
                                                                             setValStoreId(r.store_id);
                                                                             setValDate(dashDate);
@@ -7038,20 +7045,20 @@ export default function DashboardPage() {
                                                             <td className="p-2 border text-center">
                                                                 {dashPeriod === "dia" ? (
                                                                     <span className={`font-bold text-sm ${r.cumplio ? "text-green-700" : "text-red-600"}`}>
-                                                                        {r.cumplio ? "✓ Sí" : "✗ No"}
+                                                                        {r.cumplio ? "âœ“ SÃ­" : "âœ— No"}
                                                                     </span>
                                                                 ) : (
                                                                     <>
                                                                         <span className={`font-bold text-sm ${r.dias_cumplidos === r.dias_totales ? "text-green-700" : r.dias_cumplidos > 0 ? "text-amber-600" : "text-red-600"}`}>
-                                                                            {r.dias_cumplidos}/{r.dias_totales} días
+                                                                            {r.dias_cumplidos}/{r.dias_totales} dÃ­as
                                                                         </span>
                                                                         <div className="text-xs text-slate-400">{r.cumplimiento_pct}%</div>
                                                                     </>
                                                                 )}
                                                             </td>
                                                             {dashPeriod === "dia" && <>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "â€”"}</td>
+                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "â€”"}</td>
                                                                 <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                             </>}
                                                         </tr>
@@ -7063,13 +7070,13 @@ export default function DashboardPage() {
                                 </section>
                             ) : dashData.length === 0 && !dashLoading ? (
                                 <div className="bg-white rounded-3xl p-8 shadow text-center text-slate-400">
-                                    Presiona <b>Consultar</b> para cargar los datos del período seleccionado.
+                                    Presiona <b>Consultar</b> para cargar los datos del perÃ­odo seleccionado.
                                 </div>
                             ) : null}
                         </>
                     )}
 
-                    {/* ── SUB-TAB: RESULTADOS DE CONTEO ───────────────── */}
+                    {/* â”€â”€ SUB-TAB: RESULTADOS DE CONTEO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {valTab === "resultados" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-end justify-between">
@@ -7149,7 +7156,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
+                    {/* â”€â”€ SUB-TAB: ASIGNAR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {canValidateCyclic && valTab === "no_inventariables" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -7221,7 +7228,7 @@ export default function DashboardPage() {
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Asignar productos para contar</h3>
-                                    <p className="text-slate-500 text-sm mt-1">Busca un producto del maestro global y asígnalo a la tienda/fecha seleccionada. También puedes cargar masivamente por Excel.</p>
+                                    <p className="text-slate-500 text-sm mt-1">Busca un producto del maestro global y asÃ­gnalo a la tienda/fecha seleccionada. TambiÃ©n puedes cargar masivamente por Excel.</p>
                                 </div>
 
                                 <div className="space-y-2">
@@ -7271,7 +7278,7 @@ export default function DashboardPage() {
                                                     Asignar seleccionados ({filteredAssignResults.filter(product => assignSelectedIds.has(product.id)).length})
                                                 </button>
                                                 <span className="text-xs font-semibold text-slate-500">
-                                                    {filteredAssignResults.length} visibles · {valStoreId === ALL_STORES_VALUE ? "Destino: todas las tiendas" : "Destino: tienda seleccionada"}
+                                                    {filteredAssignResults.length} visibles Â· {valStoreId === ALL_STORES_VALUE ? "Destino: todas las tiendas" : "Destino: tienda seleccionada"}
                                                 </span>
                                             </div>
                                             <div className="max-h-72 overflow-auto">
@@ -7289,11 +7296,11 @@ export default function DashboardPage() {
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="font-semibold text-slate-900 text-sm">{p.sku}</div>
                                                                 <div className="whitespace-normal break-words text-xs text-slate-600">{p.description}</div>
-                                                                <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
+                                                                <div className="text-xs text-slate-400">UM: {p.unit} Â· CÃ³digo: {p.barcode || "â€”"}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
                                                                 {alreadyAssigned ? (
-                                                                    <span className="text-xs text-green-700 font-semibold px-3 py-2">✓ Asignado</span>
+                                                                    <span className="text-xs text-green-700 font-semibold px-3 py-2">âœ“ Asignado</span>
                                                                 ) : (
                                                                     <button className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold disabled:opacity-40" disabled={assignBusy} onClick={() => assignProduct(p)}>+ Asignar</button>
                                                                 )}
@@ -7314,12 +7321,12 @@ export default function DashboardPage() {
                                 {/* Carga masiva */}
                                 <div className="border-t pt-4 space-y-3">
                                     <div>
-                                        <p className="text-sm font-semibold text-slate-700">📦 Carga masiva por Excel — <span className="text-blue-700">Todas las tiendas</span></p>
+                                        <p className="text-sm font-semibold text-slate-700">ðŸ“¦ Carga masiva por Excel â€” <span className="text-blue-700">Todas las tiendas</span></p>
                                         <div className="mt-1.5 rounded-2xl bg-blue-50 border border-blue-200 p-3 space-y-1 text-xs text-slate-600">
-                                            <p>✅ <b>Formato multi-tienda recomendado:</b> <b>A: Tienda</b> · <b>B: Código</b>.<br/>
-                                            El sistema busca descripción, UM y costo en el maestro, y toma el stock desde la sincronización por tienda.</p>
-                                            <p className="text-slate-400">Formato simple: <b>A: Código</b>. Requiere tienda seleccionada arriba. Si incluyes una columna <b>Stock</b>, se usará como override manual.</p>
-                                            <p className="text-blue-700 font-semibold">⚡ Puedes usar nombre, código o sede ERP de la tienda. Los códigos pueden ser SKU o código de barra.</p>
+                                            <p>âœ… <b>Formato multi-tienda recomendado:</b> <b>A: Tienda</b> Â· <b>B: CÃ³digo</b>.<br/>
+                                            El sistema busca descripciÃ³n, UM y costo en el maestro, y toma el stock desde la sincronizaciÃ³n por tienda.</p>
+                                            <p className="text-slate-400">Formato simple: <b>A: CÃ³digo</b>. Requiere tienda seleccionada arriba. Si incluyes una columna <b>Stock</b>, se usarÃ¡ como override manual.</p>
+                                            <p className="text-blue-700 font-semibold">âš¡ Puedes usar nombre, cÃ³digo o sede ERP de la tienda. Los cÃ³digos pueden ser SKU o cÃ³digo de barra.</p>
                                         </div>
                                     </div>
                                     {bulkAssignProgress && (
@@ -7332,20 +7339,20 @@ export default function DashboardPage() {
                                     )}
                                     <div className="flex gap-3 flex-wrap items-center">
                                         <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => bulkAssignRef.current?.click()}>
-                                            {bulkAssignFileName || "📂 Seleccionar Excel"}
+                                            {bulkAssignFileName || "ðŸ“‚ Seleccionar Excel"}
                                         </button>
                                         <input ref={bulkAssignRef} type="file" accept=".xlsx,.xls" className="hidden"
                                             onChange={e => { const f = e.target.files?.[0] || null; setBulkAssignFile(f); setBulkAssignFileName(f?.name || ""); e.target.value = ""; }} />
                                         {bulkAssignFile && (
                                             <button className="px-4 py-2.5 rounded-2xl bg-blue-700 text-white font-semibold text-sm" onClick={uploadBulkAssign}>
-                                                🚀 Cargar todas las tiendas
+                                                ðŸš€ Cargar todas las tiendas
                                             </button>
                                         )}
                                     </div>
                                 </div>
                             </section>
 
-                            {/* Lista asignados del día */}
+                            {/* Lista asignados del dÃ­a */}
                             {valStoreId === ALL_STORES_VALUE && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -7423,7 +7430,7 @@ export default function DashboardPage() {
                             {assignments.length > 0 && (
                                 <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
-                                        <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
+                                        <h3 className="font-bold text-slate-900">Asignados este dÃ­a ({assignments.length})</h3>
                                         <div className="flex gap-2 flex-wrap">
                                             <button
                                                 className="px-4 py-2 rounded-2xl border border-blue-200 bg-blue-50 text-blue-700 font-semibold text-xs hover:bg-blue-100 transition disabled:opacity-40"
@@ -7436,7 +7443,7 @@ export default function DashboardPage() {
                                                 className="px-4 py-2 rounded-2xl border border-red-300 text-red-600 font-semibold text-xs hover:bg-red-50 transition"
                                                 onClick={removeAllAssignments}
                                             >
-                                                🗑️ Quitar todos
+                                                ðŸ—‘ï¸ Quitar todos
                                             </button>
                                         </div>
                                     </div>
@@ -7446,10 +7453,10 @@ export default function DashboardPage() {
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border text-left">SKU</th>
-                                                        <th className="p-2 border text-left">Descripción</th>
+                                                        <th className="p-2 border text-left">DescripciÃ³n</th>
                                                         <th className="p-2 border">UM</th>
                                                         <th className="p-2 border">Stock Sis.</th>
-                                                        <th className="p-2 border">Acción</th>
+                                                        <th className="p-2 border">AcciÃ³n</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
@@ -7476,7 +7483,7 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* ── SUB-TAB: REGISTROS ─────────────────────────── */}
+                    {/* â”€â”€ SUB-TAB: REGISTROS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {valTab === "registros" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
@@ -7485,15 +7492,15 @@ export default function DashboardPage() {
                                     <p className="text-slate-500 text-xs mt-0.5">{filteredCounts.length} registro{filteredCounts.length !== 1 ? "s" : ""} encontrado{filteredCounts.length !== 1 ? "s" : ""}</p>
                                 </div>
                                 <div className="flex gap-2 flex-wrap">
-                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>↓ Excel registros</button>
-                                    {/* Reversar cumplimiento — solo admin y validador */}
+                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportCounts}>â†“ Excel registros</button>
+                                    {/* Reversar cumplimiento â€” solo admin y validador */}
                                     {canValidateCyclic && counts.length > 0 && (
                                         <button
                                             className="px-4 py-2 rounded-2xl border-2 border-orange-400 text-orange-700 bg-orange-50 hover:bg-orange-100 text-sm font-bold transition-colors"
                                             onClick={reversarCumplimiento}
-                                            title="Elimina todos los conteos del día para que el operario pueda volver a registrar"
+                                            title="Elimina todos los conteos del dÃ­a para que el operario pueda volver a registrar"
                                         >
-                                            🔄 Reversar cumplimiento
+                                            ðŸ”„ Reversar cumplimiento
                                         </button>
                                     )}
                                 </div>
@@ -7502,12 +7509,12 @@ export default function DashboardPage() {
                             {/* Aviso si hay conteos "sin stock" */}
                             {counts.some(c => c.location === "__sin_stock__") && (
                                 <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 font-medium flex items-center gap-2">
-                                    🚫 <span>Hay {counts.filter(c => c.location === "__sin_stock__").length} código{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} marcado{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} como <b>sin stock físico</b>.</span>
+                                    ðŸš« <span>Hay {counts.filter(c => c.location === "__sin_stock__").length} cÃ³digo{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} marcado{counts.filter(c => c.location === "__sin_stock__").length !== 1 ? "s" : ""} como <b>sin stock fÃ­sico</b>.</span>
                                 </div>
                             )}
 
                             <div className="flex gap-3 flex-wrap">
-                                <input className="flex-1 border rounded-2xl p-3 text-sm text-slate-900 bg-white min-w-[180px]" placeholder="Buscar SKU, descripción, usuario..." value={valSearchText} onChange={e => setValSearchText(e.target.value)} />
+                                <input className="flex-1 border rounded-2xl p-3 text-sm text-slate-900 bg-white min-w-[180px]" placeholder="Buscar SKU, descripciÃ³n, usuario..." value={valSearchText} onChange={e => setValSearchText(e.target.value)} />
                                 <select className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={valStatusFilter} onChange={e => setValStatusFilter(e.target.value)}>
                                     <option value="todos">Todos los estados</option>
                                     <option value="pendiente">Pendiente</option>
@@ -7523,14 +7530,14 @@ export default function DashboardPage() {
                                         <thead className="bg-slate-100 sticky top-0">
                                             <tr>
                                                 <th className="p-2 border text-left">SKU</th>
-                                                <th className="p-2 border text-left">Descripción</th>
+                                                <th className="p-2 border text-left">DescripciÃ³n</th>
                                                 <th className="p-2 border">Stock usado</th>
-                                                <th className="p-2 border">Ubicación</th>
+                                                <th className="p-2 border">UbicaciÃ³n</th>
                                                 <th className="p-2 border">Cantidad</th>
                                                 <th className="p-2 border">Usuario</th>
                                                 <th className="p-2 border">Hora</th>
                                                 <th className="p-2 border">Estado</th>
-                                                <th className="p-2 border">Acción</th>
+                                                <th className="p-2 border">AcciÃ³n</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -7540,10 +7547,10 @@ export default function DashboardPage() {
                                                 <tr key={c.id} className={isSinStock ? "bg-red-50" : "hover:bg-slate-50"}>
                                                     <td className="p-2 border font-medium">{c.sku}</td>
                                                     <td className="p-2 border text-slate-600 max-w-[180px] whitespace-normal break-words">{c.description}</td>
-                                                    <td className="p-2 border text-center font-semibold">{c.stock_snapshot !== null && c.stock_snapshot !== undefined ? formatNumber(c.stock_snapshot) : c.system_stock !== null && c.system_stock !== undefined ? formatNumber(c.system_stock) : "—"}</td>
+                                                    <td className="p-2 border text-center font-semibold">{c.stock_snapshot !== null && c.stock_snapshot !== undefined ? formatNumber(c.stock_snapshot) : c.system_stock !== null && c.system_stock !== undefined ? formatNumber(c.system_stock) : "â€”"}</td>
                                                     <td className="p-2 border text-center font-mono text-xs">
                                                         {isSinStock
-                                                            ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">🚫 Sin stock</span>
+                                                            ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold text-xs border border-red-200">ðŸš« Sin stock</span>
                                                             : c.location}
                                                     </td>
                                                     <td className="p-2 border text-center font-semibold">{formatNumber(c.counted_quantity)}</td>
@@ -7554,7 +7561,7 @@ export default function DashboardPage() {
                                                         {canValidateCyclic ? (
                                                         <>
                                                         <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditCount(c)}>Editar</button>
-                                                        <button className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 border border-red-200" onClick={() => deleteCount(c)}>✕</button>
+                                                        <button className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-600 border border-red-200" onClick={() => deleteCount(c)}>âœ•</button>
                                                         </>
                                                         ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                     </td>
@@ -7562,7 +7569,7 @@ export default function DashboardPage() {
                                                 );
                                             })}
                                             {filteredCounts.length === 0 && (
-                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={9}>No hay conteos registrados todavía.</td></tr>
+                                                <tr><td className="p-6 border text-center text-slate-400" colSpan={9}>No hay conteos registrados todavÃ­a.</td></tr>
                                             )}
                                         </tbody>
                                     </table>
@@ -7571,7 +7578,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
+                    {/* â”€â”€ SUB-TAB: RESUMEN POR CÃ“DIGO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {valTab === "resumen" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             {/* Breadcrumb desde dashboard */}
@@ -7581,17 +7588,17 @@ export default function DashboardPage() {
                                         className="flex items-center gap-1.5 text-blue-700 hover:text-blue-900 font-semibold transition-colors"
                                         onClick={() => { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); setValTab("dashboard"); }}
                                     >
-                                        ← Volver al Dashboard
+                                        â† Volver al Dashboard
                                     </button>
-                                    <span className="text-slate-400">·</span>
+                                    <span className="text-slate-400">Â·</span>
                                     <span className="text-slate-600 font-medium">{allStores.find(s => s.id === valStoreId)?.name}</span>
-                                    <span className="text-slate-400">·</span>
+                                    <span className="text-slate-400">Â·</span>
                                     <span className="text-slate-500">{valDate}</span>
                                 </div>
                             )}
                             <div className="flex flex-wrap gap-3 items-center justify-between">
                                 <div>
-                                    <h3 className="text-lg font-bold text-slate-900">Resumen por código</h3>
+                                    <h3 className="text-lg font-bold text-slate-900">Resumen por cÃ³digo</h3>
                                     <p className="text-slate-500 text-xs mt-0.5">
                                         Diferencia valorizada total:&nbsp;
                                         <b className={resumenStats.valorizadaDif < 0 ? "text-red-600" : resumenStats.valorizadaDif > 0 ? "text-blue-700" : "text-green-700"}>
@@ -7600,13 +7607,13 @@ export default function DashboardPage() {
                                     </p>
                                 </div>
                                 <div className="flex gap-2 flex-wrap">
-                                    {/* Botón modo edición — solo en drill-down desde dashboard */}
+                                    {/* BotÃ³n modo ediciÃ³n â€” solo en drill-down desde dashboard */}
                                     {canValidateCyclic && dashDrillSource && (
                                         <button
                                             className={`px-4 py-2 rounded-2xl text-sm font-semibold border transition-all ${resumenEditMode ? "bg-amber-500 text-white border-amber-500" : "bg-white text-amber-700 border-amber-400 hover:bg-amber-50"}`}
                                             onClick={() => { setResumenEditMode(prev => !prev); if (resumenEditMode) { setResumenOverrides({}); setResumenDraft({}); setResumenSort(null); } }}
                                         >
-                                            {resumenEditMode ? "✏️ Editando — Click para salir" : "✏️ Modo análisis"}
+                                            {resumenEditMode ? "âœï¸ Editando â€” Click para salir" : "âœï¸ Modo anÃ¡lisis"}
                                         </button>
                                     )}
                                     {resumenEditMode && (Object.keys(resumenDraft).length > 0 || Object.keys(resumenOverrides).length > 0) && (
@@ -7614,7 +7621,7 @@ export default function DashboardPage() {
                                             className="px-4 py-2 rounded-2xl text-sm font-semibold border border-slate-300 text-slate-600 hover:bg-slate-50"
                                             onClick={() => { setResumenOverrides({}); setResumenDraft({}); }}
                                         >
-                                            🔄 Resetear cambios
+                                            ðŸ”„ Resetear cambios
                                         </button>
                                     )}
                                     {resumenEditMode && Object.keys(resumenDraft).length > 0 && (
@@ -7625,31 +7632,31 @@ export default function DashboardPage() {
                                                 const merged = { ...resumenOverrides, ...resumenDraft };
                                                 setResumenOverrides(merged);
                                                 setResumenDraft({});
-                                                // saveResumenAnalysis uses resumenOverrides — give React one tick then call
+                                                // saveResumenAnalysis uses resumenOverrides â€” give React one tick then call
                                                 setTimeout(() => saveResumenAnalysis(merged), 0);
                                             }}
                                             disabled={savingAnalysis}
                                         >
-                                            {savingAnalysis ? "Guardando..." : `💾 Guardar ${Object.keys(resumenDraft).length} cambio${Object.keys(resumenDraft).length !== 1 ? "s" : ""}`}
+                                            {savingAnalysis ? "Guardando..." : `ðŸ’¾ Guardar ${Object.keys(resumenDraft).length} cambio${Object.keys(resumenDraft).length !== 1 ? "s" : ""}`}
                                         </button>
                                     )}
-                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>↓ Excel resumen</button>
+                                    <button className="px-4 py-2 rounded-2xl border text-sm font-semibold text-slate-700" onClick={exportResumen}>â†“ Excel resumen</button>
                                 </div>
                             </div>
 
                             <input
                                 className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white"
-                                placeholder="Buscar SKU o descripción..."
+                                placeholder="Buscar SKU o descripciÃ³n..."
                                 value={resumenSearch}
                                 onChange={e => setResumenSearch(e.target.value)}
                             />
 
                             {filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length > 0 && (
                                 <>
-                                    <p className="text-sm font-semibold text-slate-700">✅ Códigos contados ({filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length})</p>
+                                    <p className="text-sm font-semibold text-slate-700">âœ… CÃ³digos contados ({filteredResumen.filter(r => counts.some(c => c.product_id === r.product_id)).length})</p>
                                     {resumenEditMode && (
                                         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                                            ✏️ <b>Modo análisis activo:</b> Edita el <b>Stock sistema</b> o el <b>Total contado</b>. La diferencia y valorización se recalculan en tiempo real. Al presionar <b>💾 Guardar</b> los cambios se escriben en la base de datos: el stock actualiza <code>cyclic_assignments</code> y el conteo ajusta <code>cyclic_counts</code>.
+                                            âœï¸ <b>Modo anÃ¡lisis activo:</b> Edita el <b>Stock sistema</b> o el <b>Total contado</b>. La diferencia y valorizaciÃ³n se recalculan en tiempo real. Al presionar <b>ðŸ’¾ Guardar</b> los cambios se escriben en la base de datos: el stock actualiza <code>cyclic_assignments</code> y el conteo ajusta <code>cyclic_counts</code>.
                                         </p>
                                     )}
                                     <div className="border rounded-2xl overflow-hidden">
@@ -7659,7 +7666,7 @@ export default function DashboardPage() {
                                                     <tr>
                                                         {([
                                                             { col: "sku",     label: "SKU",             align: "left"   as const, amber: false },
-                                                            { col: "desc",    label: "Descripción",     align: "left"   as const, amber: false },
+                                                            { col: "desc",    label: "DescripciÃ³n",     align: "left"   as const, amber: false },
                                                             { col: "um",      label: "UM",              align: "center" as const, amber: false },
                                                             { col: "stock",   label: "Stock Sis.",      align: "center" as const, amber: true  },
                                                             { col: "contado", label: "Total Contado",   align: "center" as const, amber: true  },
@@ -7686,7 +7693,7 @@ export default function DashboardPage() {
                                                                     <span className="inline-flex items-center gap-1">
                                                                         {label}
                                                                         <span className={`text-xs transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover:opacity-40"}`}>
-                                                                            {isAsc ? "↑" : "↓"}
+                                                                            {isAsc ? "â†‘" : "â†“"}
                                                                         </span>
                                                                     </span>
                                                                 </th>
@@ -7762,14 +7769,14 @@ export default function DashboardPage() {
 
                             {notCountedAssignments.length > 0 && (
                                 <div className="space-y-3">
-                                    <p className="text-sm font-semibold text-amber-700">⏳ Sin contar ({notCountedAssignments.length})</p>
+                                    <p className="text-sm font-semibold text-amber-700">â³ Sin contar ({notCountedAssignments.length})</p>
                                     <div className="border border-amber-200 rounded-2xl overflow-hidden">
                                         <div className="max-h-[400px] overflow-auto">
                                             <table className="w-full text-sm">
                                                 <thead className="bg-amber-50 sticky top-0">
                                                     <tr>
                                                         <th className="p-2 border border-amber-200 text-left">SKU</th>
-                                                        <th className="p-2 border border-amber-200 text-left">Descripción</th>
+                                                        <th className="p-2 border border-amber-200 text-left">DescripciÃ³n</th>
                                                         <th className="p-2 border border-amber-200">UM</th>
                                                         <th className="p-2 border border-amber-200">Costo Unit.</th>
                                                         <th className="p-2 border border-amber-200">Stock Sis.</th>
@@ -7813,25 +7820,25 @@ export default function DashboardPage() {
                 </>
             )}
 
-            {/* ════════════════════════════════════════════════════════
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
                 TAB ADMIN
-            ════════════════════════════════════════════════════════ */}
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {((activeTab === "admin" && isAdmin) || activeTab === "ubicaciones") && (
                 <>
 
-                    {/* ── ADMIN: MAESTRO PRODUCTOS ──────────────────────── */}
+                    {/* â”€â”€ ADMIN: MAESTRO PRODUCTOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {activeTab === "admin" && adminTab === "productos" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
                                     <h2 className="text-xl font-bold text-slate-900">Maestro global de productos</h2>
-                                    <p className="text-slate-500 text-sm mt-1">Sube 2 archivos: el <b>Maestro de productos</b> y los <b>Códigos de barra</b>.</p>
+                                    <p className="text-slate-500 text-sm mt-1">Sube 2 archivos: el <b>Maestro de productos</b> y los <b>CÃ³digos de barra</b>.</p>
                                 </div>
 
                                 {/* ARCHIVO 1: Maestro de productos */}
                                 <div className="rounded-2xl bg-slate-50 border p-4 space-y-2">
-                                    <p className="text-sm font-semibold text-slate-700">📋 Archivo 1 — Maestro de productos</p>
-                                    <p className="text-xs text-slate-400">Columnas por posición (la fila 1 se ignora): <b>A: Código</b> · <b>B: Descripción</b> · <b>C: Unidad de medida</b> · <b>D: Costo</b> · <b>E: Stock</b>. El encabezado no importa, solo el orden de columnas.</p>
+                                    <p className="text-sm font-semibold text-slate-700">ðŸ“‹ Archivo 1 â€” Maestro de productos</p>
+                                    <p className="text-xs text-slate-400">Columnas por posiciÃ³n (la fila 1 se ignora): <b>A: CÃ³digo</b> Â· <b>B: DescripciÃ³n</b> Â· <b>C: Unidad de medida</b> Â· <b>D: Costo</b> Â· <b>E: Stock</b>. El encabezado no importa, solo el orden de columnas.</p>
                                     {uploadProgress && (
                                         <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 space-y-1">
                                             <p className="text-xs font-semibold text-blue-800">{uploadProgress.step}</p>
@@ -7853,9 +7860,9 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
 
-                                {/* ARCHIVO 2: Códigos de barra */}
+                                {/* ARCHIVO 2: CÃ³digos de barra */}
                                 <div className="rounded-2xl bg-slate-50 border p-4 space-y-2">
-                                    <p className="text-sm font-semibold text-slate-700">🔖 Archivo 2 — Códigos de barra</p>
+                                    <p className="text-sm font-semibold text-slate-700">ðŸ”– Archivo 2 â€” CÃ³digos de barra</p>
                                     <p className="text-xs text-slate-400">Columnas: <b>CODIGO</b>, <b>CODIGO DE BARRA 1</b>, <b>CODIGO DE BARRA 2</b>. Se sube 1 sola vez.</p>
                                     {barcodesProgress && (
                                         <div className="rounded-xl bg-blue-50 border border-blue-200 p-3 space-y-1">
@@ -7872,7 +7879,7 @@ export default function DashboardPage() {
                                         <input ref={barcodesInputRef} type="file" accept=".xlsx,.xls" className="hidden"
                                             onChange={e => { const f = e.target.files?.[0] || null; setBarcodesFile(f); setBarcodesFileName(f?.name || ""); e.target.value = ""; }} />
                                         {barcodesFile && (
-                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBarcodes}>Actualizar códigos</button>
+                                            <button className="px-4 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={uploadBarcodes}>Actualizar cÃ³digos</button>
                                         )}
                                     </div>
                                 </div>
@@ -7882,7 +7889,7 @@ export default function DashboardPage() {
                             <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                                 <div className="flex items-center justify-between gap-3 flex-wrap">
                                     <h3 className="font-bold text-slate-900">Productos del maestro</h3>
-                                    <input className="border rounded-2xl px-3 py-2 text-sm w-64 text-slate-900 bg-white" placeholder="Buscar SKU o descripción..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
+                                    <input className="border rounded-2xl px-3 py-2 text-sm w-64 text-slate-900 bg-white" placeholder="Buscar SKU o descripciÃ³n..." value={prodSearch} onChange={e => setProdSearch(e.target.value)} />
                                 </div>
                                 <div className="border rounded-2xl overflow-hidden">
                                     <div className="max-h-[450px] overflow-auto">
@@ -7890,11 +7897,11 @@ export default function DashboardPage() {
                                             <thead className="bg-slate-100 sticky top-0">
                                                 <tr>
                                                     <th className="p-2 border text-left">SKU</th>
-                                                    <th className="p-2 border text-left">Descripción</th>
+                                                    <th className="p-2 border text-left">DescripciÃ³n</th>
                                                     <th className="p-2 border">UM</th>
                                                     <th className="p-2 border">Costo</th>
-                                                    <th className="p-2 border">Código barra</th>
-                                                    <th className="p-2 border">Acción</th>
+                                                    <th className="p-2 border">CÃ³digo barra</th>
+                                                    <th className="p-2 border">AcciÃ³n</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -7904,7 +7911,7 @@ export default function DashboardPage() {
                                                         <td className="p-2 border text-slate-600 max-w-[200px] whitespace-normal break-words">{p.description}</td>
                                                         <td className="p-2 border text-center">{p.unit}</td>
                                                         <td className="p-2 border text-center">{formatMoney(p.cost)}</td>
-                                                        <td className="p-2 border text-center font-mono text-xs">{p.barcode || "—"}</td>
+                                                        <td className="p-2 border text-center font-mono text-xs">{p.barcode || "â€”"}</td>
                                                         <td className="p-2 border text-center">
                                                             <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold" onClick={() => { setEditingProduct(p); setEditProdSku(p.sku); setEditProdBarcode(p.barcode || ""); setEditProdDesc(p.description); setEditProdUnit(p.unit); setEditProdCost(String(p.cost)); }}>Editar</button>
                                                         </td>
@@ -7922,7 +7929,7 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {/* ── ADMIN: TIENDAS ────────────────────────────────── */}
+                    {/* â”€â”€ ADMIN: TIENDAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {activeTab === "admin" && adminTab === "tiendas" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Tiendas</h2>
@@ -7930,7 +7937,7 @@ export default function DashboardPage() {
                                 <p className="text-sm font-semibold text-slate-700">Nueva tienda</p>
                                 <div className="flex gap-3 flex-wrap">
                                     <input className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[160px]" placeholder="Nombre de la tienda" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
-                                    <input className="w-32 border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Código" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
+                                    <input className="w-32 border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="CÃ³digo" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
                                     <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createStore}>+ Crear</button>
                                 </div>
                             </div>
@@ -7939,9 +7946,9 @@ export default function DashboardPage() {
                                     <thead className="bg-slate-100">
                                         <tr>
                                             <th className="p-2 border text-left">Nombre</th>
-                                            <th className="p-2 border">Código</th>
+                                            <th className="p-2 border">CÃ³digo</th>
                                             <th className="p-2 border">Estado</th>
-                                            <th className="p-2 border">Acción</th>
+                                            <th className="p-2 border">AcciÃ³n</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -7964,7 +7971,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
+                    {/* â”€â”€ ADMIN: USUARIOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
                     {activeTab === "ubicaciones" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -8089,9 +8096,9 @@ export default function DashboardPage() {
                                 <p className="text-sm font-semibold text-slate-700">Crear nuevo usuario</p>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="ContraseÃ±a" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 — con código de país)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
+                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 â€” con cÃ³digo de paÃ­s)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
                                     <div>
                                         <label className="text-xs text-slate-500 block mb-1">Rol</label>
                                         <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
@@ -8105,14 +8112,14 @@ export default function DashboardPage() {
                                         <div>
                                             <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
                                             <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)}>
-                                                <option value="">— Sin asignar —</option>
+                                                <option value="">â€” Sin asignar â€”</option>
                                                 {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                             </select>
                                         </div>
                                     )}
                                     <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700 md:col-span-2">
                                         <input type="checkbox" checked={newRole === "Administrador" || newRole === "Supervisor" || newUserAuditAccess} disabled={newRole === "Administrador" || newRole === "Supervisor"} onChange={e => setNewUserAuditAccess(e.target.checked)} />
-                                        Puede acceder a auditorías
+                                        Puede acceder a auditorÃ­as
                                     </label>
                                 </div>
                                 <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createUser}>+ Crear usuario</button>
@@ -8128,9 +8135,9 @@ export default function DashboardPage() {
                                                 <th className="p-2 border">Rol</th>
                                                 <th className="p-2 border">Tienda</th>
                                                 <th className="p-2 border">WhatsApp</th>
-                                                <th className="p-2 border">Auditoría</th>
+                                                <th className="p-2 border">AuditorÃ­a</th>
                                                 <th className="p-2 border">Estado</th>
-                                                <th className="p-2 border">Acción</th>
+                                                <th className="p-2 border">AcciÃ³n</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -8143,11 +8150,11 @@ export default function DashboardPage() {
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Supervisor" ? "bg-emerald-100 text-emerald-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
                                                         </td>
-                                                        <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "—")}</td>
+                                                        <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "â€”")}</td>
                                                         <td className="p-2 border text-center text-xs">
                                                             {u.whatsapp
-                                                                ? <a href={`https://wa.me/${u.whatsapp}`} target="_blank" rel="noreferrer" className="text-green-600 font-semibold hover:underline">📲 {u.whatsapp}</a>
-                                                                : <span className="text-slate-400">—</span>}
+                                                                ? <a href={`https://wa.me/${u.whatsapp}`} target="_blank" rel="noreferrer" className="text-green-600 font-semibold hover:underline">ðŸ“² {u.whatsapp}</a>
+                                                                : <span className="text-slate-400">â€”</span>}
                                                         </td>
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "Si" : "No"}</span>
@@ -8157,7 +8164,7 @@ export default function DashboardPage() {
                                                         </td>
                                                         <td className="p-2 border text-center">
                                                             <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditUser(u)}>Editar</button>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deleteUser(u)}>✕</button>
+                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deleteUser(u)}>âœ•</button>
                                                         </td>
                                                     </tr>
                                                 );
@@ -8175,9 +8182,9 @@ export default function DashboardPage() {
 
             </div>{/* end content space-y-4 */}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — CONTEO (Operario) — MÚLTIPLES UBICACIONES
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” CONTEO (Operario) â€” MÃšLTIPLES UBICACIONES
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeAssignment && (
                 <div className="fixed inset-0 bg-black/50 flex items-end justify-center overflow-y-auto p-2 sm:items-center sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-2xl p-4 w-full max-w-md shadow-2xl sm:rounded-3xl sm:p-6">
@@ -8188,7 +8195,7 @@ export default function DashboardPage() {
                                 <p className="break-words text-sm text-slate-500">{activeAssignment.description}</p>
                                 <div className="flex flex-wrap items-center gap-2 mt-1.5">
                                     <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2.5 py-1 rounded-full border">UM: {activeAssignment.unit}</span>
-                                        <span className="max-w-full break-words text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">📦 Stock sistema: {formatNumber(activeAssignment.system_stock)}</span>
+                                        <span className="max-w-full break-words text-xs bg-blue-50 text-blue-700 font-bold px-2.5 py-1 rounded-full border border-blue-200">ðŸ“¦ Stock sistema: {formatNumber(activeAssignment.system_stock)}</span>
                                     <button
                                         onClick={() => refreshAssignmentStock(activeAssignment)}
                                         disabled={refreshingStockId === activeAssignment.id || savingCount}
@@ -8199,7 +8206,7 @@ export default function DashboardPage() {
                                     </button>
                                 </div>
                             </div>
-                            <button className="shrink-0 text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>×</button>
+                            <button className="shrink-0 text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setActiveAssignment(null)}>Ã—</button>
                         </div>
 
                         <div className="space-y-3 mb-4">
@@ -8228,11 +8235,11 @@ export default function DashboardPage() {
                                     onClick={addLocationRow}
                                     disabled={sinStock}
                                 >
-                                    + Agregar ubicación
+                                    + Agregar ubicaciÃ³n
                                 </button>
                             </div>
 
-                            {/* ── Botón "Sin stock" ── */}
+                            {/* â”€â”€ BotÃ³n "Sin stock" â”€â”€ */}
                             <button
                                 className={`w-full py-3 rounded-2xl font-bold text-sm border-2 transition-all ${
                                     sinStock
@@ -8241,11 +8248,11 @@ export default function DashboardPage() {
                                 }`}
                                 onClick={() => setSinStock(prev => !prev)}
                             >
-                                {sinStock ? "🚫 Sin stock físico — toca para cancelar" : "🚫 Sin stock físico"}
+                                {sinStock ? "ðŸš« Sin stock fÃ­sico â€” toca para cancelar" : "ðŸš« Sin stock fÃ­sico"}
                             </button>
                             {sinStock && (
                                 <div className="rounded-2xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 font-medium">
-                                    Se registrará <b>cantidad 0</b> para <b>{activeAssignment?.sku}</b>. El producto quedará como contado con diferencia. No necesitas ingresar ubicación.
+                                    Se registrarÃ¡ <b>cantidad 0</b> para <b>{activeAssignment?.sku}</b>. El producto quedarÃ¡ como contado con diferencia. No necesitas ingresar ubicaciÃ³n.
                                 </div>
                             )}
 
@@ -8253,10 +8260,10 @@ export default function DashboardPage() {
                                 <div key={i} className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-3 space-y-3 sm:p-4">
                                     <div className="flex items-center justify-between gap-2">
                                         <span className="text-sm font-bold text-slate-600">
-                                            {locationRows.length > 1 ? `📍 Ubicación ${i + 1}` : "📍 Ubicación"}
+                                            {locationRows.length > 1 ? `ðŸ“ UbicaciÃ³n ${i + 1}` : "ðŸ“ UbicaciÃ³n"}
                                         </span>
                                         {locationRows.length > 1 && (
-                                            <button className="text-xs text-red-500 hover:text-red-700 font-semibold active:scale-95 transition-all" onClick={() => removeLocationRow(i)}>✕ Quitar</button>
+                                            <button className="text-xs text-red-500 hover:text-red-700 font-semibold active:scale-95 transition-all" onClick={() => removeLocationRow(i)}>âœ• Quitar</button>
                                         )}
                                     </div>
                                     <div>
@@ -8274,7 +8281,7 @@ export default function DashboardPage() {
                                             <button
                                                 className="px-3 py-2 rounded-xl bg-slate-800 text-white text-xs active:bg-slate-600 active:scale-95 transition-all"
                                                 onClick={() => openScanner("location", i)}
-                                                title="Escanear ubicación"
+                                                title="Escanear ubicaciÃ³n"
                                             >
                                                 <QrCode size={16} />
                                             </button>
@@ -8301,7 +8308,7 @@ export default function DashboardPage() {
                                 onClick={saveCount}
                                 disabled={savingCount}
                             >
-                                {savingCount ? "Guardando..." : "💾 Guardar conteo"}
+                                {savingCount ? "Guardando..." : "ðŸ’¾ Guardar conteo"}
                             </button>
                             <button
                                 className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm text-slate-700 active:bg-slate-100 active:scale-95 transition-all"
@@ -8315,18 +8322,18 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — EDITAR CONTEO (Validador)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” EDITAR CONTEO (Validador)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {editingCount && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-4 shadow-2xl sm:p-6">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar registro</h3>
-                                <p className="text-slate-600 text-sm">{editingCount.sku} — {editingCount.description}</p>
+                                <p className="text-slate-600 text-sm">{editingCount.sku} â€” {editingCount.description}</p>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingCount(null)}>×</button>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingCount(null)}>Ã—</button>
                         </div>
                         <div className="space-y-3">
                             <div>
@@ -8334,7 +8341,7 @@ export default function DashboardPage() {
                                 <input className="w-full border rounded-2xl p-3 text-center font-semibold text-slate-900 bg-white" type="number" min="0" value={editQty} onChange={e => setEditQty(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Ubicación</label>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">UbicaciÃ³n</label>
                                 <input className="w-full border rounded-2xl p-3 font-mono text-slate-900 bg-white" value={editLocation} onChange={e => setEditLocation(e.target.value)} />
                             </div>
                             <div>
@@ -8359,9 +8366,9 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — EDITAR PRODUCTO (Admin)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” EDITAR PRODUCTO (Admin)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {editingProduct && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-md space-y-4 shadow-2xl sm:p-6">
@@ -8370,7 +8377,7 @@ export default function DashboardPage() {
                                 <h3 className="text-xl font-bold text-slate-900">Editar producto</h3>
                                 <p className="text-slate-600 text-sm">{editingProduct.sku}</p>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingProduct(null)}>×</button>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingProduct(null)}>Ã—</button>
                         </div>
                         <div className="grid md:grid-cols-2 gap-4">
                             <div>
@@ -8378,11 +8385,11 @@ export default function DashboardPage() {
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editProdSku} onChange={e => setEditProdSku(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block font-semibold text-sm mb-1 text-slate-900">Código de barra</label>
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">CÃ³digo de barra</label>
                                 <input className="w-full border rounded-2xl p-3 font-mono text-slate-900 bg-white" value={editProdBarcode} onChange={e => setEditProdBarcode(e.target.value)} placeholder="Opcional" />
                             </div>
                             <div className="md:col-span-2">
-                                <label className="block font-semibold text-sm mb-1 text-slate-900">Descripción</label>
+                                <label className="block font-semibold text-sm mb-1 text-slate-900">DescripciÃ³n</label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editProdDesc} onChange={e => setEditProdDesc(e.target.value)} />
                             </div>
                             <div>
@@ -8402,18 +8409,18 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — EDITAR USUARIO (Admin)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” EDITAR USUARIO (Admin)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {editingUser && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-md space-y-4 shadow-2xl sm:p-6">
                         <div className="flex items-start justify-between gap-3">
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Editar usuario</h3>
-                                <p className="text-slate-600 text-sm">{editingUser.username} · {editingUser.full_name}</p>
+                                <p className="text-slate-600 text-sm">{editingUser.username} Â· {editingUser.full_name}</p>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingUser(null)}>×</button>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingUser(null)}>Ã—</button>
                         </div>
                         <div className="space-y-3">
                             <div>
@@ -8433,27 +8440,27 @@ export default function DashboardPage() {
                                 <div>
                                     <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
                                     <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)}>
-                                        <option value="">— Sin asignar —</option>
+                                        <option value="">â€” Sin asignar â€”</option>
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 </div>
                             )}
                             <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
-                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseÃ±a <span className="text-slate-400 font-normal">(dejar vacÃ­o para no cambiar)</span></label>
+                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseÃ±a..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
                             </div>
                             <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con cÃ³digo de paÃ­s, ej: 51987654321)</span></label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
                             </div>
                             <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
                                 <input type="checkbox" checked={editUserRole === "Administrador" || editUserRole === "Supervisor" || editUserAuditAccess} disabled={editUserRole === "Administrador" || editUserRole === "Supervisor"} onChange={e => setEditUserAuditAccess(e.target.checked)} />
-                                Puede acceder a auditorías
+                                Puede acceder a auditorÃ­as
                             </label>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
                                 <div className="flex gap-3">
-                                    <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${editUserActive ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(true)}>✓ Activo</button>
+                                    <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${editUserActive ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(true)}>âœ“ Activo</button>
                                     <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${!editUserActive ? "bg-red-500 text-white border-red-500" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(false)}>Inactivo</button>
                                 </div>
                             </div>
@@ -8466,17 +8473,17 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — CONFIRMAR RECONTEO (Operario)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” CONFIRMAR RECONTEO (Operario)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {showRecountConfirmModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-5 shadow-2xl sm:p-6">
                         <div className="text-center space-y-2">
-                            <div className="text-5xl">🔄</div>
-                            <h3 className="text-xl font-bold text-slate-900">¿Iniciar reconteo?</h3>
+                            <div className="text-5xl">ðŸ”„</div>
+                            <h3 className="text-xl font-bold text-slate-900">Â¿Iniciar reconteo?</h3>
                             <p className="text-slate-600 text-sm leading-relaxed">
-                                Tienes <span className="font-bold text-orange-700">{difAssignments.length} código{difAssignments.length !== 1 ? "s" : ""} para recontar</span>
+                                Tienes <span className="font-bold text-orange-700">{difAssignments.length} cÃ³digo{difAssignments.length !== 1 ? "s" : ""} para recontar</span>
                                 {pendingAssignments.length > 0 && (
                                     <>, incluyendo <span className="font-bold text-amber-700">{pendingAssignments.length} sin contar</span></>
                                 )}.
@@ -8484,7 +8491,7 @@ export default function DashboardPage() {
                         </div>
                         {pendingAssignments.length > 0 && (
                             <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 max-h-36 overflow-auto">
-                                <p className="text-xs font-bold text-amber-800 mb-2">Códigos no contados incluidos:</p>
+                                <p className="text-xs font-bold text-amber-800 mb-2">CÃ³digos no contados incluidos:</p>
                                 <div className="flex flex-wrap gap-1.5">
                                     {pendingAssignments.map(a => (
                                         <span key={a.id} className="text-xs bg-amber-100 text-amber-900 rounded-xl px-2 py-0.5 font-semibold border border-amber-200">{a.sku}</span>
@@ -8497,29 +8504,29 @@ export default function DashboardPage() {
                                 Cancelar
                             </button>
                             <button className="flex-1 py-3 rounded-2xl bg-orange-500 text-white font-bold text-sm" onClick={() => { setShowRecountConfirmModal(false); openRecountPanel(); }}>
-                                Sí, recontar
+                                SÃ­, recontar
                             </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — TERMINAR CONTEO (Operario)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” TERMINAR CONTEO (Operario)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {showFinishModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-sm space-y-5 shadow-2xl sm:p-6">
                         <div className="text-center space-y-2">
-                            <div className="text-5xl">⚠️</div>
-                            <h3 className="text-xl font-bold text-slate-900">¿Terminar conteo?</h3>
+                            <div className="text-5xl">âš ï¸</div>
+                            <h3 className="text-xl font-bold text-slate-900">Â¿Terminar conteo?</h3>
                             <p className="text-slate-600 text-sm leading-relaxed">
-                                Aún tienes <span className="font-bold text-amber-700">{pendingAssignments.length} código{pendingAssignments.length !== 1 ? "s" : ""} sin contar</span>.
-                                ¿Deseas terminar de todas formas?
+                                AÃºn tienes <span className="font-bold text-amber-700">{pendingAssignments.length} cÃ³digo{pendingAssignments.length !== 1 ? "s" : ""} sin contar</span>.
+                                Â¿Deseas terminar de todas formas?
                             </p>
                         </div>
                         <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 max-h-40 overflow-auto">
-                            <p className="text-xs font-bold text-amber-800 mb-2">Códigos pendientes:</p>
+                            <p className="text-xs font-bold text-amber-800 mb-2">CÃ³digos pendientes:</p>
                             <div className="flex flex-wrap gap-1.5">
                                 {pendingAssignments.map(a => (
                                     <span key={a.id} className="text-xs bg-amber-100 text-amber-900 rounded-xl px-2 py-0.5 font-semibold border border-amber-200">{a.sku}</span>
@@ -8531,16 +8538,16 @@ export default function DashboardPage() {
                                 Volver a contar
                             </button>
                             <button className="flex-1 py-3 rounded-2xl bg-red-500 text-white font-bold text-sm" onClick={confirmFinishSession}>
-                                Sí, terminar
+                                SÃ­, terminar
                             </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — WHATSAPP MASIVO POST-CARGA
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” WHATSAPP MASIVO POST-CARGA
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {locationEntryOpen && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-xl shadow-2xl space-y-4 sm:p-6">
@@ -8549,7 +8556,7 @@ export default function DashboardPage() {
                                 <h3 className="text-xl font-bold text-slate-900">Agregar ubicacion</h3>
                                 <p className="text-sm text-slate-500 mt-1">{allStores.find(s => s.id === locationStoreId)?.name || "Tienda seleccionada"}</p>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setLocationEntryOpen(false)}>×</button>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setLocationEntryOpen(false)}>Ã—</button>
                         </div>
 
                         <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
@@ -8597,7 +8604,7 @@ export default function DashboardPage() {
                                     </div>
                                     {row.product && (
                                         <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-900">
-                                            <b>{row.product.sku}</b> · {row.product.description}
+                                            <b>{row.product.sku}</b> Â· {row.product.description}
                                         </div>
                                     )}
                                     {row.status === "error" && <p className="text-xs font-semibold text-red-600">{row.message}</p>}
@@ -8621,14 +8628,14 @@ export default function DashboardPage() {
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-lg shadow-2xl space-y-4 sm:p-6">
 
-                        {/* ── FASE 1: Selección ── */}
+                        {/* â”€â”€ FASE 1: SelecciÃ³n â”€â”€ */}
                         {bulkWspSendingIdx < 0 ? (<>
                             <div className="flex items-start justify-between gap-3">
                                 <div>
-                                    <h3 className="text-xl font-bold text-slate-900">📲 WhatsApp masivo</h3>
-                                    <p className="text-slate-500 text-sm mt-1">Fecha: <b>{bulkWspDate}</b> · Selecciona las tiendas a notificar.</p>
+                                    <h3 className="text-xl font-bold text-slate-900">ðŸ“² WhatsApp masivo</h3>
+                                    <p className="text-slate-500 text-sm mt-1">Fecha: <b>{bulkWspDate}</b> Â· Selecciona las tiendas a notificar.</p>
                                 </div>
-                                <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>×</button>
+                                <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>Ã—</button>
                             </div>
 
                             <div className="flex gap-2">
@@ -8656,15 +8663,15 @@ export default function DashboardPage() {
                                             }}
                                         >
                                             <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${selected && hasOp ? "bg-green-600 border-green-600" : "border-slate-300"}`}>
-                                                {selected && hasOp && <span className="text-white text-xs font-bold">✓</span>}
+                                                {selected && hasOp && <span className="text-white text-xs font-bold">âœ“</span>}
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <div className="font-semibold text-sm text-slate-900 truncate">{store.name}</div>
                                                 <div className="text-xs text-slate-500">
-                                                    {store.count} código{store.count !== 1 ? "s" : ""}
+                                                    {store.count} cÃ³digo{store.count !== 1 ? "s" : ""}
                                                     {store.operario
-                                                        ? <> · <span className="text-green-700">{store.operario.full_name} · {store.operario.whatsapp}</span></>
-                                                        : <span className="text-red-400"> · Sin WhatsApp registrado</span>
+                                                        ? <> Â· <span className="text-green-700">{store.operario.full_name} Â· {store.operario.whatsapp}</span></>
+                                                        : <span className="text-red-400"> Â· Sin WhatsApp registrado</span>
                                                     }
                                                 </div>
                                             </div>
@@ -8687,17 +8694,17 @@ export default function DashboardPage() {
                                     disabled={bulkWspQueue.length === 0}
                                     onClick={startBulkSend}
                                 >
-                                    📲 Iniciar envío a {bulkWspQueue.length} tienda{bulkWspQueue.length !== 1 ? "s" : ""}
+                                    ðŸ“² Iniciar envÃ­o a {bulkWspQueue.length} tienda{bulkWspQueue.length !== 1 ? "s" : ""}
                                 </button>
                                 <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700 text-sm" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
                                     Omitir
                                 </button>
                             </div>
                         </>) : (
-                        /* ── FASE 2: Envío paso a paso ── */
+                        /* â”€â”€ FASE 2: EnvÃ­o paso a paso â”€â”€ */
                         <>
                             <div className="text-center space-y-1">
-                                <div className="text-4xl">📲</div>
+                                <div className="text-4xl">ðŸ“²</div>
                                 <h3 className="text-xl font-bold text-slate-900">Enviando mensajes</h3>
                                 <p className="text-slate-500 text-sm">{bulkWspSendingIdx + 1} de {bulkWspQueue.length} tiendas</p>
                             </div>
@@ -8719,9 +8726,9 @@ export default function DashboardPage() {
                                 return (
                                     <div className="rounded-2xl bg-green-50 border border-green-200 p-4 space-y-2">
                                         <div className="font-bold text-slate-900 text-base">{cur.name}</div>
-                                        <div className="text-xs text-slate-500">{cur.operario?.full_name} · {cur.operario?.whatsapp}</div>
+                                        <div className="text-xs text-slate-500">{cur.operario?.full_name} Â· {cur.operario?.whatsapp}</div>
                                         <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-white rounded-xl p-3 border">{buildWspMessage(cur)}</pre>
-                                        <p className="text-xs text-amber-700 font-semibold">⬆️ Se abrió WhatsApp con este mensaje. Presiona <b>Siguiente</b> cuando lo hayas enviado.</p>
+                                        <p className="text-xs text-amber-700 font-semibold">â¬†ï¸ Se abriÃ³ WhatsApp con este mensaje. Presiona <b>Siguiente</b> cuando lo hayas enviado.</p>
                                     </div>
                                 );
                             })()}
@@ -8734,10 +8741,10 @@ export default function DashboardPage() {
                                         <div key={s.id} className="flex items-center gap-2">
                                             <span className="text-slate-300">#{bulkWspSendingIdx + 2 + i}</span>
                                             <span>{s.name}</span>
-                                            <span className="text-slate-400">· {s.operario?.whatsapp}</span>
+                                            <span className="text-slate-400">Â· {s.operario?.whatsapp}</span>
                                         </div>
                                     ))}
-                                    {bulkWspQueue.length > bulkWspSendingIdx + 4 && <p className="text-slate-400">... y {bulkWspQueue.length - bulkWspSendingIdx - 4} más</p>}
+                                    {bulkWspQueue.length > bulkWspSendingIdx + 4 && <p className="text-slate-400">... y {bulkWspQueue.length - bulkWspSendingIdx - 4} mÃ¡s</p>}
                                 </div>
                             )}
 
@@ -8746,48 +8753,48 @@ export default function DashboardPage() {
                                     className="flex-1 py-4 rounded-2xl bg-green-600 text-white font-bold text-base"
                                     onClick={nextBulkSend}
                                 >
-                                    {bulkWspSendingIdx + 1 >= bulkWspQueue.length ? "✅ Finalizar" : `Siguiente → ${bulkWspQueue[bulkWspSendingIdx + 1]?.name}`}
+                                    {bulkWspSendingIdx + 1 >= bulkWspQueue.length ? "âœ… Finalizar" : `Siguiente â†’ ${bulkWspQueue[bulkWspSendingIdx + 1]?.name}`}
                                 </button>
                             </div>
                             <button className="w-full text-xs text-slate-400 underline" onClick={() => { setShowBulkWspModal(false); setBulkWspSendingIdx(-1); }}>
-                                Cancelar envío
+                                Cancelar envÃ­o
                             </button>
                         </>)}
                     </div>
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                OVERLAY — ESCÁNER DE CÁMARA
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                OVERLAY â€” ESCÃNER DE CÃMARA
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {scannerTarget && (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-[60]">
                     <div className="app-modal-panel bg-white w-full max-w-lg rounded-3xl p-4 shadow-2xl space-y-4 sm:p-5">
                         <div>
                             <h3 className="text-xl font-bold text-slate-900">
-                                {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicación ${(locationRows.length > 1 || recountRows.length > 1) ? scanningRowIndex + 1 : ""}`}
+                                {scannerTarget === "product" ? "Escanear producto" : `Escanear ubicaciÃ³n ${(locationRows.length > 1 || recountRows.length > 1) ? scanningRowIndex + 1 : ""}`}
                             </h3>
                             <p className="text-sm text-slate-500">
-                                {scannerTarget === "product" ? "Escanea el codigo del producto." : "Escanea o escribe la ubicación."}
+                                {scannerTarget === "product" ? "Escanea el codigo del producto." : "Escanea o escribe la ubicaciÃ³n."}
                             </p>
                         </div>
                         <div className="rounded-2xl overflow-hidden border bg-black min-h-[260px] flex items-center justify-center">
                             <div id={scannerContainerId} className="w-full" />
                         </div>
-                        <div className="text-sm text-slate-500">{scannerRunning ? "Cámara activa. Apunta al código." : "Iniciando cámara..."}</div>
+                        <div className="text-sm text-slate-500">{scannerRunning ? "CÃ¡mara activa. Apunta al cÃ³digo." : "Iniciando cÃ¡mara..."}</div>
                         {torchAvailable && (
                             <button onClick={toggleTorch} className="w-full px-4 py-3 rounded-2xl bg-slate-900 text-white font-semibold">
-                                {torchOn ? "Apagar linterna 🔦" : "Prender linterna 🔦"}
+                                {torchOn ? "Apagar linterna ðŸ”¦" : "Prender linterna ðŸ”¦"}
                             </button>
                         )}
-                        <button onClick={closeScanner} className="w-full px-4 py-3 rounded-2xl border font-semibold text-slate-700">Cerrar cámara</button>
+                        <button onClick={closeScanner} className="w-full px-4 py-3 rounded-2xl border font-semibold text-slate-700">Cerrar cÃ¡mara</button>
                     </div>
                 </div>
             )}
 
-            {/* ════════════════════════════════════════════════════════
-                MODAL — CORREO GERENCIAL (Preview + Acciones)
-            ════════════════════════════════════════════════════════ */}
+            {/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+                MODAL â€” CORREO GERENCIAL (Preview + Acciones)
+            â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {showEmailModal && (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
                     <div className="app-modal-panel bg-white rounded-3xl w-full max-w-4xl flex flex-col shadow-2xl">
@@ -8795,10 +8802,10 @@ export default function DashboardPage() {
                         {/* Header del modal */}
                         <div className="flex items-center justify-between gap-4 px-6 py-4 border-b bg-white flex-shrink-0">
                             <div>
-                                <h3 className="text-lg font-bold text-slate-900">✉️ Correo — Conteo Cíclico</h3>
-                                <p className="text-slate-500 text-xs mt-0.5">Ingresa los destinatarios y envía directo a Gmail.</p>
+                                <h3 className="text-lg font-bold text-slate-900">âœ‰ï¸ Correo â€” Conteo CÃ­clico</h3>
+                                <p className="text-slate-500 text-xs mt-0.5">Ingresa los destinatarios y envÃ­a directo a Gmail.</p>
                             </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0" onClick={() => setShowEmailModal(false)}>×</button>
+                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0" onClick={() => setShowEmailModal(false)}>Ã—</button>
                         </div>
 
                         {/* Campo destinatarios + botones */}
@@ -8825,13 +8832,13 @@ export default function DashboardPage() {
                                         }
                                         // 2. Abrir Gmail con asunto y destinatarios listos
                                         const to = emailRecipients.trim();
-                                        const subject = encodeURIComponent(`Informe Conteo Cíclico — ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
+                                        const subject = encodeURIComponent(`Informe Conteo CÃ­clico â€” ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
                                         const gmail = `https://mail.google.com/mail/?view=cm&fs=1${to ? `&to=${encodeURIComponent(to)}` : ""}&su=${subject}`;
                                         setTimeout(() => window.open(gmail, "_blank"), 400);
-                                        showMessage("📋 Se abrieron 2 pestañas: el informe y Gmail. Selecciona todo el informe (Ctrl+A), cópialo (Ctrl+C) y pégalo en el cuerpo del correo (Ctrl+V).", "info");
+                                        showMessage("ðŸ“‹ Se abrieron 2 pestaÃ±as: el informe y Gmail. Selecciona todo el informe (Ctrl+A), cÃ³pialo (Ctrl+C) y pÃ©galo en el cuerpo del correo (Ctrl+V).", "info");
                                     }}
                                 >
-                                    📧 Enviar por Gmail
+                                    ðŸ“§ Enviar por Gmail
                                 </button>
                                 <button
                                     className="px-5 py-2.5 rounded-2xl bg-indigo-700 text-white font-semibold text-sm hover:bg-indigo-800 transition-colors"
@@ -8845,7 +8852,7 @@ export default function DashboardPage() {
                                         URL.revokeObjectURL(url);
                                     }}
                                 >
-                                    ↓ Descargar HTML
+                                    â†“ Descargar HTML
                                 </button>
                                 <button
                                     className="px-5 py-2.5 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-100 transition-colors"
@@ -8854,7 +8861,7 @@ export default function DashboardPage() {
                                         if (w) { w.document.write(emailHTML); w.document.close(); w.print(); }
                                     }}
                                 >
-                                    🖨️ Imprimir / PDF
+                                    ðŸ–¨ï¸ Imprimir / PDF
                                 </button>
                             </div>
                         </div>
@@ -8912,3 +8919,4 @@ export default function DashboardPage() {
         </main>
     );
 }
+

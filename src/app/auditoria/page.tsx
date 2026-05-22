@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
@@ -19,7 +19,7 @@ type SortDirection = "asc" | "desc";
 const AUDIT_MAIN_TAB_KEY = "audit_main_tab";
 const AUDIT_REGISTER_TAB_KEY = "audit_register_tab";
 const AUDIT_SESSION_ID_KEY = "audit_session_id";
-const ONLINE_STOCK_MESSAGE = "Verifica tu conexión a internet. No se puede contar sin actualizar la fotografía de stock.";
+const ONLINE_STOCK_MESSAGE = "Verifica tu conexiÃ³n a internet. No se puede contar sin actualizar la fotografÃ­a de stock.";
 
 type CyclicUser = {
   id: string;
@@ -117,6 +117,14 @@ type AuditAdminSummaryRow = AuditSession & {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function scannerPermissionMessage(error: unknown) {
+  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
+  if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
+    return "Permiso de camara denegado. Para volver a solicitarlo, abre los permisos del sitio o de la PWA, habilita Camara y vuelve a tocar Escanear.";
+  }
+  return "No se pudo iniciar la camara: " + (error instanceof Error ? error.message : text);
 }
 
 function addDaysISO(date: string, days: number) {
@@ -369,13 +377,13 @@ export default function AuditoriaPage() {
               await scanProduct(decodedText);
             } else if (target === "location") {
               setLocation(decodedText.trim().toUpperCase());
-              setMessage("Ubicación escaneada: " + decodedText.trim().toUpperCase());
+              setMessage("UbicaciÃ³n escaneada: " + decodedText.trim().toUpperCase());
             }
           },
           () => {}
         );
       } catch (err: any) {
-        setMessage("No se pudo iniciar la cámara: " + (err?.message || err));
+        setMessage(scannerPermissionMessage(err));
         await stopScanner();
       }
     })();
@@ -415,13 +423,13 @@ export default function AuditoriaPage() {
       const next = !torchOn;
       const scanner = scannerRef.current;
       if (!scanner?.applyVideoConstraints) {
-        setMessage("La linterna no está disponible en este dispositivo.");
+        setMessage("La linterna no estÃ¡ disponible en este dispositivo.");
         return;
       }
       await scanner.applyVideoConstraints({ advanced: [{ torch: next }] });
       setTorchOn(next);
     } catch {
-      setMessage("La linterna no está disponible en este dispositivo.");
+      setMessage("La linterna no estÃ¡ disponible en este dispositivo.");
     }
   }
 
@@ -781,7 +789,7 @@ export default function AuditoriaPage() {
       status: "in_progress",
     }).select("*").single();
     setLoading(false);
-    if (error) { setMessage("Error creando sesión: " + error.message); return; }
+    if (error) { setMessage("Error creando sesiÃ³n: " + error.message); return; }
     setSession(data as AuditSession);
     setItems([]);
     setCounts([]);
@@ -789,7 +797,7 @@ export default function AuditoriaPage() {
     setSelected(new Set());
     sessionStorage.setItem(AUDIT_SESSION_ID_KEY, data.id);
     await loadSessions();
-    setMessage("Sesión de auditoría iniciada.");
+    setMessage("SesiÃ³n de auditorÃ­a iniciada.");
   }
 
   async function searchProductsByTypedCode(text: string, limit = 120): Promise<Product[]> {
@@ -860,7 +868,7 @@ export default function AuditoriaPage() {
     const selectedProducts = results.filter(p => selected.has(p.id));
     const chosen = selectedProducts.filter(p => !existingProductIds.has(p.id));
     if (selectedProducts.length === 0) { setMessage("Selecciona al menos un producto."); return; }
-    if (chosen.length === 0) { setMessage("Los productos seleccionados ya están en la fotografía de esta auditoría."); return; }
+    if (chosen.length === 0) { setMessage("Los productos seleccionados ya estÃ¡n en la fotografÃ­a de esta auditorÃ­a."); return; }
     const rows = chosen.map(p => ({
       session_id: session.id,
       product_id: p.id,
@@ -872,7 +880,7 @@ export default function AuditoriaPage() {
     if (error) { setMessage("Error agregando productos: " + error.message); return; }
     await loadSessionData(session.id);
     const omitted = selectedProducts.length - rows.length;
-    setMessage(`${rows.length} productos agregados a la sesión.${omitted > 0 ? ` ${omitted} ya estaban en la fotografía y no se modificaron.` : ""}`);
+    setMessage(`${rows.length} productos agregados a la sesiÃ³n.${omitted > 0 ? ` ${omitted} ya estaban en la fotografÃ­a y no se modificaron.` : ""}`);
   }
 
   async function loadSessionData(sessionId: string) {
@@ -969,7 +977,7 @@ export default function AuditoriaPage() {
     }
     const product = await findProductByCode(code);
     if (product === "AMBIGUOUS") return;
-    if (!product) { setMessage("Código no encontrado en maestro."); return; }
+    if (!product) { setMessage("CÃ³digo no encontrado en maestro."); return; }
 
     await openAuditProduct(product);
   }
@@ -1127,8 +1135,8 @@ export default function AuditoriaPage() {
       return;
     }
     const quantity = Number(qty);
-    if (!location.trim()) { setMessage("Ingresa ubicación."); return; }
-    if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
+    if (!location.trim()) { setMessage("Ingresa ubicaciÃ³n."); return; }
+    if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad vÃ¡lida."); return; }
     savingCountRef.current = true;
     setSavingCount(true);
     try {
@@ -1172,11 +1180,11 @@ export default function AuditoriaPage() {
   async function saveEdit() {
     if (!editingCount || !session) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) {
-      setMessage("Verifica tu conexión a internet antes de editar registros de auditoría.");
+      setMessage("Verifica tu conexiÃ³n a internet antes de editar registros de auditorÃ­a.");
       return;
     }
     const quantity = Number(editQty);
-    if (!editLocation.trim() || !Number.isFinite(quantity) || quantity < 0) { setMessage("Datos de edición inválidos."); return; }
+    if (!editLocation.trim() || !Number.isFinite(quantity) || quantity < 0) { setMessage("Datos de ediciÃ³n invÃ¡lidos."); return; }
     const { error } = await supabase.from("audit_counts").update({ location: editLocation.trim().toUpperCase(), quantity }).eq("id", editingCount.id);
     if (error) { setMessage("Error actualizando registro: " + error.message); return; }
     const item = items.find(row => row.id === editingCount.item_id || row.product_id === editingCount.product_id);
@@ -1188,7 +1196,7 @@ export default function AuditoriaPage() {
 
   async function deleteCount(row: AuditCount) {
     if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
-    if (!session || !confirm("¿Eliminar este registro de auditoría?")) return;
+    if (!session || !confirm("Â¿Eliminar este registro de auditorÃ­a?")) return;
     const { error } = await supabase.from("audit_counts").delete().eq("id", row.id);
     if (error) { setMessage("Error eliminando registro: " + error.message); return; }
     await loadSessionData(session.id);
@@ -1201,7 +1209,7 @@ export default function AuditoriaPage() {
     const { error } = await supabase.from("audit_sessions").update({ status: "finished", finished_at: new Date().toISOString() }).eq("id", session.id);
     if (error) { setMessage("Error finalizando: " + error.message); return; }
     setSession({ ...session, status: "finished", finished_at: new Date().toISOString() });
-    setMessage("Auditoría finalizada.");
+    setMessage("AuditorÃ­a finalizada.");
   }
 
   async function deleteSession(row: AuditSession) {
@@ -1209,9 +1217,9 @@ export default function AuditoriaPage() {
       setMessage("Solo el administrador puede eliminar sesiones.");
       return;
     }
-    if (!confirm(`¿Eliminar la sesión de auditoría de ${row.store_name || row.store_id}? Esta acción borrará sus productos y conteos.`)) return;
+    if (!confirm(`Â¿Eliminar la sesiÃ³n de auditorÃ­a de ${row.store_name || row.store_id}? Esta acciÃ³n borrarÃ¡ sus productos y conteos.`)) return;
     const { error } = await supabase.from("audit_sessions").delete().eq("id", row.id);
-    if (error) { setMessage("Error eliminando sesión: " + error.message); return; }
+    if (error) { setMessage("Error eliminando sesiÃ³n: " + error.message); return; }
     if (session?.id === row.id) {
       setSession(null);
       setItems([]);
@@ -1219,7 +1227,7 @@ export default function AuditoriaPage() {
       setActiveItem(null);
     }
     await loadSessions();
-    setMessage("Sesión eliminada.");
+    setMessage("SesiÃ³n eliminada.");
   }
 
   async function saveItemObservation(itemId: string) {
@@ -1232,18 +1240,18 @@ export default function AuditoriaPage() {
       .eq("id", itemId);
     setSavingItemObservationId(null);
     if (error) {
-      setMessage("Error guardando observación por código: " + error.message + ". Ejecuta supabase_auditoria.sql para crear la columna y recargar el schema cache.");
+      setMessage("Error guardando observaciÃ³n por cÃ³digo: " + error.message + ". Ejecuta supabase_auditoria.sql para crear la columna y recargar el schema cache.");
       return;
     }
     setItems(prev => prev.map(item => item.id === itemId ? { ...item, observation: text || null } : item));
-    setMessage("Observación del código guardada.");
+    setMessage("ObservaciÃ³n del cÃ³digo guardada.");
   }
 
   async function saveItemStockSnapshot(itemId: string) {
     if (!session || user?.role !== "Administrador") return;
     const stock = Number(itemStockDrafts[itemId]);
     if (!Number.isFinite(stock) || stock < 0) {
-      setMessage("Ingresa un stock sistema válido.");
+      setMessage("Ingresa un stock sistema vÃ¡lido.");
       return;
     }
     setSavingItemStockId(itemId);
@@ -1253,13 +1261,13 @@ export default function AuditoriaPage() {
       .eq("id", itemId);
     setSavingItemStockId(null);
     if (error) {
-      setMessage("Error actualizando stock de la fotografía: " + error.message);
+      setMessage("Error actualizando stock de la fotografÃ­a: " + error.message);
       return;
     }
     setItems(prev => prev.map(item => item.id === itemId ? { ...item, system_stock: stock } : item));
     setActiveItem(prev => prev?.id === itemId ? { ...prev, system_stock: stock } : prev);
     setItemStockDrafts(prev => ({ ...prev, [itemId]: String(stock) }));
-    setMessage("Stock de la fotografía actualizado solo para esta auditoría.");
+    setMessage("Stock de la fotografÃ­a actualizado solo para esta auditorÃ­a.");
   }
 
   const summaryRows = useMemo(() => items.map(item => {
@@ -1500,7 +1508,7 @@ export default function AuditoriaPage() {
     const surplusDifferences = [...summaryRows]
       .filter(r => r.diff > 0)
       .sort((a, b) => b.value - a.value);
-    const chart = auditBarChart("Indicadores de auditoría", [
+    const chart = auditBarChart("Indicadores de auditorÃ­a", [
       { label: "Sobrantes", value: totals.surplus, color: "#2563eb" },
       { label: "Faltantes", value: totals.missing, color: "#dc2626" },
       { label: "OK", value: totals.ok, color: "#16a34a" },
@@ -1523,12 +1531,12 @@ export default function AuditoriaPage() {
       ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
       : surplusDifferences.map(diffRow).join("");
     const today = new Date().toLocaleString("es-PE");
-    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
+    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditorÃ­a ${escapeHTML(storeName)}</title></head>
 <body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
   <div style="max-width:920px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
     <div style="background:#0f172a;padding:28px 32px;color:#ffffff;">
       <div style="font-size:12px;font-weight:900;letter-spacing:1.8px;color:#93c5fd;">WMS AUDITORIA DE EXISTENCIAS</div>
-      <h1 style="margin:8px 0 4px;font-size:25px;line-height:1.2;">Informe de auditoría</h1>
+      <h1 style="margin:8px 0 4px;font-size:25px;line-height:1.2;">Informe de auditorÃ­a</h1>
       <p style="margin:0;color:#cbd5e1;font-size:14px;">${escapeHTML(storeName)} - ${escapeHTML(user?.full_name || "")} - ${escapeHTML(today)}</p>
     </div>
     <div style="padding:28px 32px;">
@@ -1548,15 +1556,15 @@ export default function AuditoriaPage() {
         </tr>
       </table>
       <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Dashboard compatible</h2>
-      <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="Gráfico auditoría"/></div>
+      <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:22px;background:#f8fafc;"><img src="${chart}" width="640" style="max-width:100%;display:block;" alt="GrÃ¡fico auditorÃ­a"/></div>
       <h2 style="font-size:16px;margin:0 0 10px;border-left:4px solid #dc2626;padding-left:10px;">Faltantes - todas las diferencias (${missingDifferences.length})</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÃ“DIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÃ“N</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÃ“N</th></tr></thead>
         <tbody>${missingRows}</tbody>
       </table>
       <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #2563eb;padding-left:10px;">Sobrantes - todas las diferencias (${surplusDifferences.length})</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;font-size:13px;">
-        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÓDIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÓN</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÓN</th></tr></thead>
+        <thead><tr style="background:#f1f5f9;color:#475569;"><th style="padding:9px;text-align:left;">CÃ“DIGO</th><th style="padding:9px;text-align:left;">DESCRIPCIÃ“N</th><th style="padding:9px;text-align:center;">UM</th><th style="padding:9px;text-align:center;">STOCK</th><th style="padding:9px;text-align:center;">CONTADO</th><th style="padding:9px;text-align:center;">DIF.</th><th style="padding:9px;text-align:center;">VALOR</th><th style="padding:9px;text-align:left;">OBSERVACIÃ“N</th></tr></thead>
         <tbody>${surplusRows}</tbody>
       </table>
       <h2 style="font-size:16px;margin:24px 0 10px;border-left:4px solid #16a34a;padding-left:10px;">Firmas de conformidad</h2>
@@ -1565,17 +1573,17 @@ export default function AuditoriaPage() {
           <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
             <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
             <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(leadAuditor)}</div>
-            <div style="font-size:11px;color:#64748b;">Auditor líder</div>
+            <div style="font-size:11px;color:#64748b;">Auditor lÃ­der</div>
           </td>
           <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
             <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
             <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(storeLeader)}</div>
-            <div style="font-size:11px;color:#64748b;">Líder de tienda</div>
+            <div style="font-size:11px;color:#64748b;">LÃ­der de tienda</div>
           </td>
           <td style="width:33.33%;padding:16px;border:1px solid #e2e8f0;border-radius:12px;text-align:center;vertical-align:bottom;height:104px;">
             <div style="height:42px;border-bottom:1.5px solid #0f172a;margin-bottom:8px;"></div>
             <div style="font-weight:900;font-size:12px;color:#0f172a;">${escapeHTML(warehouseAdvisor)}</div>
-            <div style="font-size:11px;color:#64748b;">Asesor de almacén</div>
+            <div style="font-size:11px;color:#64748b;">Asesor de almacÃ©n</div>
           </td>
         </tr>
       </table>
@@ -1591,9 +1599,9 @@ export default function AuditoriaPage() {
   }
 
   function generateAuditReport() {
-    if (!session) { setMessage("Selecciona una sesión para generar el informe."); return; }
+    if (!session) { setMessage("Selecciona una sesiÃ³n para generar el informe."); return; }
     if (!leadAuditor.trim() || !storeLeader.trim() || !warehouseAdvisor.trim()) {
-      setMessage("Completa auditor líder, líder de tienda y asesor de almacén antes de generar el informe.");
+      setMessage("Completa auditor lÃ­der, lÃ­der de tienda y asesor de almacÃ©n antes de generar el informe.");
       return;
     }
     const html = buildAuditReportHTML();
@@ -1615,9 +1623,9 @@ export default function AuditoriaPage() {
 
   function openEmailDraft() {
     if (!session) return;
-    const subject = `Informe auditoría ${selectedStore?.name || session.store_name || ""}`;
+    const subject = `Informe auditorÃ­a ${selectedStore?.name || session.store_name || ""}`;
     window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(subject)}`, "_blank");
-    setMessage("Se abrió Gmail. Descarga o copia el informe HTML y pégalo en el cuerpo del correo.");
+    setMessage("Se abriÃ³ Gmail. Descarga o copia el informe HTML y pÃ©galo en el cuerpo del correo.");
   }
 
   function logout() {
@@ -1653,7 +1661,7 @@ export default function AuditoriaPage() {
           )}
           <button onClick={() => { window.location.href = "/consulta-stock"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Consulta de stock"><PackageSearch size={18} /></button>
           <button onClick={refreshAuditData} disabled={loading} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40" title="Actualizar datos"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
-          <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
+          <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesiÃ³n"><LogOut size={18} /></button>
         </div>
       </header>
 
@@ -1672,8 +1680,8 @@ export default function AuditoriaPage() {
           <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
             <section className="space-y-4">
               {canManageAudit ? <div className="rounded-2xl border bg-white p-4 shadow-sm">
-                <h2 className="font-black">Crear sesión de auditoría</h2>
-                <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditoría y carga la familia de productos a contar.</p>
+                <h2 className="font-black">Crear sesiÃ³n de auditorÃ­a</h2>
+                <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditorÃ­a y carga la familia de productos a contar.</p>
                 <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
                   {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
@@ -1688,7 +1696,7 @@ export default function AuditoriaPage() {
                   </div>
                 )}
                 {!session ? (
-                  <button onClick={createSession} disabled={!storeId || loading} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"><ClipboardCheck size={18} /> Crear sesión</button>
+                  <button onClick={createSession} disabled={!storeId || loading} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"><ClipboardCheck size={18} /> Crear sesiÃ³n</button>
                 ) : (
                   null
                 )}
@@ -1869,13 +1877,13 @@ export default function AuditoriaPage() {
                     <h2 className="text-lg font-black">Conteo fisico</h2>
                     <p className="text-xs text-slate-500">Pantalla compacta para celular.</p>
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "in_progress" ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}`}>{session?.status === "in_progress" ? "Activa" : "Sin sesión"}</span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "in_progress" ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}`}>{session?.status === "in_progress" ? "Activa" : "Sin sesiÃ³n"}</span>
                 </div>
 
                 <div className="mt-4 space-y-3">
                   <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Producto</label>
                   <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
-                    <input value={scanCode} onChange={e => setScanCode(e.target.value)} onKeyDown={e => { if (e.key === "Enter") scanProduct(); }} placeholder="Escanea o digita código/barra" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base outline-none" />
+                    <input value={scanCode} onChange={e => setScanCode(e.target.value)} onKeyDown={e => { if (e.key === "Enter") scanProduct(); }} placeholder="Escanea o digita cÃ³digo/barra" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base outline-none" />
                     <button onClick={() => openScanner("product")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-slate-900 text-white disabled:opacity-40" title="Escanear QR producto"><QrCode size={22} /></button>
                   </div>
                   <button onClick={() => scanProduct()} disabled={!session || session.status !== "in_progress"} className="w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><PackageSearch className="mr-2 inline" size={16} /> Buscar producto</button>
@@ -1909,8 +1917,8 @@ export default function AuditoriaPage() {
                     <div className="mt-4 space-y-3">
                       <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Ubicacion</label>
                       <div className="flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
-                        <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Escanea ubicación" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base font-semibold uppercase outline-none" />
-                        <button onClick={() => openScanner("location")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-green-700 text-white disabled:opacity-40" title="Escanear QR ubicación"><QrCode size={22} /></button>
+                        <input value={location} onChange={e => setLocation(e.target.value)} placeholder="Escanea ubicaciÃ³n" className="min-w-0 flex-1 rounded-xl px-3 py-3 text-base font-semibold uppercase outline-none" />
+                        <button onClick={() => openScanner("location")} disabled={!session || session.status !== "in_progress"} className="grid h-12 w-12 place-items-center rounded-xl bg-green-700 text-white disabled:opacity-40" title="Escanear QR ubicaciÃ³n"><QrCode size={22} /></button>
                       </div>
                       <label className="block text-xs font-black uppercase tracking-wide text-slate-500">Cantidad</label>
                       <input value={qty} onChange={e => setQty(e.target.value)} placeholder="0" inputMode="decimal" type="number" className="w-full rounded-2xl border px-4 py-4 text-center text-2xl font-black outline-none focus:ring-2 focus:ring-blue-200" />
@@ -1929,7 +1937,7 @@ export default function AuditoriaPage() {
                     <input
                       value={recordsQuery}
                       onChange={e => setRecordsQuery(e.target.value)}
-                      placeholder="Buscar código, descripción, UM o ubicación"
+                      placeholder="Buscar cÃ³digo, descripciÃ³n, UM o ubicaciÃ³n"
                       className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm outline-none"
                     />
                     <Search className="mx-3 self-center text-slate-400" size={18} />
@@ -1937,7 +1945,7 @@ export default function AuditoriaPage() {
                 </div>
                 <div className="max-h-[70vh] overflow-auto">
                   <table className="w-full min-w-[760px] text-sm">
-                    <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
+                    <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">CÃ³digo</th><th className="p-2 text-left">DescripciÃ³n</th><th className="p-2">UM</th><th className="p-2">UbicaciÃ³n</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">AcciÃ³n</th></tr></thead>
                     <tbody>{filteredCounts.map(c => {
                       const item = items.find(i => i.id === c.item_id);
                       return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center">{canManageAudit ? <><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></> : <span className="text-xs font-semibold text-slate-400">Lectura</span>}</td></tr>;
@@ -1961,7 +1969,7 @@ export default function AuditoriaPage() {
                 <div className="rounded-2xl border bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div>
-                      <h2 className="font-black">Informe de auditoría</h2>
+                      <h2 className="font-black">Informe de auditorÃ­a</h2>
                       <p className="text-xs text-slate-500">Completa los responsables antes de generar el informe.</p>
                     </div>
                     <div className="flex gap-2">
@@ -1970,16 +1978,16 @@ export default function AuditoriaPage() {
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <input value={leadAuditor} onChange={e => setLeadAuditor(e.target.value)} placeholder="Auditor líder" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
-                    <input value={storeLeader} onChange={e => setStoreLeader(e.target.value)} placeholder="Líder de tienda" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
-                    <input value={warehouseAdvisor} onChange={e => setWarehouseAdvisor(e.target.value)} placeholder="Asesor de almacén" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                    <input value={leadAuditor} onChange={e => setLeadAuditor(e.target.value)} placeholder="Auditor lÃ­der" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                    <input value={storeLeader} onChange={e => setStoreLeader(e.target.value)} placeholder="LÃ­der de tienda" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
+                    <input value={warehouseAdvisor} onChange={e => setWarehouseAdvisor(e.target.value)} placeholder="Asesor de almacÃ©n" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
                   </div>
                 </div>
 
                 <div className="rounded-2xl border bg-white shadow-sm">
                   <div className="border-b px-4 py-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                      <div className="font-black">Resumen por código ({filteredSummaryRows.length}/{summaryRows.length})</div>
+                      <div className="font-black">Resumen por cÃ³digo ({filteredSummaryRows.length}/{summaryRows.length})</div>
                       <button onClick={downloadSummaryExcel} disabled={filteredSummaryRows.length === 0} className="inline-flex items-center justify-center rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                         <Download className="mr-1" size={15} /> Descargar Excel
                       </button>
@@ -1988,7 +1996,7 @@ export default function AuditoriaPage() {
                       <input
                         value={summaryQuery}
                         onChange={e => setSummaryQuery(e.target.value)}
-                        placeholder="Buscar código, descripción, UM, estado u observación"
+                        placeholder="Buscar cÃ³digo, descripciÃ³n, UM, estado u observaciÃ³n"
                         className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm outline-none"
                       />
                       <Search className="mx-3 self-center text-slate-400" size={18} />
@@ -1998,15 +2006,15 @@ export default function AuditoriaPage() {
                     <table className="w-full min-w-[1160px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
                         <tr>
-                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("sku")} className="font-black">Código{summarySortMark("sku")}</button></th>
-                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("description")} className="font-black">Descripción{summarySortMark("description")}</button></th>
+                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("sku")} className="font-black">CÃ³digo{summarySortMark("sku")}</button></th>
+                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("description")} className="font-black">DescripciÃ³n{summarySortMark("description")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("unit")} className="font-black">UM{summarySortMark("unit")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("stock")} className="font-black">Stock foto{summarySortMark("stock")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("counted")} className="font-black">Contado{summarySortMark("counted")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("diff")} className="font-black">Dif.{summarySortMark("diff")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("value")} className="font-black">Valor{summarySortMark("value")}</button></th>
                           <th className="p-2"><button onClick={() => changeSummarySort("status")} className="font-black">Estado{summarySortMark("status")}</button></th>
-                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("observation")} className="font-black">Observación{summarySortMark("observation")}</button></th>
+                          <th className="p-2 text-left"><button onClick={() => changeSummarySort("observation")} className="font-black">ObservaciÃ³n{summarySortMark("observation")}</button></th>
                           <th className="p-2">Guardar</th>
                         </tr>
                       </thead>
@@ -2031,7 +2039,7 @@ export default function AuditoriaPage() {
                                     onClick={() => saveItemStockSnapshot(r.item.id)}
                                     disabled={savingItemStockId === r.item.id}
                                     className="rounded-lg border border-amber-200 px-2 py-1 text-amber-700 disabled:opacity-40"
-                                    title="Guardar stock de fotografía"
+                                    title="Guardar stock de fotografÃ­a"
                                   >
                                     <Save size={13} />
                                   </button>
@@ -2046,7 +2054,7 @@ export default function AuditoriaPage() {
                               <textarea
                                 value={itemObservationDrafts[r.item.id] ?? ""}
                                 onChange={e => setItemObservationDrafts(prev => ({ ...prev, [r.item.id]: e.target.value }))}
-                                placeholder="Observación por código"
+                                placeholder="ObservaciÃ³n por cÃ³digo"
                                 className="min-h-16 w-full min-w-56 rounded-xl border px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-200"
                               />
                             </td>
@@ -2071,10 +2079,11 @@ export default function AuditoriaPage() {
         )}
       </div>
 
-      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
-      {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]"><button onClick={saveEdit} className="rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
-      {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel flex w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
+      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicaciÃ³n"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
+      {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="UbicaciÃ³n" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]"><button onClick={saveEdit} className="rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
+      {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel flex w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditorÃ­a</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que grÃ¡ficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditorÃ­a" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
       {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3"><div><h3 className="font-black">Elige el codigo</h3><p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70dvh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={async () => { setManualProductCandidates([]); await openAuditProduct(product); }} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="break-words text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div><div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-500 sm:grid-cols-3"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>Stock: {number2(product.system_stock || 0)}</span></div></button>))}</div></div></div>)}
     </main>
   );
 }
+
