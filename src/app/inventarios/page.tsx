@@ -930,6 +930,7 @@ export default function InventariosPage() {
     const rows = recountItems.filter(row =>
       row.status !== "cancelled" &&
       row.recount_type === recountType &&
+      (!recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId) &&
       (!q ||
         row.sku.toLowerCase().includes(q) ||
         row.description.toLowerCase().includes(q) ||
@@ -954,7 +955,7 @@ export default function InventariosPage() {
       const right = recountAssignedSort.key === "assigned_operator_name" ? String(b.assigned_operator_name || "") : b[recountAssignedSort.key];
       return compareValues(left as string | number, right as string | number, recountAssignedSort.direction);
     });
-  }, [recountAssignedQuery, recountAssignedSort, recountItems, recountType]);
+  }, [recountAssignedQuery, recountAssignedSort, recountItems, recountPrintOperatorId, recountType]);
 
   const activeAssignedRecountCount = useMemo(
     () => recountItems.filter(row => row.status !== "cancelled" && row.recount_type === recountType).length,
@@ -962,8 +963,8 @@ export default function InventariosPage() {
   );
 
   const manualRecountRows = useMemo(() => {
-    return assignedRecountRows.filter(row => !recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId);
-  }, [assignedRecountRows, recountPrintOperatorId]);
+    return assignedRecountRows;
+  }, [assignedRecountRows]);
 
   const filteredOperatorRecountItems = useMemo(() => {
     const q = operatorRecountQuery.trim();
@@ -6303,7 +6304,7 @@ export default function InventariosPage() {
                       value={recountPrintOperatorId}
                       onChange={event => setRecountPrintOperatorId(event.target.value)}
                       className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
-                      title="Filtrar actas por recontador"
+                      title="Filtrar reconteos por recontador"
                     >
                       <option value="">Todos los recontadores</option>
                       {sessionOperators.map(operatorRow => (
