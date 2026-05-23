@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -305,6 +305,35 @@ function searchWords(value: string) {
   return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
 }
 
+function normalizeRecordSearch(value: string | number | null | undefined) {
+  return normalizeCode(value).toLowerCase();
+}
+
+function recordSkuMatchesNumber(sku: string, query: string) {
+  const cleanQuery = query.replace(/\D/g, "");
+  if (!cleanQuery) return true;
+  const cleanSku = normalizeRecordSearch(sku);
+  const skuNumbers = cleanSku.replace(/\D/g, "");
+  return cleanSku === cleanQuery || skuNumbers === cleanQuery || skuNumbers.endsWith(cleanQuery) || skuNumbers.includes(cleanQuery);
+}
+
+function recordTextFieldsMatch(row: CountRow, query: string) {
+  const haystack = [
+    row.description,
+    row.location_code,
+    row.operator_name,
+  ].map(normalizeRecordSearch);
+  return haystack.some(value => value.includes(query));
+}
+
+function recordMatchesQuery(row: CountRow, rawQuery: string) {
+  const query = normalizeRecordSearch(rawQuery);
+  if (!query) return true;
+  if (/^\d+$/.test(query)) return recordSkuMatchesNumber(row.sku, query);
+  if (recordTextFieldsMatch(row, query)) return true;
+  return normalizeRecordSearch(row.sku).includes(query);
+}
+
 function codeMatchRank(product: Product, query: string) {
   const sku = normalizeCode(product.sku).toUpperCase();
   const barcode = normalizeCode(product.barcode).toUpperCase();
@@ -589,6 +618,7 @@ export default function InventariosPage() {
   }, [selectedSession?.id, selectedSession?.notes]);
 
   useEffect(() => {
+    setRecordsQuery("");
     setRecordsOperatorFilter("");
     setRecordsZoneFilter("");
   }, [selectedSessionId]);
@@ -618,15 +648,11 @@ export default function InventariosPage() {
   }, [counts]);
 
   const filteredCounts = useMemo(() => {
-    const q = recordsQuery.trim().toLowerCase();
+    const q = recordsQuery.trim();
     const rows = counts.filter(row =>
       (!recordsOperatorFilter || row.operator_id === recordsOperatorFilter) &&
       (!recordsZoneFilter || locationZoneKey(row.location_code) === recordsZoneFilter) &&
-      (!q ||
-        row.sku.toLowerCase().includes(q) ||
-        row.description.toLowerCase().includes(q) ||
-        row.location_code.toLowerCase().includes(q) ||
-        String(row.operator_name || "").toLowerCase().includes(q))
+      recordMatchesQuery(row, q)
     );
     return [...rows].sort((a, b) => {
       if (recordsSort.key === "location_code") {
@@ -5845,6 +5871,11 @@ export default function InventariosPage() {
                 <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
                   <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                  {recordsQuery && (
+                    <button type="button" onClick={() => setRecordsQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda">
+                      <X size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="divide-y">
@@ -6772,6 +6803,11 @@ export default function InventariosPage() {
                   <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
                     <Search size={16} className="text-slate-400" />
                     <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                    {recordsQuery && (
+                      <button type="button" onClick={() => setRecordsQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda">
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
                   <button onClick={exportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                     <Download size={15} /> Descargar Excel
