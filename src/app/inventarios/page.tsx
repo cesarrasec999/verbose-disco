@@ -906,12 +906,14 @@ export default function InventariosPage() {
   }, [recountCandidates, recountColumn, recountType, recountValue]);
 
   const assignedRecountKeys = useMemo(
-    () => new Set(recountItems.map(row => row.product_id)),
+    () => new Set(recountItems
+      .filter(row => row.status !== "cancelled")
+      .map(row => recountKey(row))),
     [recountItems]
   );
 
   const unassignedRecountCandidates = useMemo(
-    () => selectedRecountCandidates.filter(row => !assignedRecountKeys.has(row.product_id)),
+    () => selectedRecountCandidates.filter(row => !assignedRecountKeys.has(recountKey(row))),
     [assignedRecountKeys, selectedRecountCandidates]
   );
 
@@ -2736,7 +2738,7 @@ export default function InventariosPage() {
       setMessage("No se pudo quitar la asignacion: " + error.message);
       return;
     }
-    setMessage("Asignacion quitada. La linea queda fuera de pendientes porque ya fue enviada a reconteo.");
+    setMessage("Asignacion quitada. Si la diferencia sigue vigente, la linea volvera a pendientes por asignar.");
     await loadRecountAssignments(selectedSessionId);
   }
 
