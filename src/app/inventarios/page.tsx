@@ -334,6 +334,33 @@ function recordMatchesQuery(row: CountRow, rawQuery: string) {
   return normalizeRecordSearch(row.sku).includes(query);
 }
 
+function operatorRecountItemMatchesQuery(row: RecountItem, rawQuery: string) {
+  const query = normalizeRecordSearch(rawQuery);
+  if (!query) return true;
+  const typeLabel = row.recount_type === "missing" ? "faltante" : "sobrante";
+  const fields = [
+    row.sku,
+    row.description,
+    row.location_code,
+    row.full_location,
+    row.ticket,
+    row.zone,
+    row.zone_ref,
+    row.lineal,
+    row.assigned_operator_name,
+    typeLabel,
+    ...row.original_locations.flatMap(location => [
+      location.location_code,
+      location.full_location,
+      location.ticket,
+      location.zone,
+      location.zone_ref,
+      location.lineal,
+    ]),
+  ];
+  return fields.map(normalizeRecordSearch).some(value => value.includes(query));
+}
+
 function countRowKey(row: CountRow) {
   return [
     row.id,
@@ -591,6 +618,7 @@ export default function InventariosPage() {
   const [inventoryOperatorDrafts, setInventoryOperatorDrafts] = useState<Record<string, InventoryOperatorDraft>>({});
   const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
+  const [operatorRecountQuery, setOperatorRecountQuery] = useState("");
   const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
   const [recountType, setRecountType] = useState<RecountType>("surplus");
   const recountColumn: RecountColumn = "zone";
@@ -633,6 +661,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     setRecordsQuery("");
+    setOperatorRecountQuery("");
     setRecordsOperatorFilter("");
     setRecordsZoneFilter("");
   }, [selectedSessionId]);
@@ -933,6 +962,11 @@ export default function InventariosPage() {
   const manualRecountRows = useMemo(() => {
     return assignedRecountRows.filter(row => !recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId);
   }, [assignedRecountRows, recountPrintOperatorId]);
+
+  const filteredOperatorRecountItems = useMemo(() => {
+    const q = operatorRecountQuery.trim();
+    return recountItems.filter(row => operatorRecountItemMatchesQuery(row, q));
+  }, [operatorRecountQuery, recountItems]);
 
   const filteredAdminRecountRecords = useMemo(() => {
     const q = recountRecordsQuery.trim().toLowerCase();
@@ -5930,12 +5964,34 @@ export default function InventariosPage() {
 
           {operator && !isValidator && operatorMode === "reconteo" && !selectedSession?.manual_recount_enabled && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3">
-                <h2 className="font-black">Mis reconteos asignados</h2>
-                <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
+              <div className="mb-3 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-black">Mis reconteos asignados</h2>
+                    <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
+                  </div>
+                  <div className="text-right text-xs font-bold text-slate-500">
+                    <div>{recountItems.length} asignados</div>
+                    {filteredOperatorRecountItems.length !== recountItems.length && <div>{filteredOperatorRecountItems.length} filtrados</div>}
+                  </div>
+                </div>
+                <div className="flex items-center rounded-xl border px-3 py-2">
+                  <Search size={16} className="shrink-0 text-slate-400" />
+                  <input
+                    value={operatorRecountQuery}
+                    onChange={event => setOperatorRecountQuery(event.target.value)}
+                    placeholder="Buscar codigo, descripcion o ubicacion"
+                    className="min-w-0 flex-1 px-2 text-sm outline-none"
+                  />
+                  {operatorRecountQuery && (
+                    <button type="button" onClick={() => setOperatorRecountQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda de reconteos">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
-                {recountItems.map(row => {
+                {filteredOperatorRecountItems.map(row => {
                   const draft = recountDraftFor(row);
                   return (
                   <article key={row.id} className="rounded-2xl border bg-slate-50 p-4">
@@ -6044,6 +6100,11 @@ export default function InventariosPage() {
                 {recountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
                     No tienes códigos asignados para reconteo en este inventario.
+                  </div>
+                )}
+                {recountItems.length > 0 && filteredOperatorRecountItems.length === 0 && (
+                  <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                    No hay reconteos que coincidan con la búsqueda.
                   </div>
                 )}
               </div>
