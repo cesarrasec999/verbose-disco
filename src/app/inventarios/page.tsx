@@ -257,7 +257,12 @@ function normalizeLocationCode(value: string | number | null | undefined) {
 
 function locationZoneKey(value: string | number | null | undefined) {
   const clean = normalizeLocationCode(value);
-  return clean.split("-")[0] || clean;
+  const zone = clean.split("-")[0] || clean;
+  if (/^0+\d+$/.test(zone)) {
+    const numeric = zone.replace(/^0+/, "");
+    return numeric.padStart(2, "0");
+  }
+  return zone;
 }
 
 function buildFullLocationFromParts(parts: Pick<ManualLocationDraft, "zone" | "zone_ref" | "lineal" | "reference">) {
