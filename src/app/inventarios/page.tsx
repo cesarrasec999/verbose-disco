@@ -5869,6 +5869,9 @@ export default function InventariosPage() {
                     <p className="text-xs text-slate-500">Asigna diferencias por bloques a operadores activos.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <button onClick={() => assignRecountBlock(10)} disabled={isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
+                      Asignar 10 primeros
+                    </button>
                     <button onClick={() => assignRecountBlock(20)} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                       Asignar 20 primeros
                     </button>
@@ -6920,4 +6923,3 @@ function Kpi({ label, value, tone = "slate" }: { label: string; value: string | 
     </div>
   );
 }
-
