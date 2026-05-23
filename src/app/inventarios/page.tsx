@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
+import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -249,8 +249,14 @@ function normalizeCode(value: string | number | null | undefined) {
 function normalizeLocationCode(value: string | number | null | undefined) {
   return normalizeCode(value)
     .replace(/\u00a0/g, " ")
+    .replace(/['’‘´`]/g, "-")
     .trim()
     .toUpperCase();
+}
+
+function locationZoneKey(value: string | number | null | undefined) {
+  const clean = normalizeLocationCode(value);
+  return clean.split("-")[0] || clean;
 }
 
 function buildFullLocationFromParts(parts: Pick<ManualLocationDraft, "zone" | "zone_ref" | "lineal" | "reference">) {
@@ -398,6 +404,12 @@ function compareValues(a: string | number, b: string | number, direction: SortDi
   const multiplier = direction === "asc" ? 1 : -1;
   if (typeof a === "number" && typeof b === "number") return (a - b) * multiplier;
   return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }) * multiplier;
+}
+
+function compareLocationByZone(a: string | number | null | undefined, b: string | number | null | undefined, direction: SortDirection = "asc") {
+  const zoneCompare = compareValues(locationZoneKey(a), locationZoneKey(b), direction);
+  if (zoneCompare !== 0) return zoneCompare;
+  return compareValues(normalizeLocationCode(a), normalizeLocationCode(b), direction);
 }
 
 function recountKey(row: Pick<RecountCandidate, "product_id" | "recount_type">) {
@@ -575,6 +587,9 @@ export default function InventariosPage() {
         String(row.operator_name || "").toLowerCase().includes(q))
     );
     return [...rows].sort((a, b) => {
+      if (recordsSort.key === "location_code") {
+        return compareLocationByZone(a.location_code, b.location_code, recordsSort.direction);
+      }
       const left = recordsSort.key === "value" ? Number(a.quantity || 0) * Number(a.cost_snapshot || 0) :
         recordsSort.key === "counted_at" ? new Date(a.counted_at).getTime() :
         a[recordsSort.key];
@@ -1309,7 +1324,7 @@ export default function InventariosPage() {
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
     const clean = decodedText.trim();
     if (target === "location") {
-      setLocationCode(clean.toUpperCase());
+      setLocationCode(normalizeLocationCode(clean));
       setMessage("Ubicación escaneada.");
       setTimeout(() => productInputRef.current?.focus(), 50);
     }
@@ -1322,7 +1337,7 @@ export default function InventariosPage() {
     if (target === "recount_location" && activeRecountScanId) {
       const [rowId, indexText] = activeRecountScanId.split(":");
       const item = recountItems.find(row => row.id === rowId);
-      if (item) updateRecountDraftLine(item, Number(indexText || 0), "locationCode", clean.toUpperCase());
+      if (item) updateRecountDraftLine(item, Number(indexText || 0), "locationCode", normalizeLocationCode(clean));
       setMessage("Ubicacion de reconteo escaneada.");
     }
     if (target === "recount_product" && activeRecountScanId) {
@@ -1491,8 +1506,12 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_counts", "location_code", sessionId, "location_code"),
     ]);
 
-    setLocations((locRes.data || []) as InventoryLocation[]);
-    setCountedLocationCodes([...new Set(countRows.map(row => row.location_code).filter(Boolean))]);
+    setLocations(((locRes.data || []) as InventoryLocation[]).map(row => ({
+      ...row,
+      location_code: normalizeLocationCode(row.location_code),
+      ticket: row.ticket ? normalizeLocationCode(row.ticket) : row.ticket,
+    })));
+    setCountedLocationCodes([...new Set(countRows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
   }
 
   async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null) {
@@ -1505,7 +1524,7 @@ export default function InventariosPage() {
     const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
     const rows = mergePendingCounts(countRows, pendingRows);
     setCounts(rows);
-    if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => row.location_code).filter(Boolean))]);
+    if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
   }
 
   async function loadPendingOfflineCountRows(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
@@ -1519,7 +1538,7 @@ export default function InventariosPage() {
           session_id: String(payload.session_id || sessionId),
           operator_id: String(payload.operator_id || ""),
           location_id: String(payload.location_id || ""),
-          location_code: String(payload.location_code || ""),
+          location_code: normalizeLocationCode(payload.location_code),
           product_id: String(payload.product_id || ""),
           sku: String(payload.sku || ""),
           description: String(payload.description || ""),
@@ -2134,6 +2153,7 @@ export default function InventariosPage() {
       }
       rows.push(...((data || []).map((row: any) => ({
         ...row,
+        location_code: normalizeLocationCode(row.location_code),
         operator_name: row.general_inventory_operators?.full_name || null,
       })) as CountRow[]));
       if (!data || data.length < pageSize) break;
@@ -4313,10 +4333,12 @@ export default function InventariosPage() {
 
   async function exportRecords() {
     if (!selectedSessionId) return;
-    const rows = filteredCounts.map(row => ({
+    const orderedCounts = [...filteredCounts].sort((a, b) => compareLocationByZone(a.location_code, b.location_code, "asc"));
+    const rows = orderedCounts.map(row => ({
       FECHA: new Date(row.counted_at).toLocaleString("es-PE"),
       CONTADOR: row.operator_name || "",
-      UBICACION: row.location_code,
+      ZONA: locationZoneKey(row.location_code),
+      UBICACION: normalizeLocationCode(row.location_code),
       CODIGO: row.sku,
       DESCRIPCION: row.description,
       UM: row.unit,
@@ -4344,6 +4366,84 @@ export default function InventariosPage() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recountRows), "Reconteo");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), "Resumen contadores");
     XLSX.writeFile(wb, `inventario_registros_${selectedSession?.name || "sesion"}.xlsx`);
+  }
+
+  function printRecordsByZone() {
+    if (!selectedSession) return;
+    const rows = [...counts].sort((a, b) => compareLocationByZone(a.location_code, b.location_code, "asc"));
+    if (rows.length === 0) {
+      setMessage("No hay registros para imprimir.");
+      return;
+    }
+    const generatedAt = new Date().toLocaleString("es-PE");
+    const title = `Registros de inventario - ${selectedSession.store_name || selectedSession.name}`;
+    const bodyRows = rows.map((row, index) => `
+      <tr>
+        <td class="num">${index + 1}</td>
+        <td>${escapeHtml(locationZoneKey(row.location_code))}</td>
+        <td>${escapeHtml(normalizeLocationCode(row.location_code))}</td>
+        <td class="code">${escapeHtml(row.sku)}</td>
+        <td>${escapeHtml(row.description)}</td>
+        <td>${escapeHtml(row.unit)}</td>
+        <td class="num">${number2(row.quantity)}</td>
+        <td>${escapeHtml(row.operator_name || "Sin usuario")}</td>
+        <td>${escapeHtml(new Date(row.counted_at).toLocaleString("es-PE"))}</td>
+      </tr>
+    `).join("");
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; color: #071126; margin: 0; font-size: 10px; }
+    h1 { margin: 0 0 4px; font-size: 18px; }
+    .header { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1.5px solid #071126; padding-bottom: 8px; margin-bottom: 8px; }
+    .meta { color: #334155; line-height: 1.35; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #b9c6d6; padding: 3px 4px; vertical-align: top; }
+    th { background: #eef3f8; text-align: left; font-size: 8px; }
+    .num { text-align: right; font-weight: 700; }
+    .code { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>${escapeHtml(title)}</h1>
+      <div class="meta">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong><br>Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
+    </div>
+    <div class="meta" style="text-align:right">Generado: <strong>${escapeHtml(generatedAt)}</strong><br>Registros: <strong>${number2(rows.length)}</strong><br>Orden: <strong>Zona / ubicacion A-Z</strong></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:32px" class="num">#</th>
+        <th style="width:52px">Zona</th>
+        <th style="width:105px">Ubicacion</th>
+        <th style="width:76px">Codigo</th>
+        <th>Descripcion</th>
+        <th style="width:38px">UM</th>
+        <th style="width:58px" class="num">Cantidad</th>
+        <th style="width:115px">Contador</th>
+        <th style="width:95px">Fecha</th>
+      </tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+  </table>
+</body>
+</html>`;
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo la impresion de registros. Permite ventanas emergentes.");
+      return;
+    }
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    setTimeout(() => reportWindow.print(), 500);
   }
 
   function exportSummary() {
@@ -5623,7 +5723,7 @@ export default function InventariosPage() {
                   </div>
                 )}
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-green-200">
-                  <input value={locationCode} onChange={event => setLocationCode(event.target.value.toUpperCase())} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
+                  <input value={locationCode} onChange={event => setLocationCode(normalizeLocationCode(event.target.value))} placeholder="Ubicación / ticket" autoFocus className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-black outline-none" />
                   <button onClick={() => openScanner("location")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-green-700 text-white transition active:scale-95 active:bg-green-800" title="Escanear ubicación">
                     <QrCode size={22} />
                   </button>
@@ -6595,6 +6695,9 @@ export default function InventariosPage() {
                   </div>
                   <button onClick={exportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                     <Download size={15} /> Descargar Excel
+                  </button>
+                  <button onClick={printRecordsByZone} disabled={counts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                    <Printer size={15} /> Imprimir registros
                   </button>
                 </div>
               </div>
