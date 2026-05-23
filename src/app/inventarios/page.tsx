@@ -237,6 +237,7 @@ type ManualLocationDraft = {
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
+const COUNTER_ACTIVE_GAP_MINUTES = 5;
 
 function normalizePhone(value: string) {
   return value.replace(/\D/g, "");
@@ -412,6 +413,34 @@ function compareLocationByZone(a: string | number | null | undefined, b: string 
   return compareValues(normalizeLocationCode(a), normalizeLocationCode(b), direction);
 }
 
+function calculateActiveCounterMinutes(times: number[]) {
+  const validTimes = times.filter(Number.isFinite).sort((a, b) => a - b);
+  if (validTimes.length === 0) return { activeMinutes: 0, excludedPauseMinutes: 0 };
+  if (validTimes.length === 1) return { activeMinutes: 1, excludedPauseMinutes: 0 };
+
+  const maxActiveGapMs = COUNTER_ACTIVE_GAP_MINUTES * 60000;
+  let blockStart = validTimes[0];
+  let previous = validTimes[0];
+  let activeMs = 0;
+  let excludedPauseMs = 0;
+
+  for (const time of validTimes.slice(1)) {
+    const gap = time - previous;
+    if (gap > maxActiveGapMs) {
+      activeMs += Math.max(60000, previous - blockStart);
+      excludedPauseMs += gap;
+      blockStart = time;
+    }
+    previous = time;
+  }
+
+  activeMs += Math.max(60000, previous - blockStart);
+  return {
+    activeMinutes: Math.max(1, activeMs / 60000),
+    excludedPauseMinutes: Math.max(0, excludedPauseMs / 60000),
+  };
+}
+
 function recountKey(row: Pick<RecountCandidate, "product_id" | "recount_type">) {
   return `${row.product_id}__${row.recount_type}`;
 }
@@ -475,6 +504,7 @@ export default function InventariosPage() {
   const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
   const [recordsOperatorFilter, setRecordsOperatorFilter] = useState("");
+  const [recordsZoneFilter, setRecordsZoneFilter] = useState("");
   const [locationCode, setLocationCode] = useState("");
   const [productCode, setProductCode] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -555,6 +585,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     setRecordsOperatorFilter("");
+    setRecordsZoneFilter("");
   }, [selectedSessionId]);
 
   const activeSessions = useMemo(
@@ -576,10 +607,16 @@ export default function InventariosPage() {
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [counts]);
 
+  const recordsZoneOptions = useMemo(() => {
+    return [...new Set(counts.map(row => locationZoneKey(row.location_code)).filter(Boolean))]
+      .sort((a, b) => compareLocationByZone(a, b, "asc"));
+  }, [counts]);
+
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim().toLowerCase();
     const rows = counts.filter(row =>
       (!recordsOperatorFilter || row.operator_id === recordsOperatorFilter) &&
+      (!recordsZoneFilter || locationZoneKey(row.location_code) === recordsZoneFilter) &&
       (!q ||
         row.sku.toLowerCase().includes(q) ||
         row.description.toLowerCase().includes(q) ||
@@ -598,25 +635,27 @@ export default function InventariosPage() {
         b[recordsSort.key];
       return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
-  }, [counts, recordsOperatorFilter, recordsQuery, recordsSort]);
+  }, [counts, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter]);
 
   const counterStats = useMemo(() => {
-    const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number }>();
+    const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number; times: number[] }>();
     for (const row of counts) {
       const time = new Date(row.counted_at).getTime();
+      if (!Number.isFinite(time)) continue;
       const key = row.operator_id;
       const current = grouped.get(key);
       if (!current) {
-        grouped.set(key, { id: key, name: row.operator_name || "Sin usuario", count: 1, first: time, last: time });
+        grouped.set(key, { id: key, name: row.operator_name || "Sin usuario", count: 1, first: time, last: time, times: [time] });
         continue;
       }
       current.count += 1;
       current.first = Math.min(current.first, time);
       current.last = Math.max(current.last, time);
+      current.times.push(time);
     }
     const rows = [...grouped.values()].map(row => {
-      const minutes = Math.max(1, (row.last - row.first) / 60000);
-      return { ...row, minutes, perMinute: row.count / minutes };
+      const { activeMinutes, excludedPauseMinutes } = calculateActiveCounterMinutes(row.times);
+      return { ...row, minutes: activeMinutes, excludedPauseMinutes, perMinute: row.count / activeMinutes };
     }).sort((a, b) => b.perMinute - a.perMinute);
     const maxPerMinute = Math.max(1, ...rows.map(row => row.perMinute));
     return { rows, maxPerMinute };
@@ -1019,9 +1058,13 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-        if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
-        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+        if (isValidator) {
+          if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+          if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
+          if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+          return;
+        }
+        if (operator?.id) void loadRecordsData(selectedSessionId, operator.id);
       }, 1500);
     };
 
@@ -1043,7 +1086,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab]);
+  }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1520,11 +1563,15 @@ export default function InventariosPage() {
       return;
     }
 
-    const countRows = await loadAllCounts(sessionId, operatorId);
-    const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
-    const rows = mergePendingCounts(countRows, pendingRows);
-    setCounts(rows);
-    if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
+    try {
+      const countRows = await loadAllCounts(sessionId, operatorId);
+      const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
+      const rows = mergePendingCounts(countRows, pendingRows);
+      setCounts(rows);
+      if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
+    } catch (error) {
+      setMessage("Error leyendo registros: " + (error instanceof Error ? error.message : String(error)));
+    }
   }
 
   async function loadPendingOfflineCountRows(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
@@ -2144,12 +2191,12 @@ export default function InventariosPage() {
         .from("general_inventory_counts")
         .select("*, general_inventory_operators(full_name)")
         .eq("session_id", sessionId)
-        .order("counted_at", { ascending: false });
+        .order("counted_at", { ascending: false })
+        .order("id", { ascending: false });
       if (operatorId) query = query.eq("operator_id", operatorId);
       const { data, error } = await query.range(from, from + pageSize - 1);
       if (error) {
-        setMessage("Error leyendo registros: " + error.message);
-        break;
+        throw error;
       }
       rows.push(...((data || []).map((row: any) => ({
         ...row,
@@ -3569,7 +3616,8 @@ export default function InventariosPage() {
         sync_origin: navigator.onLine ? "web" : "pwa_offline",
       };
 
-      if (!navigator.onLine) {
+      const keepCountPending = async (messageText: string) => {
+        const pendingPayload = { ...insertRow, sync_origin: "pwa_offline" };
         await enqueueOfflineItem({
           localId: clientUuid,
           clientUuid,
@@ -3577,7 +3625,7 @@ export default function InventariosPage() {
           module: "general_inventory",
           entity: "general_inventory_counts",
           operation: "insert",
-          payload: insertRow,
+          payload: pendingPayload,
           status: "pending",
           attempts: pendingEdit?.attempts || 0,
           createdAt: pendingEdit?.createdAt || now,
@@ -3601,10 +3649,16 @@ export default function InventariosPage() {
         setProductLookupMessage("");
         setQuantity("");
         setEditingCountId(null);
-        setMessage(editingCountId
-          ? "Edicion guardada sin conexion. Se subira solo la ultima version."
-          : "Conteo guardado sin conexion. Se sincronizara cuando vuelva internet."
-        );
+        setMessage(messageText);
+      };
+
+      if (pendingEdit) {
+        await keepCountPending("Edicion guardada en pendiente. Se subira solo la ultima version.");
+        return;
+      }
+
+      if (!navigator.onLine) {
+        await keepCountPending("Conteo guardado sin conexion. Se sincronizara cuando vuelva internet.");
         return;
       }
 
@@ -3614,7 +3668,11 @@ export default function InventariosPage() {
       const { error } = await request;
 
       if (error) {
-        setMessage("No se pudo guardar conteo: " + error.message);
+        if (!editingCountId) {
+          await keepCountPending("No se pudo confirmar en Supabase, pero el conteo quedo guardado en este equipo y se reintentara automaticamente.");
+          return;
+        }
+        setMessage("No se pudo guardar la edicion en Supabase. El registro original no fue modificado: " + error.message);
         return;
       }
 
@@ -4351,7 +4409,8 @@ export default function InventariosPage() {
       REGISTROS: row.count,
       PRIMER_REGISTRO: Number.isFinite(row.first) ? new Date(row.first).toLocaleString("es-PE") : "",
       ULTIMO_REGISTRO: Number.isFinite(row.last) ? new Date(row.last).toLocaleString("es-PE") : "",
-      MINUTOS: Number(row.minutes.toFixed(2)),
+      MINUTOS_ACTIVOS: Number(row.minutes.toFixed(2)),
+      PAUSAS_EXCLUIDAS_MIN: Number(row.excludedPauseMinutes.toFixed(2)),
       REGISTROS_POR_MINUTO: Number(row.perMinute.toFixed(2)),
     }));
     let recountRows: Awaited<ReturnType<typeof loadRecountRecordsForExport>> = [];
@@ -4370,7 +4429,7 @@ export default function InventariosPage() {
 
   function printRecordsByZone() {
     if (!selectedSession) return;
-    const rows = [...counts].sort((a, b) => compareLocationByZone(a.location_code, b.location_code, "asc"));
+    const rows = [...filteredCounts].sort((a, b) => compareLocationByZone(a.location_code, b.location_code, "asc"));
     if (rows.length === 0) {
       setMessage("No hay registros para imprimir.");
       return;
@@ -4415,7 +4474,7 @@ export default function InventariosPage() {
       <h1>${escapeHtml(title)}</h1>
       <div class="meta">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong><br>Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
     </div>
-    <div class="meta" style="text-align:right">Generado: <strong>${escapeHtml(generatedAt)}</strong><br>Registros: <strong>${number2(rows.length)}</strong><br>Orden: <strong>Zona / ubicacion A-Z</strong></div>
+    <div class="meta" style="text-align:right">Generado: <strong>${escapeHtml(generatedAt)}</strong><br>Registros: <strong>${number2(rows.length)}</strong><br>${recordsZoneFilter ? `Zona: <strong>${escapeHtml(recordsZoneFilter)}</strong><br>` : ""}Orden: <strong>Zona / ubicacion A-Z</strong></div>
   </div>
   <table>
     <thead>
@@ -5773,7 +5832,10 @@ export default function InventariosPage() {
               <div className="border-b p-3">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
-                  <div className="text-xs font-bold text-slate-500">{filteredCounts.length}</div>
+                  <div className="text-right text-xs font-bold text-slate-500">
+                    <div>{counts.length} registros totales</div>
+                    {filteredCounts.length !== counts.length && <div>{filteredCounts.length} filtrados</div>}
+                  </div>
                 </div>
                 <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
@@ -6648,7 +6710,7 @@ export default function InventariosPage() {
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="font-black">Productividad de contadores</h2>
-                  <p className="text-xs text-slate-500">Registros por minuto calculado desde el primer al ultimo registro de cada contador.</p>
+                  <p className="text-xs text-slate-500">Registros por minuto efectivo. Pausas mayores a {COUNTER_ACTIVE_GAP_MINUTES} min no se consideran.</p>
                 </div>
                 <div className="text-xs font-black text-slate-500">{counts.length} registros</div>
               </div>
@@ -6665,7 +6727,10 @@ export default function InventariosPage() {
                         style={{ width: `${Math.max(4, Math.round((row.perMinute / counterStats.maxPerMinute) * 100))}%` }}
                       />
                     </div>
-                    <div className="text-sm font-black text-slate-900">{row.perMinute.toFixed(2)} reg/min</div>
+                    <div className="text-sm font-black text-slate-900">
+                      {row.perMinute.toFixed(2)} reg/min
+                      <div className="text-[11px] font-bold text-slate-500">{row.minutes.toFixed(1)} min activos</div>
+                    </div>
                   </div>
                 ))}
                 {counterStats.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin registros para graficar.</div>}
@@ -6689,6 +6754,16 @@ export default function InventariosPage() {
                       ))}
                     </select>
                   )}
+                  <select
+                    value={recordsZoneFilter}
+                    onChange={event => setRecordsZoneFilter(event.target.value)}
+                    className="min-h-10 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700"
+                  >
+                    <option value="">Todas las zonas</option>
+                    {recordsZoneOptions.map(zone => (
+                      <option key={zone} value={zone}>Zona {zone}</option>
+                    ))}
+                  </select>
                   <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
                     <Search size={16} className="text-slate-400" />
                     <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
