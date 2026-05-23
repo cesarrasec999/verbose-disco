@@ -334,6 +334,20 @@ function recordMatchesQuery(row: CountRow, rawQuery: string) {
   return normalizeRecordSearch(row.sku).includes(query);
 }
 
+function countRowKey(row: CountRow) {
+  return [
+    row.id,
+    row.session_id,
+    row.operator_id,
+    row.location_id,
+    row.location_code,
+    row.product_id,
+    row.sku,
+    row.quantity,
+    row.counted_at,
+  ].map(value => String(value ?? "")).join("__");
+}
+
 function codeMatchRank(product: Product, query: string) {
   const sku = normalizeCode(product.sku).toUpperCase();
   const barcode = normalizeCode(product.barcode).toUpperCase();
@@ -667,6 +681,16 @@ export default function InventariosPage() {
       return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
   }, [counts, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter]);
+
+  const recordsRenderKey = useMemo(() => [
+    selectedSessionId,
+    recordsOperatorFilter,
+    recordsZoneFilter,
+    recordsQuery.trim(),
+    recordsSort.key,
+    recordsSort.direction,
+    filteredCounts.length,
+  ].join("__"), [filteredCounts.length, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter, selectedSessionId]);
 
   const counterStats = useMemo(() => {
     const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number; times: number[] }>();
@@ -5878,9 +5902,9 @@ export default function InventariosPage() {
                   )}
                 </div>
               </div>
-              <div className="divide-y">
+              <div key={recordsRenderKey} className="divide-y">
                 {filteredCounts.map(row => (
-                  <div key={row.id} className="p-3">
+                  <div key={countRowKey(row)} className="p-3">
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -6832,9 +6856,9 @@ export default function InventariosPage() {
                     <th className="p-2 text-center">Acciones</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody key={recordsRenderKey}>
                   {filteredCounts.map(row => (
-                    <tr key={row.id} className="border-b">
+                    <tr key={countRowKey(row)} className="border-b">
                       <td className="p-2 text-center text-xs text-slate-500">{new Date(row.counted_at).toLocaleString("es-PE")}</td>
                       <td className="max-w-[180px] truncate p-2 font-bold text-slate-700">{row.operator_name || "Sin usuario"}</td>
                       <td className="p-2 text-center font-black text-slate-800">{row.location_code}</td>
