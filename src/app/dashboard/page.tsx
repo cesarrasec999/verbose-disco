@@ -9,429 +9,61 @@ import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
-function scannerPermissionMessage(error: unknown) {
-    const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
-    if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
-        return "Permiso de camara denegado. Para volver a solicitarlo, abre los permisos del sitio o de la PWA, habilita Camara y vuelve a tocar Escanear.";
-    }
-    return "No se pudo iniciar la camara: " + (error instanceof Error ? error.message : text);
-}
-
-// ══════════════════════════════════════════════════════════
-//  TIPOS
-// ══════════════════════════════════════════════════════════
-type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
-type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
-type ValTabKey = "asignar"|"no_inventariables"|"registros"|"resumen"|"progreso"|"dashboard"|"resultados";
-
-type CyclicUser = {
-    id: string;
-    username: string;
-    password?: string;
-    full_name: string;
-    role: Role;
-    store_id: string | null;
-    can_access_all_stores: boolean;
-    can_access_audit?: boolean;
-    is_active: boolean;
-    whatsapp?: string | null;
-};
-
-type Store = {
-    id: string;
-    code: string;
-    name: string;
-    erp_sede?: string | null;
-    is_active: boolean;
-};
-
-type Product = {
-    id: string;
-    sku: string;
-    barcode: string | null;
-    description: string;
-    unit: string;
-    cost: number;
-    is_active: boolean;
-    system_stock?: number;
-};
-
-type StockGeneralRow = {
-    sede: string | null;
-    codsap: string | null;
-    stock: number | string | null;
-    updated_at?: string | null;
-};
-
-type NonInventoryProduct = {
-    id: string;
-    product_id: string | null;
-    sku: string;
-    description: string | null;
-    is_active: boolean;
-    barcode?: string | null;
-    unit?: string | null;
-    cost?: number | null;
-    product_description?: string | null;
-};
-
-type Assignment = {
-    id: string;
-    store_id: string;
-    product_id: string;
-    system_stock: number;
-    assigned_date: string;
-    assigned_by: string | null;
-    sku?: string;
-    barcode?: string | null;
-    description?: string;
-    unit?: string;
-    cost?: number;
-    store_name?: string;
-    counted?: boolean;
-    count_id?: string;
-};
-
-type CountRecord = {
-    id: string;
-    assignment_id: string;
-    store_id: string;
-    product_id: string;
-    counted_quantity: number;
-    location: string;
-    user_id: string | null;
-    user_name: string | null;
-    validator_id: string | null;
-    validator_name: string | null;
-    status: "Pendiente" | "Diferencia" | "Validado" | "Corregido";
-    note: string | null;
-    stock_snapshot?: number | null;
-    counted_at: string;
-    updated_at: string;
-    sku?: string;
-    barcode?: string | null;
-    description?: string;
-    unit?: string;
-    cost?: number;
-    system_stock?: number;
-    difference?: number;
-    store_name?: string;
-};
-
-// Resumen agrupado por product_id
-type ResumenRow = {
-    product_id: string;
-    sku: string;
-    description: string;
-    unit: string;
-    cost: number;
-    system_stock: number;
-    total_counted: number;
-    difference: number;
-    dif_valorizada: number;
-};
-
-// Dashboard: datos por tienda para el período
-type DashboardRow = {
-    store_id: string;
-    store_name: string;
-    date: string;
-    total_asignados: number;
-    total_asignados_periodo?: number;
-    total_ok: number;
-    total_sobrantes: number;
-    total_faltantes: number;
-    total_no_contados: number;
-    dif_valorizada: number;
-    eri: number;
-    cumplio: boolean;
-    cumplimiento_pct: number; // % días cumplidos sobre total días con asignación (para vista mes)
-    dias_cumplidos: number;
-    dias_totales: number;
-    hora_inicio: string | null;
-    hora_fin: string | null;
-    duracion_min: number | null;
-};
-
-type StoreProgress = {
-    store_id: string;
-    store_name: string;
-    total_asignados: number;
-    total_contados: number;
-    pct: number;
-};
-
-type GlobalStockProgress = {
-    total_stock_codes: number;
-    completed_codes: number;
-    pending_codes: number;
-    pct: number;
-};
-
-type AllStoreAssignmentSummary = {
-    assignment_id: string;
-    store_id: string;
-    store_name: string;
-    product_id: string;
-    sku: string;
-    description: string;
-    unit: string;
-    system_stock: number;
-};
-
-type ProductCountHistoryRow = {
-    assignment_id: string;
-    source: "ciclico" | "auditoria" | "inventario general";
-    source_label: string;
-    store_name: string;
-    assigned_date: string;
-    sku: string;
-    description: string;
-    unit: string;
-    system_stock: number;
-    counted_quantity: number;
-    difference: number;
-    ok: number;
-    faltante: number;
-    sobrante: number;
-    result: string;
-    motive: string;
-};
-
-// Fila de ubicación + cantidad en el modal del operario
-type LocationRow = { location: string; qty: string };
-
-type LocationEntryProductRow = {
-    code: string;
-    product: Product | null;
-    status: "" | "ok" | "error";
-    message: string;
-};
-
-type ProductLocation = {
-    id: string;
-    store_id: string | null;
-    product_id: string;
-    sku: string;
-    location: string;
-    is_active: boolean;
-    last_source?: string | null;
-    last_seen_at?: string | null;
-    updated_at?: string | null;
-    cyclic_registered?: boolean | null;
-    audit_registered?: boolean | null;
-    general_inventory_registered?: boolean | null;
-    cyclic_products?: Pick<Product, "sku" | "description" | "unit" | "cost"> | null;
-};
-
-// ══════════════════════════════════════════════════════════
-//  HELPERS
-// ══════════════════════════════════════════════════════════
-function todayISO(): string {
-    return new Date().toISOString().split("T")[0];
-}
-
-function cleanCode(value: string | null | undefined): string {
-    if (!value) return "";
-    let s = String(value).trim();
-    s = s.replace(/^['"''""\u2018\u2019\u201C\u201D]+/, "").replace(/['"''""\u2018\u2019\u201C\u201D]+$/, "").trim();
-    if (/[Ee][+-]/.test(s) && !isNaN(Number(s))) {
-        const n = Number(s);
-        if (isFinite(n)) s = Math.round(n).toString();
-    }
-    s = s.replace(/\.0+$/, "");
-    if (/^\d+$/.test(s)) {
-        s = s.replace(/^0+/, "");
-        if (s === "") s = "0";
-    }
-    return s;
-}
-
-function fullProductCode(value: string | number | null | undefined): string {
-    const raw = String(value ?? "").trim();
-    if (!raw) return "";
-    let s = raw.replace(/^['"''""\u2018\u2019\u201C\u201D]+/, "").replace(/['"''""\u2018\u2019\u201C\u201D]+$/, "").trim();
-    if (/[Ee][+-]/.test(s) && !isNaN(Number(s))) {
-        const n = Number(s);
-        if (isFinite(n)) s = Math.round(n).toString();
-    }
-    return s.replace(/\.0+$/, "");
-}
-
-function normalizeUnit(value: string | null | undefined): string {
-    return String(value || "").trim().toUpperCase();
-}
-
-function resultLabel(counted: boolean, difference: number) {
-    if (!counted) return "Sin conteo";
-    if (difference === 0) return "OK";
-    return difference < 0 ? "Faltante" : "Sobrante";
-}
-
-function resultMotive(result: string, detail?: string | null) {
-    const cleanDetail = String(detail || "").trim();
-    const base = result === "OK"
-        ? "Conteo coincide con stock"
-        : result === "Faltante"
-            ? "Conteo menor al stock"
-            : result === "Sobrante"
-                ? "Conteo mayor al stock"
-                : "Sin registros de conteo";
-    return cleanDetail ? `${base}. ${cleanDetail}` : base;
-}
-
-function visibleProductCode(value: string | number | null | undefined): string {
-    const full = fullProductCode(value);
-    const digits = full.replace(/\D/g, "");
-    const suffix = (digits || full).slice(-5);
-    return cleanCode(suffix);
-}
-
-function isShortVisibleOnlyCode(value: string | number | null | undefined): boolean {
-    return /^\d{1,5}$/.test(fullProductCode(value));
-}
-
-function preferFullCodsapProducts<T extends Product>(rows: T[]): T[] {
-    const groups = new Map<string, T[]>();
-    for (const row of rows) {
-        const key = visibleProductCode(row.sku) || fullProductCode(row.sku);
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(row);
-    }
-
-    const result: T[] = [];
-    for (const group of groups.values()) {
-        const hasFullCode = group.some(row => !isShortVisibleOnlyCode(row.sku));
-        result.push(...(hasFullCode ? group.filter(row => !isShortVisibleOnlyCode(row.sku)) : group));
-    }
-    return result;
-}
-
-function codeCandidates(value: string | null | undefined): string[] {
-    const raw = String(value || "").trim();
-    const clean = cleanCode(raw);
-    const withoutPrefix = raw.replace(/^[A-Za-z]+/, "");
-    const withoutPrefixClean = cleanCode(withoutPrefix);
-    const withAuPrefix = withoutPrefixClean ? `AU${withoutPrefixClean.padStart(7, "0")}` : "";
-    const padded = withoutPrefixClean ? withoutPrefixClean.padStart(7, "0") : "";
-    return Array.from(new Set([raw, clean, withoutPrefix, withoutPrefixClean, padded, withAuPrefix].filter(Boolean)));
-}
-
-function mappedProductCodeCandidates(row: Record<string, unknown> | null | undefined): string[] {
-    if (!row) return [];
-    const value = row.codsap ?? row.codigosap ?? row.ProductReference ?? row.productreference ?? row.sku;
-    const full = fullProductCode(String(value ?? ""));
-    return full ? [full] : [];
-}
-
-function normalizeText(v: string | null | undefined) {
-    return String(v || "").trim().toLowerCase();
-}
-
-/** Parsea costos con miles: "1,140.95" → 1140.95; "1140.95" → 1140.95 */
-function parseCost(raw: any): number {
-    if (raw === null || raw === undefined || raw === "") return 0;
-    if (typeof raw === "number") return isNaN(raw) ? 0 : raw;
-    // Convertir a string y quitar separador de miles (coma o punto según locale)
-    let s = String(raw).trim().replace(/\s/g, "");
-    // Si tiene tanto coma como punto, la coma es separador de miles
-    if (s.includes(",") && s.includes(".")) {
-        // e.g. "1,140.95" → "1140.95"
-        s = s.replace(/,/g, "");
-    } else if (s.includes(",")) {
-        // Podría ser separador decimal (europeo) o de miles
-        const parts = s.split(",");
-        if (parts.length === 2 && parts[1].length <= 2) {
-            // "1140,95" → decimal europeo → "1140.95"
-            s = s.replace(",", ".");
-        } else {
-            // "1,140" → miles → "1140"
-            s = s.replace(/,/g, "");
-        }
-    }
-    const n = parseFloat(s);
-    return isNaN(n) ? 0 : n;
-}
-
-function formatMoney(v: number) {
-    return `S/ ${Number(v || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function formatNumber(v: number | string | null | undefined) {
-    const n = Number(v || 0);
-    if (!Number.isFinite(n)) return "0";
-    return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
-}
-
-function escapeHtml(value: unknown) {
-    return String(value ?? "").replace(/[&<>"']/g, char => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-    }[char] || char));
-}
-
-/** Redondea a 2 decimales eliminando errores de punto flotante */
-function r2(v: number): number {
-    return Math.round((v + Number.EPSILON) * 100) / 100;
-}
-
-function formatDateTime(v: string) {
-    if (!v) return "-";
-    const d = new Date(v);
-    if (isNaN(d.getTime())) return v;
-    return d.toLocaleString("es-PE");
-}
-
-const ALL_STORES_VALUE = "__all_stores__";
-const SESSION_FLAG_LOCATIONS = new Set([
-    "__session_counting__",
-    "__session_finished__",
-    "__recount_started__",
-    "__recount_done__",
-]);
-
-function isSessionFlagLocation(location: string | null | undefined): boolean {
-    return SESSION_FLAG_LOCATIONS.has(String(location || ""));
-}
-
-function formatDuration(minutes: number | null): string {
-    if (minutes === null || minutes < 0) return "—";
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    if (h === 0) return `${m} min`;
-    return `${h}h ${m}m`;
-}
-
-function statusBadge(status: CountRecord["status"]) {
-    const base = "inline-block px-2 py-0.5 rounded-full text-xs font-semibold";
-    switch (status) {
-        case "Pendiente":  return `${base} bg-slate-100 text-slate-700`;
-        case "Diferencia": return `${base} bg-red-100 text-red-700`;
-        case "Validado":   return `${base} bg-green-100 text-green-700`;
-        case "Corregido":  return `${base} bg-blue-100 text-blue-700`;
-        default:           return `${base} bg-slate-100 text-slate-700`;
-    }
-}
+import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
+import type {
+    AllStoreAssignmentSummary,
+    Assignment,
+    CountRecord,
+    CyclicUser,
+    DashboardRow,
+    GlobalStockProgress,
+    LocationEntryProductRow,
+    LocationRow,
+    NonInventoryProduct,
+    Product,
+    ProductCountHistoryRow,
+    ProductLocation,
+    ResumenRow,
+    Role,
+    StockGeneralRow,
+    Store,
+    StoreProgress,
+    TabKey,
+    ValTabKey,
+} from "@/features/ciclicos/types";
+import {
+    ALL_STORES_VALUE,
+    cleanCode,
+    codeCandidates,
+    diffCardClass,
+    diffPillClass,
+    escapeHtml,
+    formatDateTime,
+    formatDuration,
+    formatMoney,
+    formatNumber,
+    fullProductCode,
+    isSessionFlagLocation,
+    isShortVisibleOnlyCode,
+    mappedProductCodeCandidates,
+    normalizeText,
+    normalizeUnit,
+    parseCost,
+    preferFullCodsapProducts,
+    r2,
+    resultLabel,
+    resultMotive,
+    scannerPermissionMessage,
+    SESSION_FLAG_LOCATIONS,
+    statusBadge,
+    todayISO,
+    visibleProductCode,
+} from "@/features/ciclicos/utils";
 
 function diffBadge(diff: number) {
     if (diff === 0) return <span className="text-green-700 font-semibold">0</span>;
     if (diff > 0)   return <span className="text-blue-700 font-semibold">+{formatNumber(diff)}</span>;
     return <span className="text-red-600 font-semibold">{formatNumber(diff)}</span>;
-}
-
-function diffCardClass(diff: number) {
-    if (diff === 0) return "bg-green-50 border-green-300";
-    if (diff > 0) return "bg-blue-50 border-blue-300";
-    return "bg-red-50 border-red-300";
-}
-
-function diffPillClass(diff: number) {
-    if (diff === 0) return "bg-green-100 text-green-700 border-green-200";
-    if (diff > 0) return "bg-blue-100 text-blue-700 border-blue-200";
-    return "bg-red-100 text-red-700 border-red-200";
 }
 
 // ══════════════════════════════════════════════════════════
@@ -6089,27 +5721,7 @@ export default function DashboardPage() {
                     md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`}
                 style={{ minWidth: "14rem" }}>
 
-                {/* Logo / Brand */}
-                <div className="px-5 py-5 border-b border-slate-700/60">
-                    <div className="flex items-center gap-2.5">
-                        <div style={{
-                            background: "linear-gradient(135deg, #f97316 0%, #c2410c 100%)",
-                            borderRadius: "10px", padding: "6px 8px",
-                        }}>
-                            <svg viewBox="0 0 60 60" width="24" height="24">
-                                <polygon points="30,3 54,17 54,43 30,57 6,43 6,17" fill="rgba(255,255,255,0.15)" />
-                                <text x="30" y="42" textAnchor="middle" fill="white"
-                                    fontSize="32" fontWeight="900" fontFamily="Arial Black, sans-serif">R</text>
-                            </svg>
-                        </div>
-                        <div>
-                            <p className="font-black text-sm leading-none tracking-wider">
-                                RASE<span style={{ color: "#f97316" }}>CORP</span>
-                            </p>
-                            <p className="text-slate-400 text-[10px] leading-none mt-1 tracking-widest">CÍCLICOS</p>
-                        </div>
-                    </div>
-                </div>
+                <SidebarBrand />
 
                 {/* Usuario */}
                 <div className="px-5 py-3 border-b border-slate-700/60">
