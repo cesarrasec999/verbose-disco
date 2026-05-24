@@ -769,26 +769,31 @@ export default function InventariosPage() {
   }, [operator?.id, isValidator, selectedSession?.id, selectedSession?.status]);
 
   useEffect(() => {
-    if (!selectedSessionId || !isValidator) return;
+    if (!selectedSessionId) return;
 
     const channel = supabase
       .channel(`gi-session-${selectedSessionId}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "general_inventory_sessions", filter: `id=eq.${selectedSessionId}` },
-        () => { void loadInitial(selectedSessionId); }
+        () => {
+          void (async () => {
+            await loadInitial(selectedSessionId);
+            if (!isValidator && operator?.id) await loadOperatorRecountItems(selectedSessionId, operator.id);
+          })();
+        }
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, isValidator, operator?.id]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
     void loadOperatorRecountItems(selectedSessionId, operator.id);
-  }, [selectedSessionId, operator?.id, isValidator]);
+  }, [selectedSessionId, operator?.id, isValidator, selectedSession?.validation_enabled]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1886,7 +1891,23 @@ export default function InventariosPage() {
   }
 
   async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
-    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const sessionState = await supabase
+      .from("general_inventory_sessions")
+      .select("validation_enabled,manual_recount_enabled")
+      .eq("id", sessionId)
+      .maybeSingle();
+    const sessionStateData = sessionState.data;
+    const validationMode = Boolean(sessionStateData?.validation_enabled ?? selectedSession?.validation_enabled);
+    if (sessionStateData) {
+      setSessions(prev => prev.map(session => session.id === sessionId
+        ? {
+          ...session,
+          validation_enabled: Boolean(sessionStateData.validation_enabled),
+          manual_recount_enabled: Boolean(sessionStateData.manual_recount_enabled),
+        }
+        : session
+      ));
+    }
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
@@ -6001,7 +6022,7 @@ export default function InventariosPage() {
               <div className="mb-3 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h2 className="font-black">Mis reconteos asignados</h2>
+                    <h2 className="font-black">{selectedSession?.validation_enabled ? "Mis validaciones asignadas" : "Mis reconteos asignados"}</h2>
                     <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
                   </div>
                   <div className="text-right text-xs font-bold text-slate-500">
@@ -6123,7 +6144,7 @@ export default function InventariosPage() {
                             </button>
                           )}
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : "Guardar reconteo"}
+                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : selectedSession?.validation_enabled ? "Guardar validacion" : "Guardar reconteo"}
                           </button>
                         </div>
                       </div>
@@ -6133,19 +6154,19 @@ export default function InventariosPage() {
                 })}
                 {recountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                    No tienes códigos asignados para reconteo en este inventario.
+                    No tienes códigos asignados para {selectedSession?.validation_enabled ? "validacion" : "reconteo"} en este inventario.
                   </div>
                 )}
                 {recountItems.length > 0 && filteredOperatorRecountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                    No hay reconteos que coincidan con la búsqueda.
+                    No hay {selectedSession?.validation_enabled ? "validaciones" : "reconteos"} que coincidan con la búsqueda.
                   </div>
                 )}
               </div>
               <div className="mt-4 rounded-2xl border bg-white">
                 <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
                   <div>
-                    <h3 className="font-black text-slate-900">Reconteos guardados</h3>
+                    <h3 className="font-black text-slate-900">{selectedSession?.validation_enabled ? "Validaciones guardadas" : "Reconteos guardados"}</h3>
                     <p className="text-xs text-slate-500">Registro de lo que vas guardando en esta sesión.</p>
                   </div>
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{operatorRecountRecords.length}</span>
