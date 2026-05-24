@@ -175,6 +175,7 @@ export default function InventariosPage() {
   const [savingInventoryOperatorId, setSavingInventoryOperatorId] = useState<string | null>(null);
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
   const [operatorRecountQuery, setOperatorRecountQuery] = useState("");
+  const [operatorSavedRecordQuery, setOperatorSavedRecordQuery] = useState("");
   const [operatorRecordLayer, setOperatorRecordLayer] = useState<"recount" | "validation">("recount");
   const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
   const [recountFilter, setRecountFilter] = useState<RecountFilter>("surplus");
@@ -220,6 +221,7 @@ export default function InventariosPage() {
   useEffect(() => {
     setRecordsQuery("");
     setOperatorRecountQuery("");
+    setOperatorSavedRecordQuery("");
     setOperatorRecordLayer(selectedSession?.validation_enabled ? "validation" : "recount");
     setRecordsOperatorFilter("");
     setRecordsZoneFilter("");
@@ -627,7 +629,7 @@ export default function InventariosPage() {
   }), [operatorRecountRecords]);
 
   const filteredOperatorRecountRecords = useMemo(() => {
-    const q = operatorRecountQuery.trim().toLowerCase();
+    const q = operatorSavedRecordQuery.trim().toLowerCase();
     return operatorRecountRecords.filter(record => {
       const layer = record.item.layer === "validation" ? "validation" : "recount";
       if (layer !== operatorRecordLayer) return false;
@@ -638,7 +640,7 @@ export default function InventariosPage() {
         String(record.item.ticket || "").toLowerCase().includes(q) ||
         String(record.item.full_location || "").toLowerCase().includes(q);
     });
-  }, [operatorRecordLayer, operatorRecountQuery, operatorRecountRecords]);
+  }, [operatorRecordLayer, operatorSavedRecordQuery, operatorRecountRecords]);
 
   const filteredAdminRecountRecords = useMemo(() => {
     const q = recountRecordsQuery.trim().toLowerCase();
@@ -1944,7 +1946,6 @@ export default function InventariosPage() {
       .eq("id", sessionId)
       .maybeSingle();
     const sessionStateData = sessionState.data;
-    const validationMode = Boolean(sessionStateData?.validation_enabled ?? selectedSession?.validation_enabled);
     if (sessionStateData) {
       setSessions(prev => prev.map(session => session.id === sessionId
         ? {
@@ -1955,8 +1956,6 @@ export default function InventariosPage() {
         : session
       ));
     }
-    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
-    const sourceCountTable = validationMode ? "general_inventory_recount_counts" : "general_inventory_counts";
     const operatorIds = new Set([operatorId]);
     if (operator?.phone) {
       const samePhone = await supabase
@@ -1966,19 +1965,20 @@ export default function InventariosPage() {
       for (const row of samePhone.data || []) operatorIds.add(row.id);
     }
 
-    const { data, error } = await supabase
-      .from(itemTable)
-      .select("*")
-      .eq("session_id", sessionId)
-      .in("assigned_operator_id", [...operatorIds])
-      .order("location_code", { ascending: true, nullsFirst: false })
-      .order("value_diff", { ascending: false });
-    if (error) {
-      setMessage("No se pudo leer reconteos asignados: " + error.message);
-      return;
-    }
-    const assignedRows = (data || []) as any[];
-    const mappedRows = sortOperatorRecountCards(assignedRows.map((row: any) => ({
+    const loadAssignedLayer = async (layer: "recount" | "validation") => {
+      const layerValidationMode = layer === "validation";
+      const { data, error } = await supabase
+        .from(layerValidationMode ? "general_inventory_validation_items" : "general_inventory_recount_items")
+        .select("*")
+        .eq("session_id", sessionId)
+        .in("assigned_operator_id", [...operatorIds])
+        .order("location_code", { ascending: true, nullsFirst: false })
+        .order("value_diff", { ascending: false });
+      if (error) {
+        setMessage(`No se pudo leer ${layerValidationMode ? "validaciones" : "reconteos"} asignados: ${error.message}`);
+        return [] as RecountItem[];
+      }
+      return (data || []).map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -2002,9 +2002,16 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operator?.full_name || null,
       status: row.status || "assigned",
-      layer: validationMode ? "validation" : "recount",
+      layer,
       source_recount_item_id: row.source_recount_item_id || null,
-    })) as RecountItem[]);
+      })) as RecountItem[];
+    };
+
+    const assignedRows = [
+      ...(await loadAssignedLayer("recount")),
+      ...(await loadAssignedLayer("validation")),
+    ];
+    const mappedRows = sortOperatorRecountCards(assignedRows);
 
     const productIds = [...new Set(mappedRows.map(row => row.product_id).filter(Boolean))];
     const locationsRequest = supabase
@@ -2012,27 +2019,34 @@ export default function InventariosPage() {
       .select("*")
       .eq("session_id", sessionId)
       .eq("is_active", true);
-    const [countRowsRes, locationsRes] = productIds.length > 0
+    const [originalCountRowsRes, recountCountRowsRes, locationsRes] = productIds.length > 0
       ? await Promise.all([
         supabase
-          .from(sourceCountTable)
+          .from("general_inventory_counts")
+          .select("product_id,location_id,location_code,quantity")
+          .eq("session_id", sessionId)
+          .in("product_id", productIds),
+        supabase
+          .from("general_inventory_recount_counts")
           .select("product_id,location_id,location_code,quantity")
           .eq("session_id", sessionId)
           .in("product_id", productIds),
         locationsRequest,
       ])
-      : [{ data: [] }, await locationsRequest];
+      : [{ data: [] }, { data: [] }, await locationsRequest];
     const activeLocations = (locationsRes.data || []) as InventoryLocation[];
     setLocations(activeLocations);
     const locationById = new Map(activeLocations.map(row => [row.id, row]));
-    const linesByProduct = new Map<string, RecountLocationLine[]>();
-    for (const countRow of countRowsRes.data || []) {
+    const linesByLayerProduct = new Map<string, RecountLocationLine[]>();
+    const addSourceLines = (sourceLayer: "recount" | "validation", countRows: any[]) => {
+    for (const countRow of countRows || []) {
       const productId = String(countRow.product_id || "");
       const loc = locationById.get(String(countRow.location_id || ""));
       const code = normalizeLocationCode(countRow.location_code || loc?.location_code || "");
       if (!productId || !code) continue;
-      if (!linesByProduct.has(productId)) linesByProduct.set(productId, []);
-      const rows = linesByProduct.get(productId)!;
+      const key = `${sourceLayer}__${productId}`;
+      if (!linesByLayerProduct.has(key)) linesByLayerProduct.set(key, []);
+      const rows = linesByLayerProduct.get(key)!;
       const existing = rows.find(row => normalizeLocationCode(row.location_code) === code);
       if (existing) {
         existing.counted_qty += Number(countRow.quantity || 0);
@@ -2050,9 +2064,13 @@ export default function InventariosPage() {
         });
       }
     }
+    };
+    addSourceLines("recount", originalCountRowsRes.data || []);
+    addSourceLines("validation", recountCountRowsRes.data || []);
 
     const rowsWithLocations = mappedRows.map(row => {
-      const originalLocations = (linesByProduct.get(row.product_id) || [])
+      const rowLayer = row.layer === "validation" ? "validation" : "recount";
+      const originalLocations = (linesByLayerProduct.get(`${rowLayer}__${row.product_id}`) || [])
         .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
       const originalTotal = originalLocations.reduce((sum, location) => sum + Number(location.counted_qty || 0), 0);
       const shouldUseCountedLocations = row.recount_type === "surplus" || originalLocations.length > 0;
@@ -2088,8 +2106,8 @@ export default function InventariosPage() {
       const savedRows = (savedRes.data || []) as any[];
       const savedItemIds = [...new Set(savedRows.map(row => String(row[layerItemIdColumn] || "")).filter(Boolean))];
       const savedItems = new Map<string, RecountItem>();
-      if (layer === (validationMode ? "validation" : "recount")) {
-        for (const [id, item] of itemById.entries()) savedItems.set(id, item);
+      for (const [id, item] of itemById.entries()) {
+        if ((item.layer === "validation" ? "validation" : "recount") === layer) savedItems.set(id, item);
       }
       for (let i = 0; i < savedItemIds.length; i += 100) {
         const chunk = savedItemIds.slice(i, i + 100).filter(id => !savedItems.has(id));
@@ -6156,29 +6174,13 @@ export default function InventariosPage() {
               <div className="mb-3 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h2 className="font-black">{selectedSession?.validation_enabled ? "Mis validaciones asignadas" : "Mis reconteos asignados"}</h2>
+                    <h2 className="font-black">{selectedSession?.validation_enabled ? "Mis reconteos y validaciones asignadas" : "Mis reconteos asignados"}</h2>
                     <p className="text-xs text-slate-500">{operator.full_name}{selectedSession ? ` · ${selectedSession.name}` : ""}</p>
                   </div>
                   <div className="text-right text-xs font-bold text-slate-500">
                     <div>{recountItems.length} asignados</div>
                     {filteredOperatorRecountItems.length !== recountItems.length && <div>{filteredOperatorRecountItems.length} filtrados</div>}
                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 rounded-xl border bg-slate-50 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setOperatorRecordLayer("recount")}
-                    className={`rounded-lg px-3 py-2 text-xs font-black ${operatorRecordLayer === "recount" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-                  >
-                    Reconteo ({operatorRecordLayerCounts.recount})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperatorRecordLayer("validation")}
-                    className={`rounded-lg px-3 py-2 text-xs font-black ${operatorRecordLayer === "validation" ? "bg-slate-900 text-white" : "text-slate-600"}`}
-                  >
-                    Validacion ({operatorRecordLayerCounts.validation})
-                  </button>
                 </div>
                 <div className="flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
@@ -6294,7 +6296,7 @@ export default function InventariosPage() {
                             </button>
                           )}
                           <button onClick={() => saveRecountValidation(row)} disabled={savingRecountId === row.id} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : selectedSession?.validation_enabled ? "Guardar validacion" : "Guardar reconteo"}
+                            {savingRecountId === row.id ? "Guardando" : editingRecountItemId === row.id ? "Guardar edición" : row.layer === "validation" ? "Guardar validacion" : "Guardar reconteo"}
                           </button>
                         </div>
                       </div>
@@ -6304,7 +6306,7 @@ export default function InventariosPage() {
                 })}
                 {recountItems.length === 0 && (
                   <div className="rounded-2xl border bg-slate-50 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                    No tienes códigos asignados para {selectedSession?.validation_enabled ? "validacion" : "reconteo"} en este inventario.
+                    No tienes códigos asignados para {selectedSession?.validation_enabled ? "reconteo o validacion" : "reconteo"} en este inventario.
                   </div>
                 )}
                 {recountItems.length > 0 && filteredOperatorRecountItems.length === 0 && (
@@ -6321,6 +6323,38 @@ export default function InventariosPage() {
                   </div>
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{filteredOperatorRecountRecords.length}</span>
                 </div>
+                <div className="border-b px-4 py-3">
+                  <div className="mb-2 grid grid-cols-2 gap-2 rounded-xl border bg-slate-50 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setOperatorRecordLayer("recount")}
+                      className={`rounded-lg px-3 py-2 text-xs font-black ${operatorRecordLayer === "recount" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Reconteo ({operatorRecordLayerCounts.recount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOperatorRecordLayer("validation")}
+                      className={`rounded-lg px-3 py-2 text-xs font-black ${operatorRecordLayer === "validation" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Validacion ({operatorRecordLayerCounts.validation})
+                    </button>
+                  </div>
+                  <div className="flex items-center rounded-xl border px-3 py-2">
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                    <input
+                      value={operatorSavedRecordQuery}
+                      onChange={event => setOperatorSavedRecordQuery(event.target.value)}
+                      placeholder="Buscar registro guardado"
+                      className="min-w-0 flex-1 px-2 text-sm outline-none"
+                    />
+                    {operatorSavedRecordQuery && (
+                      <button type="button" onClick={() => setOperatorSavedRecordQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda de registros guardados">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
                 <div className="divide-y">
                   {filteredOperatorRecountRecords.map(record => (
                     <div key={record.id} className="p-3">
@@ -6335,9 +6369,7 @@ export default function InventariosPage() {
                         </div>
                         <div className="shrink-0 text-right">
                           <div className="text-xl font-black text-slate-950">{number2(record.quantity)}</div>
-                          {record.item.layer === (selectedSession?.validation_enabled ? "validation" : "recount") && (
-                            <button onClick={() => editRecountRecord(record)} className="mt-1 rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
-                          )}
+                          <button onClick={() => editRecountRecord(record)} className="mt-1 rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
                         </div>
                       </div>
                     </div>
