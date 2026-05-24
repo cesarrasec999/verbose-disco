@@ -5286,6 +5286,8 @@ export default function InventariosPage() {
           <td class="num">${number2(row.system_stock)}</td>
           <td class="num">${number2(row.recount_original_quantity)}</td>
           <td class="num">${number2(row.recount_quantity)}</td>
+          <td class="num ${row.diff_qty < 0 ? "bad" : row.diff_qty > 0 ? "warn" : ""}">${number2(row.diff_qty)}</td>
+          <td class="num ${row.value_diff < 0 ? "bad" : row.value_diff > 0 ? "warn" : ""}">${money(row.value_diff)}</td>
           <td>${escapeHtml(row.recount_type === "missing" ? "Faltante" : "Sobrante")}</td>
         </tr>
       `).join("");
@@ -5324,6 +5326,8 @@ export default function InventariosPage() {
                 <th style="width:44px" class="num">Stock</th>
                 <th style="width:50px" class="num">Conteo</th>
                 <th style="width:56px" class="num">Reconteo</th>
+                <th style="width:48px" class="num">Dif. und</th>
+                <th style="width:64px" class="num">Dif. valorizada</th>
                 <th style="width:58px">Tipo</th>
               </tr>
             </thead>
@@ -5363,6 +5367,8 @@ export default function InventariosPage() {
     th, td { border: 1px solid #cbd5e1; padding: 3px; line-height: 1.15; vertical-align: top; word-wrap: break-word; }
     th { background: #f1f5f9; text-align: left; font-size: 9px; }
     .num { text-align: right; white-space: nowrap; }
+    .bad { color: #dc2626; font-weight: 800; }
+    .warn { color: #2563eb; font-weight: 800; }
     .signatureGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 34px; margin-top: auto; padding-top: 18mm; break-inside: avoid; page-break-inside: avoid; }
     .signature { border-top: 1px solid #0f172a; padding-top: 22px; text-align: center; font-weight: 800; }
     .toolbar { position: sticky; top: 0; margin-bottom: 8px; padding: 8px; background: white; border-bottom: 1px solid #cbd5e1; }
