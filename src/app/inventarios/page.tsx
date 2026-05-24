@@ -3,585 +3,89 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LogIn, LogOut, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
+import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
-import { readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
-
-type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
-type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
-type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
-type OperatorMode = "conteo" | "reconteo";
-type RecountManagerTab = "pendientes" | "asignados" | "manual" | "registros";
-type RecountAssignedStatusFilter = "all" | "pending" | "counted";
-type SortDirection = "asc" | "desc";
-type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
-type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "validation_qty" | "diff" | "cost" | "valueDiff" | "observation";
-type RecountAssignedSortKey = "status" | "recount_type" | "ticket" | "location_code" | "sku" | "description" | "system_stock" | "counted_qty" | "diff_qty" | "value_diff" | "assigned_operator_name";
-type SortState<T extends string> = { key: T; direction: SortDirection };
-
-type CyclicUser = {
-  id: string;
-  full_name: string;
-  role: Role;
-  store_id: string | null;
-  can_access_all_stores: boolean;
-  is_active: boolean;
-};
-
-type Store = {
-  id: string;
-  name: string;
-  erp_sede?: string | null;
-  is_active: boolean;
-};
-
-type InventorySession = {
-  id: string;
-  store_id: string;
-  name: string;
-  status: SessionStatus;
-  scheduled_date: string | null;
-  stock_frozen_at: string | null;
-  location_lock_enabled?: boolean | null;
-  manual_recount_enabled?: boolean | null;
-  validation_enabled?: boolean | null;
-  finished_at?: string | null;
-  created_at?: string | null;
-  frozen_total_value: number;
-  notes?: string | null;
-  store_name?: string;
-};
-
-type InventoryOperator = {
-  id: string;
-  full_name: string;
-  phone: string;
-  password?: string;
-};
-
-type InventoryLocation = {
-  id: string;
-  session_id: string;
-  location_code: string;
-  ticket?: string | null;
-  zone?: string | null;
-  zone_ref?: string | null;
-  lineal?: string | null;
-  reference?: string | null;
-  full_location?: string | null;
-  description?: string | null;
-  is_active: boolean;
-  is_empty?: boolean | null;
-  empty_marked_by?: string | null;
-  empty_marked_at?: string | null;
-};
-
-type Product = {
-  id: string;
-  sku: string;
-  barcode: string | null;
-  description: string;
-  unit: string;
-  cost: number;
-  is_active: boolean;
-};
-
-type StockGeneralRow = {
-  codsap: string;
-  stock: number | string | null;
-  costo: number | string | null;
-};
-
-type CountRow = {
-  id: string;
-  session_id: string;
-  operator_id: string;
-  location_id: string;
-  location_code: string;
-  product_id: string;
-  sku: string;
-  description: string;
-  unit: string;
-  quantity: number;
-  cost_snapshot: number;
-  counted_at: string;
-  operator_name?: string | null;
-};
-
-type SummaryRow = {
-  product_id: string;
-  sku: string;
-  description: string;
-  unit: string;
-  brand?: string | null;
-  department?: string | null;
-  class_name?: string | null;
-  subclass_name?: string | null;
-  rotation_category?: string | null;
-  system_stock: number;
-  counted: number;
-  counted_original: number;
-  recounted_qty: number | null;
-  validation_qty: number | null;
-  diff: number;
-  cost: number;
-  valueDiff: number;
-  re_counted: boolean;
-  validated: boolean;
-  observation?: string | null;
-};
-
-type RecountType = "surplus" | "missing";
-type RecountFilter = RecountType | "surplus_zero_stock" | "missing_not_counted";
-type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
-type ProductLookupMode = "typed" | "scan";
-
-type RecountLocationLine = {
-  id: string;
-  location_id: string | null;
-  location_code: string;
-  full_location: string | null;
-  zone: string | null;
-  zone_ref: string | null;
-  lineal: string | null;
-  ticket: string | null;
-  counted_qty: number;
-};
-
-type RecountCandidate = {
-  product_id: string;
-  sku: string;
-  description: string;
-  unit: string;
-  location_id: string | null;
-  location_code: string | null;
-  full_location: string | null;
-  zone: string | null;
-  zone_ref: string | null;
-  lineal: string | null;
-  ticket: string | null;
-  recount_type: RecountType;
-  system_stock: number;
-  counted_qty: number;
-  diff_qty: number;
-  cost_snapshot: number;
-  value_diff: number;
-  location_count: number;
-  original_locations: RecountLocationLine[];
-};
-
-type RecountItem = RecountCandidate & {
-  id: string;
-  status: string;
-  assigned_operator_id: string | null;
-  assigned_operator_name?: string | null;
-  layer?: "recount" | "validation";
-  source_recount_item_id?: string | null;
-};
-
-type RecountDocumentRow = RecountItem & {
-  recount_count_id: string;
-  recount_operator_id: string;
-  recount_operator_name: string;
-  recount_quantity: number;
-  recount_original_quantity: number;
-  recount_counted_at: string;
-  recount_updated_at: string;
-};
-
-type OperatorRecountRecord = {
-  id: string;
-  recount_item_id: string;
-  operator_id: string;
-  operator_name?: string | null;
-  location_id: string | null;
-  location_code: string;
-  product_id: string;
-  sku: string;
-  description: string;
-  unit: string;
-  quantity: number;
-  original_quantity?: number;
-  cost_snapshot: number;
-  counted_at: string;
-  updated_at?: string | null;
-  item: RecountItem;
-};
-
-type ManualRecountDraft = {
-  locationCode: string;
-  quantity: string;
-};
-
-type RecountDraft = {
-  productCode: string;
-  extraProductCode: string;
-  rows: Array<{
-    locationCode: string;
-    quantity: string;
-    isExtra?: boolean;
-  }>;
-};
-
-type InventoryOperatorDraft = {
-  full_name: string;
-  phone: string;
-  password: string;
-};
-
-type ManualLocationDraft = {
-  location_code: string;
-  zone: string;
-  zone_ref: string;
-  lineal: string;
-  reference: string;
-};
+import { fetchOperatorCountsPage } from "@/features/inventarios/api";
+import { InventoryHeader } from "@/features/inventarios/components/InventoryHeader";
+import type {
+  CountRow,
+  CyclicUser,
+  InventoryLocation,
+  InventoryOperator,
+  InventoryOperatorDraft,
+  InventorySession,
+  ManualLocationDraft,
+  ManualRecountDraft,
+  OperatorMode,
+  OperatorRecountRecord,
+  Product,
+  ProductLookupMode,
+  RecountAssignedSortKey,
+  RecountAssignedStatusFilter,
+  RecountCandidate,
+  RecountDocumentRow,
+  RecountDraft,
+  RecountFilter,
+  RecountItem,
+  RecountLocationLine,
+  RecountManagerTab,
+  RecountType,
+  ScannerTarget,
+  SessionStatus,
+  SortDirection,
+  SortState,
+  StockGeneralRow,
+  Store,
+  SummaryRow,
+  SummarySortKey,
+  ValidatorTab,
+  RecordsSortKey,
+} from "@/features/inventarios/types";
+import {
+  buildFullLocationFromParts,
+  calculateActiveCounterMinutes,
+  canOperatorEnter,
+  codeMatchRank,
+  compareLocationByZone,
+  compareValues,
+  COUNTER_ACTIVE_GAP_MINUTES,
+  countRowKey,
+  dateOnly,
+  escapeHtml,
+  findInventoryLocation,
+  firstColumnValue,
+  isIosDevice,
+  locationZoneKey,
+  money,
+  normalizeCode,
+  normalizeLocationCode,
+  normalizePhone,
+  number2,
+  OPERATOR_RECORDS_PAGE_SIZE,
+  operatorRecountItemMatchesQuery,
+  pickColumn,
+  pickFirstMatchingColumn,
+  pickLastMatchingColumn,
+  readWorkbookRows,
+  recordMatchesQuery,
+  recountCandidateMatchesQuery,
+  recountKey,
+  scannerPermissionMessage,
+  searchWords,
+  sortOperatorRecountCards,
+  sortRecountAssignmentLines,
+  statusLabel,
+  summaryStatus,
+} from "@/features/inventarios/utils";
 
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
-const COUNTER_ACTIVE_GAP_MINUTES = 5;
-const OPERATOR_RECORDS_PAGE_SIZE = 20;
-
-function normalizePhone(value: string) {
-  return value.replace(/\D/g, "");
-}
-
-function normalizeCode(value: string | number | null | undefined) {
-  return String(value ?? "").trim().replace(/\.0+$/, "");
-}
-
-function normalizeLocationCode(value: string | number | null | undefined) {
-  return normalizeCode(value)
-    .replace(/\u00a0/g, " ")
-    .replace(/['’‘´`]/g, "-")
-    .trim()
-    .toUpperCase();
-}
-
-function locationZoneKey(value: string | number | null | undefined) {
-  const clean = normalizeLocationCode(value);
-  const zone = clean.split("-")[0] || clean;
-  if (/^0+\d+$/.test(zone)) {
-    const numeric = zone.replace(/^0+/, "");
-    return numeric.padStart(2, "0");
-  }
-  return zone;
-}
-
-function buildFullLocationFromParts(parts: Pick<ManualLocationDraft, "zone" | "zone_ref" | "lineal" | "reference">) {
-  return [parts.zone, parts.zone_ref, parts.lineal, parts.reference]
-    .map(value => value.trim())
-    .filter(Boolean)
-    .join(" - ");
-}
-
-function numericLocationKey(value: string | number | null | undefined) {
-  const clean = normalizeLocationCode(value);
-  return /^\d+$/.test(clean) ? clean.replace(/^0+(?=\d)/, "") : "";
-}
-
-function findInventoryLocation(locations: InventoryLocation[], value: string | number | null | undefined) {
-  const target = normalizeLocationCode(value);
-  if (!target) return null;
-
-  const exact = locations.find(row =>
-    normalizeLocationCode(row.location_code) === target ||
-    normalizeLocationCode(row.ticket) === target
-  );
-  if (exact) return exact;
-
-  const numericTarget = numericLocationKey(target);
-  if (!numericTarget) return null;
-  const numericMatches = locations.filter(row =>
-    numericLocationKey(row.location_code) === numericTarget ||
-    numericLocationKey(row.ticket) === numericTarget
-  );
-  return numericMatches.length === 1 ? numericMatches[0] : null;
-}
-
-function isIosDevice() {
-  if (typeof navigator === "undefined") return false;
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-}
-
-function searchWords(value: string) {
-  return value.trim().toLowerCase().split(/\s+/).filter(word => word.length >= 2);
-}
-
-function normalizeRecordSearch(value: string | number | null | undefined) {
-  return normalizeCode(value).toLowerCase();
-}
-
-function recordSkuMatchesNumber(sku: string, query: string) {
-  const cleanQuery = query.replace(/\D/g, "");
-  if (!cleanQuery) return true;
-  const cleanSku = normalizeRecordSearch(sku);
-  const skuNumbers = cleanSku.replace(/\D/g, "");
-  return cleanSku === cleanQuery || skuNumbers === cleanQuery || skuNumbers.endsWith(cleanQuery) || skuNumbers.includes(cleanQuery);
-}
-
-function recordTextFieldsMatch(row: CountRow, query: string) {
-  const haystack = [
-    row.description,
-    row.location_code,
-    row.operator_name,
-  ].map(normalizeRecordSearch);
-  return haystack.some(value => value.includes(query));
-}
-
-function recordMatchesQuery(row: CountRow, rawQuery: string) {
-  const query = normalizeRecordSearch(rawQuery);
-  if (!query) return true;
-  if (/^\d+$/.test(query)) return recordSkuMatchesNumber(row.sku, query);
-  if (recordTextFieldsMatch(row, query)) return true;
-  return normalizeRecordSearch(row.sku).includes(query);
-}
-
-function summaryStatus(row: Pick<SummaryRow, "counted" | "diff">) {
-  if (row.diff === 0) return "OK";
-  return row.diff < 0 ? "Faltante" : "Sobrante";
-}
-
-function operatorRecountItemMatchesQuery(row: RecountItem, rawQuery: string) {
-  const query = normalizeRecordSearch(rawQuery);
-  if (!query) return true;
-  const typeLabel = row.recount_type === "missing" ? "faltante" : "sobrante";
-  const fields = [
-    row.sku,
-    row.description,
-    row.location_code,
-    row.full_location,
-    row.ticket,
-    row.zone,
-    row.zone_ref,
-    row.lineal,
-    row.assigned_operator_name,
-    typeLabel,
-    ...row.original_locations.flatMap(location => [
-      location.location_code,
-      location.full_location,
-      location.ticket,
-      location.zone,
-      location.zone_ref,
-      location.lineal,
-    ]),
-  ];
-  return fields.map(normalizeRecordSearch).some(value => value.includes(query));
-}
-
-function recountCandidateMatchesQuery(row: RecountCandidate, rawQuery: string) {
-  const query = normalizeRecordSearch(rawQuery);
-  if (!query) return true;
-  const typeLabel = row.recount_type === "missing" ? "faltante" : "sobrante";
-  const fields = [
-    row.sku,
-    row.description,
-    row.location_code,
-    row.full_location,
-    row.ticket,
-    row.zone,
-    row.zone_ref,
-    row.lineal,
-    typeLabel,
-    ...row.original_locations.flatMap(location => [
-      location.location_code,
-      location.full_location,
-      location.ticket,
-      location.zone,
-      location.zone_ref,
-      location.lineal,
-    ]),
-  ];
-  return fields.map(normalizeRecordSearch).some(value => value.includes(query));
-}
-
-function countRowKey(row: CountRow) {
-  return [
-    row.id,
-    row.session_id,
-    row.operator_id,
-    row.location_id,
-    row.location_code,
-    row.product_id,
-    row.sku,
-    row.quantity,
-    row.counted_at,
-  ].map(value => String(value ?? "")).join("__");
-}
-
-function codeMatchRank(product: Product, query: string) {
-  const sku = normalizeCode(product.sku).toUpperCase();
-  const barcode = normalizeCode(product.barcode).toUpperCase();
-  const suffix = query.slice(-5);
-  if (sku === query || barcode === query) return 0;
-  if (query.length >= 4 && (sku.endsWith(query) || barcode.endsWith(query))) return 1;
-  if (suffix.length >= 4 && (sku.endsWith(suffix) || barcode.endsWith(suffix))) return 2;
-  if (query.length >= 4 && (sku.includes(query) || barcode.includes(query))) return 3;
-  if (suffix.length >= 4 && (sku.includes(suffix) || barcode.includes(suffix))) return 4;
-  return 5;
-}
-
-function money(value: number) {
-  return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function number2(value: number | string | null | undefined) {
-  const n = Number(value || 0);
-  if (!Number.isFinite(n)) return "0";
-  return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
-}
-
-function dateOnly(value: string | null | undefined) {
-  if (!value) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    const [year, month, day] = value.split("-");
-    return `${day}/${month}/${year}`;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("es-PE");
-}
-
-function escapeHtml(value: unknown) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[char] || char));
-}
-
-function scannerPermissionMessage(error: unknown) {
-  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
-  if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
-    return "Permiso de camara denegado. Para volver a solicitarlo, abre los permisos del sitio o de la PWA, habilita Camara y vuelve a tocar Escanear.";
-  }
-  return "No se pudo iniciar la camara: " + (error instanceof Error ? error.message : text);
-}
-
-function statusLabel(status: SessionStatus) {
-  if (status === "planned") return "Planificado";
-  if (status === "open") return "Abierto";
-  if (status === "frozen") return "Stock congelado";
-  if (status === "finished") return "Finalizado";
-  return "Cancelado";
-}
-
-function canOperatorEnter(status: SessionStatus) {
-  return status === "open" || status === "frozen";
-}
-
-async function readWorkbookRows(file: File): Promise<Record<string, string>[]> {
-  return readSafeSheetObjects<Record<string, string>>(file, { maxRows: 12000, maxCols: 60, raw: false });
-}
-
-function pickColumn(row: Record<string, string>, names: string[]) {
-  const entries = Object.entries(row);
-  for (const name of names) {
-    const normalized = name.trim().toLowerCase();
-    const found = entries.find(([key]) => key.trim().toLowerCase() === normalized);
-    if (found) return String(found[1] ?? "").trim();
-  }
-  return "";
-}
-
-function normalizeHeader(value: string) {
-  return value.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/_\d+$/, "");
-}
-
-function pickFirstMatchingColumn(row: Record<string, string>, names: string[]) {
-  const normalizedNames = new Set(names.map(normalizeHeader));
-  const found = Object.entries(row).find(([key]) => normalizedNames.has(normalizeHeader(key)));
-  return String(found?.[1] ?? "").trim();
-}
-
-function pickLastMatchingColumn(row: Record<string, string>, names: string[]) {
-  const normalizedNames = new Set(names.map(normalizeHeader));
-  const found = [...Object.entries(row)].reverse().find(([key]) => normalizedNames.has(normalizeHeader(key)));
-  return String(found?.[1] ?? "").trim();
-}
-
-function firstColumnValue(row: Record<string, string>) {
-  const first = Object.values(row)[0];
-  return String(first ?? "").trim();
-}
-
-function compareValues(a: string | number, b: string | number, direction: SortDirection) {
-  const multiplier = direction === "asc" ? 1 : -1;
-  if (typeof a === "number" && typeof b === "number") return (a - b) * multiplier;
-  return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }) * multiplier;
-}
-
-function compareLocationByZone(a: string | number | null | undefined, b: string | number | null | undefined, direction: SortDirection = "asc") {
-  const zoneCompare = compareValues(locationZoneKey(a), locationZoneKey(b), direction);
-  if (zoneCompare !== 0) return zoneCompare;
-  return compareValues(normalizeLocationCode(a), normalizeLocationCode(b), direction);
-}
-
-function calculateActiveCounterMinutes(times: number[]) {
-  const validTimes = times.filter(Number.isFinite).sort((a, b) => a - b);
-  if (validTimes.length === 0) return { activeMinutes: 0, excludedPauseMinutes: 0 };
-  if (validTimes.length === 1) return { activeMinutes: 1, excludedPauseMinutes: 0 };
-
-  const maxActiveGapMs = COUNTER_ACTIVE_GAP_MINUTES * 60000;
-  let blockStart = validTimes[0];
-  let previous = validTimes[0];
-  let activeMs = 0;
-  let excludedPauseMs = 0;
-
-  for (const time of validTimes.slice(1)) {
-    const gap = time - previous;
-    if (gap > maxActiveGapMs) {
-      activeMs += Math.max(60000, previous - blockStart);
-      excludedPauseMs += gap;
-      blockStart = time;
-    }
-    previous = time;
-  }
-
-  activeMs += Math.max(60000, previous - blockStart);
-  return {
-    activeMinutes: Math.max(1, activeMs / 60000),
-    excludedPauseMinutes: Math.max(0, excludedPauseMs / 60000),
-  };
-}
-
-function recountKey(row: Pick<RecountCandidate, "product_id" | "recount_type">) {
-  return `${row.product_id}__${row.recount_type}`;
-}
-
-function sortRecountAssignmentLines<T extends Pick<RecountCandidate, "value_diff" | "recount_type" | "sku">>(rows: T[]) {
-  return [...rows].sort((a, b) => {
-    const aValue = Number(a.value_diff || 0);
-    const bValue = Number(b.value_diff || 0);
-    const valueCompare = a.recount_type === "missing"
-      ? aValue - bValue
-      : bValue - aValue;
-    if (valueCompare !== 0) return valueCompare;
-    return String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
-  });
-}
-
-function sortOperatorRecountCards<T extends Pick<RecountCandidate, "sku" | "value_diff" | "recount_type">>(rows: T[]) {
-  return [...rows].sort((a, b) => {
-    const aValue = Number(a.value_diff || 0);
-    const bValue = Number(b.value_diff || 0);
-    const valueCompare = a.recount_type === "missing"
-      ? aValue - bValue
-      : bValue - aValue;
-    if (valueCompare !== 0) return valueCompare;
-    const skuCompare = String(a.sku || "").localeCompare(String(b.sku || ""), "es", { numeric: true, sensitivity: "base" });
-    if (skuCompare !== 0) return skuCompare;
-    return 0;
-  });
-}
 
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
@@ -1849,33 +1353,9 @@ export default function InventariosPage() {
   async function loadOperatorCountsPage(sessionId: string, operatorId: string, page: number, rawQuery: string): Promise<CountRow[]> {
     setOperatorRecordsLoading(true);
     try {
-      const from = Math.max(0, (page - 1) * OPERATOR_RECORDS_PAGE_SIZE);
-      const to = from + OPERATOR_RECORDS_PAGE_SIZE - 1;
-      const queryText = normalizeRecordSearch(rawQuery).replace(/[,%()]/g, " ").trim();
-      let query = supabase
-        .from("general_inventory_counts")
-        .select("*, general_inventory_operators(full_name)", { count: "exact" })
-        .eq("session_id", sessionId)
-        .eq("operator_id", operatorId)
-        .order("counted_at", { ascending: false })
-        .order("id", { ascending: false })
-        .range(from, to);
-
-      if (queryText) {
-        const term = `%${queryText}%`;
-        query = /^\d+$/.test(queryText)
-          ? query.or(`sku.ilike.${term}`)
-          : query.or(`sku.ilike.${term},description.ilike.${term},location_code.ilike.${term}`);
-      }
-
-      const { data, error, count } = await query;
-      if (error) throw error;
-      setOperatorRecordsTotal(Number(count || 0));
-      return ((data || []).map((row: any) => ({
-        ...row,
-        location_code: normalizeLocationCode(row.location_code),
-        operator_name: row.general_inventory_operators?.full_name || null,
-      })) as CountRow[]);
+      const { rows, total } = await fetchOperatorCountsPage(supabase, { sessionId, operatorId, page, query: rawQuery });
+      setOperatorRecordsTotal(total);
+      return rows;
     } finally {
       setOperatorRecordsLoading(false);
     }
@@ -5958,60 +5438,20 @@ export default function InventariosPage() {
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">
-      <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
-          <button
-            onClick={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
-            className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
-            title={operator && !user ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesión") : "Volver"}
-          >
-            {operator && !user ? (operatorMode === "reconteo" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <ArrowLeft size={18} />}
-          </button>
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-base font-black leading-tight">Inventarios generales</h1>
-            <p className="truncate text-xs text-slate-500">RASECORP - conteo por ubicaciones</p>
-          </div>
-          <button onClick={refreshCurrentView} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
-            <RefreshCw size={18} />
-          </button>
-          {user && (
-            <button onClick={() => goModule("/consulta-stock")} className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Consulta de stock">
-              <PackageSearch size={18} />
-            </button>
-          )}
-          {!isMobileAccess && (user?.role === "Administrador" || user?.role === "Supervisor") && (
-            <select
-              value="/inventarios"
-              onChange={event => goModule(event.target.value)}
-              className="hidden shrink-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700 md:block"
-              title="Cambiar modulo"
-            >
-              <option value="/dashboard">Ciclicos</option>
-              <option value="/auditoria">Auditorias</option>
-              <option value="/inventarios">Inventarios</option>
-            </select>
-          )}
-          {user && (
-            <button onClick={logoutUser} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Cerrar sesión">
-              <LogOut size={18} />
-              <span className="hidden sm:inline">Cerrar sesión</span>
-            </button>
-          )}
-          {operator && !user && !selectedSession?.manual_recount_enabled && (
-            <button onClick={operatorMode === "reconteo" ? openOperatorCountMode : openOperatorRecountMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "reconteo" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "reconteo" ? "Volver a conteo" : "Modo reconteo"}>
-              {operatorMode === "reconteo" ? <ClipboardList size={18} /> : <PackageSearch size={18} />}
-              <span className="hidden sm:inline">{operatorMode === "reconteo" ? "Conteo" : "Reconteo"}</span>
-            </button>
-          )}
-          {!user && !operator && (
-            <button onClick={goLogin} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesión">
-              <LogIn size={18} />
-              <span className="hidden sm:inline">Iniciar sesión</span>
-            </button>
-          )}
-        </div>
-      </header>
+      <InventoryHeader
+        user={user}
+        operator={operator}
+        operatorMode={operatorMode}
+        selectedSession={selectedSession}
+        isMobileAccess={isMobileAccess}
+        onBack={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
+        onRefresh={refreshCurrentView}
+        onGoModule={goModule}
+        onLogoutUser={logoutUser}
+        onLogin={goLogin}
+        onOpenOperatorCountMode={openOperatorCountMode}
+        onOpenOperatorRecountMode={openOperatorRecountMode}
+      />
 
       <div className={`mx-auto grid w-full min-w-0 ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
         {showSidePanel && (
@@ -7681,7 +7121,7 @@ function SortHeader({ label, active, direction, onClick, align = "center" }: { l
         className={`flex w-full items-center gap-1 px-2 py-2 text-xs font-black ${align === "left" ? "justify-start" : "justify-center"} ${active ? "text-slate-950" : "text-slate-600 hover:text-slate-950"}`}
       >
         <span>{label}</span>
-        <span className="text-[10px]">{active ? (direction === "desc" ? "↓" : "↑") : "↕"}</span>
+        <span className="text-[10px]">{active ? (direction === "desc" ? "?" : "?") : "?"}</span>
       </button>
     </th>
   );

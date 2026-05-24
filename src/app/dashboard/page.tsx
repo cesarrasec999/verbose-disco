@@ -728,7 +728,13 @@ export default function DashboardPage() {
     }, [isMobileAccess]);
 
     useEffect(() => {
-        if (user) { loadStores(); loadProducts(); loadNonInventoryProducts(); if (!isMobileAccess && user.role !== "Operario") loadAllUsers(); }
+        if (!user) return;
+        loadStores();
+        if (!isMobileAccess) {
+            loadProducts();
+            loadNonInventoryProducts();
+            if (user.role !== "Operario") loadAllUsers();
+        }
     }, [user, isMobileAccess]);
 
     useEffect(() => {
