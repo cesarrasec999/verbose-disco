@@ -5,6 +5,7 @@ import { ArrowLeft, Download, FileText, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { readSafeSheetMatrix } from "@/lib/safeExcel";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
@@ -214,6 +215,7 @@ function currentRotationPeriod() {
 }
 
 export default function ReportesPage() {
+  const isMobileAccess = useIsMobileAccess();
   const [user] = useState<CyclicUser | null>(() => {
     if (typeof window === "undefined") return null;
     const raw = localStorage.getItem(USER_KEY);
@@ -244,6 +246,10 @@ export default function ReportesPage() {
   const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
   const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
+
+  useEffect(() => {
+    if (isMobileAccess) window.location.replace("/dashboard");
+  }, [isMobileAccess]);
   const snapshotInputRef = useRef<HTMLInputElement | null>(null);
 
   const canView = user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador";

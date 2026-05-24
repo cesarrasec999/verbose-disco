@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { ArrowLeft, Download, RefreshCw, Search } from "lucide-react";
 import * as XLSX from "xlsx";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 
 type Role = "Operario" | "Validador" | "Administrador";
 
@@ -95,6 +96,7 @@ function numberFmt(value: number | null | undefined, digits = 2) {
 }
 
 export default function RotacionesPage() {
+  const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [rows, setRows] = useState<RotationRow[]>([]);
@@ -103,6 +105,10 @@ export default function RotacionesPage() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (isMobileAccess) window.location.replace("/dashboard");
+  }, [isMobileAccess]);
   const [search, setSearch] = useState("");
   const [storeFilter, setStoreFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<(typeof CATEGORY_OPTIONS)[number]>("Todas");

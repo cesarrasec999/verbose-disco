@@ -10,6 +10,7 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
 import { readSafeSheetObjects } from "@/lib/safeExcel";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
@@ -245,6 +246,7 @@ const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 const COUNTER_ACTIVE_GAP_MINUTES = 5;
+const OPERATOR_RECORDS_PAGE_SIZE = 20;
 
 function normalizePhone(value: string) {
   return value.replace(/\D/g, "");
@@ -593,6 +595,7 @@ export default function InventariosPage() {
   const [operatorPassword, setOperatorPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const isMobileAccess = useIsMobileAccess();
 
   const [newStoreId, setNewStoreId] = useState("");
   const [newName, setNewName] = useState("");
@@ -611,6 +614,9 @@ export default function InventariosPage() {
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [savingEmptyLocationId, setSavingEmptyLocationId] = useState<string | null>(null);
   const [counts, setCounts] = useState<CountRow[]>([]);
+  const [operatorRecordsPage, setOperatorRecordsPage] = useState(1);
+  const [operatorRecordsTotal, setOperatorRecordsTotal] = useState(0);
+  const [operatorRecordsLoading, setOperatorRecordsLoading] = useState(false);
   const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
   const [recordsOperatorFilter, setRecordsOperatorFilter] = useState("");
@@ -702,7 +708,21 @@ export default function InventariosPage() {
     setOperatorRecountQuery("");
     setRecordsOperatorFilter("");
     setRecordsZoneFilter("");
+    setOperatorRecordsPage(1);
+    setOperatorRecordsTotal(0);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    setOperatorRecordsPage(1);
+  }, [recordsQuery, operator?.id]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !operator?.id || isValidator || operatorMode !== "conteo") return;
+    const timer = window.setTimeout(() => {
+      void loadRecordsData(selectedSessionId, operator.id);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [selectedSessionId, operator?.id, isValidator, operatorMode, operatorRecordsPage, recordsQuery]);
 
   const activeSessions = useMemo(
     () => sessions.filter(session => canOperatorEnter(session.status)),
@@ -767,6 +787,10 @@ export default function InventariosPage() {
       return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
   }, [counts, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter]);
+
+  const operatorRecordsTotalPages = Math.max(1, Math.ceil(operatorRecordsTotal / OPERATOR_RECORDS_PAGE_SIZE));
+  const operatorRecordsFrom = operatorRecordsTotal === 0 ? 0 : ((operatorRecordsPage - 1) * OPERATOR_RECORDS_PAGE_SIZE) + 1;
+  const operatorRecordsTo = Math.min(operatorRecordsPage * OPERATOR_RECORDS_PAGE_SIZE, operatorRecordsTotal);
 
   const recordsRenderKey = useMemo(() => [
     selectedSessionId,
@@ -1231,7 +1255,7 @@ export default function InventariosPage() {
   }, [operator?.id, isValidator, selectedSession?.id, selectedSession?.status]);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!selectedSessionId || !isValidator) return;
 
     const channel = supabase
       .channel(`gi-session-${selectedSessionId}`)
@@ -1259,16 +1283,12 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (isValidator) {
-          if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-          else markSessionTabStale(selectedSessionId, "registros");
-          if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
-          else markSessionTabStale(selectedSessionId, "resumen");
-          if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
-          else markSessionTabStale(selectedSessionId, "reconteo");
-          return;
-        }
-        if (operator?.id) void loadRecordsData(selectedSessionId, operator.id);
+        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+        else markSessionTabStale(selectedSessionId, "registros");
+        if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
+        else markSessionTabStale(selectedSessionId, "resumen");
+        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+        else markSessionTabStale(selectedSessionId, "reconteo");
       }, 1500);
     };
 
@@ -1304,7 +1324,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab, operator?.id, selectedSession?.validation_enabled]);
+  }, [selectedSessionId, isValidator, validatorTab, selectedSession?.validation_enabled]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1808,18 +1828,56 @@ export default function InventariosPage() {
   async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null) {
     if (!isValidator && !operatorId) {
       setCounts([]);
+      setOperatorRecordsTotal(0);
       return;
     }
 
     try {
-      const countRows = await loadAllCounts(sessionId, operatorId);
+      const countRows = !isValidator && operatorId
+        ? await loadOperatorCountsPage(sessionId, operatorId, operatorRecordsPage, recordsQuery)
+        : await loadAllCounts(sessionId, operatorId);
       const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
-      const rows = mergePendingCounts(countRows, pendingRows);
+      const rows = mergePendingCounts(countRows, (!isValidator && operatorId && operatorRecordsPage > 1) ? [] : pendingRows);
       setCounts(rows);
       if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
       if (isValidator && !operatorId) markSessionTabLoaded(sessionId, "registros");
     } catch (error) {
       setMessage("Error leyendo registros: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  async function loadOperatorCountsPage(sessionId: string, operatorId: string, page: number, rawQuery: string): Promise<CountRow[]> {
+    setOperatorRecordsLoading(true);
+    try {
+      const from = Math.max(0, (page - 1) * OPERATOR_RECORDS_PAGE_SIZE);
+      const to = from + OPERATOR_RECORDS_PAGE_SIZE - 1;
+      const queryText = normalizeRecordSearch(rawQuery).replace(/[,%()]/g, " ").trim();
+      let query = supabase
+        .from("general_inventory_counts")
+        .select("*, general_inventory_operators(full_name)", { count: "exact" })
+        .eq("session_id", sessionId)
+        .eq("operator_id", operatorId)
+        .order("counted_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, to);
+
+      if (queryText) {
+        const term = `%${queryText}%`;
+        query = /^\d+$/.test(queryText)
+          ? query.or(`sku.ilike.${term}`)
+          : query.or(`sku.ilike.${term},description.ilike.${term},location_code.ilike.${term}`);
+      }
+
+      const { data, error, count } = await query;
+      if (error) throw error;
+      setOperatorRecordsTotal(Number(count || 0));
+      return ((data || []).map((row: any) => ({
+        ...row,
+        location_code: normalizeLocationCode(row.location_code),
+        operator_name: row.general_inventory_operators?.full_name || null,
+      })) as CountRow[]);
+    } finally {
+      setOperatorRecordsLoading(false);
     }
   }
 
@@ -5922,7 +5980,7 @@ export default function InventariosPage() {
               <PackageSearch size={18} />
             </button>
           )}
-          {(user?.role === "Administrador" || user?.role === "Supervisor") && (
+          {!isMobileAccess && (user?.role === "Administrador" || user?.role === "Supervisor") && (
             <select
               value="/inventarios"
               onChange={event => goModule(event.target.value)}
@@ -6336,18 +6394,39 @@ export default function InventariosPage() {
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
                   <div className="text-right text-xs font-bold text-slate-500">
-                    <div>{counts.length} registros totales</div>
-                    {filteredCounts.length !== counts.length && <div>{filteredCounts.length} filtrados</div>}
+                    <div>{operatorRecordsLoading ? "Cargando..." : `${number2(operatorRecordsTotal)} registros`}</div>
+                    <div>Pagina {operatorRecordsPage} de {operatorRecordsTotalPages}</div>
                   </div>
                 </div>
                 <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
-                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar codigo, descripcion o ubicacion" className="min-w-0 flex-1 px-2 text-sm outline-none" />
                   {recordsQuery && (
                     <button type="button" onClick={() => setRecordsQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda">
                       <X size={14} />
                     </button>
                   )}
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2 text-xs font-black text-slate-500">
+                  <span>{operatorRecordsTotal === 0 ? "Sin registros para mostrar" : `Mostrando ${number2(operatorRecordsFrom)}-${number2(operatorRecordsTo)}`}</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setOperatorRecordsPage(page => Math.max(1, page - 1))}
+                      disabled={operatorRecordsPage <= 1 || operatorRecordsLoading}
+                      className="rounded-lg border px-3 py-1.5 text-slate-700 disabled:opacity-40"
+                    >
+                      Anterior
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOperatorRecordsPage(page => Math.min(operatorRecordsTotalPages, page + 1))}
+                      disabled={operatorRecordsPage >= operatorRecordsTotalPages || operatorRecordsLoading || operatorRecordsTotal === 0}
+                      className="rounded-lg border px-3 py-1.5 text-slate-700 disabled:opacity-40"
+                    >
+                      Siguiente
+                    </button>
+                  </div>
                 </div>
               </div>
               <div key={recordsRenderKey} className="divide-y">

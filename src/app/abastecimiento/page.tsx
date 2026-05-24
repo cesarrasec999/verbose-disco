@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ClipboardCheck, ClipboardList, Flashlight, LogOut, PackageCheck, PackageSearch, QrCode, RefreshCw, Search, Truck, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type TabKey = "deliveries" | "receptions";
@@ -232,6 +233,7 @@ function cleanReason(value: unknown) {
 }
 
 export default function AbastecimientoPage() {
+  const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState("");
@@ -257,6 +259,10 @@ export default function AbastecimientoPage() {
   const scannerRef = useRef<any>(null);
   const scannerTargetRef = useRef<ScannerTarget>(null);
   const scannerHistoryRef = useRef(false);
+
+  useEffect(() => {
+    if (isMobileAccess) window.location.replace("/dashboard");
+  }, [isMobileAccess]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const scannerContainerId = "supply-scanner";
 

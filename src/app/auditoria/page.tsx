@@ -7,6 +7,7 @@ import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Down
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -205,6 +206,7 @@ function number2(value: number | string | null | undefined) {
 }
 
 export default function AuditoriaPage() {
+  const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [sessions, setSessions] = useState<AuditSession[]>([]);
@@ -274,6 +276,11 @@ export default function AuditoriaPage() {
   const canViewAuditSummary = user?.role === "Administrador" || user?.role === "Supervisor";
 
   useEffect(() => {
+    if (isMobileAccess) window.location.replace("/dashboard");
+  }, [isMobileAccess]);
+
+  useEffect(() => {
+    if (isMobileAccess) return;
     const raw = localStorage.getItem("cyclic_user");
     if (!raw) { window.location.replace("/"); return; }
     const parsed = JSON.parse(raw) as CyclicUser;
@@ -296,7 +303,7 @@ export default function AuditoriaPage() {
     loadSessions();
     const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
     if (savedSessionId) void loadSavedSession(savedSessionId);
-  }, []);
+  }, [isMobileAccess]);
 
   useEffect(() => {
     sessionStorage.setItem(AUDIT_MAIN_TAB_KEY, mainTab);

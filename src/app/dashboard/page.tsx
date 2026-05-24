@@ -8,6 +8,7 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
+import { useIsMobileAccess } from "@/lib/mobileAccess";
 function scannerPermissionMessage(error: unknown) {
     const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
     if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
@@ -440,6 +441,7 @@ export default function DashboardPage() {
     // ─── Auth ───────────────────────────────────────────────
     const [user, setUser]         = useState<CyclicUser | null>(null);
     const [activeTab, setActiveTab] = useState<TabKey>("operario");
+    const isMobileAccess = useIsMobileAccess();
 
     // ─── Datos globales ─────────────────────────────────────
     const [stores, setStores]         = useState<Store[]>([]);
@@ -680,17 +682,19 @@ export default function DashboardPage() {
                 if (savedTab) {
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
-                        (savedTab === "validador" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
+                        (!isMobileAccess && savedTab === "validador" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
                         savedTab === "ubicaciones" ||
-                        (savedTab === "admin" && u.role === "Administrador");
+                        (!isMobileAccess && savedTab === "admin" && u.role === "Administrador");
                     if (isValid) { setActiveTab(savedTab); }
                     else {
-                        if (u.role === "Administrador") setActiveTab("admin");
+                        if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
+                        else if (u.role === "Administrador") setActiveTab("admin");
                         else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
                         else setActiveTab("operario");
                     }
                 } else {
-                    if (u.role === "Administrador") setActiveTab("admin");
+                    if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
+                    else if (u.role === "Administrador") setActiveTab("admin");
                     else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
                     else setActiveTab("operario");
                 }
@@ -715,16 +719,17 @@ export default function DashboardPage() {
 
             } catch {
                 setUser(parsed);
-                if (parsed.role === "Administrador") setActiveTab("admin");
+                if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
+                else if (parsed.role === "Administrador") setActiveTab("admin");
                 else if (parsed.role === "Validador" || parsed.role === "Supervisor") setActiveTab("validador");
                 else setActiveTab("operario");
             }
         })();
-    }, []);
+    }, [isMobileAccess]);
 
     useEffect(() => {
-        if (user) { loadStores(); loadProducts(); loadNonInventoryProducts(); if (user.role !== "Operario") loadAllUsers(); }
-    }, [user]);
+        if (user) { loadStores(); loadProducts(); loadNonInventoryProducts(); if (!isMobileAccess && user.role !== "Operario") loadAllUsers(); }
+    }, [user, isMobileAccess]);
 
     useEffect(() => {
         if (!user) return;
@@ -732,7 +737,7 @@ export default function DashboardPage() {
             const sid = user.store_id || "";
             setSelectedStoreId(sid);
             if (sid) loadOperarioData(sid, selectedDate);
-        } else if (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor") {
+        } else if (!isMobileAccess && (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor")) {
             // Restaurar datos del validador si estaba en ese tab
             const savedTab      = sessionStorage.getItem("cyclic_active_tab");
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
@@ -750,7 +755,14 @@ export default function DashboardPage() {
                 }
             }
         }
-    }, [user]);
+    }, [user, isMobileAccess]);
+
+    useEffect(() => {
+        if (!isMobileAccess || !user) return;
+        if (activeTab !== "operario" && activeTab !== "ubicaciones") {
+            setActiveTab(user.role === "Operario" ? "operario" : "ubicaciones");
+        }
+    }, [isMobileAccess, user, activeTab]);
 
     useEffect(() => {
         if (activeTab) sessionStorage.setItem("cyclic_active_tab", activeTab);
@@ -792,17 +804,17 @@ export default function DashboardPage() {
     }, [valDate]);
 
     useEffect(() => {
-        if (activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
+        if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
         loadAllStoreAssignmentSummary(valDate);
-    }, [activeTab, valTab, valStoreId, valDate, stores]);
+    }, [isMobileAccess, activeTab, valTab, valStoreId, valDate, stores]);
 
     useEffect(() => {
-        if (activeTab !== "validador" || valTab !== "asignar") return;
+        if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar") return;
         const timer = setTimeout(() => {
             void searchProductsForAssign(assignSearch);
         }, 1000);
         return () => clearTimeout(timer);
-    }, [assignSearch, activeTab, valTab, valStoreId, stores]);
+    }, [isMobileAccess, assignSearch, activeTab, valTab, valStoreId, stores]);
 
     // realtime para operario
     useEffect(() => {
@@ -825,7 +837,7 @@ export default function DashboardPage() {
 
     // realtime para validador: recarga cuando operario registra conteos
     useEffect(() => {
-        if (!valStoreId || activeTab !== "validador") return;
+        if (isMobileAccess || !valStoreId || activeTab !== "validador") return;
         if (valStoreId === ALL_STORES_VALUE) {
             const ch = supabase.channel(`cyclic-validador-all-${valDate}`)
                 .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments" }, () => loadAllStoreAssignmentSummary(valDate))
@@ -837,7 +849,7 @@ export default function DashboardPage() {
             .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
             .subscribe();
         return () => { supabase.removeChannel(ch); };
-    }, [valStoreId, valDate, activeTab]);
+    }, [isMobileAccess, valStoreId, valDate, activeTab]);
 
     // scanner overlay
     useEffect(() => {
@@ -6132,7 +6144,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* MÓDULO VALIDADOR */}
-                    {isValOrAdm && (
+                    {isValOrAdm && !isMobileAccess && (
                         <>
                             {/* Header de sección */}
                             <div className="px-5 pt-3 pb-1">
@@ -6179,7 +6191,7 @@ export default function DashboardPage() {
                         </>
                     )}
 
-                    {!isAdmin && (
+                    {(!isAdmin || isMobileAccess) && (
                         <div className="px-3 mt-1 space-y-0.5">
                             <button
                                 onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
@@ -6202,7 +6214,7 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {isValOrAdm && (
+                    {isValOrAdm && !isMobileAccess && (
                         <div className="px-3 mt-1">
                             <button
                                 onClick={() => { window.location.href = "/reportes"; }}
@@ -6214,7 +6226,7 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {(isAdmin || isSupervisor) && (
+                    {(isAdmin || isSupervisor) && !isMobileAccess && (
                         <>
                     {isAdmin && <div className="px-3 mt-1">
                         <button
@@ -6278,7 +6290,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* MÓDULO ADMIN */}
-                    {isAdmin && (
+                    {isAdmin && !isMobileAccess && (
                         <>
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</p>
@@ -6887,7 +6899,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB VALIDADOR
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "validador" && isValOrAdm && (
+            {activeTab === "validador" && isValOrAdm && !isMobileAccess && (
                 <>
 
                     {/* ── SUB-TAB: PROGRESO POR TIENDA ─────────────────── */}
@@ -7986,7 +7998,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB ADMIN
             ════════════════════════════════════════════════════════ */}
-            {((activeTab === "admin" && isAdmin) || activeTab === "ubicaciones") && (
+            {((activeTab === "admin" && isAdmin && !isMobileAccess) || activeTab === "ubicaciones") && (
                 <>
 
                     {/* ── ADMIN: MAESTRO PRODUCTOS ──────────────────────── */}
