@@ -199,6 +199,7 @@ export default function InventariosPage() {
   const [editingAdminRecountLocation, setEditingAdminRecountLocation] = useState("");
   const [editingAdminRecountQuantity, setEditingAdminRecountQuantity] = useState("");
   const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
+  const editingRecountItemIdRef = useRef<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [torchOn, setTorchOn] = useState(false);
   const scannerRef = useRef<any>(null);
@@ -224,6 +225,10 @@ export default function InventariosPage() {
   useEffect(() => {
     setInventoryNotesDraft(selectedSession?.notes || "");
   }, [selectedSession?.id, selectedSession?.notes]);
+
+  useEffect(() => {
+    editingRecountItemIdRef.current = editingRecountItemId;
+  }, [editingRecountItemId]);
 
   useEffect(() => {
     setRecordsQuery("");
@@ -2029,23 +2034,30 @@ export default function InventariosPage() {
     const mappedRows = sortOperatorRecountCards(assignedRows);
 
     const productIds = [...new Set(mappedRows.map(row => row.product_id).filter(Boolean))];
+    const skus = [...new Set(mappedRows.map(row => normalizeCode(row.sku).toUpperCase()).filter(Boolean))];
     const locationsRequest = supabase
       .from("general_inventory_locations")
       .select("*")
       .eq("session_id", sessionId)
       .eq("is_active", true);
-    const [originalCountRowsRes, recountCountRowsRes, locationsRes] = productIds.length > 0
+    const [originalCountRowsRes, recountCountRowsRes, locationsRes] = productIds.length > 0 || skus.length > 0
       ? await Promise.all([
         supabase
           .from("general_inventory_counts")
-          .select("product_id,location_id,location_code,quantity")
+          .select("product_id,sku,location_id,location_code,quantity")
           .eq("session_id", sessionId)
-          .in("product_id", productIds),
+          .or([
+            productIds.length > 0 ? `product_id.in.(${productIds.join(",")})` : "",
+            skus.length > 0 ? `sku.in.(${skus.map(sku => `"${sku}"`).join(",")})` : "",
+          ].filter(Boolean).join(",")),
         supabase
           .from("general_inventory_recount_counts")
-          .select("product_id,location_id,location_code,quantity")
+          .select("recount_item_id,product_id,sku,location_id,location_code,quantity")
           .eq("session_id", sessionId)
-          .in("product_id", productIds),
+          .or([
+            productIds.length > 0 ? `product_id.in.(${productIds.join(",")})` : "",
+            skus.length > 0 ? `sku.in.(${skus.map(sku => `"${sku}"`).join(",")})` : "",
+          ].filter(Boolean).join(",")),
         locationsRequest,
       ])
       : [{ data: [] }, { data: [] }, await locationsRequest];
@@ -2054,38 +2066,52 @@ export default function InventariosPage() {
     const locationById = new Map(activeLocations.map(row => [row.id, row]));
     const linesByLayerProduct = new Map<string, RecountLocationLine[]>();
     const addSourceLines = (sourceLayer: "recount" | "validation", countRows: any[]) => {
-    for (const countRow of countRows || []) {
-      const productId = String(countRow.product_id || "");
-      const loc = locationById.get(String(countRow.location_id || ""));
-      const code = normalizeLocationCode(countRow.location_code || loc?.location_code || "");
-      if (!productId || !code) continue;
-      const key = `${sourceLayer}__${productId}`;
-      if (!linesByLayerProduct.has(key)) linesByLayerProduct.set(key, []);
-      const rows = linesByLayerProduct.get(key)!;
-      const existing = rows.find(row => normalizeLocationCode(row.location_code) === code);
-      if (existing) {
-        existing.counted_qty += Number(countRow.quantity || 0);
-      } else {
-        rows.push({
-          id: `${productId}__${code}`,
-          location_id: String(countRow.location_id || loc?.id || "") || null,
-          location_code: code,
-          full_location: loc?.full_location || loc?.description || null,
-          zone: loc?.zone || null,
-          zone_ref: loc?.zone_ref || null,
-          lineal: loc?.lineal || null,
-          ticket: loc?.ticket || code,
-          counted_qty: Number(countRow.quantity || 0),
-        });
+      for (const countRow of countRows || []) {
+        const productId = String(countRow.product_id || "");
+        const loc = locationById.get(String(countRow.location_id || ""));
+        const code = normalizeLocationCode(countRow.location_code || loc?.location_code || "");
+        if (!code) continue;
+        const sku = normalizeCode(countRow.sku).toUpperCase();
+        const keys = [
+          productId ? `${sourceLayer}__product__${productId}` : "",
+          sku ? `${sourceLayer}__sku__${sku}` : "",
+        ].filter(Boolean);
+        for (const key of keys) {
+          if (!linesByLayerProduct.has(key)) linesByLayerProduct.set(key, []);
+          const rows = linesByLayerProduct.get(key)!;
+          const existing = rows.find(row => normalizeLocationCode(row.location_code) === code);
+          if (existing) {
+            existing.counted_qty += Number(countRow.quantity || 0);
+          } else {
+            rows.push({
+              id: `${productId || sku}__${code}`,
+              location_id: String(countRow.location_id || loc?.id || "") || null,
+              location_code: code,
+              full_location: loc?.full_location || loc?.description || null,
+              zone: loc?.zone || null,
+              zone_ref: loc?.zone_ref || null,
+              lineal: loc?.lineal || null,
+              ticket: loc?.ticket || code,
+              counted_qty: Number(countRow.quantity || 0),
+            });
+          }
+        }
       }
-    }
     };
     addSourceLines("recount", originalCountRowsRes.data || []);
     addSourceLines("validation", recountCountRowsRes.data || []);
 
     const rowsWithLocations = mappedRows.map(row => {
       const rowLayer = row.layer === "validation" ? "validation" : "recount";
-      const originalLocations = (linesByLayerProduct.get(`${rowLayer}__${row.product_id}`) || [])
+      const productLocations = linesByLayerProduct.get(`${rowLayer}__product__${row.product_id}`) || [];
+      const skuLocations = linesByLayerProduct.get(`${rowLayer}__sku__${normalizeCode(row.sku).toUpperCase()}`) || [];
+      const sourceLocationsByCode = new Map<string, RecountLocationLine>();
+      for (const location of [...productLocations, ...skuLocations]) {
+        const code = normalizeLocationCode(location.location_code);
+        if (!code || sourceLocationsByCode.has(code)) continue;
+        sourceLocationsByCode.set(code, location);
+      }
+      const originalLocations = [...sourceLocationsByCode.values()]
         .sort((a, b) => a.location_code.localeCompare(b.location_code, "es", { numeric: true, sensitivity: "base" }));
       const originalTotal = originalLocations.reduce((sum, location) => sum + Number(location.counted_qty || 0), 0);
       const shouldUseCountedLocations = row.recount_type === "surplus" || originalLocations.length > 0;
@@ -2100,7 +2126,8 @@ export default function InventariosPage() {
         location_count: shouldUseCountedLocations ? originalLocations.length : 0,
       };
     });
-    setRecountItems(rowsWithLocations.filter(row => !["counted", "cancelled"].includes(row.status || "")));
+    const editingItemId = editingRecountItemIdRef.current;
+    setRecountItems(rowsWithLocations.filter(row => !["counted", "cancelled"].includes(row.status || "") || row.id === editingItemId));
     const itemById = new Map(rowsWithLocations.map(row => [row.id, row]));
 
     const loadSavedLayerRecords = async (layer: "recount" | "validation") => {
@@ -2462,23 +2489,21 @@ export default function InventariosPage() {
       originalCountedByProduct.set(row.product_id, (originalCountedByProduct.get(row.product_id) || 0) + Number(row.quantity || 0));
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
-    const latestRecountTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
-    for (const row of recountCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = recountItemById.get(row.recount_item_id);
-      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
-      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
-      const current = latestRecountTypeByProduct.get(item.product_id);
+    const latestRecountItemByProduct = new Map<string, { id: string; timestamp: number }>();
+    for (const item of recountItemRows) {
+      if (!item?.id || !item.product_id || item.status !== "counted") continue;
+      const timestamp = new Date(item.updated_at || item.created_at || 0).getTime() || 0;
+      const current = latestRecountItemByProduct.get(item.product_id);
       if (!current || timestamp >= current.timestamp) {
-        latestRecountTypeByProduct.set(item.product_id, { type: item.recount_type as RecountType, timestamp });
+        latestRecountItemByProduct.set(item.product_id, { id: item.id, timestamp });
       }
     }
     const recountTotalByProduct = new Map<string, number>();
     for (const row of recountCountRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = recountItemById.get(row.recount_item_id);
-      const latestType = item?.product_id ? latestRecountTypeByProduct.get(item.product_id)?.type : null;
-      if (item?.product_id && item.status === "counted" && item.recount_type === latestType) {
+      const latestItemId = item?.product_id ? latestRecountItemByProduct.get(item.product_id)?.id : null;
+      if (item?.product_id && item.status === "counted" && item.id === latestItemId) {
         recountTotalByProduct.set(item.product_id, (recountTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
@@ -2489,23 +2514,21 @@ export default function InventariosPage() {
     }
 
     const validationItemById = new Map(validationItemRows.map(row => [row.id, row]));
-    const latestValidationTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
-    for (const row of validationCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = validationItemById.get(row.validation_item_id);
-      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
-      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
-      const current = latestValidationTypeByProduct.get(item.product_id);
+    const latestValidationItemByProduct = new Map<string, { id: string; status: string; timestamp: number }>();
+    for (const item of validationItemRows) {
+      if (!item?.id || !item.product_id || item.status === "cancelled") continue;
+      const timestamp = new Date(item.updated_at || item.created_at || 0).getTime() || 0;
+      const current = latestValidationItemByProduct.get(item.product_id);
       if (!current || timestamp >= current.timestamp) {
-        latestValidationTypeByProduct.set(item.product_id, { type: item.recount_type as RecountType, timestamp });
+        latestValidationItemByProduct.set(item.product_id, { id: item.id, status: item.status || "assigned", timestamp });
       }
     }
     const validationTotalByProduct = new Map<string, number>();
     for (const row of validationCountRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = validationItemById.get(row.validation_item_id);
-      const latestType = item?.product_id ? latestValidationTypeByProduct.get(item.product_id)?.type : null;
-      if (item?.product_id && item.status === "counted" && item.recount_type === latestType) {
+      const latestItem = item?.product_id ? latestValidationItemByProduct.get(item.product_id) : null;
+      if (item?.product_id && item.status === "counted" && item.id === latestItem?.id) {
         validationTotalByProduct.set(item.product_id, (validationTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
@@ -2513,6 +2536,8 @@ export default function InventariosPage() {
     const countedValidationByProduct = new Set<string>();
     for (const item of validationItemRows) {
       if (!item.product_id || item.status === "cancelled") continue;
+      const latestItem = latestValidationItemByProduct.get(item.product_id);
+      if (item.id !== latestItem?.id) continue;
       if (item.status === "counted") countedValidationByProduct.add(item.product_id);
       else assignedValidationByProduct.add(item.product_id);
     }
@@ -6325,7 +6350,7 @@ export default function InventariosPage() {
                                   </div>
                                   {original && (
                                     <div className="mb-2 rounded-xl border bg-white px-3 py-2">
-                                      <div className="text-[10px] font-black uppercase text-slate-500">Conteo original</div>
+                                      <div className="text-[10px] font-black uppercase text-slate-500">{row.layer === "validation" ? "Reconteo base" : "Conteo original"}</div>
                                       <div className="text-2xl font-black leading-tight text-slate-950">{number2(original.counted_qty)} <span className="text-sm font-black text-slate-900">{row.unit}</span></div>
                                     </div>
                                   )}
