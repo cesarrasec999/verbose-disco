@@ -91,7 +91,13 @@ function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_statu
   const status = row.recount_status || (row.re_counted ? "counted" : "no");
   if (status === "counted") return "Si";
   if (status === "assigned") return "Asignado";
-  return "No";
+  return "-";
+}
+
+function summaryQuantityStatusLabel(value: number | null, status: "no" | "assigned" | "counted" | undefined) {
+  if (status === "assigned") return "Asignado";
+  if (status === "counted") return value === null ? "-" : number2(value);
+  return "-";
 }
 
 export default function InventariosPage() {
@@ -2502,6 +2508,13 @@ export default function InventariosPage() {
         validationTotalByProduct.set(item.product_id, (validationTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
+    const assignedValidationByProduct = new Set<string>();
+    const countedValidationByProduct = new Set<string>();
+    for (const item of validationItemRows) {
+      if (!item.product_id || item.status === "cancelled") continue;
+      if (item.status === "counted") countedValidationByProduct.add(item.product_id);
+      else assignedValidationByProduct.add(item.product_id);
+    }
 
     const observations = new Map<string, string>();
     for (const row of observationRows) observations.set(row.product_id, row.observation || "");
@@ -2527,6 +2540,9 @@ export default function InventariosPage() {
       const countedOriginal = originalCountedByProduct.get(snap.product_id) || 0;
       const recountedQty = recountTotalByProduct.has(snap.product_id) ? recountTotalByProduct.get(snap.product_id)! : null;
       const validationQty = validationTotalByProduct.has(snap.product_id) ? validationTotalByProduct.get(snap.product_id)! : null;
+      const validationStatus = validationTotalByProduct.has(snap.product_id)
+        ? "counted" as const
+        : (assignedValidationByProduct.has(snap.product_id) || countedValidationByProduct.has(snap.product_id)) ? "assigned" as const : "no" as const;
       const counted = validationQty ?? recountedQty ?? countedOriginal;
       const systemStock = Number(snap.system_stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
@@ -2550,6 +2566,7 @@ export default function InventariosPage() {
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(snap.product_id),
         recount_status: recountTotalByProduct.has(snap.product_id) ? "counted" : assignedRecountByProduct.has(snap.product_id) ? "assigned" : "no",
+        validation_status: validationStatus,
         validated: validationTotalByProduct.has(snap.product_id),
         observation: observations.get(snap.product_id) || "",
       });
@@ -2561,6 +2578,9 @@ export default function InventariosPage() {
       const countedOriginal = originalCountedByProduct.get(row.product_id) || 0;
       const recountedQty = recountTotalByProduct.has(row.product_id) ? recountTotalByProduct.get(row.product_id)! : null;
       const validationQty = validationTotalByProduct.has(row.product_id) ? validationTotalByProduct.get(row.product_id)! : null;
+      const validationStatus = validationTotalByProduct.has(row.product_id)
+        ? "counted" as const
+        : (assignedValidationByProduct.has(row.product_id) || countedValidationByProduct.has(row.product_id)) ? "assigned" as const : "no" as const;
       const counted = validationQty ?? recountedQty ?? countedOriginal;
       const liveStock = liveStockBySku.get(normalizeCode(row.sku).toUpperCase());
       const systemStock = Number(liveStock?.stock || 0);
@@ -2583,6 +2603,7 @@ export default function InventariosPage() {
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(row.product_id),
         recount_status: recountTotalByProduct.has(row.product_id) ? "counted" : assignedRecountByProduct.has(row.product_id) ? "assigned" : "no",
+        validation_status: validationStatus,
         validated: validationTotalByProduct.has(row.product_id),
         observation: observations.get(row.product_id) || "",
       });
@@ -4815,18 +4836,17 @@ export default function InventariosPage() {
         UM: row.unit,
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
-        RECONTEO: row.recounted_qty ?? "",
       };
       return {
         ...base,
         ...(showValidationSummary ? {
-          VALIDACION: row.validation_qty ?? "",
+          VALIDACION: summaryQuantityStatusLabel(row.validation_qty, row.validation_status),
         } : {}),
         DIFERENCIA: row.diff,
         STATUS: summaryStatus(row),
         COSTO: row.cost,
         DIF_VALORIZADA: row.valueDiff,
-        RECONTADO: summaryRecountLabel(row).toUpperCase(),
+        RECONTADO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
         ...(showValidationSummary ? {
           VALIDADO: row.validated ? "SI" : "NO",
         } : {}),
@@ -7257,7 +7277,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1400px]" : "min-w-[1320px]"}`}>
+                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1320px]" : "min-w-[1240px]"}`}>
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -7265,7 +7285,6 @@ export default function InventariosPage() {
                       <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
-                      <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
                       {showValidationSummary && <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />}
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <th className="p-2 text-center">Status</th>
@@ -7284,8 +7303,7 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{row.unit}</td>
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
-                        <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
-                        {showValidationSummary && <td className="p-2 text-center font-bold">{row.validation_qty === null ? "-" : number2(row.validation_qty)}</td>}
+                        {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">
                           <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
@@ -7302,7 +7320,7 @@ export default function InventariosPage() {
                                 ? "bg-amber-100 text-amber-700"
                                 : "bg-slate-100 text-slate-600"
                           }`}>
-                            {summaryRecountLabel(row)}
+                            {summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}
                           </span>
                         </td>
                         <td className="p-2">

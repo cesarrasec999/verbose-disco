@@ -119,6 +119,7 @@ export type SummaryRow = {
   valueDiff: number;
   re_counted: boolean;
   recount_status: "no" | "assigned" | "counted";
+  validation_status?: "no" | "assigned" | "counted";
   validated: boolean;
   observation?: string | null;
 };
