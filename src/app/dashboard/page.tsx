@@ -2248,12 +2248,11 @@ export default function DashboardPage() {
             });
             if (error) { showMessage("Error al guardar reconteo: " + error.message, "error"); savingRecountRef.current = false; setSavingRecount(false); return; }
         }
-        await upsertProductLocations(
+        await replaceProductLocations(
             currentRecountAssignment.product_id,
             currentRecountAssignment.sku,
             currentRecountAssignment.store_id,
-            recountRows.map(row => row.location),
-            "ciclico"
+            recountRows.map(row => row.location)
         );
 
         showMessage(`✅ Reconteo guardado para ${recountAssignment.sku}.`, "success");
