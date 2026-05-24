@@ -15,6 +15,7 @@ type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 type ValidatorTab = "preparacion" | "registros" | "reconteo" | "resumen" | "usuarios";
 type OperatorMode = "conteo" | "reconteo";
 type RecountManagerTab = "pendientes" | "asignados" | "manual" | "registros";
+type RecountAssignedStatusFilter = "all" | "pending" | "counted";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
 type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "diff" | "cost" | "valueDiff" | "observation";
@@ -610,6 +611,7 @@ export default function InventariosPage() {
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
   const [recountAssignedSort, setRecountAssignedSort] = useState<SortState<RecountAssignedSortKey>>({ key: "ticket", direction: "asc" });
   const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
+  const [recountAssignedStatusFilter, setRecountAssignedStatusFilter] = useState<RecountAssignedStatusFilter>("all");
   const [recountRecordsQuery, setRecountRecordsQuery] = useState("");
   const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
   const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
@@ -931,6 +933,9 @@ export default function InventariosPage() {
       row.status !== "cancelled" &&
       row.recount_type === recountType &&
       (!recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId) &&
+      (recountAssignedStatusFilter === "all" ||
+        (recountAssignedStatusFilter === "pending" && row.status !== "counted") ||
+        (recountAssignedStatusFilter === "counted" && row.status === "counted")) &&
       (!q ||
         row.sku.toLowerCase().includes(q) ||
         row.description.toLowerCase().includes(q) ||
@@ -955,7 +960,20 @@ export default function InventariosPage() {
       const right = recountAssignedSort.key === "assigned_operator_name" ? String(b.assigned_operator_name || "") : b[recountAssignedSort.key];
       return compareValues(left as string | number, right as string | number, recountAssignedSort.direction);
     });
-  }, [recountAssignedQuery, recountAssignedSort, recountItems, recountPrintOperatorId, recountType]);
+  }, [recountAssignedQuery, recountAssignedSort, recountAssignedStatusFilter, recountItems, recountPrintOperatorId, recountType]);
+
+  const assignedRecountStatusCounts = useMemo(() => {
+    const baseRows = recountItems.filter(row =>
+      row.status !== "cancelled" &&
+      row.recount_type === recountType &&
+      (!recountPrintOperatorId || row.assigned_operator_id === recountPrintOperatorId)
+    );
+    return {
+      all: baseRows.length,
+      pending: baseRows.filter(row => row.status !== "counted").length,
+      counted: baseRows.filter(row => row.status === "counted").length,
+    };
+  }, [recountItems, recountPrintOperatorId, recountType]);
 
   const activeAssignedRecountCount = useMemo(
     () => recountItems.filter(row => row.status !== "cancelled" && row.recount_type === recountType).length,
@@ -6310,6 +6328,16 @@ export default function InventariosPage() {
                       {sessionOperators.map(operatorRow => (
                         <option key={operatorRow.id} value={operatorRow.id}>{operatorRow.full_name}</option>
                       ))}
+                    </select>
+                    <select
+                      value={recountAssignedStatusFilter}
+                      onChange={event => setRecountAssignedStatusFilter(event.target.value as RecountAssignedStatusFilter)}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
+                      title="Filtrar por estado de guardado"
+                    >
+                      <option value="all">Todos ({assignedRecountStatusCounts.all})</option>
+                      <option value="pending">Sin guardar ({assignedRecountStatusCounts.pending})</option>
+                      <option value="counted">Guardados ({assignedRecountStatusCounts.counted})</option>
                     </select>
                     <button
                       onClick={generateRecountCommitmentDocuments}
