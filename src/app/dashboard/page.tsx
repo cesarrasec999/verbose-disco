@@ -2991,26 +2991,121 @@ export default function DashboardPage() {
     async function loadGeneralInventoryResults(productIds: string[], productMap: Map<string, Product>): Promise<ProductCountHistoryRow[]> {
         if (productIds.length === 0) return [];
         const countRows: any[] = [];
+        const recountCountRows: any[] = [];
+        const validationCountRows: any[] = [];
         for (let i = 0; i < productIds.length; i += 200) {
-            const { data, error } = await supabase
-                .from("general_inventory_counts")
-                .select("session_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_sessions(id,name,store_id,scheduled_date,finished_at,created_at,stores(name))")
-                .in("product_id", productIds.slice(i, i + 200));
-            if (error) throw error;
-            countRows.push(...(data || []));
+            const productChunk = productIds.slice(i, i + 200);
+            const [countRes, recountRes, validationRes] = await Promise.all([
+                supabase
+                    .from("general_inventory_counts")
+                    .select("session_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at")
+                    .in("product_id", productChunk),
+                supabase
+                    .from("general_inventory_recount_counts")
+                    .select("session_id,recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at")
+                    .in("product_id", productChunk),
+                supabase
+                    .from("general_inventory_validation_counts")
+                    .select("session_id,validation_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at")
+                    .in("product_id", productChunk),
+            ]);
+            if (countRes.error) throw countRes.error;
+            if (recountRes.error && !/does not exist|schema cache/i.test(recountRes.error.message)) throw recountRes.error;
+            if (validationRes.error && !/does not exist|schema cache/i.test(validationRes.error.message)) throw validationRes.error;
+            countRows.push(...(countRes.data || []));
+            recountCountRows.push(...(recountRes.data || []));
+            validationCountRows.push(...(validationRes.data || []));
         }
-        const grouped = new Map<string, any[]>();
+
+        const sessionIds = [...new Set([
+            ...countRows.map(row => String(row.session_id || "")),
+            ...recountCountRows.map(row => String(row.session_id || "")),
+            ...validationCountRows.map(row => String(row.session_id || "")),
+        ].filter(Boolean))];
+        if (sessionIds.length === 0) return [];
+
+        const sessionsMap = new Map<string, any>();
+        for (let i = 0; i < sessionIds.length; i += 200) {
+            const { data, error } = await supabase
+                .from("general_inventory_sessions")
+                .select("id,name,store_id,scheduled_date,finished_at,created_at,stores(name)")
+                .in("id", sessionIds.slice(i, i + 200));
+            if (error) throw error;
+            for (const row of data || []) sessionsMap.set(String(row.id), row);
+        }
+
+        const originalGrouped = new Map<string, any[]>();
         for (const row of countRows) {
-            const sessionRow = Array.isArray(row.general_inventory_sessions) ? row.general_inventory_sessions[0] : row.general_inventory_sessions;
+            const sessionRow = sessionsMap.get(String(row.session_id || ""));
             if (valStoreId !== ALL_STORES_VALUE && sessionRow?.store_id !== valStoreId) continue;
             const key = `${row.session_id}__${row.product_id}`;
-            if (!grouped.has(key)) grouped.set(key, []);
-            grouped.get(key)!.push(row);
+            if (!originalGrouped.has(key)) originalGrouped.set(key, []);
+            originalGrouped.get(key)!.push(row);
         }
+
+        const recountItemIds = [...new Set(recountCountRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
+        const validationItemIds = [...new Set(validationCountRows.map(row => String(row.validation_item_id || "")).filter(Boolean))];
+        const recountItemById = new Map<string, any>();
+        const validationItemById = new Map<string, any>();
+        for (let i = 0; i < recountItemIds.length; i += 500) {
+            const { data, error } = await supabase
+                .from("general_inventory_recount_items")
+                .select("id,session_id,product_id,status,recount_type,created_at,updated_at")
+                .in("id", recountItemIds.slice(i, i + 500));
+            if (error) throw error;
+            for (const row of data || []) recountItemById.set(String(row.id), row);
+        }
+        for (let i = 0; i < validationItemIds.length; i += 500) {
+            const { data, error } = await supabase
+                .from("general_inventory_validation_items")
+                .select("id,session_id,product_id,status,recount_type,created_at,updated_at")
+                .in("id", validationItemIds.slice(i, i + 500));
+            if (error && !/does not exist|schema cache/i.test(error.message)) throw error;
+            for (const row of data || []) validationItemById.set(String(row.id), row);
+        }
+
+        const summarizeLayer = (rows: any[], itemById: Map<string, any>, itemIdColumn: "recount_item_id" | "validation_item_id") => {
+            const latestTypeByKey = new Map<string, { type: string; timestamp: number }>();
+            for (const row of rows) {
+                const item = itemById.get(String(row[itemIdColumn] || ""));
+                if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
+                const sessionRow = sessionsMap.get(String(row.session_id || item.session_id || ""));
+                if (valStoreId !== ALL_STORES_VALUE && sessionRow?.store_id !== valStoreId) continue;
+                const key = `${row.session_id || item.session_id}__${item.product_id}`;
+                const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
+                const current = latestTypeByKey.get(key);
+                if (!current || timestamp >= current.timestamp) latestTypeByKey.set(key, { type: item.recount_type, timestamp });
+            }
+
+            const grouped = new Map<string, { rows: any[]; total: number; latestAt: string }>();
+            for (const row of rows) {
+                const item = itemById.get(String(row[itemIdColumn] || ""));
+                if (!item?.product_id || item.status !== "counted") continue;
+                const key = `${row.session_id || item.session_id}__${item.product_id}`;
+                const latest = latestTypeByKey.get(key);
+                if (!latest || item.recount_type !== latest.type) continue;
+                const sessionRow = sessionsMap.get(String(row.session_id || item.session_id || ""));
+                if (valStoreId !== ALL_STORES_VALUE && sessionRow?.store_id !== valStoreId) continue;
+                const current = grouped.get(key) || { rows: [], total: 0, latestAt: "" };
+                current.rows.push(row);
+                current.total = r2(current.total + Number(row.quantity || 0));
+                const rowDate = String(row.updated_at || row.counted_at || item.updated_at || item.created_at || "");
+                if (!current.latestAt || new Date(rowDate).getTime() > new Date(current.latestAt).getTime()) current.latestAt = rowDate;
+                grouped.set(key, current);
+            }
+            return grouped;
+        };
+
+        const recountGrouped = summarizeLayer(recountCountRows, recountItemById, "recount_item_id");
+        const validationGrouped = summarizeLayer(validationCountRows, validationItemById, "validation_item_id");
+        const resultKeys = [...new Set([
+            ...originalGrouped.keys(),
+            ...recountGrouped.keys(),
+            ...validationGrouped.keys(),
+        ])];
 
         const snapshotRows: any[] = [];
         const observationRows: any[] = [];
-        const sessionIds = [...new Set(countRows.map(row => String(row.session_id || "")).filter(Boolean))];
         for (let i = 0; i < sessionIds.length; i += 100) {
             for (let j = 0; j < productIds.length; j += 200) {
                 const sessionChunk = sessionIds.slice(i, i + 100);
@@ -3028,25 +3123,34 @@ export default function DashboardPage() {
         const snapshotMap = new Map(snapshotRows.map(row => [`${row.session_id}__${row.product_id}`, row]));
         const observationMap = new Map(observationRows.map(row => [`${row.session_id}__${row.product_id}`, row.observation || ""]));
 
-        return [...grouped.entries()].map(([key, rows]) => {
-            const first = rows[0];
-            const sessionRow = Array.isArray(first.general_inventory_sessions) ? first.general_inventory_sessions[0] : first.general_inventory_sessions;
+        return resultKeys.map(key => {
+            const rows = originalGrouped.get(key) || [];
+            const recountLayer = recountGrouped.get(key) || null;
+            const validationLayer = validationGrouped.get(key) || null;
+            const sourceRows = validationLayer?.rows || recountLayer?.rows || rows;
+            const first = sourceRows[0] || rows[0];
+            const [sessionId, productId] = key.split("__");
+            const sessionRow = sessionsMap.get(sessionId);
             const storeRow = Array.isArray(sessionRow?.stores) ? sessionRow.stores[0] : sessionRow?.stores;
-            const product = productMap.get(first.product_id);
+            const product = productMap.get(productId);
             const snapshot = snapshotMap.get(key);
-            const countedQuantity = r2(rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0));
+            const originalQuantity = r2(rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0));
+            const countedQuantity = validationLayer ? validationLayer.total : recountLayer ? recountLayer.total : originalQuantity;
             const systemStock = Number(snapshot?.system_stock || 0);
             const difference = r2(countedQuantity - systemStock);
-            const result = resultLabel(rows.length > 0, difference);
+            const hasResult = sourceRows.length > 0;
+            const result = resultLabel(hasResult, difference);
+            const layerLabel = validationLayer ? "Validacion" : recountLayer ? "Reconteo" : "Conteo original";
+            const observation = observationMap.get(key);
             return {
                 assignment_id: `general-${key}`,
                 source: "inventario general" as const,
-                source_label: "Inventario general",
+                source_label: `Inventario general - ${layerLabel}`,
                 store_name: storeRow?.name || sessionRow?.name || "Inventario general",
-                assigned_date: sessionRow?.finished_at || sessionRow?.scheduled_date || sessionRow?.created_at || rows[0]?.counted_at || "",
-                sku: first.sku || product?.sku || first.product_id,
-                description: first.description || product?.description || "",
-                unit: first.unit || product?.unit || "",
+                assigned_date: validationLayer?.latestAt || recountLayer?.latestAt || sessionRow?.finished_at || sessionRow?.scheduled_date || sessionRow?.created_at || first?.counted_at || "",
+                sku: first?.sku || product?.sku || productId,
+                description: first?.description || product?.description || "",
+                unit: first?.unit || product?.unit || "",
                 system_stock: systemStock,
                 counted_quantity: countedQuantity,
                 difference,
@@ -3054,7 +3158,7 @@ export default function DashboardPage() {
                 faltante: difference < 0 ? Math.abs(difference) : 0,
                 sobrante: difference > 0 ? difference : 0,
                 result,
-                motive: resultMotive(result, observationMap.get(key)),
+                motive: resultMotive(result, `${layerLabel}${observation ? `. ${observation}` : ""}`),
             };
         });
     }
