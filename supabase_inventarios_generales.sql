@@ -84,7 +84,7 @@ alter table general_inventory_locations add column if not exists is_empty boolea
 alter table general_inventory_locations add column if not exists empty_marked_by uuid references cyclic_users(id);
 alter table general_inventory_locations add column if not exists empty_marked_at timestamptz;
 
-create index if not exists idx_gi_locations_session_code on general_inventory_locations(session_id, location_code);
+-- La restriccion unique (session_id, location_code) ya crea un indice equivalente.
 create index if not exists idx_gi_locations_session_zone on general_inventory_locations(session_id, zone);
 create index if not exists idx_gi_locations_session_zone_ref on general_inventory_locations(session_id, zone_ref);
 create index if not exists idx_gi_locations_session_lineal on general_inventory_locations(session_id, lineal);
@@ -101,7 +101,7 @@ create table if not exists general_inventory_non_inventory_products (
   unique (session_id, sku)
 );
 
-create index if not exists idx_gi_noninv_session_sku on general_inventory_non_inventory_products(session_id, sku);
+-- La restriccion unique (session_id, sku) ya crea un indice equivalente.
 create index if not exists idx_stock_general_sede_codsap on stock_general(sede, codsap);
 create index if not exists idx_stock_general_sede_stock_codsap on stock_general(sede, codsap) where stock > 0;
 create index if not exists idx_cyclic_products_active_sku on cyclic_products(sku) where is_active = true;
@@ -275,7 +275,7 @@ create table if not exists general_inventory_validation_counts (
   unique (validation_item_id)
 );
 
-create index if not exists idx_gi_validation_counts_item on general_inventory_validation_counts(validation_item_id);
+-- La restriccion unique (validation_item_id) ya crea un indice equivalente.
 create index if not exists idx_gi_validation_counts_session on general_inventory_validation_counts(session_id);
 create index if not exists idx_gi_validation_counts_sku on general_inventory_validation_counts(session_id, sku);
 

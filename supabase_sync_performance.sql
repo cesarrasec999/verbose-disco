@@ -10,8 +10,7 @@ create index if not exists idx_stock_general_codsap_sede
 create index if not exists idx_stock_general_updated_at
   on public.stock_general(updated_at desc);
 
-create index if not exists idx_codigos_barra_codsap_upc
-  on public.codigos_barra(codsap, upc);
+-- La restriccion unique (codsap, upc) ya crea un indice equivalente.
 
 create index if not exists idx_codigos_barra_upc_active
   on public.codigos_barra(upc, is_active)
@@ -33,8 +32,7 @@ create index if not exists idx_cyclic_assignments_product
 create index if not exists idx_cyclic_counts_assignment_location
   on public.cyclic_counts(assignment_id, location);
 
-create index if not exists idx_audit_items_session_product
-  on public.audit_session_items(session_id, product_id);
+-- La restriccion unique (session_id, product_id) ya crea un indice equivalente.
 
 create index if not exists idx_audit_counts_session_item
   on public.audit_counts(session_id, item_id);

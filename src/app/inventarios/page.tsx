@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
+import { readSafeSheetObjects } from "@/lib/safeExcel";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
@@ -476,10 +477,7 @@ function canOperatorEnter(status: SessionStatus) {
 }
 
 async function readWorkbookRows(file: File): Promise<Record<string, string>[]> {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: "array" });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return XLSX.utils.sheet_to_json<Record<string, string>>(sheet, { defval: "", raw: false });
+  return readSafeSheetObjects<Record<string, string>>(file, { maxRows: 12000, maxCols: 60, raw: false });
 }
 
 function pickColumn(row: Record<string, string>, names: string[]) {
@@ -1274,7 +1272,8 @@ export default function InventariosPage() {
       }, 1500);
     };
 
-    const channel = supabase
+    const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
+    let channel = supabase
       .channel(`gi-counts-${selectedSessionId}`)
       .on(
         "postgres_changes",
@@ -1285,24 +1284,27 @@ export default function InventariosPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadInventoryCounts
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
-        reloadInventoryCounts
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
-        reloadInventoryCounts
-      )
-      .subscribe();
+      );
+    if (validationRealtimeEnabled) {
+      channel = channel
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
+          reloadInventoryCounts
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
+          reloadInventoryCounts
+        );
+    }
+    channel.subscribe();
 
     return () => {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
+  }, [selectedSessionId, isValidator, validatorTab, operator?.id, selectedSession?.validation_enabled]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1341,7 +1343,8 @@ export default function InventariosPage() {
       }, 250);
     };
 
-    const channel = supabase
+    const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
+    let channel = supabase
       .channel(`gi-operator-recounts-${selectedSessionId}-${operator.id}`)
       .on(
         "postgres_changes",
@@ -1352,24 +1355,27 @@ export default function InventariosPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadAssignedRecounts
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
-        reloadAssignedRecounts
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
-        reloadAssignedRecounts
-      )
-      .subscribe();
+      );
+    if (validationRealtimeEnabled) {
+      channel = channel
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
+          reloadAssignedRecounts
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
+          reloadAssignedRecounts
+        );
+    }
+    channel.subscribe();
 
     return () => {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, operator?.id, isValidator]);
+  }, [selectedSessionId, operator?.id, isValidator, selectedSession?.validation_enabled]);
 
   useEffect(() => {
     const validKeys = new Set(unassignedRecountCandidates.map(row => recountKey(row)));
@@ -3649,13 +3655,17 @@ export default function InventariosPage() {
   }
 
   async function deleteSession() {
-    if (!selectedSessionId || user?.role !== "Administrador") return;
+    if (!selectedSessionId || user?.role !== "Administrador" || !selectedSession) return;
+    const confirmed = window.confirm(
+      `Cancelar/archivar la sesion "${selectedSession.name}"? No se borraran ubicaciones, conteos, reconteos, validaciones ni stock congelado.`
+    );
+    if (!confirmed) return;
     const { error } = await supabase
       .from("general_inventory_sessions")
-      .delete()
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
       .eq("id", selectedSessionId);
     if (error) {
-      setMessage("No se pudo eliminar la sesion: " + error.message);
+      setMessage("No se pudo cancelar la sesion: " + error.message);
       return;
     }
     setSelectedSessionId("");
@@ -3664,7 +3674,7 @@ export default function InventariosPage() {
     setCounts([]);
     setCountedLocationCodes([]);
     setSummary([]);
-    setMessage("Sesion eliminada.");
+    setMessage("Sesion cancelada/archivada. No se borraron registros.");
     await loadInitial("");
   }
 
@@ -6062,7 +6072,7 @@ export default function InventariosPage() {
               )}
               {user?.role === "Administrador" && (
                 <button onClick={deleteSession} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700">
-                  Eliminar sesion
+                  Cancelar sesion
                 </button>
               )}
             </section>
@@ -6162,7 +6172,7 @@ export default function InventariosPage() {
                   )}
                   {user?.role === "Administrador" && (
                     <button onClick={deleteSession} disabled={!selectedSessionId} className="w-full rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm font-black text-red-700 disabled:opacity-40">
-                      Eliminar sesion
+                      Cancelar sesion
                     </button>
                   )}
                 </section>

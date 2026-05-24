@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { syncPendingOfflineItems } from "@/lib/offline/syncQueue";
+import { countPendingOfflineItems } from "@/lib/offline/pendingQueue";
+
+const OFFLINE_SYNC_INTERVAL_MS = 30000;
 
 export default function PwaQueueSync() {
   const [syncing, setSyncing] = useState(false);
@@ -15,8 +18,10 @@ export default function PwaQueueSync() {
     const runSync = async () => {
       if (!navigator.onLine || running) return;
       running = true;
-      setSyncing(true);
       try {
+        const pending = await countPendingOfflineItems();
+        if (pending === 0) return;
+        setSyncing(true);
         const synced = await syncPendingOfflineItems(supabase);
         if (!cancelled && synced > 0) {
           setLastSynced(synced);
@@ -37,7 +42,7 @@ export default function PwaQueueSync() {
       if (document.visibilityState === "visible") void runSync();
     };
 
-    const interval = window.setInterval(runSync, 8000);
+    const interval = window.setInterval(runSync, OFFLINE_SYNC_INTERVAL_MS);
     window.addEventListener("online", runSync);
     window.addEventListener("focus", runSync);
     document.addEventListener("visibilitychange", runSyncWhenVisible);

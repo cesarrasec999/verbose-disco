@@ -31,8 +31,8 @@ ALTER TABLE public.cyclic_products ADD COLUMN IF NOT EXISTS product_created_at d
 ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS store_created_at date;
 CREATE INDEX IF NOT EXISTS idx_cyclic_products_product_created_at ON public.cyclic_products (product_created_at);
 CREATE INDEX IF NOT EXISTS idx_stores_store_created_at ON public.stores (store_created_at);
-CREATE INDEX IF NOT EXISTS idx_stock_general_rotation ON public.stock_general (sede, codsap);
-CREATE INDEX IF NOT EXISTS idx_stock_general_rotation_product ON public.stock_general (codsap, sede);
+CREATE INDEX IF NOT EXISTS idx_stock_general_sede_codsap ON public.stock_general (sede, codsap);
+CREATE INDEX IF NOT EXISTS idx_stock_general_codsap_sede ON public.stock_general (codsap, sede);
 
 CREATE TABLE IF NOT EXISTS public.product_sales_daily (
   sale_date date NOT NULL,

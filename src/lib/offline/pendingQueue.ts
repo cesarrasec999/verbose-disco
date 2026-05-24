@@ -44,3 +44,23 @@ export function listPendingOfflineItems(): Promise<OfflineQueueItem[]> {
       })
   );
 }
+
+export function countPendingOfflineItems(): Promise<number> {
+  return openOfflineDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const transaction = db.transaction(OFFLINE_QUEUE_STORE, "readonly");
+        const store = transaction.objectStore(OFFLINE_QUEUE_STORE);
+        const index = store.index("status");
+        const request = index.count("pending");
+
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        transaction.oncomplete = () => db.close();
+        transaction.onerror = () => {
+          db.close();
+          reject(transaction.error);
+        };
+      })
+  );
+}

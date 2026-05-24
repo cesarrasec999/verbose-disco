@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 function scannerPermissionMessage(error: unknown) {
     const text = error instanceof Error ? `${error.name} ${error.message}` : String(error || "");
     if (/notallowed|permission|permissions|denied|permiso|camera access/i.test(text)) {
@@ -3713,10 +3714,7 @@ export default function DashboardPage() {
         setNonInventoryExcelBusy(true);
         setNonInventoryExcelFileName(file.name);
         try {
-            const data = await file.arrayBuffer();
-            const wb = XLSX.read(data, { type: "array" });
-            const sheet = wb.Sheets[wb.SheetNames[0]];
-            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const allRows = await readSafeSheetMatrix(file, { maxRows: 20000, maxCols: 10, raw: false });
             const firstCol = allRows
                 .map(row => String(row?.[0] ?? "").trim())
                 .filter(Boolean);
@@ -3824,10 +3822,7 @@ export default function DashboardPage() {
         if (!bulkAssignFile) { showMessage("Selecciona un archivo Excel.", "error"); return; }
         if (!valDate) { showMessage("Selecciona una fecha antes.", "error"); return; }
         try {
-            const data = await bulkAssignFile.arrayBuffer();
-            const wb = XLSX.read(data, { type: "array" });
-            const sheet = wb.Sheets[wb.SheetNames[0]];
-            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, header: 1 });
+            const allRows = await readSafeSheetMatrix(bulkAssignFile, { maxRows: 50000, maxCols: 30, raw: true });
             const headerRow = allRows[0] || [];
 
             const findCol = (names: string[]): number => {
@@ -4380,12 +4375,9 @@ export default function DashboardPage() {
         if (!masterFile) { showMessage("Selecciona un archivo.", "error"); return; }
         if (!confirm("¿Seguro? Esto actualizará o insertará productos en el maestro global.")) return;
         try {
-            const data = await masterFile.arrayBuffer();
-            const wb = XLSX.read(data, { type: "array" });
-            const sheet = wb.Sheets[wb.SheetNames[0]];
             // Leer como array de arrays para ignorar la fila 1 y leer por posición de columna
             // Col A=0: codigo, Col B=1: descripcion, Col C=2: unidad, Col D=3: costo, Col E=4: stock
-            const allRows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const allRows = await readSafeSheetMatrix(masterFile, { maxBytes: 25 * 1024 * 1024, maxRows: 100000, maxCols: 25, raw: false });
             const dataRows = allRows.slice(1); // ignorar fila 1 (encabezado)
 
             const inputCodes = [...new Set(dataRows.map(row => fullProductCode(String(row[0] || ""))).filter(Boolean))];
@@ -4443,10 +4435,7 @@ export default function DashboardPage() {
         if (!barcodesFile) { showMessage("Selecciona un archivo de códigos de barra.", "error"); return; }
         if (!confirm("¿Seguro? Esto actualizará los códigos de barra del maestro global.")) return;
         try {
-            const data = await barcodesFile.arrayBuffer();
-            const wb = XLSX.read(data, { type: "array" });
-            const sheet = wb.Sheets[wb.SheetNames[0]];
-            const rows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
+            const rows = await readSafeSheetObjects<Record<string, unknown>>(barcodesFile, { maxBytes: 25 * 1024 * 1024, maxRows: 100000, maxCols: 25, raw: false });
             let ok = 0, notFound = 0;
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
@@ -4815,16 +4804,13 @@ export default function DashboardPage() {
         if (!locationsFile) { showMessage("Selecciona el Excel de ubicaciones.", "error"); return; }
         setLocationBusy(true);
         try {
-            const data = await locationsFile.arrayBuffer();
-            const wb = XLSX.read(data, { type: "array" });
-            const sheet = wb.Sheets[wb.SheetNames[0]];
-            const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, header: 1 });
+            const rows = await readSafeSheetMatrix(locationsFile, { maxRows: 50000, maxCols: 20, raw: false });
             const body = rows.filter(row => row.some(value => String(value || "").trim()));
             const first = body[0]?.map(value => String(value || "").trim().toLowerCase()) || [];
             const hasHeader = first.some(cell => ["codigo", "código", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
             const dataRows = hasHeader ? body.slice(1) : body;
             const codeLocPairs = dataRows.map(row => ({
-                code: fullProductCode(row[0]),
+                code: fullProductCode(String(row[0] || "")),
                 location: String(row[1] || "").trim().toUpperCase(),
             })).filter(row => row.code && row.location);
 

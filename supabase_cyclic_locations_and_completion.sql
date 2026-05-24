@@ -44,7 +44,6 @@ create table if not exists public.cyclic_completed_products (
   unique (store_id, product_id)
 );
 
-create index if not exists idx_cyclic_completed_products_store
-  on public.cyclic_completed_products(store_id, product_id);
+-- La restriccion unique (store_id, product_id) ya crea un indice equivalente.
 
 notify pgrst, 'reload schema';

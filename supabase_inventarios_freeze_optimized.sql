@@ -15,8 +15,7 @@ create index if not exists idx_cyclic_non_inventory_active_sku
   on public.cyclic_non_inventory_products(sku)
   where is_active = true;
 
-create index if not exists idx_gi_non_inventory_session_sku
-  on public.general_inventory_non_inventory_products(session_id, sku);
+-- La restriccion unique (session_id, sku) ya crea un indice equivalente.
 
 create or replace function public.freeze_general_inventory_stock(
   p_session_id uuid,

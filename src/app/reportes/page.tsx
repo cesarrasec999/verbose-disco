@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Download, FileText, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { readSafeSheetMatrix } from "@/lib/safeExcel";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
@@ -547,10 +548,7 @@ export default function ReportesPage() {
     setLoading(true);
     setProgress("Leyendo fotografía...");
     try {
-      const data = await snapshotFile.arrayBuffer();
-      const workbook = XLSX.read(data);
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
+      const rows = await readSafeSheetMatrix(snapshotFile, { maxRows: 50000, maxCols: 60, raw: false });
       const parsed = parseSnapshotRows(rows);
       if (parsed.length === 0) {
         setMessage("No pude leer tiendas/valorizado del Excel.");
