@@ -381,6 +381,7 @@ export default function InventariosPage() {
     for (const row of counts) {
       const summaryRow = summaryByProduct.get(row.product_id);
       if (!summaryRow || summaryRow.diff <= 0) continue;
+      if (!validationMode && summaryRow.re_counted) continue;
       const location = locationById.get(row.location_id) || null;
       const key = row.product_id;
       const qty = Number(row.quantity || 0);
@@ -443,7 +444,7 @@ export default function InventariosPage() {
     }
 
     const missingRows = summary
-      .filter(row => row.diff < 0 && (!validationMode || row.re_counted))
+      .filter(row => row.diff < 0 && (validationMode ? row.re_counted : !row.re_counted))
       .map(row => ({
         product_id: row.product_id,
         sku: row.sku,
