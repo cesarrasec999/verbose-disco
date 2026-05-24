@@ -87,6 +87,13 @@ const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 
+function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_status">) {
+  const status = row.recount_status || (row.re_counted ? "counted" : "no");
+  if (status === "counted") return "Si";
+  if (status === "assigned") return "Asignado";
+  return "No";
+}
+
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -179,6 +186,7 @@ export default function InventariosPage() {
   const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
   const [adminRecountRecords, setAdminRecountRecords] = useState<OperatorRecountRecord[]>([]);
   const [editingAdminRecountRecord, setEditingAdminRecountRecord] = useState<OperatorRecountRecord | null>(null);
+  const [editingAdminRecountMode, setEditingAdminRecountMode] = useState<"edit" | "add">("edit");
   const [editingAdminRecountLocation, setEditingAdminRecountLocation] = useState("");
   const [editingAdminRecountQuantity, setEditingAdminRecountQuantity] = useState("");
   const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
@@ -2289,6 +2297,11 @@ export default function InventariosPage() {
         recountTotalByProduct.set(item.product_id, (recountTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
       }
     }
+    const assignedRecountByProduct = new Set<string>();
+    for (const item of recountItemRows) {
+      if (!item.product_id || item.status === "counted" || item.status === "cancelled") continue;
+      assignedRecountByProduct.add(item.product_id);
+    }
 
     const validationItemById = new Map(validationItemRows.map(row => [row.id, row]));
     const latestValidationTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
@@ -2358,6 +2371,7 @@ export default function InventariosPage() {
         cost,
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(snap.product_id),
+        recount_status: recountTotalByProduct.has(snap.product_id) ? "counted" : assignedRecountByProduct.has(snap.product_id) ? "assigned" : "no",
         validated: validationTotalByProduct.has(snap.product_id),
         observation: observations.get(snap.product_id) || "",
       });
@@ -2390,6 +2404,7 @@ export default function InventariosPage() {
         cost,
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(row.product_id),
+        recount_status: recountTotalByProduct.has(row.product_id) ? "counted" : assignedRecountByProduct.has(row.product_id) ? "assigned" : "no",
         validated: validationTotalByProduct.has(row.product_id),
         observation: observations.get(row.product_id) || "",
       });
@@ -2577,9 +2592,18 @@ export default function InventariosPage() {
 
   function openAdminEditRecountRecord(record: OperatorRecountRecord) {
     if (!ensureSelectedSessionEditable()) return;
+    setEditingAdminRecountMode("edit");
     setEditingAdminRecountRecord(record);
     setEditingAdminRecountLocation(record.location_code === "SIN_FISICO" ? "" : record.location_code || "");
     setEditingAdminRecountQuantity(String(record.quantity || ""));
+  }
+
+  function openAdminAddRecountRecord(record: OperatorRecountRecord) {
+    if (!ensureSelectedSessionEditable()) return;
+    setEditingAdminRecountMode("add");
+    setEditingAdminRecountRecord(record);
+    setEditingAdminRecountLocation("");
+    setEditingAdminRecountQuantity("");
   }
 
   async function saveAdminEditRecountRecord() {
@@ -2610,24 +2634,58 @@ export default function InventariosPage() {
       locationCode = loc.location_code;
     }
     const validationMode = editingAdminRecountRecord.item.layer === "validation";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
+    const now = new Date().toISOString();
+    const rowPayload = {
+      [itemIdColumn]: editingAdminRecountRecord.recount_item_id,
+      session_id: selectedSessionId,
+      operator_id: editingAdminRecountRecord.operator_id,
+      location_id: loc?.id || null,
+      location_code: locationCode,
+      product_id: editingAdminRecountRecord.product_id,
+      sku: editingAdminRecountRecord.sku,
+      description: editingAdminRecountRecord.description,
+      unit: editingAdminRecountRecord.unit,
+      quantity: qty,
+      cost_snapshot: editingAdminRecountRecord.cost_snapshot,
+      ...(validationMode ? {} : {
+        client_uuid: createClientUuid("gi-recount"),
+        client_device_id: getOrCreateDeviceId(),
+        sync_origin: "web",
+      }),
+      updated_at: now,
+    };
 
-    const { error } = await supabase
-      .from(validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts")
-      .update({
+    const request = editingAdminRecountMode === "add"
+      ? supabase.from(countTable).insert(rowPayload)
+      : supabase
+        .from(countTable)
+        .update({
         location_id: loc?.id || null,
         location_code: locationCode,
         quantity: qty,
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
       .eq("id", editingAdminRecountRecord.id)
       .eq("session_id", selectedSessionId);
+    const { error } = await request;
     if (error) {
-      setMessage(`No se pudo actualizar registro de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
+      setMessage(`No se pudo ${editingAdminRecountMode === "add" ? "agregar" : "actualizar"} registro de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
       return;
     }
 
+    if (editingAdminRecountMode === "add") {
+      await supabase
+        .from(itemTable)
+        .update({ status: "counted", updated_at: now })
+        .eq("id", editingAdminRecountRecord.recount_item_id);
+    }
+
     setEditingAdminRecountRecord(null);
-    setMessage(`Registro de ${validationMode ? "validacion" : "reconteo"} actualizado.`);
+    setEditingAdminRecountMode("edit");
+    setMessage(`Registro de ${validationMode ? "validacion" : "reconteo"} ${editingAdminRecountMode === "add" ? "agregado" : "actualizado"}.`);
     await Promise.all([
       loadAdminRecountRecords(selectedSessionId),
       loadSummary(selectedSessionId, true),
@@ -4558,7 +4616,7 @@ export default function InventariosPage() {
         STATUS: summaryStatus(row),
         COSTO: row.cost,
         DIF_VALORIZADA: row.valueDiff,
-        RECONTADO: row.re_counted ? "SI" : "NO",
+        RECONTADO: summaryRecountLabel(row).toUpperCase(),
         ...(showValidationSummary ? {
           VALIDADO: row.validated ? "SI" : "NO",
         } : {}),
@@ -4955,7 +5013,7 @@ export default function InventariosPage() {
         <td class="num">${row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
         <td class="num ${row.diff < 0 ? "bad" : "warn"}">${number2(row.diff)}</td>
         <td class="num ${row.valueDiff < 0 ? "bad" : "warn"}">${money(row.valueDiff)}</td>
-        <td class="num">${row.re_counted ? "Si" : "No"}</td>
+        <td class="num">${summaryRecountLabel(row)}</td>
         <td class="oneLine">${escapeHtml(row.observation || "")}</td>
       </tr>
     `).join("");
@@ -6602,6 +6660,7 @@ export default function InventariosPage() {
                           <td className="p-2">
                             <div className="flex justify-center gap-1">
                               <button onClick={() => openAdminEditRecountRecord(record)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Editar</button>
+                              <button onClick={() => openAdminAddRecountRecord(record)} disabled={isSelectedSessionFinished} className="rounded-lg border border-blue-200 px-2 py-1 text-xs font-black text-blue-700 disabled:opacity-40">Agregar</button>
                               <button onClick={() => deleteAdminRecountRecord(record)} disabled={isSelectedSessionFinished} className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40">Borrar</button>
                             </div>
                           </td>
@@ -6991,8 +7050,14 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
                         <td className="p-2 text-center">
-                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${row.re_counted ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-                            {row.re_counted ? "Si" : "No"}
+                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${
+                            row.recount_status === "counted"
+                              ? "bg-green-100 text-green-700"
+                              : row.recount_status === "assigned"
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-slate-100 text-slate-600"
+                          }`}>
+                            {summaryRecountLabel(row)}
                           </span>
                         </td>
                         <td className="p-2">
@@ -7049,7 +7114,7 @@ export default function InventariosPage() {
       {editingAdminRecountRecord && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
           <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
-            <h3 className="font-black">Editar registro de reconteo</h3>
+            <h3 className="font-black">{editingAdminRecountMode === "add" ? "Agregar ubicacion al reconteo" : "Editar registro de reconteo"}</h3>
             <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">
               {editingAdminRecountRecord.sku} - {editingAdminRecountRecord.description}
             </p>
@@ -7075,9 +7140,9 @@ export default function InventariosPage() {
             </div>
             <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
               <button onClick={saveAdminEditRecountRecord} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                Guardar
+                {editingAdminRecountMode === "add" ? "Agregar linea" : "Guardar"}
               </button>
-              <button onClick={() => setEditingAdminRecountRecord(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
+              <button onClick={() => { setEditingAdminRecountRecord(null); setEditingAdminRecountMode("edit"); }} className="rounded-xl border px-4 py-3 text-sm font-black">
                 Cancelar
               </button>
             </div>

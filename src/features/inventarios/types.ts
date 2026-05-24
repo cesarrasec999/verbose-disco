@@ -118,6 +118,7 @@ export type SummaryRow = {
   cost: number;
   valueDiff: number;
   re_counted: boolean;
+  recount_status: "no" | "assigned" | "counted";
   validated: boolean;
   observation?: string | null;
 };
