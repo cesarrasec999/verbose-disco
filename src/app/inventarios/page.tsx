@@ -191,6 +191,7 @@ export default function InventariosPage() {
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
   const [manualRecountDrafts, setManualRecountDrafts] = useState<Record<string, ManualRecountDraft>>({});
   const [savingRecountId, setSavingRecountId] = useState<string | null>(null);
+  const savingRecountIdsRef = useRef<Set<string>>(new Set());
   const [operatorRecountRecords, setOperatorRecountRecords] = useState<OperatorRecountRecord[]>([]);
   const [adminRecountRecords, setAdminRecountRecords] = useState<OperatorRecountRecord[]>([]);
   const [editingAdminRecountRecord, setEditingAdminRecountRecord] = useState<OperatorRecountRecord | null>(null);
@@ -4069,7 +4070,8 @@ export default function InventariosPage() {
   }
 
   async function saveRecountValidation(row: RecountItem) {
-    if (!operator || !selectedSessionId || savingRecountId) return;
+    if (!operator || !selectedSessionId || savingRecountIdsRef.current.has(row.id)) return;
+    savingRecountIdsRef.current.add(row.id);
     const validationMode = row.layer === "validation";
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
@@ -4077,11 +4079,13 @@ export default function InventariosPage() {
     const actionLabel = validationMode ? "validacion" : "reconteo";
     if (selectedSession?.status === "finished") {
       setMessage(`Esta sesion ya fue finalizada. No se puede guardar ${actionLabel}.`);
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
     const draft = recountDraftFor(row);
     if (!draft.productCode.trim()) {
       setMessage(`Ingresa codigo valido para la ${actionLabel}.`);
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
 
@@ -4095,6 +4099,7 @@ export default function InventariosPage() {
 
     if (lines.length === 0) {
       setMessage(`Ingresa al menos una ubicacion y cantidad para la ${actionLabel}.`);
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
 
@@ -4106,6 +4111,7 @@ export default function InventariosPage() {
           continue;
         }
         setMessage(`Completa la ubicacion en todas las lineas de la ${actionLabel}.`);
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       const loc = await resolveInventoryLocation(line.locationCode, { allowCreate: true, sourceLabel: line.locationCode });
@@ -4114,10 +4120,12 @@ export default function InventariosPage() {
           ? `Ubicacion ${line.locationCode} no autorizada para esta sesion.`
           : `Ubicacion ${line.locationCode} no valida.`
         );
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       if (!Number.isFinite(line.quantity) || line.quantity < 0) {
         setMessage(`Ingresa cantidades validas para todas las lineas de la ${actionLabel}.`);
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       const existing = locationRows.find(item => normalizeLocationCode(item.locationCode) === normalizeLocationCode(loc.location_code));
@@ -4212,6 +4220,7 @@ export default function InventariosPage() {
       setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado.`);
       await loadOperatorRecountItems(selectedSessionId, operator.id);
     } finally {
+      savingRecountIdsRef.current.delete(row.id);
       setSavingRecountId(null);
     }
   }
@@ -4251,18 +4260,23 @@ export default function InventariosPage() {
 
   async function saveManualRecountValidation(row: RecountItem) {
     if (!ensureSelectedSessionEditable()) return;
+    if (savingRecountIdsRef.current.has(row.id)) return;
+    savingRecountIdsRef.current.add(row.id);
     if (!selectedSessionId || !canManageInventory) {
       setMessage("Solo el validador o administrador puede registrar reconteos manuales.");
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
     if (!row.assigned_operator_id) {
       setMessage("Este reconteo no tiene recontador asignado.");
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
     const draft = manualRecountDrafts[row.id] || { locationCode: "", quantity: "" };
     const totalQuantity = Number(String(draft.quantity).replace(",", "."));
     if (!Number.isFinite(totalQuantity) || totalQuantity < 0) {
       setMessage("Ingresa una cantidad de reconteo valida.");
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
 
@@ -4270,6 +4284,7 @@ export default function InventariosPage() {
       .filter(line => line.locationCode || totalQuantity === 0);
     if (parsedLines.length === 0) {
       setMessage("Ingresa al menos una ubicacion para el reconteo manual.");
+      savingRecountIdsRef.current.delete(row.id);
       return;
     }
 
@@ -4281,10 +4296,12 @@ export default function InventariosPage() {
           continue;
         }
         setMessage("Completa la ubicacion del reconteo manual.");
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       if (!Number.isFinite(line.quantity) || line.quantity < 0) {
         setMessage("Si ingresas varias ubicaciones usa el formato UBICACION:CANTIDAD por linea.");
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       const loc = await resolveInventoryLocation(line.locationCode, { allowCreate: true, sourceLabel: line.locationCode });
@@ -4293,6 +4310,7 @@ export default function InventariosPage() {
           ? `Ubicacion ${line.locationCode} no autorizada para esta sesion.`
           : `No se pudo registrar la ubicacion ${line.locationCode}.`
         );
+        savingRecountIdsRef.current.delete(row.id);
         return;
       }
       locationRows.push({ loc, locationCode: loc.location_code, quantity: line.quantity });
@@ -4356,6 +4374,7 @@ export default function InventariosPage() {
         loadSummary(selectedSessionId, true),
       ]);
     } finally {
+      savingRecountIdsRef.current.delete(row.id);
       setSavingRecountId(null);
     }
   }
@@ -4860,11 +4879,11 @@ export default function InventariosPage() {
 
   function generateInventoryCategoryReport() {
     if (!selectedSession) {
-      setMessage("Selecciona un inventario para generar el reporte por categoria.");
+      setMessage("Selecciona un inventario para generar el Reporte IG.");
       return;
     }
     if (summary.length === 0) {
-      setMessage("Carga o actualiza el resumen antes de generar el reporte por categoria.");
+      setMessage("Carga o actualiza el resumen antes de generar el Reporte IG.");
       return;
     }
 
@@ -4922,6 +4941,10 @@ export default function InventariosPage() {
     const valueProgress = (row: GroupRow) => row.systemValue > 0 ? Math.round((row.countedValue / row.systemValue) * 100) : 0;
     const deptRows = aggregateBy("department");
     const rotationRows = aggregateBy("rotation_category");
+    const totalCodes = summary.length;
+    const originallyCountedCodes = summary.filter(row => row.counted_original > 0).length;
+    const recountedCodes = summary.filter(row => row.recount_status === "counted").length;
+    const validatedCodes = summary.filter(row => row.validation_status === "counted").length;
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const reportStartDate = dateOnly(selectedSession.scheduled_date || selectedSession.created_at);
     const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
@@ -5006,7 +5029,7 @@ export default function InventariosPage() {
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Reporte categoria inventario - ${escapeHtml(selectedSession.name)}</title>
+  <title>Reporte IG - ${escapeHtml(selectedSession.name)}</title>
   <style>
     @page { size: A4 landscape; margin: 8mm; }
     * { box-sizing: border-box; }
@@ -5072,7 +5095,7 @@ export default function InventariosPage() {
           <div style="font-size:10px;color:#64748b;letter-spacing:1px;">AUDITORIA Y CONTROL DE INVENTARIOS</div>
         </div>
       </div>
-      <h1>Informe ejecutivo de inventario general</h1>
+      <h1>Reporte IG</h1>
       <div class="muted">Inventario: <strong>${escapeHtml(selectedSession.name)}</strong></div>
       <div class="muted">Tienda: <strong>${escapeHtml(selectedSession.store_name || selectedSession.store_id)}</strong></div>
       <div class="muted">Fecha: <strong>${escapeHtml(reportStartDate || "-")} - ${escapeHtml(reportEndDate)}</strong></div>
@@ -5094,6 +5117,15 @@ export default function InventariosPage() {
     ${donut("ERI", kpis.eri, "#16a34a", `${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} codigos`)}
     ${donut("AVANCE POR SKU", kpis.skuProgress, "#0f172a", `${kpis.countedCodes} / ${kpis.totalCodes} codigos`)}
     ${donut("AVANCE POR VALORIZADO", kpis.valueProgress, "#1d4ed8", `${money(kpis.countedValue)} de ${money(kpis.systemValue)}`)}
+    </tr>
+  </table>
+
+  <h2>Control de avance operativo</h2>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
+    <tr>
+    ${donut("CODIGOS CONTADOS", pct(originallyCountedCodes, totalCodes), "#0f172a", `${number2(originallyCountedCodes)} / ${number2(totalCodes)} codigos`)}
+    ${donut("CODIGOS RECONTADOS", pct(recountedCodes, totalCodes), "#7c3aed", `${number2(recountedCodes)} / ${number2(totalCodes)} codigos`)}
+    ${donut("CODIGOS VALIDADOS", pct(validatedCodes, totalCodes), "#15803d", `${number2(validatedCodes)} / ${number2(totalCodes)} codigos`)}
     </tr>
   </table>
 
@@ -7091,7 +7123,7 @@ export default function InventariosPage() {
                     </button>
                   )}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
-                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte Cat/Rot.</button>
+                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte IG</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
                 </div>
               </div>
