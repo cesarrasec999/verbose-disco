@@ -598,6 +598,8 @@ export default function InventariosPage() {
   const productLookupModeRef = useRef<ProductLookupMode>("typed");
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
+  const loadedSessionTabsRef = useRef<Set<string>>(new Set());
+  const staleSessionTabsRef = useRef<Set<string>>(new Set());
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
@@ -675,6 +677,25 @@ export default function InventariosPage() {
 
   const isOperatorView = !!operator && !isValidator;
   const showSidePanel = false;
+
+  function sessionTabKey(sessionId: string, tab: ValidatorTab) {
+    return `${sessionId}__${tab}`;
+  }
+
+  function markSessionTabLoaded(sessionId: string, tab: ValidatorTab) {
+    const key = sessionTabKey(sessionId, tab);
+    loadedSessionTabsRef.current.add(key);
+    staleSessionTabsRef.current.delete(key);
+  }
+
+  function markSessionTabStale(sessionId: string, tab: ValidatorTab) {
+    staleSessionTabsRef.current.add(sessionTabKey(sessionId, tab));
+  }
+
+  function isSessionTabFresh(sessionId: string, tab: ValidatorTab) {
+    const key = sessionTabKey(sessionId, tab);
+    return loadedSessionTabsRef.current.has(key) && !staleSessionTabsRef.current.has(key);
+  }
 
   const recordsOperatorOptions = useMemo(() => {
     const options = new Map<string, string>();
@@ -1120,6 +1141,7 @@ export default function InventariosPage() {
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
+    if (isSessionTabFresh(selectedSessionId, validatorTab)) return;
     void loadSessionData(selectedSessionId, validatorTab);
   }, [selectedSessionId, validatorTab, isValidator, operator?.id]);
 
@@ -1170,8 +1192,11 @@ export default function InventariosPage() {
       timer = window.setTimeout(() => {
         if (isValidator) {
           if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+          else markSessionTabStale(selectedSessionId, "registros");
           if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
+          else markSessionTabStale(selectedSessionId, "resumen");
           if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+          else markSessionTabStale(selectedSessionId, "reconteo");
           return;
         }
         if (operator?.id) void loadRecordsData(selectedSessionId, operator.id);
@@ -1203,6 +1228,9 @@ export default function InventariosPage() {
 
     const reloadAfterOfflineSync = () => {
       if (isValidator) {
+        markSessionTabStale(selectedSessionId, "registros");
+        markSessionTabStale(selectedSessionId, "resumen");
+        markSessionTabStale(selectedSessionId, "reconteo");
         void loadSessionData(selectedSessionId, validatorTab);
         return;
       }
@@ -1212,6 +1240,14 @@ export default function InventariosPage() {
     window.addEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
     return () => window.removeEventListener("rasecorp-offline-sync-complete", reloadAfterOfflineSync);
   }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !isValidator || validatorTab !== "resumen" || !summaryHasPendingChanges || summaryLoading) return;
+    const timer = window.setTimeout(() => {
+      void loadSummary(selectedSessionId, true);
+    }, 20000);
+    return () => window.clearTimeout(timer);
+  }, [selectedSessionId, isValidator, validatorTab, summaryHasPendingChanges, summaryLoading]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -1626,21 +1662,26 @@ export default function InventariosPage() {
     if (isValidator) {
       if (tab === "preparacion" && canManageInventory) {
         await loadPreparationData(sessionId);
+        markSessionTabLoaded(sessionId, "preparacion");
         return;
       }
       if (tab === "registros") {
         await loadRecordsData(sessionId);
+        markSessionTabLoaded(sessionId, "registros");
         return;
       }
       if (tab === "reconteo" && canManageInventory) {
         await loadRecountData(sessionId);
+        markSessionTabLoaded(sessionId, "reconteo");
         return;
       }
       if (tab === "usuarios" && user?.role === "Administrador") {
         await loadInventoryOperators();
+        markSessionTabLoaded(sessionId, "usuarios");
         return;
       }
-      await loadSummary(sessionId);
+      await loadSummary(sessionId, summaryHasPendingChanges);
+      markSessionTabLoaded(sessionId, "resumen");
       return;
     }
 
@@ -1679,6 +1720,7 @@ export default function InventariosPage() {
       const rows = mergePendingCounts(countRows, pendingRows);
       setCounts(rows);
       if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
+      if (isValidator && !operatorId) markSessionTabLoaded(sessionId, "registros");
     } catch (error) {
       setMessage("Error leyendo registros: " + (error instanceof Error ? error.message : String(error)));
     }
@@ -1723,6 +1765,7 @@ export default function InventariosPage() {
       loadRecountAssignments(sessionId),
       loadAdminRecountRecords(sessionId),
     ]);
+    markSessionTabLoaded(sessionId, "reconteo");
   }
 
   async function loadOriginalCountedByProductLocation(sessionId: string, productIds: string[]) {
@@ -2633,6 +2676,7 @@ export default function InventariosPage() {
     setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
     setSummaryLoadedSessionId(sessionId);
     setSummaryHasPendingChanges(false);
+    markSessionTabLoaded(sessionId, "resumen");
     setSummaryLoading(false);
   }
 
@@ -3135,7 +3179,7 @@ export default function InventariosPage() {
       return;
     }
     if (selectedSession?.stock_frozen_at) {
-      const typed = window.prompt("Esto reemplaza definitivamente la foto de stock actual de esta sesion. Escribe ACTUALIZAR STOCK para continuar.");
+      const typed = window.prompt("Esto actualiza la foto de stock solo para codigos no OK de esta sesion. Los codigos OK quedan protegidos. Escribe ACTUALIZAR STOCK para continuar.");
       if (typed !== "ACTUALIZAR STOCK") return;
     }
     await saveStockSnapshot("Actualizando stock actual y congelando nueva foto.", "Stock actualizado y congelado");
@@ -3149,6 +3193,15 @@ export default function InventariosPage() {
     setSummaryLoading(true);
     setMessage(progressMessage);
     try {
+      if (selectedSession?.stock_frozen_at) {
+        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel, true);
+        if (fallbackInserted === null) return;
+        await loadInitial(selectedSessionId);
+        setValidatorTab("resumen");
+        await loadSummary(selectedSessionId, true);
+        return;
+      }
+
       const { data, error } = await supabase.rpc("freeze_general_inventory_stock", {
         p_session_id: selectedSessionId,
         p_user_id: user.id,
@@ -3160,7 +3213,7 @@ export default function InventariosPage() {
           return;
         }
         setMessage("La actualizacion directa demoro demasiado. Continuo por lotes para evitar timeout...");
-        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel);
+        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel, false);
         if (fallbackInserted === null) return;
       } else {
         const { count: productsWithStockCount } = await supabase
@@ -3179,7 +3232,71 @@ export default function InventariosPage() {
     }
   }
 
-  async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string) {
+  async function loadProtectedOkProductIdsForStockUpdate(sessionId: string) {
+    const [snapshotRows, countRows, recountCountRows, recountItemRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_stock_snapshot", "product_id,system_stock", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_counts", "product_id,sku,quantity", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,quantity,counted_at,updated_at", sessionId, "product_id"),
+      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
+    ]);
+    const originalCountedByProduct = new Map<string, number>();
+    for (const row of countRows) {
+      const productId = String(row.product_id || "");
+      if (!productId) continue;
+      originalCountedByProduct.set(productId, (originalCountedByProduct.get(productId) || 0) + Number(row.quantity || 0));
+    }
+
+    const recountItemById = new Map(recountItemRows.map(row => [String(row.id || ""), row]));
+    const latestRecountTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
+    for (const row of recountCountRows) {
+      const item = recountItemById.get(String(row.recount_item_id || ""));
+      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
+      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
+      const productId = String(item.product_id || "");
+      const current = latestRecountTypeByProduct.get(productId);
+      if (!current || timestamp >= current.timestamp) {
+        latestRecountTypeByProduct.set(productId, { type: item.recount_type as RecountType, timestamp });
+      }
+    }
+
+    const recountTotalByProduct = new Map<string, number>();
+    for (const row of recountCountRows) {
+      const item = recountItemById.get(String(row.recount_item_id || ""));
+      const productId = item?.product_id ? String(item.product_id) : "";
+      const latestType = productId ? latestRecountTypeByProduct.get(productId)?.type : null;
+      if (productId && item?.status === "counted" && item.recount_type === latestType) {
+        recountTotalByProduct.set(productId, (recountTotalByProduct.get(productId) || 0) + Number(row.quantity || 0));
+      }
+    }
+
+    const protectedIds = new Set<string>();
+    for (const snap of snapshotRows) {
+      const productId = String(snap.product_id || "");
+      if (!productId) continue;
+      const counted = recountTotalByProduct.has(productId) ? recountTotalByProduct.get(productId)! : originalCountedByProduct.get(productId) || 0;
+      const systemStock = Number(snap.system_stock || 0);
+      if (counted > 0 && counted === systemStock) protectedIds.add(productId);
+    }
+    return protectedIds;
+  }
+
+  async function deleteUnprotectedSnapshotRows(sessionId: string, protectedProductIds: Set<string>) {
+    const snapshotRows = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
+    const deleteIds = snapshotRows
+      .filter(row => !protectedProductIds.has(String(row.product_id || "")))
+      .map(row => String(row.id || ""))
+      .filter(Boolean);
+    for (let i = 0; i < deleteIds.length; i += 500) {
+      const deleteRes = await supabase
+        .from("general_inventory_stock_snapshot")
+        .delete()
+        .in("id", deleteIds.slice(i, i + 500));
+      if (deleteRes.error) return deleteRes.error;
+    }
+    return null;
+  }
+
+  async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string, preserveOkProducts: boolean) {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
     const sede = store?.erp_sede || store?.name || session?.store_name || "";
@@ -3188,18 +3305,18 @@ export default function InventariosPage() {
       return null;
     }
 
+    const protectedProductIds = preserveOkProducts ? await loadProtectedOkProductIdsForStockUpdate(sessionId) : new Set<string>();
     const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const deleteRes = await supabase
-      .from("general_inventory_stock_snapshot")
-      .delete()
-      .eq("session_id", sessionId);
-    if (deleteRes.error) {
-      setMessage("No se pudo limpiar la foto anterior de stock: " + deleteRes.error.message);
+    const deleteError = preserveOkProducts
+      ? await deleteUnprotectedSnapshotRows(sessionId, protectedProductIds)
+      : (await supabase.from("general_inventory_stock_snapshot").delete().eq("session_id", sessionId)).error;
+    if (deleteError) {
+      setMessage("No se pudo limpiar la foto anterior de stock: " + deleteError.message);
       return null;
     }
 
-    let inserted = 0;
+    let inserted = protectedProductIds.size;
     let totalValue = 0;
     let from = 0;
     const pageSize = 1000;
@@ -3236,11 +3353,10 @@ export default function InventariosPage() {
           setMessage("No se pudo cruzar stock con maestro de productos: " + productsRes.error.message);
           return null;
         }
-        const rows = ((productsRes.data || []) as Product[]).map(product => {
+        const rows = ((productsRes.data || []) as Product[]).filter(product => !protectedProductIds.has(product.id)).map(product => {
           const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
           const systemStock = Number(stock?.stock || 0);
           const cost = Number(stock?.costo ?? product.cost ?? 0);
-          totalValue += systemStock * cost;
           return {
             session_id: sessionId,
             product_id: product.id,
@@ -3261,13 +3377,17 @@ export default function InventariosPage() {
             return null;
           }
           inserted += rows.length;
-          setMessage(`Actualizando stock por lotes... ${inserted} codigos cargados.`);
+          setMessage(`Actualizando stock por lotes... ${inserted} codigos en foto${protectedProductIds.size > 0 ? ` (${protectedProductIds.size} OK protegidos)` : ""}.`);
         }
       }
 
       if (stockRows.length < pageSize) break;
       from += pageSize;
     }
+
+    const finalSnapshotRows = await loadPagedSessionRows("general_inventory_stock_snapshot", "system_stock,cost", sessionId, "product_id");
+    totalValue = finalSnapshotRows.reduce((sum, row) => sum + Number(row.system_stock || 0) * Number(row.cost || 0), 0);
+    inserted = finalSnapshotRows.length;
 
     const sessionUpdate = await supabase
       .from("general_inventory_sessions")
@@ -3284,7 +3404,7 @@ export default function InventariosPage() {
       return null;
     }
 
-    setMessage(`${successLabel}. Codigos en foto: ${inserted}. Con stock: ${inserted}.`);
+    setMessage(`${successLabel}. Codigos en foto: ${inserted}. Con stock: ${inserted}.${protectedProductIds.size > 0 ? ` OK protegidos: ${protectedProductIds.size}.` : ""}`);
     return inserted;
   }
 
