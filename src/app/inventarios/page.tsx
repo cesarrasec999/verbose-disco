@@ -2490,9 +2490,11 @@ export default function InventariosPage() {
     }
     const recountItemById = new Map(recountItemRows.map(row => [row.id, row]));
     const latestRecountItemByProduct = new Map<string, { id: string; timestamp: number }>();
-    for (const item of recountItemRows) {
+    for (const row of recountCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = recountItemById.get(row.recount_item_id);
       if (!item?.id || !item.product_id || item.status !== "counted") continue;
-      const timestamp = new Date(item.updated_at || item.created_at || 0).getTime() || 0;
+      const timestamp = new Date(row.updated_at || row.counted_at || 0).getTime() || 0;
       const current = latestRecountItemByProduct.get(item.product_id);
       if (!current || timestamp >= current.timestamp) {
         latestRecountItemByProduct.set(item.product_id, { id: item.id, timestamp });
@@ -2514,32 +2516,47 @@ export default function InventariosPage() {
     }
 
     const validationItemById = new Map(validationItemRows.map(row => [row.id, row]));
-    const latestValidationItemByProduct = new Map<string, { id: string; status: string; timestamp: number }>();
-    for (const item of validationItemRows) {
-      if (!item?.id || !item.product_id || item.status === "cancelled") continue;
-      const timestamp = new Date(item.updated_at || item.created_at || 0).getTime() || 0;
-      const current = latestValidationItemByProduct.get(item.product_id);
+    const latestValidationCountItemByProduct = new Map<string, { id: string; timestamp: number }>();
+    for (const row of validationCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = validationItemById.get(row.validation_item_id);
+      if (!item?.id || !item.product_id || item.status !== "counted") continue;
+      const timestamp = new Date(row.updated_at || row.counted_at || 0).getTime() || 0;
+      const current = latestValidationCountItemByProduct.get(item.product_id);
       if (!current || timestamp >= current.timestamp) {
-        latestValidationItemByProduct.set(item.product_id, { id: item.id, status: item.status || "assigned", timestamp });
+        latestValidationCountItemByProduct.set(item.product_id, { id: item.id, timestamp });
       }
     }
     const validationTotalByProduct = new Map<string, number>();
     for (const row of validationCountRows) {
       if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = validationItemById.get(row.validation_item_id);
-      const latestItem = item?.product_id ? latestValidationItemByProduct.get(item.product_id) : null;
+      const latestItem = item?.product_id ? latestValidationCountItemByProduct.get(item.product_id) : null;
       if (item?.product_id && item.status === "counted" && item.id === latestItem?.id) {
         validationTotalByProduct.set(item.product_id, (validationTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
+      }
+    }
+    const latestValidationAssignmentByProduct = new Map<string, { id: string; status: string; timestamp: number }>();
+    for (const item of validationItemRows) {
+      if (!item?.id || !item.product_id || item.status === "cancelled") continue;
+      if (latestValidationCountItemByProduct.has(item.product_id)) continue;
+      const timestamp = new Date(item.updated_at || item.created_at || 0).getTime() || 0;
+      const current = latestValidationAssignmentByProduct.get(item.product_id);
+      if (!current || timestamp >= current.timestamp) {
+        latestValidationAssignmentByProduct.set(item.product_id, { id: item.id, status: item.status || "assigned", timestamp });
       }
     }
     const assignedValidationByProduct = new Set<string>();
     const countedValidationByProduct = new Set<string>();
     for (const item of validationItemRows) {
       if (!item.product_id || item.status === "cancelled") continue;
-      const latestItem = latestValidationItemByProduct.get(item.product_id);
-      if (item.id !== latestItem?.id) continue;
-      if (item.status === "counted") countedValidationByProduct.add(item.product_id);
-      else assignedValidationByProduct.add(item.product_id);
+      const latestCountItem = latestValidationCountItemByProduct.get(item.product_id);
+      if (latestCountItem) {
+        if (item.id === latestCountItem.id) countedValidationByProduct.add(item.product_id);
+        continue;
+      }
+      const latestAssignedItem = latestValidationAssignmentByProduct.get(item.product_id);
+      if (item.id === latestAssignedItem?.id) assignedValidationByProduct.add(item.product_id);
     }
 
     const observations = new Map<string, string>();
@@ -4967,9 +4984,10 @@ export default function InventariosPage() {
     const deptRows = aggregateBy("department");
     const rotationRows = aggregateBy("rotation_category");
     const totalCodes = summary.length;
+    const totalDiffCodes = summary.filter(row => row.diff !== 0).length;
     const originallyCountedCodes = summary.filter(row => row.counted_original > 0).length;
-    const recountedCodes = summary.filter(row => row.recount_status === "counted").length;
-    const validatedCodes = summary.filter(row => row.validation_status === "counted").length;
+    const recountedCodes = summary.filter(row => row.diff !== 0 && row.recount_status === "counted").length;
+    const validatedCodes = summary.filter(row => row.diff !== 0 && row.validation_status === "counted").length;
     const generatedAt = new Date().toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
     const reportStartDate = dateOnly(selectedSession.scheduled_date || selectedSession.created_at);
     const reportEndDate = selectedSession.finished_at ? dateOnly(selectedSession.finished_at) : "En curso";
@@ -5149,8 +5167,8 @@ export default function InventariosPage() {
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
     <tr>
     ${donut("CODIGOS CONTADOS", pct(originallyCountedCodes, totalCodes), "#0f172a", `${number2(originallyCountedCodes)} / ${number2(totalCodes)} codigos`)}
-    ${donut("CODIGOS RECONTADOS", pct(recountedCodes, totalCodes), "#7c3aed", `${number2(recountedCodes)} / ${number2(totalCodes)} codigos`)}
-    ${donut("CODIGOS VALIDADOS", pct(validatedCodes, totalCodes), "#15803d", `${number2(validatedCodes)} / ${number2(totalCodes)} codigos`)}
+    ${donut("CODIGOS RECONTADOS", pct(recountedCodes, totalDiffCodes), "#7c3aed", `${number2(recountedCodes)} / ${number2(totalDiffCodes)} codigos con diferencia`)}
+    ${donut("CODIGOS VALIDADOS", pct(validatedCodes, totalDiffCodes), "#15803d", `${number2(validatedCodes)} / ${number2(totalDiffCodes)} codigos con diferencia`)}
     </tr>
   </table>
 
