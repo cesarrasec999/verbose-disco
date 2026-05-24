@@ -132,7 +132,7 @@ type SummaryRow = {
 };
 
 type RecountType = "surplus" | "missing";
-type RecountColumn = "zone";
+type RecountFilter = RecountType | "surplus_zero_stock" | "missing_not_counted";
 type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
 type ProductLookupMode = "typed" | "scan";
 
@@ -333,6 +333,11 @@ function recordMatchesQuery(row: CountRow, rawQuery: string) {
   if (/^\d+$/.test(query)) return recordSkuMatchesNumber(row.sku, query);
   if (recordTextFieldsMatch(row, query)) return true;
   return normalizeRecordSearch(row.sku).includes(query);
+}
+
+function summaryStatus(row: Pick<SummaryRow, "counted" | "diff">) {
+  if (row.diff === 0) return "OK";
+  return row.diff < 0 ? "Faltante" : "Sobrante";
 }
 
 function operatorRecountItemMatchesQuery(row: RecountItem, rawQuery: string) {
@@ -624,9 +629,8 @@ export default function InventariosPage() {
   const [recountItems, setRecountItems] = useState<RecountItem[]>([]);
   const [operatorRecountQuery, setOperatorRecountQuery] = useState("");
   const [reassignOperatorDrafts, setReassignOperatorDrafts] = useState<Record<string, string>>({});
-  const [recountType, setRecountType] = useState<RecountType>("surplus");
-  const recountColumn: RecountColumn = "zone";
-  const [recountValue, setRecountValue] = useState("");
+  const [recountFilter, setRecountFilter] = useState<RecountFilter>("surplus");
+  const recountType: RecountType = recountFilter === "missing" || recountFilter === "missing_not_counted" ? "missing" : "surplus";
   const [recountOperatorId, setRecountOperatorId] = useState("");
   const [recountPrintOperatorId, setRecountPrintOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
@@ -911,22 +915,26 @@ export default function InventariosPage() {
     return grouped;
   }, [counts, locations]);
 
-  const recountValues = useMemo(() => {
-    const values = locations
-      .map(location => String(location[recountColumn] || "").trim())
-      .filter(Boolean);
-    return [...new Set(values)].sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
-  }, [locations, recountColumn]);
-
   const selectedRecountCandidates = useMemo(() => {
-    if (recountType === "missing") {
+    if (recountFilter === "missing") {
       return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "missing"));
     }
-    return sortRecountAssignmentLines(recountCandidates.filter(row =>
-      row.recount_type === "surplus" &&
-      (!recountValue || row.original_locations.some(location => String(location[recountColumn] || "") === recountValue))
-    ));
-  }, [recountCandidates, recountColumn, recountType, recountValue]);
+    if (recountFilter === "missing_not_counted") {
+      return sortRecountAssignmentLines(recountCandidates.filter(row =>
+        row.recount_type === "missing" &&
+        Number(row.system_stock || 0) > 0 &&
+        Number(row.counted_qty || 0) <= 0
+      ));
+    }
+    if (recountFilter === "surplus_zero_stock") {
+      return sortRecountAssignmentLines(recountCandidates.filter(row =>
+        row.recount_type === "surplus" &&
+        Number(row.system_stock || 0) <= 0 &&
+        Number(row.counted_qty || 0) > 0
+      ));
+    }
+    return sortRecountAssignmentLines(recountCandidates.filter(row => row.recount_type === "surplus"));
+  }, [recountCandidates, recountFilter]);
 
   const assignedRecountKeys = useMemo(
     () => new Set(recountItems
@@ -1055,11 +1063,10 @@ export default function InventariosPage() {
     });
   }
 
-  function changeRecountType(type: RecountType) {
-    setRecountType(type);
+  function changeRecountFilter(filter: RecountFilter) {
+    setRecountFilter(filter);
     setSelectedPendingRecountKeys(new Set());
     setRecountManagerTab("pendientes");
-    if (type === "missing") setRecountValue("");
   }
 
   const pendingLocations = useMemo(() => {
@@ -2694,7 +2701,7 @@ export default function InventariosPage() {
       location_id: null,
       location_code: "CODIGO_COMPLETO",
       ticket: row.recount_type === "missing" ? "FALTANTE" : "CODIGO COMPLETO",
-      zone: row.recount_type === "surplus" ? recountValue || null : null,
+      zone: null,
       zone_ref: null,
       lineal: null,
       full_location: row.recount_type === "missing" ? "Reconteo por codigo faltante" : `${row.location_count} ubicacion(es) contadas`,
@@ -4744,6 +4751,7 @@ export default function InventariosPage() {
       CONTEO: row.counted_original,
       RECONTEO: row.recounted_qty ?? "",
       DIFERENCIA: row.diff,
+      STATUS: summaryStatus(row),
       COSTO: row.cost,
       DIF_VALORIZADA: row.valueDiff,
       RECONTADO: row.re_counted ? "SI" : "NO",
@@ -6311,17 +6319,12 @@ export default function InventariosPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-3 lg:grid-cols-[180px_1fr_1fr_220px]">
-                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border p-1">
-                    <button onClick={() => changeRecountType("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
-                    <button onClick={() => changeRecountType("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountType === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
-                  </div>
-
-                  <div className="grid gap-2">
-                    <select value={recountValue} onChange={event => setRecountValue(event.target.value)} disabled={recountType === "missing" || isSelectedSessionFinished} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
-                      <option value="">Selecciona ubicacion</option>
-                      {recountValues.map(value => <option key={value} value={value}>{value}</option>)}
-                    </select>
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_220px]">
+                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border p-1 md:grid-cols-4">
+                    <button onClick={() => changeRecountFilter("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
+                    <button onClick={() => changeRecountFilter("surplus_zero_stock")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "surplus_zero_stock" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrante stock 0</button>
+                    <button onClick={() => changeRecountFilter("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
+                    <button onClick={() => changeRecountFilter("missing_not_counted")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "missing_not_counted" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltante no contado</button>
                   </div>
 
                   <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} disabled={isSelectedSessionFinished} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
@@ -7146,6 +7149,7 @@ export default function InventariosPage() {
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
                       <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
+                      <th className="p-2 text-center">Status</th>
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
                       <th className="p-2 text-center">Recontado</th>
@@ -7163,6 +7167,11 @@ export default function InventariosPage() {
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                         <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
+                        <td className="p-2 text-center">
+                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
+                            {summaryStatus(row)}
+                          </span>
+                        </td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
                         <td className="p-2 text-center">
