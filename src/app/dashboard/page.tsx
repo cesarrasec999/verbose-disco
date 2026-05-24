@@ -179,6 +179,8 @@ type AllStoreAssignmentSummary = {
 
 type ProductCountHistoryRow = {
     assignment_id: string;
+    source: "ciclico" | "auditoria" | "inventario general";
+    source_label: string;
     store_name: string;
     assigned_date: string;
     sku: string;
@@ -191,6 +193,7 @@ type ProductCountHistoryRow = {
     faltante: number;
     sobrante: number;
     result: string;
+    motive: string;
 };
 
 // Fila de ubicación + cantidad en el modal del operario
@@ -255,6 +258,24 @@ function fullProductCode(value: string | number | null | undefined): string {
 
 function normalizeUnit(value: string | null | undefined): string {
     return String(value || "").trim().toUpperCase();
+}
+
+function resultLabel(counted: boolean, difference: number) {
+    if (!counted) return "Sin conteo";
+    if (difference === 0) return "OK";
+    return difference < 0 ? "Faltante" : "Sobrante";
+}
+
+function resultMotive(result: string, detail?: string | null) {
+    const cleanDetail = String(detail || "").trim();
+    const base = result === "OK"
+        ? "Conteo coincide con stock"
+        : result === "Faltante"
+            ? "Conteo menor al stock"
+            : result === "Sobrante"
+                ? "Conteo mayor al stock"
+                : "Sin registros de conteo";
+    return cleanDetail ? `${base}. ${cleanDetail}` : base;
 }
 
 function visibleProductCode(value: string | number | null | undefined): string {
@@ -3122,8 +3143,12 @@ export default function DashboardPage() {
                 const ok = countRows.length > 0 && difference === 0 ? countedQuantity : 0;
                 const faltante = countRows.length > 0 && difference < 0 ? Math.abs(difference) : 0;
                 const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
+                const result = resultLabel(countRows.length > 0, difference);
+                const notes = [...new Set(countRows.map(count => String(count.note || "").trim()).filter(Boolean))].join(" | ");
                 return {
                     assignment_id: row.id as string,
+                    source: "ciclico" as const,
+                    source_label: "Ciclico",
                     store_name: store?.name || row.store_id,
                     assigned_date: row.assigned_date,
                     sku: productRow?.sku || product.sku,
@@ -3135,7 +3160,8 @@ export default function DashboardPage() {
                     ok,
                     faltante,
                     sobrante,
-                    result: countRows.length === 0 ? "Sin conteo" : difference === 0 ? "OK" : difference < 0 ? "Faltante" : "Sobrante",
+                    result,
+                    motive: resultMotive(result, notes),
                 };
             });
             setCountHistoryRows(rows);
@@ -3217,8 +3243,12 @@ export default function DashboardPage() {
                 const ok = countRows.length > 0 && difference === 0 ? countedQuantity : 0;
                 const faltante = countRows.length > 0 && difference < 0 ? Math.abs(difference) : 0;
                 const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
+                const result = resultLabel(countRows.length > 0, difference);
+                const notes = [...new Set(countRows.map(count => String(count.note || "").trim()).filter(Boolean))].join(" | ");
                 return {
                     assignment_id: row.id as string,
+                    source: "ciclico" as const,
+                    source_label: "Ciclico",
                     store_name: store?.name || row.store_id,
                     assigned_date: row.assigned_date,
                     sku: productRow?.sku || product?.sku || row.product_id,
@@ -3230,15 +3260,152 @@ export default function DashboardPage() {
                     ok,
                     faltante,
                     sobrante,
-                    result: countRows.length === 0 ? "Sin conteo" : difference === 0 ? "OK" : difference < 0 ? "Faltante" : "Sobrante",
+                    result,
+                    motive: resultMotive(result, notes),
                 };
             });
-            setCountHistoryRows(rows);
+            const [auditRows, generalRows] = await Promise.all([
+                loadAuditCountResults(productIds, productMap),
+                loadGeneralInventoryResults(productIds, productMap),
+            ]);
+            setCountHistoryRows([...rows, ...auditRows, ...generalRows].sort((a, b) =>
+                new Date(b.assigned_date || 0).getTime() - new Date(a.assigned_date || 0).getTime()
+            ));
         } catch (error: any) {
             showMessage("Error buscando resultados de conteo: " + (error?.message || error), "error");
         } finally {
             setCountHistoryLoading(false);
         }
+    }
+
+    async function loadAuditCountResults(productIds: string[], productMap: Map<string, Product>): Promise<ProductCountHistoryRow[]> {
+        if (productIds.length === 0) return [];
+        const itemRows: any[] = [];
+        for (let i = 0; i < productIds.length; i += 200) {
+            const { data, error } = await supabase
+                .from("audit_session_items")
+                .select("id,session_id,product_id,system_stock,cost_snapshot,observation,audit_sessions(store_id,started_at,finished_at,stores(name)),cyclic_products(sku,description,unit)")
+                .in("product_id", productIds.slice(i, i + 200));
+            if (error) throw error;
+            itemRows.push(...(data || []));
+        }
+        const itemIds = itemRows.map(row => String(row.id));
+        const countMap = new Map<string, any[]>();
+        for (let i = 0; i < itemIds.length; i += 500) {
+            const { data, error } = await supabase
+                .from("audit_counts")
+                .select("*")
+                .in("item_id", itemIds.slice(i, i + 500));
+            if (error) throw error;
+            for (const count of data || []) {
+                const key = String(count.item_id || "");
+                if (!countMap.has(key)) countMap.set(key, []);
+                countMap.get(key)!.push(count);
+            }
+        }
+
+        return itemRows
+            .filter(row => valStoreId === ALL_STORES_VALUE || row.audit_sessions?.store_id === valStoreId)
+            .map(row => {
+                const productRow = Array.isArray(row.cyclic_products) ? row.cyclic_products[0] : row.cyclic_products;
+                const sessionRow = Array.isArray(row.audit_sessions) ? row.audit_sessions[0] : row.audit_sessions;
+                const storeRow = Array.isArray(sessionRow?.stores) ? sessionRow.stores[0] : sessionRow?.stores;
+                const product = productMap.get(row.product_id);
+                const countRows = countMap.get(String(row.id)) || [];
+                const countedQuantity = r2(countRows.reduce((sum, count) => sum + Number(count.quantity || 0), 0));
+                const systemStock = Number(row.system_stock || 0);
+                const difference = r2(countedQuantity - systemStock);
+                const result = resultLabel(countRows.length > 0, difference);
+                return {
+                    assignment_id: `audit-${row.id}`,
+                    source: "auditoria" as const,
+                    source_label: "Auditoria",
+                    store_name: storeRow?.name || sessionRow?.store_id || "Auditoria",
+                    assigned_date: sessionRow?.finished_at || sessionRow?.started_at || "",
+                    sku: productRow?.sku || product?.sku || row.product_id,
+                    description: productRow?.description || product?.description || "",
+                    unit: productRow?.unit || product?.unit || "",
+                    system_stock: systemStock,
+                    counted_quantity: countedQuantity,
+                    difference,
+                    ok: countRows.length > 0 && difference === 0 ? countedQuantity : 0,
+                    faltante: countRows.length > 0 && difference < 0 ? Math.abs(difference) : 0,
+                    sobrante: countRows.length > 0 && difference > 0 ? difference : 0,
+                    result,
+                    motive: resultMotive(result, row.observation),
+                };
+            });
+    }
+
+    async function loadGeneralInventoryResults(productIds: string[], productMap: Map<string, Product>): Promise<ProductCountHistoryRow[]> {
+        if (productIds.length === 0) return [];
+        const countRows: any[] = [];
+        for (let i = 0; i < productIds.length; i += 200) {
+            const { data, error } = await supabase
+                .from("general_inventory_counts")
+                .select("session_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,general_inventory_sessions(id,name,store_id,scheduled_date,finished_at,created_at,stores(name))")
+                .in("product_id", productIds.slice(i, i + 200));
+            if (error) throw error;
+            countRows.push(...(data || []));
+        }
+        const grouped = new Map<string, any[]>();
+        for (const row of countRows) {
+            const sessionRow = Array.isArray(row.general_inventory_sessions) ? row.general_inventory_sessions[0] : row.general_inventory_sessions;
+            if (valStoreId !== ALL_STORES_VALUE && sessionRow?.store_id !== valStoreId) continue;
+            const key = `${row.session_id}__${row.product_id}`;
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key)!.push(row);
+        }
+
+        const snapshotRows: any[] = [];
+        const observationRows: any[] = [];
+        const sessionIds = [...new Set(countRows.map(row => String(row.session_id || "")).filter(Boolean))];
+        for (let i = 0; i < sessionIds.length; i += 100) {
+            for (let j = 0; j < productIds.length; j += 200) {
+                const sessionChunk = sessionIds.slice(i, i + 100);
+                const productChunk = productIds.slice(j, j + 200);
+                const [snapRes, obsRes] = await Promise.all([
+                    supabase.from("general_inventory_stock_snapshot").select("session_id,product_id,system_stock,cost").in("session_id", sessionChunk).in("product_id", productChunk),
+                    supabase.from("general_inventory_item_observations").select("session_id,product_id,observation").in("session_id", sessionChunk).in("product_id", productChunk),
+                ]);
+                if (snapRes.error) throw snapRes.error;
+                if (obsRes.error) throw obsRes.error;
+                snapshotRows.push(...(snapRes.data || []));
+                observationRows.push(...(obsRes.data || []));
+            }
+        }
+        const snapshotMap = new Map(snapshotRows.map(row => [`${row.session_id}__${row.product_id}`, row]));
+        const observationMap = new Map(observationRows.map(row => [`${row.session_id}__${row.product_id}`, row.observation || ""]));
+
+        return [...grouped.entries()].map(([key, rows]) => {
+            const first = rows[0];
+            const sessionRow = Array.isArray(first.general_inventory_sessions) ? first.general_inventory_sessions[0] : first.general_inventory_sessions;
+            const storeRow = Array.isArray(sessionRow?.stores) ? sessionRow.stores[0] : sessionRow?.stores;
+            const product = productMap.get(first.product_id);
+            const snapshot = snapshotMap.get(key);
+            const countedQuantity = r2(rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0));
+            const systemStock = Number(snapshot?.system_stock || 0);
+            const difference = r2(countedQuantity - systemStock);
+            const result = resultLabel(rows.length > 0, difference);
+            return {
+                assignment_id: `general-${key}`,
+                source: "inventario general" as const,
+                source_label: "Inventario general",
+                store_name: storeRow?.name || sessionRow?.name || "Inventario general",
+                assigned_date: sessionRow?.finished_at || sessionRow?.scheduled_date || sessionRow?.created_at || rows[0]?.counted_at || "",
+                sku: first.sku || product?.sku || first.product_id,
+                description: first.description || product?.description || "",
+                unit: first.unit || product?.unit || "",
+                system_stock: systemStock,
+                counted_quantity: countedQuantity,
+                difference,
+                ok: difference === 0 ? countedQuantity : 0,
+                faltante: difference < 0 ? Math.abs(difference) : 0,
+                sobrante: difference > 0 ? difference : 0,
+                result,
+                motive: resultMotive(result, observationMap.get(key)),
+            };
+        });
     }
 
     async function loadCompletedProductKeys(storeIds: string[], productIds: string[]): Promise<Set<string>> {
@@ -7081,8 +7248,8 @@ export default function DashboardPage() {
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-end justify-between">
                                 <div>
-                                    <h3 className="text-lg font-bold text-slate-900">Resultados de conteo ciclico</h3>
-                                    <p className="text-slate-500 text-xs mt-0.5">Busca un codigo y revisa en que tiendas fue asignado y como quedo el conteo.</p>
+                                    <h3 className="text-lg font-bold text-slate-900">Resultados de conteo</h3>
+                                    <p className="text-slate-500 text-xs mt-0.5">Busca un codigo y revisa resultados de ciclico, auditoria e inventario general. Ordenado de mas reciente a mas antiguo.</p>
                                 </div>
                                 <div className="flex gap-2 flex-wrap">
                                     <input
@@ -7111,11 +7278,12 @@ export default function DashboardPage() {
                             ) : (
                                 <div className="border rounded-2xl overflow-hidden">
                                     <div className="max-h-[520px] overflow-auto">
-                                        <table className="w-full text-sm">
+                                        <table className="w-full min-w-[1160px] text-sm">
                                             <thead className="bg-slate-100 sticky top-0">
                                                 <tr>
+                                                    <th className="p-2 border text-left">Origen</th>
                                                     <th className="p-2 border text-left">Tienda</th>
-                                                    <th className="p-2 border">Fecha asignada</th>
+                                                    <th className="p-2 border">Fecha</th>
                                                     <th className="p-2 border text-left">Codigo</th>
                                                     <th className="p-2 border text-left">Descripcion</th>
                                                     <th className="p-2 border">Stock</th>
@@ -7124,13 +7292,21 @@ export default function DashboardPage() {
                                                     <th className="p-2 border">Faltante</th>
                                                     <th className="p-2 border">Sobrante</th>
                                                     <th className="p-2 border">Resultado</th>
+                                                    <th className="p-2 border text-left">Motivo</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {countHistoryRows.map(row => (
                                                     <tr key={row.assignment_id}>
+                                                        <td className="p-2 border">
+                                                            <span className={`rounded-full px-2 py-0.5 text-[11px] font-black ${
+                                                                row.source === "ciclico" ? "bg-blue-100 text-blue-700" :
+                                                                row.source === "auditoria" ? "bg-amber-100 text-amber-700" :
+                                                                "bg-slate-100 text-slate-700"
+                                                            }`}>{row.source_label}</span>
+                                                        </td>
                                                         <td className="p-2 border font-semibold">{row.store_name}</td>
-                                                        <td className="p-2 border text-center">{row.assigned_date}</td>
+                                                        <td className="p-2 border text-center whitespace-nowrap">{row.assigned_date ? formatDateTime(row.assigned_date) : "-"}</td>
                                                         <td className="p-2 border font-mono text-xs">{row.sku}</td>
                                                         <td className="p-2 border text-slate-600 max-w-[220px] whitespace-normal break-words">{row.description}</td>
                                                         <td className="p-2 border text-center font-semibold">{formatNumber(row.system_stock)}</td>
@@ -7146,6 +7322,7 @@ export default function DashboardPage() {
                                                                 "bg-slate-100 text-slate-500"
                                                             }`}>{row.result}</span>
                                                         </td>
+                                                        <td className="max-w-[260px] whitespace-normal break-words p-2 border text-xs text-slate-600">{row.motive}</td>
                                                     </tr>
                                                 ))}
                                             </tbody>
