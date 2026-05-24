@@ -344,6 +344,7 @@ export default function InventariosPage() {
       return compareValues(left, right, summarySort.direction);
     });
   }, [summary, summaryQuery, summarySort]);
+  const showValidationSummary = Boolean(selectedSession?.validation_enabled);
 
   const recountCandidates = useMemo(() => {
     const summaryByProduct = new Map(summary.map(row => [row.product_id, row]));
@@ -4538,22 +4539,31 @@ export default function InventariosPage() {
   }
 
   function exportSummary() {
-    const rows = summary.map(row => ({
-      CODIGO: row.sku,
-      DESCRIPCION: row.description,
-      UM: row.unit,
-      STOCK_SISTEMA: row.system_stock,
-      CONTEO: row.counted_original,
-      RECONTEO: row.recounted_qty ?? "",
-      VALIDACION: row.validation_qty ?? "",
-      DIFERENCIA: row.diff,
-      STATUS: summaryStatus(row),
-      COSTO: row.cost,
-      DIF_VALORIZADA: row.valueDiff,
-      RECONTADO: row.re_counted ? "SI" : "NO",
-      VALIDADO: row.validated ? "SI" : "NO",
-      OBSERVACION: row.observation || "",
-    }));
+    const rows = summary.map(row => {
+      const base = {
+        CODIGO: row.sku,
+        DESCRIPCION: row.description,
+        UM: row.unit,
+        STOCK_SISTEMA: row.system_stock,
+        CONTEO: row.counted_original,
+        RECONTEO: row.recounted_qty ?? "",
+      };
+      return {
+        ...base,
+        ...(showValidationSummary ? {
+          VALIDACION: row.validation_qty ?? "",
+        } : {}),
+        DIFERENCIA: row.diff,
+        STATUS: summaryStatus(row),
+        COSTO: row.cost,
+        DIF_VALORIZADA: row.valueDiff,
+        RECONTADO: row.re_counted ? "SI" : "NO",
+        ...(showValidationSummary ? {
+          VALIDADO: row.validated ? "SI" : "NO",
+        } : {}),
+        OBSERVACION: row.observation || "",
+      };
+    });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Resumen");
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
@@ -6942,7 +6952,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className="w-full min-w-[1400px] text-sm">
+                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1400px]" : "min-w-[1320px]"}`}>
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -6951,7 +6961,7 @@ export default function InventariosPage() {
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
                       <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
-                      <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />
+                      {showValidationSummary && <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />}
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <th className="p-2 text-center">Status</th>
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
@@ -6970,7 +6980,7 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                         <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
-                        <td className="p-2 text-center font-bold">{row.validation_qty === null ? "-" : number2(row.validation_qty)}</td>
+                        {showValidationSummary && <td className="p-2 text-center font-bold">{row.validation_qty === null ? "-" : number2(row.validation_qty)}</td>}
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">
                           <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
