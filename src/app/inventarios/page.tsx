@@ -550,15 +550,15 @@ export default function InventariosPage() {
   );
   const assignedValidationProductIds = useMemo(
     () => new Set(recountItems
-      .filter(row => isValidationManagerTab && row.layer === "validation" && row.status !== "cancelled")
+      .filter(row => row.layer === "validation" && row.status !== "cancelled")
       .map(row => row.product_id)),
-    [isValidationManagerTab, recountItems]
+    [recountItems]
   );
 
   const unassignedRecountCandidates = useMemo(
     () => selectedRecountCandidates.filter(row => isValidationManagerTab
       ? !assignedValidationProductIds.has(row.product_id)
-      : !assignedRecountKeys.has(recountKey(row))),
+      : !assignedValidationProductIds.has(row.product_id) && !assignedRecountKeys.has(recountKey(row))),
     [assignedRecountKeys, assignedValidationProductIds, isValidationManagerTab, selectedRecountCandidates]
   );
 
