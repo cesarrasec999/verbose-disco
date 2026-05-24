@@ -49,8 +49,7 @@ create table if not exists public.general_inventory_validation_counts (
   cost_snapshot numeric(14,6) not null default 0,
   note text,
   counted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (validation_item_id)
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_gi_validation_items_session
@@ -65,7 +64,8 @@ create index if not exists idx_gi_validation_items_session_operator_status
 create index if not exists idx_gi_validation_items_source
   on public.general_inventory_validation_items(source_recount_item_id);
 
--- La restriccion unique (validation_item_id) ya crea un indice equivalente.
+create index if not exists idx_gi_validation_counts_item
+  on public.general_inventory_validation_counts(validation_item_id);
 
 create index if not exists idx_gi_validation_counts_session
   on public.general_inventory_validation_counts(session_id);

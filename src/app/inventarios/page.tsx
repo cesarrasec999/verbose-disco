@@ -208,6 +208,7 @@ export default function InventariosPage() {
     () => sessions.find(session => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
   );
+  const isValidationManagerTab = validatorTab === "validacion";
   const isSelectedSessionFinished = selectedSession?.status === "finished";
   const canAdminReopenSelectedSession = user?.role === "Administrador" && isSelectedSessionFinished;
 
@@ -358,7 +359,7 @@ export default function InventariosPage() {
     const summaryByProduct = new Map(summary.map(row => [row.product_id, row]));
     const locationById = new Map(locations.map(row => [row.id, row]));
     const surplusGroups = new Map<string, RecountCandidate>();
-    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const validationMode = isValidationManagerTab;
 
     if (validationMode) {
       return sortRecountAssignmentLines(summary
@@ -476,7 +477,7 @@ export default function InventariosPage() {
       }));
 
     return sortRecountAssignmentLines([...surplusGroups.values(), ...missingRows]);
-  }, [counts, locations, selectedSession?.validation_enabled, summary]);
+  }, [counts, locations, isValidationManagerTab, summary]);
 
   const countLocationLinesByProduct = useMemo(() => {
     const locationById = new Map(locations.map(row => [row.id, row]));
@@ -806,8 +807,10 @@ export default function InventariosPage() {
         else markSessionTabStale(selectedSessionId, "registros");
         if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
         else markSessionTabStale(selectedSessionId, "resumen");
-        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId);
+        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId, false);
         else markSessionTabStale(selectedSessionId, "reconteo");
+        if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
+        else markSessionTabStale(selectedSessionId, "validacion");
       }, 1500);
     };
 
@@ -1306,9 +1309,9 @@ export default function InventariosPage() {
         markSessionTabLoaded(sessionId, "registros");
         return;
       }
-      if (tab === "reconteo" && canManageInventory) {
-        await loadRecountData(sessionId);
-        markSessionTabLoaded(sessionId, "reconteo");
+      if ((tab === "reconteo" || tab === "validacion") && canManageInventory) {
+        await loadRecountData(sessionId, tab === "validacion");
+        markSessionTabLoaded(sessionId, tab);
         return;
       }
       if (tab === "usuarios" && user?.role === "Administrador") {
@@ -1407,15 +1410,15 @@ export default function InventariosPage() {
     return [...pendingRows, ...serverRows.filter(row => !pendingIds.has(row.id))];
   }
 
-  async function loadRecountData(sessionId: string) {
+  async function loadRecountData(sessionId: string, validationMode = isValidationManagerTab) {
     await Promise.all([
       loadPreparationData(sessionId),
       loadRecordsData(sessionId),
       loadSummary(sessionId),
-      loadRecountAssignments(sessionId),
-      loadAdminRecountRecords(sessionId),
+      loadRecountAssignments(sessionId, validationMode),
+      loadAdminRecountRecords(sessionId, validationMode),
     ]);
-    markSessionTabLoaded(sessionId, "reconteo");
+    markSessionTabLoaded(sessionId, validationMode ? "validacion" : "reconteo");
   }
 
   async function loadOriginalCountedByProductLocation(sessionId: string, productIds: string[]) {
@@ -1449,8 +1452,7 @@ export default function InventariosPage() {
     return originalByLocation;
   }
 
-  async function loadAdminRecountRecords(sessionId: string) {
-    const validationMode = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+  async function loadAdminRecountRecords(sessionId: string, validationMode = isValidationManagerTab) {
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
@@ -1565,8 +1567,7 @@ export default function InventariosPage() {
     setAdminRecountRecords(rows);
   }
 
-  async function loadRecountAssignments(sessionId: string) {
-    const validationMode = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+  async function loadRecountAssignments(sessionId: string, validationMode = isValidationManagerTab) {
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const [operatorsRes, countOperatorsRes, recountCountOperatorsRes, itemsRes] = await Promise.all([
@@ -2447,7 +2448,7 @@ export default function InventariosPage() {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
     }
-    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const validationMode = isValidationManagerTab;
     const baseRows = explicitRows || filteredUnassignedRecountCandidates;
     const sourceRows = typeof limit === "number" ? baseRows.slice(0, limit) : baseRows;
     const rows = sourceRows.map(row => ({
@@ -2762,7 +2763,7 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
     }
-    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const validationMode = isValidationManagerTab;
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const confirmed = window.confirm(`Borrar TODAS las ${validationMode ? "validaciones" : "reconteos"} guardadas de esta sesion? Las asignaciones quedaran abiertas y el resumen volvera a tomar ${validationMode ? "los reconteos" : "los conteos originales"}.`);
@@ -5715,7 +5716,7 @@ export default function InventariosPage() {
 
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
-              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-4"}`}>
+              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-6" : "grid-cols-2 md:grid-cols-5"}`}>
                 {canManageInventory && <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Preparacion
                 </button>}
@@ -5724,6 +5725,9 @@ export default function InventariosPage() {
                 </button>
                 {canManageInventory && <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Reconteo
+                </button>}
+                {canManageInventory && selectedSession?.validation_enabled && <button onClick={() => setValidatorTab("validacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "validacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Validacion
                 </button>}
                 <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Resumen
@@ -6198,13 +6202,13 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {canManageInventory && selectedSessionId && validatorTab === "reconteo" && (
+          {canManageInventory && selectedSessionId && (validatorTab === "reconteo" || validatorTab === "validacion") && (
             <section className="space-y-4">
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> {selectedSession?.validation_enabled ? "Validacion" : "Reconteo"}</h2>
-                    <p className="text-xs text-slate-500">{selectedSession?.validation_enabled ? "Asigna diferencias ya recontadas para una validacion final." : "Asigna diferencias por bloques a operadores activos."}</p>
+                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> {isValidationManagerTab ? "Validacion" : "Reconteo"}</h2>
+                    <p className="text-xs text-slate-500">{isValidationManagerTab ? "Asigna diferencias ya recontadas para una validacion final." : "Asigna diferencias por bloques a operadores activos."}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {user?.role === "Administrador" && (
@@ -6259,26 +6263,26 @@ export default function InventariosPage() {
                   onClick={() => setRecountManagerTab("asignados")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  {selectedSession?.validation_enabled ? "Validaciones asignadas" : "Reconteos asignados"} ({assignedRecountRows.length})
+                  {isValidationManagerTab ? "Validaciones asignadas" : "Reconteos asignados"} ({assignedRecountRows.length})
                 </button>
                 <button
                   onClick={() => setRecountManagerTab("manual")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "manual" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  {selectedSession?.validation_enabled ? "Validacion manual" : "Reconteo manual"} ({manualRecountRows.length})
+                  {isValidationManagerTab ? "Validacion manual" : "Reconteo manual"} ({manualRecountRows.length})
                 </button>
                 <button
                   onClick={() => setRecountManagerTab("registros")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  {selectedSession?.validation_enabled ? "Validaciones guardadas" : "Registros guardados"} ({filteredAdminRecountRecords.length})
+                  {isValidationManagerTab ? "Validaciones guardadas" : "Registros guardados"} ({filteredAdminRecountRecords.length})
                 </button>
               </div>
 
               {recountManagerTab === "pendientes" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">Codigos pendientes por asignar {selectedSession?.validation_enabled ? "a validacion" : ""}</h3>
+                  <h3 className="font-black">Codigos pendientes por asignar {isValidationManagerTab ? "a validacion" : ""}</h3>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex min-w-[240px] items-center rounded-xl border px-3 py-2 md:w-96">
                       <Search size={15} className="text-slate-400" />
@@ -6370,7 +6374,7 @@ export default function InventariosPage() {
               {recountManagerTab === "asignados" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">{selectedSession?.validation_enabled ? "Codigos en validacion / reasignar" : "Codigos asignados / reasignar"}</h3>
+                  <h3 className="font-black">{isValidationManagerTab ? "Codigos en validacion / reasignar" : "Codigos asignados / reasignar"}</h3>
                   <div className="flex flex-wrap gap-2">
                     <select
                       value={recountPrintOperatorId}
