@@ -4088,7 +4088,7 @@ export default function InventariosPage() {
     const lines = draft.rows
       .map(line => ({
         locationCode: normalizeLocationCode(line.locationCode),
-        quantity: Number(line.quantity),
+        quantity: String(line.quantity).trim() === "" ? NaN : Number(line.quantity),
         isExtra: Boolean(line.isExtra),
       }))
       .filter(line => line.locationCode || line.quantity > 0 || !line.isExtra);
@@ -4836,6 +4836,7 @@ export default function InventariosPage() {
         UM: row.unit,
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
+        RECONTEO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
       };
       return {
         ...base,
@@ -4846,7 +4847,6 @@ export default function InventariosPage() {
         STATUS: summaryStatus(row),
         COSTO: row.cost,
         DIF_VALORIZADA: row.valueDiff,
-        RECONTADO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
         ...(showValidationSummary ? {
           VALIDADO: row.validated ? "SI" : "NO",
         } : {}),
@@ -7277,7 +7277,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1320px]" : "min-w-[1240px]"}`}>
+                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1360px]" : "min-w-[1280px]"}`}>
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -7285,12 +7285,12 @@ export default function InventariosPage() {
                       <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
+                      <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
                       {showValidationSummary && <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />}
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <th className="p-2 text-center">Status</th>
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
                       <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
-                      <th className="p-2 text-center">Recontado</th>
                       <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
                       <th className="p-2">Acciones</th>
                     </tr>
@@ -7303,6 +7303,7 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{row.unit}</td>
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
+                        <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}</td>
                         {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">
@@ -7312,17 +7313,6 @@ export default function InventariosPage() {
                         </td>
                         <td className="p-2 text-center">{money(row.cost)}</td>
                         <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
-                        <td className="p-2 text-center">
-                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${
-                            row.recount_status === "counted"
-                              ? "bg-green-100 text-green-700"
-                              : row.recount_status === "assigned"
-                                ? "bg-amber-100 text-amber-700"
-                                : "bg-slate-100 text-slate-600"
-                          }`}>
-                            {summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}
-                          </span>
-                        </td>
                         <td className="p-2">
                           <input value={observationDrafts[row.product_id] || ""} onChange={event => setObservationDrafts(prev => ({ ...prev, [row.product_id]: event.target.value }))} className="w-full rounded-lg border px-2 py-1 text-xs" />
                         </td>
