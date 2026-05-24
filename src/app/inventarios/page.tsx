@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, PackageSearch, Pencil, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
+import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -100,16 +100,6 @@ function summaryQuantityStatusLabel(value: number | null, status: "no" | "assign
   return "-";
 }
 
-function parseDecimalInput(value: string) {
-  let clean = value.trim().replace(/\s/g, "");
-  if (clean.includes(",") && clean.includes(".")) clean = clean.replace(/,/g, "");
-  else if (clean.includes(",")) {
-    const parts = clean.split(",");
-    clean = parts[parts.length - 1]?.length === 3 ? parts.join("") : clean.replace(/,/g, ".");
-  }
-  return clean === "" ? NaN : Number(clean);
-}
-
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -175,10 +165,6 @@ export default function InventariosPage() {
   const [summaryQuery, setSummaryQuery] = useState("");
   const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
-  const [editingSnapshotStockRow, setEditingSnapshotStockRow] = useState<SummaryRow | null>(null);
-  const [editingSnapshotStockValue, setEditingSnapshotStockValue] = useState("");
-  const [editingSnapshotStockNote, setEditingSnapshotStockNote] = useState("");
-  const [savingSnapshotStock, setSavingSnapshotStock] = useState(false);
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
   const [recordsSort, setRecordsSort] = useState<SortState<RecordsSortKey>>({ key: "counted_at", direction: "desc" });
   const [summarySort, setSummarySort] = useState<SortState<SummarySortKey>>({ key: "valueDiff", direction: "desc" });
@@ -4580,86 +4566,6 @@ export default function InventariosPage() {
     await loadSummary(selectedSessionId, true);
   }
 
-  function openSnapshotStockEdit(row: SummaryRow) {
-    if (user?.role !== "Administrador") {
-      setMessage("Solo el administrador puede editar la foto de stock por codigo.");
-      return;
-    }
-    setEditingSnapshotStockRow(row);
-    setEditingSnapshotStockValue(String(row.system_stock));
-    setEditingSnapshotStockNote("");
-  }
-
-  async function saveSnapshotStockEdit() {
-    if (!ensureSelectedSessionEditable()) return;
-    if (user?.role !== "Administrador") {
-      setMessage("Solo el administrador puede editar la foto de stock por codigo.");
-      return;
-    }
-    if (!user || !selectedSessionId || !editingSnapshotStockRow) return;
-
-    const nextStock = parseDecimalInput(editingSnapshotStockValue);
-    if (!Number.isFinite(nextStock) || nextStock < 0) {
-      setMessage("Ingresa un stock valido mayor o igual a cero.");
-      return;
-    }
-
-    const row = editingSnapshotStockRow;
-    const confirmed = window.confirm(`Actualizar la foto de stock de ${row.sku} a ${number2(nextStock)}? No se modifican conteos, reconteos ni validaciones.`);
-    if (!confirmed) return;
-
-    setSavingSnapshotStock(true);
-    try {
-      const now = new Date().toISOString();
-      const { error } = await supabase
-        .from("general_inventory_stock_snapshot")
-        .upsert({
-          session_id: selectedSessionId,
-          product_id: row.product_id,
-          sku: row.sku,
-          description: row.description,
-          unit: row.unit,
-          system_stock: nextStock,
-          cost: row.cost || 0,
-          manually_adjusted: true,
-          adjusted_by: user.id,
-          adjusted_at: now,
-          adjustment_note: editingSnapshotStockNote.trim() || `Ajuste manual admin: ${row.system_stock} -> ${nextStock}`,
-          frozen_at: now,
-        }, { onConflict: "session_id,product_id" });
-
-      if (error) {
-        setMessage("No se pudo editar la foto de stock: " + error.message);
-        return;
-      }
-
-      const snapshotRows = await loadPagedSessionRows("general_inventory_stock_snapshot", "system_stock,cost", selectedSessionId, "product_id");
-      const totalValue = snapshotRows.reduce((sum, item) => sum + Number(item.system_stock || 0) * Number(item.cost || 0), 0);
-      const sessionUpdate = await supabase
-        .from("general_inventory_sessions")
-        .update({
-          frozen_total_value: Math.round(totalValue * 100) / 100,
-          updated_at: now,
-        })
-        .eq("id", selectedSessionId);
-
-      if (sessionUpdate.error) {
-        setMessage("Stock editado, pero no se pudo actualizar el valorizado de la sesion: " + sessionUpdate.error.message);
-        await loadSummary(selectedSessionId, true);
-        return;
-      }
-
-      setEditingSnapshotStockRow(null);
-      setEditingSnapshotStockValue("");
-      setEditingSnapshotStockNote("");
-      setMessage(`Foto de stock actualizada para ${row.sku}.`);
-      await loadInitial(selectedSessionId);
-      await loadSummary(selectedSessionId, true);
-    } finally {
-      setSavingSnapshotStock(false);
-    }
-  }
-
   async function markSummaryAsNonInventory(row: SummaryRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId) return;
@@ -7371,7 +7277,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1420px]" : "min-w-[1340px]"}`}>
+                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1360px]" : "min-w-[1280px]"}`}>
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -7395,21 +7301,7 @@ export default function InventariosPage() {
                         <td className="p-2 font-black">{row.sku}</td>
                         <td className="max-w-sm whitespace-normal break-words p-2">{row.description}</td>
                         <td className="p-2 text-center">{row.unit}</td>
-                        <td className="p-2 text-center">
-                          <div className="flex flex-col items-center gap-1">
-                            <span>{number2(row.system_stock)}</span>
-                            {user?.role === "Administrador" && (
-                              <button
-                                onClick={() => openSnapshotStockEdit(row)}
-                                disabled={isSelectedSessionFinished}
-                                className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-black text-slate-700 disabled:opacity-40"
-                                title="Editar foto de stock"
-                              >
-                                <Pencil size={12} /> Stock
-                              </button>
-                            )}
-                          </div>
-                        </td>
+                        <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                         <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}</td>
                         {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
@@ -7439,59 +7331,6 @@ export default function InventariosPage() {
           )}
       </section>
       </div>
-
-      {editingSnapshotStockRow && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
-          <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
-            <h3 className="font-black">Editar foto de stock</h3>
-            <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">
-              {editingSnapshotStockRow.sku} - {editingSnapshotStockRow.description}
-            </p>
-            <div className="mt-3 rounded-xl border bg-slate-50 p-3 text-sm">
-              <div className="text-xs font-black text-slate-500">Stock actual en foto</div>
-              <div className="text-lg font-black text-slate-900">{number2(editingSnapshotStockRow.system_stock)}</div>
-              <div className="mt-1 text-xs text-slate-500">Esta accion solo cambia la foto de stock de esta sesion. Los registros guardados no se modifican.</div>
-            </div>
-            <div className="mt-4 space-y-3">
-              <label className="block">
-                <span className="text-xs font-black text-slate-500">Nuevo stock por codigo</span>
-                <input
-                  value={editingSnapshotStockValue}
-                  onChange={event => setEditingSnapshotStockValue(event.target.value)}
-                  inputMode="decimal"
-                  className="mt-1 w-full rounded-xl border px-3 py-3 text-sm font-bold"
-                  autoFocus
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-black text-slate-500">Motivo / nota</span>
-                <input
-                  value={editingSnapshotStockNote}
-                  onChange={event => setEditingSnapshotStockNote(event.target.value)}
-                  placeholder="Opcional"
-                  className="mt-1 w-full rounded-xl border px-3 py-3 text-sm"
-                />
-              </label>
-            </div>
-            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
-              <button onClick={saveSnapshotStockEdit} disabled={savingSnapshotStock || isSelectedSessionFinished} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                <Save size={16} /> {savingSnapshotStock ? "Guardando" : "Guardar stock"}
-              </button>
-              <button
-                onClick={() => {
-                  setEditingSnapshotStockRow(null);
-                  setEditingSnapshotStockValue("");
-                  setEditingSnapshotStockNote("");
-                }}
-                disabled={savingSnapshotStock}
-                className="rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {editingAdminCount && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
