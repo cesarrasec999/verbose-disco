@@ -18,7 +18,7 @@ type RecountManagerTab = "pendientes" | "asignados" | "manual" | "registros";
 type RecountAssignedStatusFilter = "all" | "pending" | "counted";
 type SortDirection = "asc" | "desc";
 type RecordsSortKey = "counted_at" | "operator_name" | "location_code" | "sku" | "description" | "unit" | "quantity" | "cost_snapshot" | "value";
-type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "diff" | "cost" | "valueDiff" | "observation";
+type SummarySortKey = "sku" | "description" | "unit" | "system_stock" | "counted" | "counted_original" | "recounted_qty" | "validation_qty" | "diff" | "cost" | "valueDiff" | "observation";
 type RecountAssignedSortKey = "status" | "recount_type" | "ticket" | "location_code" | "sku" | "description" | "system_stock" | "counted_qty" | "diff_qty" | "value_diff" | "assigned_operator_name";
 type SortState<T extends string> = { key: T; direction: SortDirection };
 
@@ -47,6 +47,7 @@ type InventorySession = {
   stock_frozen_at: string | null;
   location_lock_enabled?: boolean | null;
   manual_recount_enabled?: boolean | null;
+  validation_enabled?: boolean | null;
   finished_at?: string | null;
   created_at?: string | null;
   frozen_total_value: number;
@@ -124,10 +125,12 @@ type SummaryRow = {
   counted: number;
   counted_original: number;
   recounted_qty: number | null;
+  validation_qty: number | null;
   diff: number;
   cost: number;
   valueDiff: number;
   re_counted: boolean;
+  validated: boolean;
   observation?: string | null;
 };
 
@@ -175,6 +178,8 @@ type RecountItem = RecountCandidate & {
   status: string;
   assigned_operator_id: string | null;
   assigned_operator_name?: string | null;
+  layer?: "recount" | "validation";
+  source_recount_item_id?: string | null;
 };
 
 type RecountDocumentRow = RecountItem & {
@@ -354,6 +359,32 @@ function operatorRecountItemMatchesQuery(row: RecountItem, rawQuery: string) {
     row.zone_ref,
     row.lineal,
     row.assigned_operator_name,
+    typeLabel,
+    ...row.original_locations.flatMap(location => [
+      location.location_code,
+      location.full_location,
+      location.ticket,
+      location.zone,
+      location.zone_ref,
+      location.lineal,
+    ]),
+  ];
+  return fields.map(normalizeRecordSearch).some(value => value.includes(query));
+}
+
+function recountCandidateMatchesQuery(row: RecountCandidate, rawQuery: string) {
+  const query = normalizeRecordSearch(rawQuery);
+  if (!query) return true;
+  const typeLabel = row.recount_type === "missing" ? "faltante" : "sobrante";
+  const fields = [
+    row.sku,
+    row.description,
+    row.location_code,
+    row.full_location,
+    row.ticket,
+    row.zone,
+    row.zone_ref,
+    row.lineal,
     typeLabel,
     ...row.original_locations.flatMap(location => [
       location.location_code,
@@ -621,6 +652,7 @@ export default function InventariosPage() {
   const [recountAssignedStatusFilter, setRecountAssignedStatusFilter] = useState<RecountAssignedStatusFilter>("all");
   const [recountRecordsQuery, setRecountRecordsQuery] = useState("");
   const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
+  const [pendingRecountQuery, setPendingRecountQuery] = useState("");
   const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
   const [sessionOperators, setSessionOperators] = useState<InventoryOperator[]>([]);
   const [inventoryOperators, setInventoryOperators] = useState<InventoryOperator[]>([]);
@@ -791,6 +823,33 @@ export default function InventariosPage() {
     const summaryByProduct = new Map(summary.map(row => [row.product_id, row]));
     const locationById = new Map(locations.map(row => [row.id, row]));
     const surplusGroups = new Map<string, RecountCandidate>();
+    const validationMode = Boolean(selectedSession?.validation_enabled);
+
+    if (validationMode) {
+      return sortRecountAssignmentLines(summary
+        .filter(row => row.re_counted && row.diff !== 0)
+        .map(row => ({
+          product_id: row.product_id,
+          sku: row.sku,
+          description: row.description,
+          unit: row.unit,
+          location_id: null,
+          location_code: null,
+          full_location: "Validacion por codigo",
+          zone: null,
+          zone_ref: null,
+          lineal: null,
+          ticket: row.diff < 0 ? "VALIDACION FALTANTE" : "VALIDACION SOBRANTE",
+          recount_type: row.diff < 0 ? "missing" as const : "surplus" as const,
+          system_stock: row.system_stock,
+          counted_qty: row.counted,
+          diff_qty: row.diff,
+          cost_snapshot: row.cost,
+          value_diff: row.valueDiff,
+          location_count: 0,
+          original_locations: [],
+        })));
+    }
 
     for (const row of counts) {
       const summaryRow = summaryByProduct.get(row.product_id);
@@ -857,7 +916,7 @@ export default function InventariosPage() {
     }
 
     const missingRows = summary
-      .filter(row => row.diff < 0)
+      .filter(row => row.diff < 0 && (!validationMode || row.re_counted))
       .map(row => ({
         product_id: row.product_id,
         sku: row.sku,
@@ -881,7 +940,7 @@ export default function InventariosPage() {
       }));
 
     return sortRecountAssignmentLines([...surplusGroups.values(), ...missingRows]);
-  }, [counts, locations, summary]);
+  }, [counts, locations, selectedSession?.validation_enabled, summary]);
 
   const countLocationLinesByProduct = useMemo(() => {
     const locationById = new Map(locations.map(row => [row.id, row]));
@@ -948,13 +1007,18 @@ export default function InventariosPage() {
     [assignedRecountKeys, selectedRecountCandidates]
   );
 
-  const selectedPendingRecountRows = useMemo(
-    () => unassignedRecountCandidates.filter(row => selectedPendingRecountKeys.has(recountKey(row))),
-    [selectedPendingRecountKeys, unassignedRecountCandidates]
+  const filteredUnassignedRecountCandidates = useMemo(
+    () => unassignedRecountCandidates.filter(row => recountCandidateMatchesQuery(row, pendingRecountQuery)),
+    [pendingRecountQuery, unassignedRecountCandidates]
   );
 
-  const allPendingRecountRowsSelected = unassignedRecountCandidates.length > 0 &&
-    unassignedRecountCandidates.every(row => selectedPendingRecountKeys.has(recountKey(row)));
+  const selectedPendingRecountRows = useMemo(
+    () => filteredUnassignedRecountCandidates.filter(row => selectedPendingRecountKeys.has(recountKey(row))),
+    [filteredUnassignedRecountCandidates, selectedPendingRecountKeys]
+  );
+
+  const allPendingRecountRowsSelected = filteredUnassignedRecountCandidates.length > 0 &&
+    filteredUnassignedRecountCandidates.every(row => selectedPendingRecountKeys.has(recountKey(row)));
 
   const assignedRecountRows = useMemo(() => {
     const q = recountAssignedQuery.trim().toLowerCase();
@@ -1055,9 +1119,9 @@ export default function InventariosPage() {
     setSelectedPendingRecountKeys(prev => {
       const next = new Set(prev);
       if (allPendingRecountRowsSelected) {
-        for (const row of unassignedRecountCandidates) next.delete(recountKey(row));
+        for (const row of filteredUnassignedRecountCandidates) next.delete(recountKey(row));
       } else {
-        for (const row of unassignedRecountCandidates) next.add(recountKey(row));
+        for (const row of filteredUnassignedRecountCandidates) next.add(recountKey(row));
       }
       return next;
     });
@@ -1222,6 +1286,16 @@ export default function InventariosPage() {
         { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadInventoryCounts
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
+        reloadInventoryCounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
+        reloadInventoryCounts
+      )
       .subscribe();
 
     return () => {
@@ -1277,6 +1351,16 @@ export default function InventariosPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
+        reloadAssignedRecounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
+        reloadAssignedRecounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadAssignedRecounts
       )
       .subscribe();
@@ -1807,28 +1891,32 @@ export default function InventariosPage() {
   }
 
   async function loadAdminRecountRecords(sessionId: string) {
+    const validationMode = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
     const { data, error } = await supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .select("*, general_inventory_operators(full_name)")
       .eq("session_id", sessionId)
       .order("updated_at", { ascending: false, nullsFirst: false })
       .order("counted_at", { ascending: false });
     if (error) {
-      setMessage("No se pudieron leer registros de reconteo: " + error.message);
+      setMessage(`No se pudieron leer registros de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
       return;
     }
 
     const countRows = (data || []) as any[];
-    const itemIds = [...new Set(countRows.map(row => String(row.recount_item_id || "")).filter(Boolean))];
+    const itemIds = [...new Set(countRows.map(row => String(row[itemIdColumn] || "")).filter(Boolean))];
     const itemRows: any[] = [];
     for (let i = 0; i < itemIds.length; i += 100) {
       const chunk = itemIds.slice(i, i + 100);
       const itemRowsRes = await supabase
-        .from("general_inventory_recount_items")
+        .from(itemTable)
         .select("*")
         .in("id", chunk);
       if (itemRowsRes.error) {
-        setMessage("No se pudieron leer detalles de reconteo: " + itemRowsRes.error.message);
+        setMessage(`No se pudieron leer detalles de ${validationMode ? "validacion" : "reconteo"}: ` + itemRowsRes.error.message);
         return;
       }
       itemRows.push(...(itemRowsRes.data || []));
@@ -1864,11 +1952,13 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id || null,
       assigned_operator_name: null,
       status: row.status || "assigned",
+      layer: validationMode ? "validation" : "recount",
+      source_recount_item_id: row.source_recount_item_id || null,
     } as RecountItem]));
 
     const rows = countRows
       .map(countRow => {
-        const item = itemById.get(String(countRow.recount_item_id || ""));
+        const item = itemById.get(String(countRow[itemIdColumn] || ""));
         if (!item) return null;
         const locationId = String(countRow.location_id || "");
         const locationCode = normalizeLocationCode(countRow.location_code);
@@ -1895,7 +1985,7 @@ export default function InventariosPage() {
         }
         return {
           id: String(countRow.id || ""),
-          recount_item_id: String(countRow.recount_item_id || ""),
+          recount_item_id: String(countRow[itemIdColumn] || ""),
           operator_id: String(countRow.operator_id || ""),
           operator_name: countRow.general_inventory_operators?.full_name || null,
           location_id: countRow.location_id ? String(countRow.location_id) : null,
@@ -1917,6 +2007,9 @@ export default function InventariosPage() {
   }
 
   async function loadRecountAssignments(sessionId: string) {
+    const validationMode = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const [operatorsRes, countOperatorsRes, recountCountOperatorsRes, itemsRes] = await Promise.all([
       supabase
         .from("general_inventory_session_operators")
@@ -1928,11 +2021,11 @@ export default function InventariosPage() {
         .select("operator_id")
         .eq("session_id", sessionId),
       supabase
-        .from("general_inventory_recount_counts")
+        .from(countTable)
         .select("operator_id")
         .eq("session_id", sessionId),
       supabase
-        .from("general_inventory_recount_items")
+        .from(itemTable)
         .select("*")
         .eq("session_id", sessionId)
         .order("location_code", { ascending: true, nullsFirst: false })
@@ -1946,10 +2039,10 @@ export default function InventariosPage() {
       setMessage("Error leyendo contadores de la sesion: " + countOperatorsRes.error.message);
     }
     if (recountCountOperatorsRes.error) {
-      setMessage("Error leyendo reconteos guardados: " + recountCountOperatorsRes.error.message);
+      setMessage(`Error leyendo ${validationMode ? "validaciones" : "reconteos"} guardados: ` + recountCountOperatorsRes.error.message);
     }
     if (itemsRes.error) {
-      setMessage("Ejecuta primero el SQL de reconteo. Error: " + itemsRes.error.message);
+      setMessage(`Ejecuta primero el SQL de ${validationMode ? "validacion" : "reconteo"}. Error: ` + itemsRes.error.message);
     }
 
     const activeOperators = (operatorsRes.data || [])
@@ -2014,6 +2107,8 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operatorLabelById.get(row.assigned_operator_id) || null,
       status: row.status || "assigned",
+      layer: validationMode ? "validation" : "recount",
+      source_recount_item_id: row.source_recount_item_id || null,
     })) as RecountItem[]);
     setRecountItems(rows);
     setReassignOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, row.assigned_operator_id || ""])));
@@ -2043,6 +2138,43 @@ export default function InventariosPage() {
       ? "Reconteo manual activado. Los operarios ya no veran reconteos asignados en la app."
       : "Reconteo manual desactivado. Los operarios podran ver sus reconteos asignados en la app."
     );
+  }
+
+  async function toggleValidationPlan() {
+    if (!ensureSelectedSessionEditable()) return;
+    if (!selectedSessionId || user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede activar o desactivar el plan de validacion.");
+      return;
+    }
+    const nextValue = !Boolean(selectedSession?.validation_enabled);
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({ validation_enabled: nextValue, updated_at: new Date().toISOString() })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo cambiar el plan de validacion. Ejecuta el SQL actualizado: " + error.message);
+      return;
+    }
+    setSessions(prev => prev.map(session => session.id === selectedSessionId ? { ...session, validation_enabled: nextValue } : session));
+    setMessage(nextValue
+      ? "Plan de validacion activado. Desde ahora el resumen priorizara validacion sobre reconteo cuando exista."
+      : "Plan de validacion desactivado. El resumen volvera a priorizar reconteo sobre conteo."
+    );
+    if (selectedSessionId) await loadSummary(selectedSessionId, true);
+  }
+
+  async function loadValidationSummaryRows(sessionId: string, enabled: boolean) {
+    if (!enabled) return { validationCountRows: [] as Array<Record<string, any>>, validationItemRows: [] as Array<Record<string, any>> };
+    try {
+      const [validationCountRows, validationItemRows] = await Promise.all([
+        loadPagedSessionRows("general_inventory_validation_counts", "validation_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at", sessionId, "sku"),
+        loadPagedSessionRows("general_inventory_validation_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
+      ]);
+      return { validationCountRows, validationItemRows };
+    } catch (error: unknown) {
+      setMessage("Plan de validacion activo, pero faltan las tablas de validacion. Ejecuta el SQL actualizado: " + (error instanceof Error ? error.message : String(error)));
+      return { validationCountRows: [] as Array<Record<string, any>>, validationItemRows: [] as Array<Record<string, any>> };
+    }
   }
 
   async function loadInventoryOperators(sessionId = selectedSessionId) {
@@ -2200,6 +2332,11 @@ export default function InventariosPage() {
   }
 
   async function loadOperatorRecountItems(sessionId: string, operatorId: string) {
+    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
+    const sourceCountTable = validationMode ? "general_inventory_recount_counts" : "general_inventory_counts";
     const operatorIds = new Set([operatorId]);
     if (operator?.phone) {
       const samePhone = await supabase
@@ -2210,7 +2347,7 @@ export default function InventariosPage() {
     }
 
     const { data, error } = await supabase
-      .from("general_inventory_recount_items")
+      .from(itemTable)
       .select("*")
       .eq("session_id", sessionId)
       .in("assigned_operator_id", [...operatorIds])
@@ -2245,6 +2382,8 @@ export default function InventariosPage() {
       assigned_operator_id: row.assigned_operator_id,
       assigned_operator_name: operator?.full_name || null,
       status: row.status || "assigned",
+      layer: validationMode ? "validation" : "recount",
+      source_recount_item_id: row.source_recount_item_id || null,
     })) as RecountItem[]);
 
     const productIds = [...new Set(mappedRows.map(row => row.product_id).filter(Boolean))];
@@ -2254,7 +2393,7 @@ export default function InventariosPage() {
       .eq("session_id", sessionId)
       .eq("is_active", true);
     const savedRecountsRequest = supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .select("*")
       .eq("session_id", sessionId)
       .in("operator_id", [...operatorIds])
@@ -2262,7 +2401,7 @@ export default function InventariosPage() {
     const [countRowsRes, locationsRes, savedRecountsRes] = productIds.length > 0
       ? await Promise.all([
         supabase
-          .from("general_inventory_counts")
+          .from(sourceCountTable)
           .select("product_id,location_id,location_code,quantity")
           .eq("session_id", sessionId)
           .in("product_id", productIds),
@@ -2319,11 +2458,11 @@ export default function InventariosPage() {
     const itemById = new Map(rowsWithLocations.map(row => [row.id, row]));
     const savedRecords = ((savedRecountsRes.data || []) as any[])
       .map(countRow => {
-        const item = itemById.get(String(countRow.recount_item_id || ""));
+        const item = itemById.get(String(countRow[itemIdColumn] || ""));
         if (!item) return null;
         return {
           id: String(countRow.id || ""),
-          recount_item_id: String(countRow.recount_item_id || ""),
+          recount_item_id: String(countRow[itemIdColumn] || ""),
           operator_id: String(countRow.operator_id || ""),
           location_id: countRow.location_id ? String(countRow.location_id) : null,
           location_code: String(countRow.location_code || ""),
@@ -2556,20 +2695,25 @@ export default function InventariosPage() {
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     setSummaryLoading(true);
-    const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows] = await Promise.all([
+    const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
+    const validationEnabled = Boolean(summarySession?.validation_enabled);
+    const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows, validationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_item_observations", "*", sessionId, "product_id"),
       loadInventoryNonInventoryRows(sessionId),
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,description,unit,quantity,cost_snapshot,counted_at,updated_at", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
+      loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
+    const { validationCountRows, validationItemRows } = validationRows;
     const hasFrozenSnapshot = snapshotRows.length > 0;
     const liveStockBySku = hasFrozenSnapshot
       ? new Map<string, StockGeneralRow>()
       : await loadStockGeneralBySkuForSession(sessionId, [
         ...countRows.map(row => row.sku),
         ...recountCountRows.map(row => row.sku),
+        ...validationCountRows.map(row => row.sku),
       ]);
 
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
@@ -2600,6 +2744,28 @@ export default function InventariosPage() {
       }
     }
 
+    const validationItemById = new Map(validationItemRows.map(row => [row.id, row]));
+    const latestValidationTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
+    for (const row of validationCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = validationItemById.get(row.validation_item_id);
+      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
+      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
+      const current = latestValidationTypeByProduct.get(item.product_id);
+      if (!current || timestamp >= current.timestamp) {
+        latestValidationTypeByProduct.set(item.product_id, { type: item.recount_type as RecountType, timestamp });
+      }
+    }
+    const validationTotalByProduct = new Map<string, number>();
+    for (const row of validationCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = validationItemById.get(row.validation_item_id);
+      const latestType = item?.product_id ? latestValidationTypeByProduct.get(item.product_id)?.type : null;
+      if (item?.product_id && item.status === "counted" && item.recount_type === latestType) {
+        validationTotalByProduct.set(item.product_id, (validationTotalByProduct.get(item.product_id) || 0) + Number(row.quantity || 0));
+      }
+    }
+
     const observations = new Map<string, string>();
     for (const row of observationRows) observations.set(row.product_id, row.observation || "");
     const productIdsForSummary = [
@@ -2610,8 +2776,8 @@ export default function InventariosPage() {
       ...snapshotRows.map(row => row.sku),
       ...countRows.map(row => row.sku),
       ...recountCountRows.map(row => row.sku),
+      ...validationCountRows.map(row => row.sku),
     ];
-    const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const [productCategories, productRotations] = await Promise.all([
       loadProductCategories(productIdsForSummary),
       loadProductRotationsForSession(summarySession, skusForSummary),
@@ -2623,7 +2789,8 @@ export default function InventariosPage() {
       if (nonInventorySkus.has(normalizeCode(snap.sku).toUpperCase())) continue;
       const countedOriginal = originalCountedByProduct.get(snap.product_id) || 0;
       const recountedQty = recountTotalByProduct.has(snap.product_id) ? recountTotalByProduct.get(snap.product_id)! : null;
-      const counted = recountedQty ?? countedOriginal;
+      const validationQty = validationTotalByProduct.has(snap.product_id) ? validationTotalByProduct.get(snap.product_id)! : null;
+      const counted = validationQty ?? recountedQty ?? countedOriginal;
       const systemStock = Number(snap.system_stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
       productIdsInSnapshot.add(snap.product_id);
@@ -2640,10 +2807,12 @@ export default function InventariosPage() {
         counted,
         counted_original: countedOriginal,
         recounted_qty: recountedQty,
+        validation_qty: validationQty,
         diff,
         cost,
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(snap.product_id),
+        validated: validationTotalByProduct.has(snap.product_id),
         observation: observations.get(snap.product_id) || "",
       });
     }
@@ -2653,7 +2822,8 @@ export default function InventariosPage() {
       if (productIdsInSnapshot.has(row.product_id)) continue;
       const countedOriginal = originalCountedByProduct.get(row.product_id) || 0;
       const recountedQty = recountTotalByProduct.has(row.product_id) ? recountTotalByProduct.get(row.product_id)! : null;
-      const counted = recountedQty ?? countedOriginal;
+      const validationQty = validationTotalByProduct.has(row.product_id) ? validationTotalByProduct.get(row.product_id)! : null;
+      const counted = validationQty ?? recountedQty ?? countedOriginal;
       const liveStock = liveStockBySku.get(normalizeCode(row.sku).toUpperCase());
       const systemStock = Number(liveStock?.stock || 0);
       const cost = Number(liveStock?.costo ?? row.cost_snapshot ?? 0);
@@ -2669,10 +2839,12 @@ export default function InventariosPage() {
         counted,
         counted_original: countedOriginal,
         recounted_qty: recountedQty,
+        validation_qty: validationQty,
         diff,
         cost,
         valueDiff: diff * cost,
         re_counted: recountTotalByProduct.has(row.product_id),
+        validated: validationTotalByProduct.has(row.product_id),
         observation: observations.get(row.product_id) || "",
       });
       productIdsInSnapshot.add(row.product_id);
@@ -2693,10 +2865,12 @@ export default function InventariosPage() {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
     }
-    const baseRows = explicitRows || unassignedRecountCandidates;
+    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const baseRows = explicitRows || filteredUnassignedRecountCandidates;
     const sourceRows = typeof limit === "number" ? baseRows.slice(0, limit) : baseRows;
     const rows = sourceRows.map(row => ({
       session_id: selectedSessionId,
+      ...(validationMode ? { source_recount_item_id: null } : {}),
       product_id: row.product_id,
       location_id: null,
       location_code: "CODIGO_COMPLETO",
@@ -2722,15 +2896,15 @@ export default function InventariosPage() {
     }));
 
     if (rows.length === 0) {
-      setMessage("No hay diferencias pendientes para asignar con ese filtro.");
+      setMessage(`No hay diferencias pendientes para asignar ${validationMode ? "en validacion" : "con ese filtro"}.`);
       return;
     }
 
     const { error } = await supabase
-      .from("general_inventory_recount_items")
+      .from(validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items")
       .upsert(rows, { onConflict: "session_id,product_id,location_code,recount_type" });
     if (error) {
-      setMessage("No se pudo asignar reconteo. Ejecuta el SQL si aun no lo hiciste: " + error.message);
+      setMessage(`No se pudo asignar ${validationMode ? "validacion" : "reconteo"}. Ejecuta el SQL si aun no lo hiciste: ` + error.message);
       return;
     }
 
@@ -2739,7 +2913,7 @@ export default function InventariosPage() {
       for (const row of sourceRows) next.delete(recountKey(row));
       return next;
     });
-    setMessage(`${rows.length} items asignados para reconteo.`);
+    setMessage(`${rows.length} items asignados para ${validationMode ? "validacion" : "reconteo"}.`);
     await loadRecountAssignments(selectedSessionId);
   }
 
@@ -2757,8 +2931,10 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede reasignar reconteos.");
       return;
     }
+    const validationMode = item.layer === "validation";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     if (item.status === "counted") {
-      setMessage("Este reconteo ya fue contado y no se puede reasignar sin anular la validacion.");
+      setMessage(`Esta ${validationMode ? "validacion" : "linea de reconteo"} ya fue contada y no se puede reasignar sin borrar el registro guardado.`);
       return;
     }
     const nextOperatorId = reassignOperatorDrafts[item.id];
@@ -2771,7 +2947,7 @@ export default function InventariosPage() {
       return;
     }
     const { error } = await supabase
-      .from("general_inventory_recount_items")
+      .from(itemTable)
       .update({
         assigned_operator_id: nextOperatorId,
         status: "assigned",
@@ -2779,10 +2955,10 @@ export default function InventariosPage() {
       })
       .eq("id", item.id);
     if (error) {
-      setMessage("No se pudo reasignar reconteo: " + error.message);
+      setMessage(`No se pudo reasignar ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
       return;
     }
-    setMessage("Reconteo reasignado.");
+    setMessage(`${validationMode ? "Validacion" : "Reconteo"} reasignado.`);
     await loadRecountAssignments(selectedSessionId);
   }
 
@@ -2792,12 +2968,14 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede quitar asignaciones.");
       return;
     }
+    const validationMode = item.layer === "validation";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     if (item.status === "counted") {
-      setMessage("Este reconteo ya fue contado y no se puede quitar sin anular la validacion.");
+      setMessage(`Esta ${validationMode ? "validacion" : "linea de reconteo"} ya fue contada y no se puede quitar sin borrar el registro guardado.`);
       return;
     }
     const { error } = await supabase
-      .from("general_inventory_recount_items")
+      .from(itemTable)
       .update({
         assigned_operator_id: null,
         status: "cancelled",
@@ -2828,22 +3006,26 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
     }
-    const confirmed = window.confirm(`Borrar el reconteo guardado de ${item.sku}? La asignacion quedara abierta y el resumen volvera a tomar el conteo original.`);
+    const validationMode = item.layer === "validation";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
+    const confirmed = window.confirm(`Borrar ${validationMode ? "la validacion" : "el reconteo"} guardado de ${item.sku}? La asignacion quedara abierta y el resumen volvera a tomar ${validationMode ? "el reconteo" : "el conteo original"}.`);
     if (!confirmed) return;
     const { error } = await supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .delete()
-      .eq("recount_item_id", item.id)
+      .eq(itemIdColumn, item.id)
       .eq("session_id", selectedSessionId);
     if (error) {
-      setMessage("No se pudo borrar el reconteo guardado: " + error.message);
+      setMessage(`No se pudo borrar ${validationMode ? "la validacion" : "el reconteo"} guardado: ` + error.message);
       return;
     }
     await supabase
-      .from("general_inventory_recount_items")
+      .from(itemTable)
       .update({ status: "assigned", updated_at: new Date().toISOString() })
       .eq("id", item.id);
-    setMessage("Reconteo guardado borrado. La linea volvio a asignado.");
+    setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado borrado. La linea volvio a asignado.`);
     await refreshAfterRecountDelete(selectedSessionId);
   }
 
@@ -2881,9 +3063,10 @@ export default function InventariosPage() {
       }
       locationCode = loc.location_code;
     }
+    const validationMode = editingAdminRecountRecord.item.layer === "validation";
 
     const { error } = await supabase
-      .from("general_inventory_recount_counts")
+      .from(validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts")
       .update({
         location_id: loc?.id || null,
         location_code: locationCode,
@@ -2893,12 +3076,12 @@ export default function InventariosPage() {
       .eq("id", editingAdminRecountRecord.id)
       .eq("session_id", selectedSessionId);
     if (error) {
-      setMessage("No se pudo actualizar registro de reconteo: " + error.message);
+      setMessage(`No se pudo actualizar registro de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
       return;
     }
 
     setEditingAdminRecountRecord(null);
-    setMessage("Registro de reconteo actualizado.");
+    setMessage(`Registro de ${validationMode ? "validacion" : "reconteo"} actualizado.`);
     await Promise.all([
       loadAdminRecountRecords(selectedSessionId),
       loadSummary(selectedSessionId, true),
@@ -2912,31 +3095,35 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
     }
-    const confirmed = window.confirm(`Borrar el registro de reconteo de ${record.sku} en ${record.location_code || "SIN UBICACION"}?`);
+    const validationMode = record.item.layer === "validation";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
+    const confirmed = window.confirm(`Borrar el registro de ${validationMode ? "validacion" : "reconteo"} de ${record.sku} en ${record.location_code || "SIN UBICACION"}?`);
     if (!confirmed) return;
     const { error } = await supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .delete()
       .eq("id", record.id)
       .eq("session_id", selectedSessionId);
     if (error) {
-      setMessage("No se pudo borrar el registro de reconteo: " + error.message);
+      setMessage(`No se pudo borrar el registro de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
       return;
     }
 
     const remaining = await supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .select("id")
-      .eq("recount_item_id", record.recount_item_id)
+      .eq(itemIdColumn, record.recount_item_id)
       .limit(1);
     if (!remaining.error && (remaining.data || []).length === 0) {
       await supabase
-        .from("general_inventory_recount_items")
+        .from(itemTable)
         .update({ status: "assigned", updated_at: new Date().toISOString() })
         .eq("id", record.recount_item_id);
     }
 
-    setMessage("Registro de reconteo borrado.");
+    setMessage(`Registro de ${validationMode ? "validacion" : "reconteo"} borrado.`);
     await Promise.all([
       loadAdminRecountRecords(selectedSessionId),
       loadSummary(selectedSessionId, true),
@@ -2950,18 +3137,21 @@ export default function InventariosPage() {
       setMessage("Solo el validador o administrador puede borrar reconteos guardados.");
       return;
     }
-    const confirmed = window.confirm("Borrar TODOS los reconteos guardados de esta sesion? Las asignaciones quedaran abiertas y el resumen volvera a tomar los conteos originales.");
+    const validationMode = Boolean(selectedSession?.validation_enabled);
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const confirmed = window.confirm(`Borrar TODAS las ${validationMode ? "validaciones" : "reconteos"} guardadas de esta sesion? Las asignaciones quedaran abiertas y el resumen volvera a tomar ${validationMode ? "los reconteos" : "los conteos originales"}.`);
     if (!confirmed) return;
     const { error } = await supabase
-      .from("general_inventory_recount_counts")
+      .from(countTable)
       .delete()
       .eq("session_id", selectedSessionId);
     if (error) {
-      setMessage("No se pudieron borrar los reconteos guardados: " + error.message);
+      setMessage(`No se pudieron borrar ${validationMode ? "las validaciones" : "los reconteos"} guardados: ` + error.message);
       return;
     }
     const statusUpdate = await supabase
-      .from("general_inventory_recount_items")
+      .from(itemTable)
       .update({ status: "assigned", updated_at: new Date().toISOString() })
       .eq("session_id", selectedSessionId)
       .eq("status", "counted");
@@ -2969,7 +3159,7 @@ export default function InventariosPage() {
       setMessage("Reconteos borrados, pero no se pudo reabrir asignaciones: " + statusUpdate.error.message);
       return;
     }
-    setMessage("Todos los reconteos guardados fueron borrados. El resumen vuelve al conteo original.");
+    setMessage(`Todas las ${validationMode ? "validaciones" : "reconteos"} guardadas fueron borradas.`);
     await refreshAfterRecountDelete(selectedSessionId);
   }
 
@@ -4037,13 +4227,18 @@ export default function InventariosPage() {
 
   async function saveRecountValidation(row: RecountItem) {
     if (!operator || !selectedSessionId || savingRecountId) return;
+    const validationMode = row.layer === "validation";
+    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
+    const actionLabel = validationMode ? "validacion" : "reconteo";
     if (selectedSession?.status === "finished") {
-      setMessage("Esta sesion ya fue finalizada. No se puede guardar reconteo.");
+      setMessage(`Esta sesion ya fue finalizada. No se puede guardar ${actionLabel}.`);
       return;
     }
     const draft = recountDraftFor(row);
     if (!draft.productCode.trim()) {
-      setMessage("Ingresa codigo valido para el reconteo.");
+      setMessage(`Ingresa codigo valido para la ${actionLabel}.`);
       return;
     }
 
@@ -4056,7 +4251,7 @@ export default function InventariosPage() {
       .filter(line => line.locationCode || line.quantity > 0 || !line.isExtra);
 
     if (lines.length === 0) {
-      setMessage("Ingresa al menos una ubicacion y cantidad para el reconteo.");
+      setMessage(`Ingresa al menos una ubicacion y cantidad para la ${actionLabel}.`);
       return;
     }
 
@@ -4067,7 +4262,7 @@ export default function InventariosPage() {
           locationRows.push({ loc: null, locationCode: "SIN_FISICO", quantity: 0 });
           continue;
         }
-        setMessage("Completa la ubicacion en todas las lineas del reconteo.");
+        setMessage(`Completa la ubicacion en todas las lineas de la ${actionLabel}.`);
         return;
       }
       const loc = await resolveInventoryLocation(line.locationCode, { allowCreate: true, sourceLabel: line.locationCode });
@@ -4079,7 +4274,7 @@ export default function InventariosPage() {
         return;
       }
       if (!Number.isFinite(line.quantity) || line.quantity < 0) {
-        setMessage("Ingresa cantidades validas para todas las lineas del reconteo.");
+        setMessage(`Ingresa cantidades validas para todas las lineas de la ${actionLabel}.`);
         return;
       }
       const existing = locationRows.find(item => normalizeLocationCode(item.locationCode) === normalizeLocationCode(loc.location_code));
@@ -4107,7 +4302,7 @@ export default function InventariosPage() {
         (candidates.length === 1 ? candidates[0] : null) ||
         assignedProductFallback;
       if (!product) {
-        setMessage(candidates.length > 1 ? "El codigo del reconteo coincide con varios productos. Ingresa el CodSap exacto." : "Codigo no existe en el maestro ni en codigos de barra.");
+        setMessage(candidates.length > 1 ? `El codigo de la ${actionLabel} coincide con varios productos. Ingresa el CodSap exacto.` : "Codigo no existe en el maestro ni en codigos de barra.");
         return;
       }
 
@@ -4120,16 +4315,16 @@ export default function InventariosPage() {
 
       const cost = Number(snapshot.data?.cost ?? product.cost ?? row.cost_snapshot ?? 0);
       const deleteExisting = await supabase
-        .from("general_inventory_recount_counts")
+        .from(countTable)
         .delete()
-        .eq("recount_item_id", row.id);
+        .eq(itemIdColumn, row.id);
       if (deleteExisting.error) {
-        setMessage("No se pudo reemplazar el reconteo anterior: " + deleteExisting.error.message);
+        setMessage(`No se pudo reemplazar la ${actionLabel} anterior: ` + deleteExisting.error.message);
         return;
       }
 
       const rows = locationRows.map(({ loc, locationCode, quantity }) => ({
-          recount_item_id: row.id,
+          [itemIdColumn]: row.id,
           session_id: selectedSessionId,
           operator_id: operator.id,
           location_id: loc?.id || null,
@@ -4140,16 +4335,18 @@ export default function InventariosPage() {
           unit: product.unit,
           quantity,
           cost_snapshot: cost,
-          client_uuid: createClientUuid("gi-recount"),
-          client_device_id: getOrCreateDeviceId(),
-          sync_origin: "web",
+          ...(validationMode ? {} : {
+            client_uuid: createClientUuid("gi-recount"),
+            client_device_id: getOrCreateDeviceId(),
+            sync_origin: "web",
+          }),
           updated_at: new Date().toISOString(),
       }));
       const { error } = await supabase
-        .from("general_inventory_recount_counts")
+        .from(countTable)
         .insert(rows);
       if (error) {
-        setMessage("No se pudo guardar reconteo. Ejecuta el SQL actualizado: " + error.message);
+        setMessage(`No se pudo guardar ${actionLabel}. Ejecuta el SQL actualizado: ` + error.message);
         return;
       }
       await Promise.all(locationRows
@@ -4157,11 +4354,11 @@ export default function InventariosPage() {
         .map(({ locationCode }) => upsertKnownProductLocation(product, locationCode)));
 
       const statusUpdate = await supabase
-        .from("general_inventory_recount_items")
+        .from(itemTable)
         .update({ status: "counted", updated_at: new Date().toISOString() })
         .eq("id", row.id);
       if (statusUpdate.error) {
-        setMessage("Reconteo guardado, pero no se pudo cerrar la linea: " + statusUpdate.error.message);
+        setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado, pero no se pudo cerrar la linea: ` + statusUpdate.error.message);
         return;
       }
 
@@ -4171,7 +4368,7 @@ export default function InventariosPage() {
         return next;
       });
       setEditingRecountItemId(null);
-      setMessage("Reconteo guardado.");
+      setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado.`);
       await loadOperatorRecountItems(selectedSessionId, operator.id);
     } finally {
       setSavingRecountId(null);
@@ -4626,6 +4823,53 @@ export default function InventariosPage() {
     });
   }
 
+  async function loadValidationRecordsForExport(sessionId: string) {
+    const { data, error } = await supabase
+      .from("general_inventory_validation_counts")
+      .select("*, general_inventory_operators(full_name)")
+      .eq("session_id", sessionId)
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .order("counted_at", { ascending: false });
+    if (error) throw error;
+
+    const countRows = (data || []) as Array<Record<string, unknown>>;
+    const itemIds = [...new Set(countRows.map(row => String(row.validation_item_id || "")).filter(Boolean))];
+    const itemRows: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < itemIds.length; i += 100) {
+      const { data: itemsData, error: itemsError } = await supabase
+        .from("general_inventory_validation_items")
+        .select("*")
+        .in("id", itemIds.slice(i, i + 100));
+      if (itemsError) throw itemsError;
+      itemRows.push(...((itemsData || []) as Array<Record<string, unknown>>));
+    }
+
+    const itemById = new Map(itemRows.map(row => [String(row.id || ""), row]));
+    return countRows.map(countRow => {
+      const item = itemById.get(String(countRow.validation_item_id || "")) || {};
+      const operator = countRow.general_inventory_operators as { full_name?: string | null } | null | undefined;
+      const recountType = String(item.recount_type || "");
+      const quantity = Number(countRow.quantity || 0);
+      const cost = Number(countRow.cost_snapshot || item.cost_snapshot || 0);
+      return {
+        FECHA: countRow.counted_at ? new Date(String(countRow.counted_at)).toLocaleString("es-PE") : "",
+        ULTIMA_EDICION: (countRow.updated_at || countRow.counted_at) ? new Date(String(countRow.updated_at || countRow.counted_at)).toLocaleString("es-PE") : "",
+        VALIDADOR: operator?.full_name || "",
+        TIPO: recountType === "missing" ? "Faltante" : recountType === "surplus" ? "Sobrante" : "",
+        UBICACION: String(countRow.location_code || ""),
+        CODIGO: String(countRow.sku || item.sku || ""),
+        DESCRIPCION: String(countRow.description || item.description || ""),
+        UM: String(countRow.unit || item.unit || ""),
+        SISTEMA: Number(item.system_stock || 0),
+        RECONTEO_BASE: Number(item.counted_qty || 0),
+        VALIDACION: quantity,
+        DIF_VALIDACION_RECONTEO: quantity - Number(item.counted_qty || 0),
+        COSTO: cost,
+        VALOR_VALIDACION: quantity * cost,
+      };
+    });
+  }
+
   async function exportRecords() {
     if (!selectedSessionId) return;
     const orderedCounts = [...filteredCounts].sort((a, b) => compareLocationByZone(a.location_code, b.location_code, "asc"));
@@ -4651,15 +4895,18 @@ export default function InventariosPage() {
       REGISTROS_POR_MINUTO: Number(row.perMinute.toFixed(2)),
     }));
     let recountRows: Awaited<ReturnType<typeof loadRecountRecordsForExport>> = [];
+    let validationRows: Awaited<ReturnType<typeof loadValidationRecordsForExport>> = [];
     try {
       recountRows = await loadRecountRecordsForExport(selectedSessionId);
+      if (selectedSession?.validation_enabled) validationRows = await loadValidationRecordsForExport(selectedSessionId);
     } catch (error: unknown) {
-      setMessage("No se pudieron leer los registros de reconteo para el Excel: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("No se pudieron leer los registros de reconteo/validacion para el Excel: " + (error instanceof Error ? error.message : String(error)));
       return;
     }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Registros");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recountRows), "Reconteo");
+    if (selectedSession?.validation_enabled) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(validationRows), "Validacion");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), "Resumen contadores");
     XLSX.writeFile(wb, `inventario_registros_${selectedSession?.name || "sesion"}.xlsx`);
   }
@@ -4750,11 +4997,13 @@ export default function InventariosPage() {
       STOCK_SISTEMA: row.system_stock,
       CONTEO: row.counted_original,
       RECONTEO: row.recounted_qty ?? "",
+      VALIDACION: row.validation_qty ?? "",
       DIFERENCIA: row.diff,
       STATUS: summaryStatus(row),
       COSTO: row.cost,
       DIF_VALORIZADA: row.valueDiff,
       RECONTADO: row.re_counted ? "SI" : "NO",
+      VALIDADO: row.validated ? "SI" : "NO",
       OBSERVACION: row.observation || "",
     }));
     const wb = XLSX.utils.book_new();
@@ -6303,10 +6552,19 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> Reconteo</h2>
-                    <p className="text-xs text-slate-500">Asigna diferencias por bloques a operadores activos.</p>
+                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> {selectedSession?.validation_enabled ? "Validacion" : "Reconteo"}</h2>
+                    <p className="text-xs text-slate-500">{selectedSession?.validation_enabled ? "Asigna diferencias ya recontadas para una validacion final." : "Asigna diferencias por bloques a operadores activos."}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {user?.role === "Administrador" && (
+                      <button
+                        onClick={toggleValidationPlan}
+                        disabled={isSelectedSessionFinished}
+                        className={`rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40 ${selectedSession?.validation_enabled ? "border-green-300 bg-green-50 text-green-800" : "text-slate-800"}`}
+                      >
+                        {selectedSession?.validation_enabled ? "Validacion activa" : "Activar validacion"}
+                      </button>
+                    )}
                     <button onClick={() => assignRecountBlock(10)} disabled={isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
                       Asignar 10 primeros
                     </button>
@@ -6333,7 +6591,7 @@ export default function InventariosPage() {
                   </select>
 
                   <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
-                    {unassignedRecountCandidates.length} pendientes | {activeAssignedRecountCount} asignados
+                    {filteredUnassignedRecountCandidates.length}{filteredUnassignedRecountCandidates.length !== unassignedRecountCandidates.length ? ` de ${unassignedRecountCandidates.length}` : ""} pendientes | {activeAssignedRecountCount} asignados
                   </div>
                 </div>
                 <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
@@ -6350,27 +6608,43 @@ export default function InventariosPage() {
                   onClick={() => setRecountManagerTab("asignados")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  Reconteos asignados ({assignedRecountRows.length})
+                  {selectedSession?.validation_enabled ? "Validaciones asignadas" : "Reconteos asignados"} ({assignedRecountRows.length})
                 </button>
                 <button
                   onClick={() => setRecountManagerTab("manual")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "manual" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  Reconteo manual ({manualRecountRows.length})
+                  {selectedSession?.validation_enabled ? "Validacion manual" : "Reconteo manual"} ({manualRecountRows.length})
                 </button>
                 <button
                   onClick={() => setRecountManagerTab("registros")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  Registros guardados ({filteredAdminRecountRecords.length})
+                  {selectedSession?.validation_enabled ? "Validaciones guardadas" : "Registros guardados"} ({filteredAdminRecountRecords.length})
                 </button>
               </div>
 
               {recountManagerTab === "pendientes" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">Codigos pendientes por asignar</h3>
-                  <div className="text-xs font-bold text-slate-500">{selectedPendingRecountRows.length} seleccionadas</div>
+                  <h3 className="font-black">Codigos pendientes por asignar {selectedSession?.validation_enabled ? "a validacion" : ""}</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex min-w-[240px] items-center rounded-xl border px-3 py-2 md:w-96">
+                      <Search size={15} className="text-slate-400" />
+                      <input
+                        value={pendingRecountQuery}
+                        onChange={event => setPendingRecountQuery(event.target.value)}
+                        placeholder="Buscar codigo, descripcion, ubicacion o ticket"
+                        className="min-w-0 flex-1 px-2 text-xs font-semibold outline-none"
+                      />
+                      {pendingRecountQuery && (
+                        <button type="button" onClick={() => setPendingRecountQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda pendientes">
+                          <X size={14} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-xs font-bold text-slate-500">{selectedPendingRecountRows.length} seleccionadas</div>
+                  </div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
                   <table className="w-full min-w-[1160px] text-xs">
@@ -6400,7 +6674,7 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {unassignedRecountCandidates.map(row => (
+                      {filteredUnassignedRecountCandidates.map(row => (
                         <tr key={recountKey(row)} className="border-t">
                           <td className="p-2 text-center">
                             <input
@@ -6429,7 +6703,7 @@ export default function InventariosPage() {
                           <td className="p-2 text-center font-black">{money(row.value_diff)}</td>
                         </tr>
                       ))}
-                      {unassignedRecountCandidates.length === 0 && (
+                      {filteredUnassignedRecountCandidates.length === 0 && (
                         <tr>
                           <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
                             No hay codigos pendientes para asignar con el filtro actual.
@@ -6445,7 +6719,7 @@ export default function InventariosPage() {
               {recountManagerTab === "asignados" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-black">Codigos asignados / reasignar</h3>
+                  <h3 className="font-black">{selectedSession?.validation_enabled ? "Codigos en validacion / reasignar" : "Codigos asignados / reasignar"}</h3>
                   <div className="flex flex-wrap gap-2">
                     <select
                       value={recountPrintOperatorId}
@@ -7139,7 +7413,7 @@ export default function InventariosPage() {
                 </div>
               </div>
               <div className="overflow-auto">
-                <table className="w-full min-w-[1320px] text-sm">
+                <table className="w-full min-w-[1400px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
@@ -7148,6 +7422,7 @@ export default function InventariosPage() {
                       <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
                       <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
                       <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
+                      <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />
                       <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
                       <th className="p-2 text-center">Status</th>
                       <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
@@ -7166,6 +7441,7 @@ export default function InventariosPage() {
                         <td className="p-2 text-center">{number2(row.system_stock)}</td>
                         <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                         <td className="p-2 text-center font-bold">{row.recounted_qty === null ? "-" : number2(row.recounted_qty)}</td>
+                        <td className="p-2 text-center font-bold">{row.validation_qty === null ? "-" : number2(row.validation_qty)}</td>
                         <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                         <td className="p-2 text-center">
                           <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>

@@ -30,6 +30,9 @@ alter table general_inventory_sessions
 alter table general_inventory_sessions
   add column if not exists manual_recount_enabled boolean not null default false;
 
+alter table general_inventory_sessions
+  add column if not exists validation_enabled boolean not null default false;
+
 create table if not exists general_inventory_operators (
   id uuid primary key default gen_random_uuid(),
   full_name text not null,
@@ -218,6 +221,63 @@ create index if not exists idx_gi_recount_counts_sku on general_inventory_recoun
 create index if not exists idx_gi_recount_counts_item_location on general_inventory_recount_counts(recount_item_id, location_code);
 
 alter table general_inventory_recount_counts drop constraint if exists general_inventory_recount_counts_recount_item_id_key;
+
+create table if not exists general_inventory_validation_items (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null references general_inventory_sessions(id) on delete cascade,
+  source_recount_item_id uuid references general_inventory_recount_items(id) on delete set null,
+  product_id uuid not null references cyclic_products(id),
+  location_id uuid references general_inventory_locations(id),
+  location_code text,
+  ticket text,
+  zone text,
+  zone_ref text,
+  lineal text,
+  full_location text,
+  recount_type text not null check (recount_type in ('surplus', 'missing')),
+  sku text not null,
+  description text,
+  unit text,
+  system_stock numeric(14,3) not null default 0,
+  counted_qty numeric(14,3) not null default 0,
+  diff_qty numeric(14,3) not null default 0,
+  cost_snapshot numeric(14,6) not null default 0,
+  value_diff numeric(14,2) not null default 0,
+  assigned_operator_id uuid references general_inventory_operators(id),
+  assigned_by uuid references cyclic_users(id),
+  status text not null default 'assigned' check (status in ('assigned', 'counted', 'reviewed', 'cancelled')),
+  location_count integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (session_id, product_id, location_code, recount_type)
+);
+
+create index if not exists idx_gi_validation_items_session on general_inventory_validation_items(session_id);
+create index if not exists idx_gi_validation_items_operator on general_inventory_validation_items(assigned_operator_id);
+create index if not exists idx_gi_validation_items_source on general_inventory_validation_items(source_recount_item_id);
+
+create table if not exists general_inventory_validation_counts (
+  id uuid primary key default gen_random_uuid(),
+  validation_item_id uuid not null references general_inventory_validation_items(id) on delete cascade,
+  session_id uuid not null references general_inventory_sessions(id) on delete cascade,
+  operator_id uuid not null references general_inventory_operators(id),
+  location_id uuid references general_inventory_locations(id),
+  location_code text,
+  product_id uuid references cyclic_products(id),
+  sku text,
+  description text,
+  unit text,
+  quantity numeric(14,3) not null check (quantity >= 0),
+  cost_snapshot numeric(14,6) not null default 0,
+  note text,
+  counted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (validation_item_id)
+);
+
+create index if not exists idx_gi_validation_counts_item on general_inventory_validation_counts(validation_item_id);
+create index if not exists idx_gi_validation_counts_session on general_inventory_validation_counts(session_id);
+create index if not exists idx_gi_validation_counts_sku on general_inventory_validation_counts(session_id, sku);
 
 create table if not exists general_inventory_item_observations (
   id uuid primary key default gen_random_uuid(),

@@ -74,5 +74,23 @@ begin
   ) then
     alter publication supabase_realtime add table public.general_inventory_recount_counts;
   end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'general_inventory_validation_items'
+  ) then
+    alter publication supabase_realtime add table public.general_inventory_validation_items;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'general_inventory_validation_counts'
+  ) then
+    alter publication supabase_realtime add table public.general_inventory_validation_counts;
+  end if;
 end;
 $$;
