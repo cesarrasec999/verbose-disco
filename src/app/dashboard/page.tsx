@@ -83,10 +83,14 @@ type LocationEntryDraftRecord = {
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════
-export default function DashboardPage() {
+type DashboardPageProps = {
+    forcedTab?: TabKey;
+};
+
+export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     // ─── Auth ───────────────────────────────────────────────
     const [user, setUser]         = useState<CyclicUser | null>(null);
-    const [activeTab, setActiveTab] = useState<TabKey>("operario");
+    const [activeTab, setActiveTab] = useState<TabKey>(forcedTab || "operario");
     const isMobileAccess = useIsMobileAccess();
 
     // ─── Datos globales ─────────────────────────────────────
@@ -290,7 +294,7 @@ export default function DashboardPage() {
                 localStorage.setItem("cyclic_user", JSON.stringify(u));
                 setUser(u);
 
-                const savedTab = sessionStorage.getItem("cyclic_active_tab") as TabKey | null;
+                const savedTab = forcedTab || (sessionStorage.getItem("cyclic_active_tab") as TabKey | null);
                 if (savedTab) {
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
@@ -331,13 +335,14 @@ export default function DashboardPage() {
 
             } catch {
                 setUser(parsed);
-                if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
+                if (forcedTab) setActiveTab(forcedTab);
+                else if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
                 else if (parsed.role === "Administrador") setActiveTab("admin");
                 else if (parsed.role === "Validador" || parsed.role === "Supervisor") setActiveTab("validador");
                 else setActiveTab("operario");
             }
         })();
-    }, [isMobileAccess]);
+    }, [isMobileAccess, forcedTab]);
 
     useEffect(() => {
         if (!user) return;
@@ -5988,7 +5993,7 @@ export default function DashboardPage() {
                 <nav className="flex-1 py-3 overflow-y-auto">
 
                     {/* CICLICOS — TOMA DE CONTEO */}
-                    {canTakeCount && (
+                    {canTakeCount && activeTab !== "ubicaciones" && activeTab !== "admin" && (
                         <div className="px-3 mb-1">
                             <button
                                 onClick={() => {
