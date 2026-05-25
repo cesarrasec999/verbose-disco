@@ -6256,8 +6256,8 @@ export default function DashboardPage() {
                         </div>
                     )}
 
-                    {/* SUBMODULOS CICLICOS / REPORTES */}
-                    {isValOrAdm && !isMobileAccess && (
+                    {/* SUBMODULOS CICLICOS */}
+                    {(canTakeCount || hasCyclicSubmodules) && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && !(activeTab === "validador" && (valTab === "no_inventariables" || valTab === "resultados")) && (
                         <>
                             {/* Header de sección */}
                             <div className="px-5 pt-3 pb-1">
@@ -6299,45 +6299,10 @@ export default function DashboardPage() {
                                     })()
                                 ))}
                             </div>
-                            {hasReportSubmodules && (
-                                <>
-                                    <div className="px-5 pt-4 pb-1">
-                                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reportes</p>
-                                    </div>
-                                    <div className="px-3 space-y-0.5">
-                                        {([
-                                            { key: "no_inventariables", icon: Database, label: "No inventariables", permission: canViewNonInventoryReports },
-                                            { key: "resultados", icon: Search, label: "Resultados", permission: canViewResultsReports },
-                                        ] as const).filter(item => item.permission).map(item => (
-                                            (() => {
-                                                const Icon = item.icon;
-                                                return (
-                                                    <button
-                                                        key={item.key}
-                                                        onClick={() => {
-                                                            setActiveTab("validador");
-                                                            setValTab(item.key);
-                                                            setSidebarOpen(false);
-                                                        }}
-                                                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                                                            activeTab === "validador" && valTab === item.key
-                                                                ? "bg-blue-600 text-white shadow-lg"
-                                                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                                                        }`}
-                                                    >
-                                                        <Icon size={16} />
-                                                        <span className="truncate">{item.label}</span>
-                                                    </button>
-                                                );
-                                            })()
-                                        ))}
-                                    </div>
-                                </>
-                            )}
                         </>
                     )}
 
-                    {(!isAdmin || isMobileAccess) && (
+                    {activeTab === "ubicaciones" && (
                         <div className="px-3 mt-1 space-y-0.5">
                             {canUseLocationsModule && <button
                                 onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
@@ -6350,68 +6315,41 @@ export default function DashboardPage() {
                                 <Package size={16} />
                                 <span className="truncate">Ubicaciones</span>
                             </button>}
-                            {canUseConsultaModule && <button
-                                onClick={() => { window.location.href = "/consulta-stock"; }}
-                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                            >
-                                <PackageSearch size={16} />
-                                <span className="truncate">Consulta</span>
-                            </button>}
                         </div>
                     )}
 
-                    {(isAdmin || isSupervisor) && !isMobileAccess && (
+                    {hasReportSubmodules && !isMobileAccess && activeTab === "validador" && (valTab === "no_inventariables" || valTab === "resultados") && (
                         <>
-                    {canUseLocationsModule && <div className="px-3 mt-1">
-                        <button
-                            onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
-                            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                                activeTab === "ubicaciones"
-                                    ? "bg-emerald-600 text-white shadow-lg"
-                                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                            }`}
-                        >
-                            <Package size={16} />
-                            <span className="truncate">Ubicaciones</span>
-                        </button>
-                    </div>}
-
                             <div className="px-5 pt-4 pb-1">
-                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reportes</p>
                             </div>
                             <div className="px-3 space-y-0.5">
-                                <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold bg-slate-800 text-white">
-                                    <ClipboardList size={16} />
-                                    <span className="truncate">Ciclicos</span>
-                                </button>
-                                {canUseAuditModule && <button
-                                    onClick={() => { window.location.href = "/auditoria"; }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                                >
-                                    <FileText size={16} />
-                                    <span className="truncate">Auditorias</span>
-                                </button>}
-                                {canUseGeneralInventoryModule && <button
-                                    onClick={() => { window.location.href = "/inventarios"; }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                                >
-                                    <Package size={16} />
-                                    <span className="truncate">Inventarios</span>
-                                </button>}
-                                {canUseConsultaModule && <button
-                                    onClick={() => { window.location.href = "/consulta-stock"; }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                                >
-                                    <PackageSearch size={16} />
-                                    <span className="truncate">Consulta</span>
-                                </button>}
-                                {canUseReportsModule && <button
-                                    onClick={() => { window.location.href = "/reportes"; }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                                >
-                                    <FileText size={16} />
-                                    <span className="truncate">Reportes</span>
-                                </button>}
+                                {([
+                                    { key: "no_inventariables", icon: Database, label: "No inventariables", permission: canViewNonInventoryReports },
+                                    { key: "resultados", icon: Search, label: "Resultados", permission: canViewResultsReports },
+                                ] as const).filter(item => item.permission).map(item => (
+                                    (() => {
+                                        const Icon = item.icon;
+                                        return (
+                                            <button
+                                                key={item.key}
+                                                onClick={() => {
+                                                    setActiveTab("validador");
+                                                    setValTab(item.key);
+                                                    setSidebarOpen(false);
+                                                }}
+                                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                                    valTab === item.key
+                                                        ? "bg-blue-600 text-white shadow-lg"
+                                                        : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                                }`}
+                                            >
+                                                <Icon size={16} />
+                                                <span className="truncate">{item.label}</span>
+                                            </button>
+                                        );
+                                    })()
+                                ))}
                             </div>
                         </>
                     )}
