@@ -855,8 +855,11 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-        else markSessionTabStale(selectedSessionId, "registros");
+        if (validatorTab === "registros" || validatorTab === "productividad") void loadRecordsData(selectedSessionId);
+        else {
+          markSessionTabStale(selectedSessionId, "registros");
+          markSessionTabStale(selectedSessionId, "productividad");
+        }
         if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
         else markSessionTabStale(selectedSessionId, "resumen");
         if (validatorTab === "reconteo") void loadRecountData(selectedSessionId, false);
@@ -1356,9 +1359,9 @@ export default function InventariosPage() {
         markSessionTabLoaded(sessionId, "preparacion");
         return;
       }
-      if (tab === "registros") {
+      if (tab === "registros" || tab === "productividad") {
         await loadRecordsData(sessionId);
-        markSessionTabLoaded(sessionId, "registros");
+        markSessionTabLoaded(sessionId, tab);
         return;
       }
       if ((tab === "reconteo" || tab === "validacion") && canManageInventory) {
@@ -4812,15 +4815,6 @@ export default function InventariosPage() {
       COSTO: row.cost_snapshot,
       VALOR: row.quantity * row.cost_snapshot,
     }));
-    const counterRows = counterStats.rows.map(row => ({
-      CONTADOR: row.name,
-      REGISTROS: row.count,
-      PRIMER_REGISTRO: Number.isFinite(row.first) ? new Date(row.first).toLocaleString("es-PE") : "",
-      ULTIMO_REGISTRO: Number.isFinite(row.last) ? new Date(row.last).toLocaleString("es-PE") : "",
-      MINUTOS_ACTIVOS: Number(row.minutes.toFixed(2)),
-      PAUSAS_EXCLUIDAS_MIN: Number(row.excludedPauseMinutes.toFixed(2)),
-      REGISTROS_POR_MINUTO: Number(row.perMinute.toFixed(2)),
-    }));
     let recountRows: Awaited<ReturnType<typeof loadRecountRecordsForExport>> = [];
     let validationRows: Awaited<ReturnType<typeof loadValidationRecordsForExport>> = [];
     try {
@@ -4834,7 +4828,6 @@ export default function InventariosPage() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Registros");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recountRows), "Reconteo");
     if (selectedSession?.validation_enabled) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(validationRows), "Validacion");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(counterRows), "Resumen contadores");
     XLSX.writeFile(wb, `inventario_registros_${selectedSession?.name || "sesion"}.xlsx`);
   }
 
@@ -5994,12 +5987,15 @@ export default function InventariosPage() {
 
           {isValidator && selectedSessionId && (
             <section className="rounded-2xl border bg-white p-2 shadow-sm">
-              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-6" : "grid-cols-2 md:grid-cols-5"}`}>
+              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-7" : "grid-cols-2 md:grid-cols-6"}`}>
                 {canManageInventory && <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Preparacion
                 </button>}
                 <button onClick={() => setValidatorTab("registros")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Registros
+                </button>
+                <button onClick={() => setValidatorTab("productividad")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "productividad" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                  Productividad
                 </button>
                 {canManageInventory && <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                   Reconteo
@@ -7250,9 +7246,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {((!isValidator && !operator) || !selectedSessionId || (isValidator && validatorTab === "registros")) && (
-          <div className="space-y-4">
-          {isValidator && selectedSessionId && validatorTab === "registros" && (
+          {isValidator && selectedSessionId && validatorTab === "productividad" && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -7284,6 +7278,9 @@ export default function InventariosPage() {
               </div>
             </section>
           )}
+
+          {((!isValidator && !operator) || !selectedSessionId || (isValidator && validatorTab === "registros")) && (
+          <div className="space-y-4">
           <section className="rounded-2xl border bg-white shadow-sm">
             <div className="border-b p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
