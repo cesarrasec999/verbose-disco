@@ -212,6 +212,19 @@ function rotationStoreKeysForStore(store: Store) {
   return [...keys];
 }
 
+function storeMatchKeys(store: Store) {
+  return [
+    store.id,
+    store.name,
+    store.erp_sede,
+    store.erp_store_no,
+    store.code,
+    ...rotationStoreKeysForStore(store),
+  ]
+    .map(value => normalizeRotationStoreKey(String(value || "")))
+    .filter(Boolean);
+}
+
 function currentRotationPeriod() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
@@ -713,20 +726,23 @@ export default function ReportesPage() {
         });
       }
 
-      setValuationRows(valuation.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name)));
+      const sortedValuation = valuation.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
+      setValuationRows(sortedValuation);
       setRotationRows([...rotationTotals.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.rotation.localeCompare(b.rotation)));
       setUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
       await loadRotationBreaks(targetStores);
       await loadRotationHistory();
       setProgress("");
+      return sortedValuation;
     } catch (error: unknown) {
       setMessage("Error generando reporte: " + (error instanceof Error ? error.message : String(error)));
+      return [];
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadInventoryValueByStoreForDate(date: string) {
+  async function loadInventoryValueByStoreForDate(date: string, fallbackRows = valuationRows) {
     const { data: snapshotData, error: snapshotError } = await supabase
       .from("inventory_valuation_snapshots")
       .select("id")
@@ -735,7 +751,7 @@ export default function ReportesPage() {
       .limit(1);
     if (snapshotError) throw snapshotError;
     const snapshotId = snapshotData?.[0]?.id;
-    if (!snapshotId) return new Map(valuationRows.map(row => [row.store_id, row.inventory_value]));
+    if (!snapshotId) return new Map(fallbackRows.map(row => [row.store_id, row.inventory_value]));
 
     const { data, error } = await supabase
       .from("inventory_valuation_snapshot_stores")
@@ -747,7 +763,7 @@ export default function ReportesPage() {
     for (const row of data || []) {
       const candidates = [row.store_id, row.store_name, row.sede].map(value => normalizeRotationStoreKey(String(value || "")));
       const store = stores.find(item => {
-        const storeKeys = [item.id, item.name, item.erp_sede, item.code].map(value => normalizeRotationStoreKey(String(value || "")));
+        const storeKeys = storeMatchKeys(item);
         return candidates.some(candidate => storeKeys.includes(candidate));
       });
       if (store) byStore.set(store.id, Number(row.inventory_value || 0));
@@ -798,7 +814,12 @@ export default function ReportesPage() {
     setMessage("");
     setProgress("Leyendo ventas sincronizadas...");
     try {
-      if (valuationRows.length === 0) await loadReport();
+      const targetStores = stores.filter(store => store.is_active && (selectedStoreId === "all" || store.id === selectedStoreId));
+      if (targetStores.length === 0) {
+        setMessage("No hay tiendas activas para reportar.");
+        return;
+      }
+      const valuationFallback = valuationRows.length === 0 ? await loadReport() : valuationRows;
       const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
       const salesEndDate = reportDate;
       const periodDate = new Date(`${reportDate}T00:00:00`);
@@ -824,18 +845,29 @@ export default function ReportesPage() {
       if (error) throw error;
 
       const storeByKey = new Map<string, Store>();
-      for (const store of stores) {
+      for (const store of targetStores) {
         for (const key of rotationStoreKeysForStore(store)) storeByKey.set(normalizeRotationStoreKey(key), store);
       }
       const grouped = new Map<string, SalesDailyRow>();
       const dayGrouped = new Map<string, SalesDailyRow>();
+      for (const store of targetStores) {
+        grouped.set(store.id, {
+          store_id: store.id,
+          store_name: store.name,
+          sales_amount: 0,
+          cost_amount: 0,
+          quantity: 0,
+          documents: 0,
+        });
+      }
       for (const row of data || []) {
         const key = normalizeRotationStoreKey(String(row.store_key || row.store_name || ""));
         const store = storeByKey.get(key);
-        const groupKey = store?.id || key;
+        if (!store) continue;
+        const groupKey = store.id;
         const current = grouped.get(groupKey) || {
-          store_id: store?.id || groupKey,
-          store_name: store?.name || String(row.store_name || row.store_key || ""),
+          store_id: store.id,
+          store_name: store.name,
           sales_amount: 0,
           cost_amount: 0,
           quantity: 0,
@@ -849,8 +881,8 @@ export default function ReportesPage() {
 
         if (String(row.sales_date || "") === salesEndDate) {
           const dayCurrent = dayGrouped.get(groupKey) || {
-            store_id: store?.id || groupKey,
-            store_name: store?.name || String(row.store_name || row.store_key || ""),
+            store_id: store.id,
+            store_name: store.name,
             sales_amount: 0,
             cost_amount: 0,
             quantity: 0,
@@ -863,7 +895,7 @@ export default function ReportesPage() {
           dayGrouped.set(groupKey, dayCurrent);
         }
       }
-      const valuationByStore = await loadInventoryValueByStoreForDate(reportDate);
+      const valuationByStore = await loadInventoryValueByStoreForDate(reportDate, valuationFallback);
       const rows = [...grouped.values()].map(row => {
         const day = dayGrouped.get(row.store_id);
         const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
