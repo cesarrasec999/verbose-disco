@@ -208,7 +208,7 @@ function number2(value: number | string | null | undefined) {
 
 function canAccessAuditModule(user: CyclicUser) {
   if (Array.isArray(user.module_access) && user.module_access.length > 0) {
-    return user.module_access.includes("audit");
+    return user.module_access.includes("audit") || user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || Boolean(user.can_access_audit);
   }
   return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || Boolean(user.can_access_audit);
 }
@@ -713,7 +713,7 @@ export default function AuditoriaPage() {
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
-    setRegisterTab(isMobileAccess ? "count" : user?.role === "Validador" ? "summary" : "records");
+    setRegisterTab(isMobileAccess ? "count" : "records");
     await loadSessionData(row.id);
   }
 
@@ -1918,7 +1918,7 @@ export default function AuditoriaPage() {
 
         {visibleMainTab === "register" && (
           <section className="space-y-4">
-            <div className="hidden grid-cols-3 gap-2 md:grid">
+            <div className="grid grid-cols-3 gap-2">
               {canCountAudit && <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>}
               <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
               <button onClick={() => setRegisterTab("summary")} className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</button>
