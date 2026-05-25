@@ -225,6 +225,11 @@ function storeMatchKeys(store: Store) {
     .filter(Boolean);
 }
 
+function isCdGpcStoreName(value: string) {
+  const normalized = normalizeRotationStoreKey(value);
+  return normalized === "CD GPC" || normalized === "CD-GPC" || normalized === "CD" || normalized.includes("CD GPC");
+}
+
 function currentRotationPeriod() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
@@ -819,6 +824,8 @@ export default function ReportesPage() {
         setMessage("No hay tiendas activas para reportar.");
         return;
       }
+      const selectedIsCdGpc = selectedStore ? isCdGpcStoreName(selectedStore.name) : false;
+      const calculationStores = selectedIsCdGpc ? stores.filter(store => store.is_active) : targetStores;
       const valuationFallback = valuationRows.length === 0 ? await loadReport() : valuationRows;
       const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
       const salesEndDate = reportDate;
@@ -840,17 +847,17 @@ export default function ReportesPage() {
         .select("sales_date,store_key,store_name,sales_amount,cost_amount,quantity,documents")
         .gte("sales_date", salesStartDate)
         .lte("sales_date", salesEndDate);
-      if (selectedStore) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
+      if (selectedStore && !selectedIsCdGpc) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
       const { data, error } = await query;
       if (error) throw error;
 
       const storeByKey = new Map<string, Store>();
-      for (const store of targetStores) {
+      for (const store of calculationStores) {
         for (const key of rotationStoreKeysForStore(store)) storeByKey.set(normalizeRotationStoreKey(key), store);
       }
       const grouped = new Map<string, SalesDailyRow>();
       const dayGrouped = new Map<string, SalesDailyRow>();
-      for (const store of targetStores) {
+      for (const store of calculationStores) {
         grouped.set(store.id, {
           store_id: store.id,
           store_name: store.name,
@@ -916,8 +923,21 @@ export default function ReportesPage() {
           inventory_value: inventoryValue,
           inventory_vs_budget: r2(inventoryValue - inventoryBudget),
         };
-      }).sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
-      setSalesRows(rows);
+      });
+
+      const otherRows = rows.filter(row => !isCdGpcStoreName(row.store_name));
+      const cdProjectedCost = r2(otherRows.reduce((sum, row) => sum + row.projected_cost, 0));
+      const cdInventoryBudget = r2(otherRows.reduce((sum, row) => sum + row.inventory_budget, 0));
+      for (const row of rows) {
+        if (!isCdGpcStoreName(row.store_name)) continue;
+        row.projected_cost = cdProjectedCost;
+        row.inventory_budget = cdInventoryBudget;
+        row.inventory_vs_budget = r2(row.inventory_value - row.inventory_budget);
+      }
+
+      const visibleRows = selectedStoreId === "all" ? rows : rows.filter(row => row.store_id === selectedStoreId);
+      visibleRows.sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
+      setSalesRows(visibleRows);
       setSalesUpdatedAt(`Dias habiles: ${elapsedBusinessDays}/${totalBusinessDays}`);
       setProgress("");
     } catch (error: unknown) {
