@@ -2,8 +2,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, LogOut, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, Home, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -89,6 +89,7 @@ type AuditCount = {
   quantity: number;
   counted_at: string;
   counted_by: string;
+  counted_by_name?: string | null;
   sku?: string;
   description?: string;
   unit?: string;
@@ -344,6 +345,13 @@ export default function AuditoriaPage() {
       return () => window.clearTimeout(timer);
     }
   }, [isReadOnlySupervisor, registerTab]);
+
+  useEffect(() => {
+    if (isMobileAccess && registerTab !== "count") {
+      const timer = window.setTimeout(() => setRegisterTab("count"), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isMobileAccess, registerTab]);
 
   useEffect(() => {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
@@ -944,8 +952,15 @@ export default function AuditoriaPage() {
     setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
     setItemStockDrafts(Object.fromEntries(mappedItems.map(item => [item.id, String(Number(item.system_stock || 0))])));
 
-    const { data: countRows } = await supabase.from("audit_counts").select("*").eq("session_id", sessionId).order("counted_at", { ascending: false });
-    setCounts((countRows || []) as AuditCount[]);
+    const { data: countRows } = await supabase
+      .from("audit_counts")
+      .select("*, cyclic_users!audit_counts_counted_by_fkey(full_name)")
+      .eq("session_id", sessionId)
+      .order("counted_at", { ascending: false });
+    setCounts(((countRows || []) as any[]).map(row => ({
+      ...row,
+      counted_by_name: row.cyclic_users?.full_name || null,
+    })) as AuditCount[]);
   }
 
   async function findProductByCode(code: string): Promise<Product | "AMBIGUOUS" | null> {
@@ -1413,6 +1428,27 @@ export default function AuditoriaPage() {
       });
   }, [counts, items, recordsQuery]);
 
+  const myAuditCounts = useMemo(() => {
+    return [...counts]
+      .filter(count => !user?.id || count.counted_by === user.id)
+      .sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime());
+  }, [counts, user?.id]);
+
+  const countsByUser = useMemo(() => {
+    const groups = new Map<string, { userId: string; userName: string; rows: AuditCount[] }>();
+    for (const count of filteredCounts) {
+      const key = count.counted_by || "sin_usuario";
+      const current = groups.get(key) || {
+        userId: key,
+        userName: count.counted_by === user?.id ? user.full_name : count.counted_by_name || "Sin usuario",
+        rows: [],
+      };
+      current.rows.push(count);
+      groups.set(key, current);
+    }
+    return [...groups.values()];
+  }, [filteredCounts, user?.full_name, user?.id]);
+
   const adminSummaryTotals = useMemo(() => {
     const auditedItems = adminSummaryRows.reduce((acc, row) => acc + row.audited_items, 0);
     const okItems = adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0);
@@ -1672,11 +1708,6 @@ export default function AuditoriaPage() {
     setMessage("Se abrió Gmail. Descarga o copia el informe HTML y pégalo en el cuerpo del correo.");
   }
 
-  function logout() {
-    localStorage.removeItem("cyclic_user");
-    window.location.href = "/";
-  }
-
   if (!user) return <main className="min-h-screen grid place-items-center text-slate-500">Cargando...</main>;
 
   const visibleMainTab = canViewAuditSummary || mainTab !== "adminSummary" ? mainTab : "register";
@@ -1687,7 +1718,7 @@ export default function AuditoriaPage() {
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-3 py-3 md:px-5">
-          <button onClick={() => window.location.href = "/dashboard"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver al dashboard"><ArrowLeft size={18} /></button>
+          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Menu principal"><Home size={18} /></button>
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 font-black text-white">W</div>
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-base font-black leading-tight">Auditoria WMS</h1>
@@ -1710,7 +1741,6 @@ export default function AuditoriaPage() {
           )}
           <button onClick={() => { window.location.href = "/consulta-stock"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Consulta de stock"><PackageSearch size={18} /></button>
           <button onClick={refreshAuditData} disabled={loading} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-40" title="Actualizar datos"><RefreshCw size={18} className={loading ? "animate-spin" : ""} /></button>
-          <button onClick={logout} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesión"><LogOut size={18} /></button>
         </div>
       </header>
 
@@ -1918,7 +1948,7 @@ export default function AuditoriaPage() {
 
         {visibleMainTab === "register" && (
           <section className="space-y-4">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="hidden grid-cols-3 gap-2 md:grid">
               {canCountAudit && <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>}
               <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
               <button onClick={() => setRegisterTab("summary")} className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</button>
@@ -2042,10 +2072,49 @@ export default function AuditoriaPage() {
                   </div>
                 )}
               </div>}
+              {session && (
+                <section className="mx-auto max-w-2xl overflow-hidden rounded-2xl border bg-white shadow-sm">
+                  <div className="border-b p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Mis registros</h2>
+                      <div className="text-right text-xs font-bold text-slate-500">{myAuditCounts.length} registro{myAuditCounts.length !== 1 ? "s" : ""}</div>
+                    </div>
+                  </div>
+                  <div className="divide-y">
+                    {myAuditCounts.map(row => {
+                      const item = items.find(i => i.id === row.item_id);
+                      return (
+                        <div key={row.id} className="p-3">
+                          <div className="flex min-w-0 items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-black text-blue-700">{item?.sku || row.sku}</span>
+                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{item?.unit || row.unit || "UM"}</span>
+                              </div>
+                              <div className="max-w-full whitespace-normal break-words text-sm text-slate-600">{item?.description || row.description}</div>
+                              <div className="mt-1 text-xs text-slate-400">{new Date(row.counted_at).toLocaleString("es-PE")} · Ubicacion: <b>{row.location}</b></div>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <div className="text-xl font-black text-slate-950">{number2(row.quantity)}</div>
+                              {canManageAudit && (
+                                <div className="mt-1 flex justify-end gap-1">
+                                  <button onClick={() => startEdit(row)} className="rounded-lg border px-2 py-1 text-xs font-black text-blue-700">Editar</button>
+                                  <button onClick={() => deleteCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black text-red-600">Eliminar</button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {myAuditCounts.length === 0 && <div className="p-8 text-center text-sm font-semibold text-slate-400">Aun no tienes registros en esta sesion.</div>}
+                  </div>
+                </section>
+              )}
               </>
             )}
 
-            {registerTab === "records" && (
+            {!isMobileAccess && registerTab === "records" && (
               <div className="rounded-2xl border bg-white shadow-sm">
                 <div className="border-b px-4 py-3">
                   <div className="font-black">Registros realizados ({filteredCounts.length}/{counts.length})</div>
@@ -2062,16 +2131,25 @@ export default function AuditoriaPage() {
                 <div className="max-h-[70vh] overflow-auto">
                   <table className="w-full min-w-[760px] text-sm">
                     <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Descripción</th><th className="p-2">UM</th><th className="p-2">Ubicación</th><th className="p-2">Cant.</th><th className="p-2">Fecha/hora</th><th className="p-2">Acción</th></tr></thead>
-                    <tbody>{filteredCounts.map(c => {
-                      const item = items.find(i => i.id === c.item_id);
-                      return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center">{canManageAudit ? <><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></> : <span className="text-xs font-semibold text-slate-400">Lectura</span>}</td></tr>;
-                    })}</tbody>
+                    <tbody>{countsByUser.map(group => (
+                      <Fragment key={group.userId}>
+                        <tr key={`${group.userId}-header`} className="border-y bg-blue-50">
+                          <td colSpan={7} className="px-3 py-2 text-xs font-black uppercase tracking-wide text-blue-800">
+                            {group.userName} - {group.rows.length} registro{group.rows.length !== 1 ? "s" : ""}
+                          </td>
+                        </tr>
+                        {group.rows.map(c => {
+                          const item = items.find(i => i.id === c.item_id);
+                          return <tr key={c.id} className="border-b hover:bg-slate-50"><td className="p-2 font-black">{item?.sku || c.sku}</td><td className="max-w-xs truncate p-2">{item?.description || c.description}</td><td className="p-2 text-center">{item?.unit || c.unit}</td><td className="p-2 text-center font-semibold">{c.location}</td><td className="p-2 text-center font-black">{number2(c.quantity)}</td><td className="p-2 text-center text-xs">{new Date(c.counted_at).toLocaleString("es-PE")}</td><td className="p-2 text-center">{canManageAudit ? <><button onClick={() => startEdit(c)} className="rounded-lg border px-2 py-1 text-blue-700"><Edit3 size={14} /></button><button onClick={() => deleteCount(c)} className="ml-1 rounded-lg border px-2 py-1 text-red-600"><Trash2 size={14} /></button></> : <span className="text-xs font-semibold text-slate-400">Lectura</span>}</td></tr>;
+                        })}
+                      </Fragment>
+                    ))}</tbody>
                   </table>
                 </div>
               </div>
             )}
 
-            {registerTab === "summary" && (
+            {!isMobileAccess && registerTab === "summary" && (
               <div className="space-y-4">
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{totals.eri}%</div></div>

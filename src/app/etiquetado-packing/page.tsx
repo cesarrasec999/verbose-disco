@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Download, LogOut, RefreshCw, Save, Search, Tags, UserPlus } from "lucide-react";
+import { Download, Home, RefreshCw, Save, Search, Tags, UserPlus } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -385,8 +385,8 @@ async function searchProducts() {
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-20 border-b bg-white px-4 py-3">
         <div className="mx-auto flex max-w-6xl items-center gap-3">
-          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver">
-            <ArrowLeft size={18} />
+          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Menu principal">
+            <Home size={18} />
           </button>
           <div className="grid h-11 w-11 place-items-center rounded-2xl bg-cyan-600 text-white">
             <Tags size={24} />
@@ -397,9 +397,6 @@ async function searchProducts() {
           </div>
           <button onClick={() => loadTasks(storeId)} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Actualizar">
             <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
-          </button>
-          <button onClick={() => { localStorage.removeItem("cyclic_user"); window.location.href = "/"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Cerrar sesion">
-            <LogOut size={18} />
           </button>
         </div>
       </header>

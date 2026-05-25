@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, PackageSearch } from "lucide-react";
+import { Home, PackageSearch } from "lucide-react";
 
 type CyclicUser = {
   full_name: string;
@@ -46,9 +46,9 @@ export default function PickingPage() {
             <button
               onClick={() => window.location.href = "/"}
               className="rounded-xl border px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-              title="Volver"
+              title="Menu principal"
             >
-              <ArrowLeft size={16} />
+              <Home size={16} />
             </button>
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-600 text-white">
               <PackageSearch size={24} />

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+import { BarChart3, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { fetchCyclicDayData } from "@/features/ciclicos/api";
@@ -6449,14 +6449,14 @@ export default function DashboardPage() {
                     )}
                 </nav>
 
-                {/* Logout */}
+                {/* Menu principal */}
                 <div className="px-3 py-4 border-t border-slate-700/60">
                     <button
-                        onClick={() => { handleLogout(); setSidebarOpen(false); }}
-                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-red-600/20 hover:text-red-300 transition-all"
+                        onClick={() => { window.location.href = "/"; setSidebarOpen(false); }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                     >
-                        <LogOut size={16} />
-                        <span>Cerrar sesión</span>
+                        <Home size={16} />
+                        <span>Menu principal</span>
                     </button>
                 </div>
             </aside>

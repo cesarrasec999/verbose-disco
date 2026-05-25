@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Flashlight, LogOut, PackageSearch, QrCode, RefreshCw, Search } from "lucide-react";
+import { Flashlight, Home, PackageSearch, QrCode, RefreshCw, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 
 type User = {
@@ -291,11 +291,6 @@ export default function ConsultaStockPage() {
     }
   }
 
-  function logout() {
-    localStorage.removeItem("cyclic_user");
-    window.location.href = "/";
-  }
-
   const hasResults = results.length > 0;
   const totalMatches = useMemo(() => results.reduce((sum, result) => sum + result.total, 0), [results]);
 
@@ -303,8 +298,8 @@ export default function ConsultaStockPage() {
     <main className="min-h-screen bg-slate-100 text-slate-950">
       <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-3 py-3 md:px-5">
-          <button onClick={() => window.history.length > 1 ? window.history.back() : window.location.href = "/dashboard"} className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border bg-white" title="Volver">
-            <ArrowLeft size={20} />
+          <button onClick={() => window.location.href = "/"} className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border bg-white" title="Menu principal">
+            <Home size={20} />
           </button>
           <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-slate-900 text-white">
             <PackageSearch size={25} />
@@ -315,9 +310,6 @@ export default function ConsultaStockPage() {
           </div>
           <button onClick={() => void loadBaseData()} className="grid h-11 w-11 place-items-center rounded-xl border bg-white" title="Actualizar sincronizacion">
             <RefreshCw size={20} />
-          </button>
-          <button onClick={logout} className="grid h-11 w-11 place-items-center rounded-xl border bg-white" title="Cerrar sesion">
-            <LogOut size={20} />
           </button>
         </div>
       </header>

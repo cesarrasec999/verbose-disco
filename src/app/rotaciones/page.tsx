@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
-import { ArrowLeft, Download, RefreshCw, Search, Upload } from "lucide-react";
+import { Download, Home, RefreshCw, Search, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { readSafeSheetObjects } from "@/lib/safeExcel";
@@ -446,10 +446,11 @@ export default function RotacionesPage() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => window.location.href = "/dashboard"}
+              onClick={() => window.location.href = "/"}
               className="rounded-xl border px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              title="Menu principal"
             >
-              <ArrowLeft size={16} />
+              <Home size={16} />
             </button>
             <div>
               <h1 className="text-lg font-bold">Rotaciones por codigo - tienda</h1>

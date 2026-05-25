@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, LineChart, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, LineChart, LogOut, MapPin, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -48,7 +48,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/rotaciones";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/rotaciones";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -61,6 +61,7 @@ const MODULES: Array<{
   accent: string;
 }> = [
   { label: "Conteo Ciclico", description: "Conteos por tienda y validacion diaria", destination: "/dashboard", icon: ClipboardCheck, accent: "bg-blue-600" },
+  { label: "Ubicaciones", description: "Consulta y mantenimiento de ubicaciones", destination: "/ubicaciones", icon: MapPin, accent: "bg-emerald-600" },
   { label: "Auditorias", description: "Revision y control de auditorias", destination: "/auditoria", icon: ShieldCheck, accent: "bg-amber-500" },
   { label: "Inventarios", description: "Conteo por ubicaciones y reconteos", destination: "/inventarios", icon: Warehouse, accent: "bg-emerald-600" },
   { label: "Consulta", description: "Consulta de stock y codigos", destination: "/consulta-stock", icon: Search, accent: "bg-sky-600" },
@@ -71,6 +72,7 @@ const MODULES: Array<{
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/dashboard": "cyclic_count_take",
+  "/ubicaciones": "locations",
   "/auditoria": "audit",
   "/inventarios": "general_inventory",
   "/picking": "picking",
@@ -89,6 +91,17 @@ function normalizePhone(value: string) {
 
 export default function LoginPage() {
   const [selectedModule, setSelectedModule] = useState<(typeof MODULES)[number] | null>(null);
+  const [authenticatedUser, setAuthenticatedUser] = useState<CyclicUser | null>(() => {
+    if (typeof window === "undefined") return null;
+    const raw = localStorage.getItem("cyclic_user");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as CyclicUser;
+    } catch {
+      localStorage.removeItem("cyclic_user");
+      return null;
+    }
+  });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -108,17 +121,16 @@ export default function LoginPage() {
   const [modalError, setModalError] = useState("");
   const [modalLoading, setModalLoading] = useState(false);
 
-  const destination = selectedModule?.destination || "/dashboard";
-  const selectedTitle = selectedModule?.label || "RASECORP";
+  const allowedModules = useMemo(() => {
+    if (!authenticatedUser) return [];
+    return MODULES.filter(module => canEnterDestination(authenticatedUser, module.destination));
+  }, [authenticatedUser]);
   const SelectedIcon = selectedModule?.icon || Boxes;
+  const loginPlaceholder = inventoryMode === "register" ? "Celular" : "ID / usuario";
 
-  const loginPlaceholder = useMemo(() => (
-    destination === "/inventarios" && inventoryMode !== "register" ? "ID / usuario o celular" : "ID / usuario"
-  ), [destination, inventoryMode]);
-
-  function canEnterDestination(user: CyclicUser) {
-    const moduleKey = DESTINATION_MODULE[destination];
-    if (destination === "/dashboard") {
+  function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
+    const moduleKey = DESTINATION_MODULE[targetDestination];
+    if (targetDestination === "/dashboard") {
       const access = userModuleAccess(user);
       const dashboardHosted = [
         "cyclic_count_take",
@@ -137,19 +149,24 @@ export default function LoginPage() {
     }
     if (moduleKey && !userModuleAccess(user).includes(moduleKey)) return false;
     if (hasExplicitModuleAccess(user)) return true;
-    if (destination === "/auditoria") return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || user.can_access_audit;
-    if (destination === "/inventarios") return user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor";
-    if (destination === "/picking") return user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor";
+    if (targetDestination === "/auditoria") return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || user.can_access_audit;
+    if (targetDestination === "/inventarios") return user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor";
+    if (targetDestination === "/picking") return user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor";
     return true;
   }
 
-  function enterSelectedDestination(user: CyclicUser) {
-    if (!canEnterDestination(user)) {
+  function enterSelectedDestination(user: CyclicUser, module: (typeof MODULES)[number]) {
+    if (!canEnterDestination(user, module.destination)) {
       setError("Tu usuario no tiene acceso a este modulo.");
       return false;
     }
     localStorage.setItem("cyclic_user", JSON.stringify(user));
-    window.location.href = destination;
+    if (module.destination === "/ubicaciones") {
+      sessionStorage.setItem("cyclic_active_tab", "ubicaciones");
+      window.location.assign("/dashboard");
+      return true;
+    }
+    window.location.assign(module.destination);
     return true;
   }
 
@@ -177,10 +194,10 @@ export default function LoginPage() {
   }
 
   useEffect(() => {
-    if (destination !== "/inventarios") return;
+    if (inventoryMode !== "register") return;
     const timer = window.setTimeout(() => void loadInventorySessions(), 0);
     return () => window.clearTimeout(timer);
-  }, [destination]);
+  }, [inventoryMode]);
 
   async function findOperatorInventorySession(operatorId: string) {
     const preferredSessionId = selectedInventorySessionId || localStorage.getItem(GENERAL_INVENTORY_SESSION_KEY) || "";
@@ -286,32 +303,6 @@ export default function LoginPage() {
   }
 
   async function handleLogin() {
-    if (!selectedModule) {
-      setError("Selecciona un modulo para continuar.");
-      return;
-    }
-
-    if (destination === "/inventarios") {
-      const cyclic = await supabase
-        .from("cyclic_users")
-        .select("*")
-        .eq("username", username.trim().toLowerCase())
-        .eq("password", password)
-        .eq("is_active", true)
-        .maybeSingle();
-      if (cyclic.data) {
-        const user = cyclic.data as CyclicUser;
-        if (!canEnterDestination(user)) {
-          setError("Tu usuario no tiene acceso a este modulo.");
-          return;
-        }
-        enterSelectedDestination(user);
-        return;
-      }
-      await handleInventoryAuth();
-      return;
-    }
-
     setLoading(true);
     setError("");
     const { data, error: dbError } = await supabase
@@ -329,8 +320,8 @@ export default function LoginPage() {
     }
 
     const user = data as CyclicUser;
-    if (!canEnterDestination(user)) {
-      setError("Tu usuario no tiene acceso a este modulo.");
+    if (MODULES.filter(module => canEnterDestination(user, module.destination)).length === 0) {
+      setError("Tu usuario no tiene modulos permitidos.");
       setLoading(false);
       return;
     }
@@ -342,7 +333,12 @@ export default function LoginPage() {
       return;
     }
 
-    enterSelectedDestination(user);
+    localStorage.setItem("cyclic_user", JSON.stringify(user));
+    setAuthenticatedUser(user);
+    setSelectedModule(null);
+    setUsername("");
+    setPassword("");
+    setLoading(false);
   }
 
   async function handleSaveWhatsapp() {
@@ -360,7 +356,12 @@ export default function LoginPage() {
       setModalError("Error al guardar el numero. Intenta de nuevo.");
       return;
     }
-    enterSelectedDestination({ ...pendingUser, whatsapp: wsp });
+    const updatedUser = { ...pendingUser, whatsapp: wsp };
+    localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
+    setAuthenticatedUser(updatedUser);
+    setSelectedModule(null);
+    setModalMode(null);
+    setPendingUser(null);
   }
 
   async function handleChangePassword() {
@@ -384,7 +385,14 @@ export default function LoginPage() {
       setModalError("Error al actualizar. Intenta de nuevo.");
       return;
     }
-    enterSelectedDestination({ ...pendingUser, password: newPass, whatsapp: wsp || pendingUser.whatsapp });
+    const updatedUser = { ...pendingUser, password: newPass, whatsapp: wsp || pendingUser.whatsapp };
+    localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
+    setAuthenticatedUser(updatedUser);
+    setSelectedModule(null);
+    setModalMode(null);
+    setPendingUser(null);
+    setNewPass("");
+    setConfirmPass("");
   }
 
   return (
@@ -461,12 +469,13 @@ export default function LoginPage() {
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-600 text-xl font-black text-white shadow-lg shadow-orange-950/40">R</div>
             <div>
               <h1 className="text-2xl font-black text-white">RASECORP</h1>
-              <p className="text-sm font-semibold text-slate-300">Selecciona un modulo para iniciar</p>
+              <p className="text-sm font-semibold text-slate-300">{authenticatedUser ? "Selecciona un modulo permitido" : "Ingresa para ver tus modulos"}</p>
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            {MODULES.map(module => {
+          {authenticatedUser ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+            {allowedModules.map(module => {
               const Icon = module.icon;
               const isActive = selectedModule?.destination === module.destination;
               return (
@@ -475,7 +484,7 @@ export default function LoginPage() {
                   onClick={() => {
                     setSelectedModule(module);
                     setError("");
-                    setInventoryMode("login");
+                    enterSelectedDestination(authenticatedUser, module);
                   }}
                   className={`group flex min-h-[112px] items-center gap-4 rounded-2xl border p-4 text-left shadow-xl shadow-slate-950/20 backdrop-blur-md transition ${
                     isActive
@@ -493,41 +502,61 @@ export default function LoginPage() {
                 </button>
               );
             })}
+            {allowedModules.length === 0 && (
+              <div className="rounded-2xl border border-white/20 bg-white/90 p-5 text-sm font-bold text-slate-600">
+                No tienes modulos activos. Pide al administrador que revise tus permisos.
+              </div>
+            )}
           </div>
+          ) : (
+            <div className="rounded-3xl border border-white/20 bg-white/10 p-5 text-sm font-semibold text-slate-200 backdrop-blur-md">
+              Primero inicia sesion. Luego veras solamente los modulos que tienes permitido usar.
+            </div>
+          )}
         </section>
 
         <section className="rounded-3xl border border-white/25 bg-white/95 p-5 shadow-2xl shadow-slate-950/40 backdrop-blur-md">
-          {!selectedModule ? (
+          {authenticatedUser ? (
             <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
               <Boxes size={48} className="text-slate-300" />
-              <p className="mt-4 text-lg font-black">Elige un modulo</p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">Luego ingresa tu ID y clave.</p>
+              <p className="mt-4 text-lg font-black">Hola, {authenticatedUser.full_name}</p>
+              <p className="mt-1 text-sm font-semibold text-slate-500">Elige un modulo permitido para continuar.</p>
+              <button
+                type="button"
+                className="mt-5 rounded-2xl border px-4 py-2 text-sm font-black text-slate-600 hover:bg-slate-50"
+                onClick={() => {
+                  localStorage.removeItem("cyclic_user");
+                  sessionStorage.clear();
+                  setAuthenticatedUser(null);
+                  setSelectedModule(null);
+                  setUsername("");
+                  setPassword("");
+                  setError("");
+                }}
+              >
+                <LogOut className="mr-2 inline" size={16} /> Cerrar sesion
+              </button>
             </div>
           ) : (
             <div className="space-y-4">
-              <button className="text-sm font-black text-slate-500 hover:text-slate-900" onClick={() => setSelectedModule(null)}>
-                Volver a modulos
-              </button>
               <div className="flex items-center gap-3">
-                <div className={`flex h-12 w-12 items-center justify-center rounded-2xl text-white ${selectedModule.accent}`}>
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-600 text-white">
                   <SelectedIcon size={24} />
                 </div>
                 <div>
-                  <h2 className="text-xl font-black">{selectedTitle}</h2>
-                  <p className="text-xs font-semibold text-slate-500">Ingresa tus credenciales para continuar</p>
+                  <h2 className="text-xl font-black">{inventoryMode === "register" ? "Auto registro inventario" : "Iniciar sesion"}</h2>
+                  <p className="text-xs font-semibold text-slate-500">{inventoryMode === "register" ? "Entraras solo a la sesion de Inventarios Generales" : "Ingresa tu ID y clave para ver tus modulos"}</p>
                 </div>
               </div>
 
-              {destination === "/inventarios" && (
-                <div className="grid grid-cols-2 gap-2 rounded-2xl border p-1">
-                  <button onClick={() => setInventoryMode("login")} className={`rounded-xl px-3 py-2 text-sm font-black ${inventoryMode === "login" ? "bg-slate-900 text-white" : "text-slate-600"}`}>Iniciar sesion</button>
-                  <button onClick={() => setInventoryMode("register")} className={`rounded-xl px-3 py-2 text-sm font-black ${inventoryMode === "register" ? "bg-slate-900 text-white" : "text-slate-600"}`}>Auto registro</button>
-                </div>
-              )}
+              <div className="grid grid-cols-2 gap-2 rounded-2xl border p-1">
+                <button onClick={() => { setInventoryMode("login"); setError(""); }} className={`rounded-xl px-3 py-2 text-sm font-black ${inventoryMode === "login" ? "bg-slate-900 text-white" : "text-slate-600"}`}>Iniciar sesion</button>
+                <button onClick={() => { setInventoryMode("register"); setError(""); }} className={`rounded-xl px-3 py-2 text-sm font-black ${inventoryMode === "register" ? "bg-slate-900 text-white" : "text-slate-600"}`}>Auto registro</button>
+              </div>
 
               {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
 
-              {destination === "/inventarios" && inventoryMode === "register" && (
+              {inventoryMode === "register" && (
                 <input
                   className="w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none focus:border-slate-900"
                   placeholder="Nombres completos"
@@ -551,14 +580,14 @@ export default function LoginPage() {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={event => setPassword(event.target.value)}
-                  onKeyDown={event => { if (event.key === "Enter") void handleLogin(); }}
+                  onKeyDown={event => { if (event.key === "Enter") void (inventoryMode === "register" ? handleInventoryAuth() : handleLogin()); }}
                 />
                 <button type="button" onClick={() => setShowPassword(prev => !prev)} className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-slate-500">
                   {showPassword ? "Ocultar" : "Ver"}
                 </button>
               </div>
 
-              {destination === "/inventarios" && inventoryMode === "register" && (
+              {inventoryMode === "register" && (
                 <select
                   className="w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none focus:border-slate-900"
                   value={selectedInventorySessionId}
@@ -571,46 +600,44 @@ export default function LoginPage() {
                 </select>
               )}
 
-              {destination !== "/inventarios" && (
-                <button
-                  type="button"
-                  className="text-xs font-bold text-slate-500 underline"
-                  onClick={() => {
-                    if (!username.trim() || !password) {
-                      setError("Ingresa ID y clave primero para cambiarla.");
-                      return;
-                    }
-                    setLoading(true);
-                    setError("");
-                    supabase
-                      .from("cyclic_users")
-                      .select("*")
-                      .eq("username", username.trim().toLowerCase())
-                      .eq("password", password)
-                      .eq("is_active", true)
-                      .maybeSingle()
-                      .then(({ data, error: dbError }) => {
-                        setLoading(false);
-                        if (dbError || !data) {
-                          setError("Usuario o clave incorrectos.");
-                          return;
-                        }
-                        setPendingUser(data as CyclicUser);
-                        setNewWspInput((data as CyclicUser).whatsapp || "");
-                        setModalMode("changepass");
-                      });
-                  }}
-                >
-                  Cambiar clave
-                </button>
-              )}
+              {inventoryMode === "login" && <button
+                type="button"
+                className="text-xs font-bold text-slate-500 underline"
+                onClick={() => {
+                  if (!username.trim() || !password) {
+                    setError("Ingresa ID y clave primero para cambiarla.");
+                    return;
+                  }
+                  setLoading(true);
+                  setError("");
+                  supabase
+                    .from("cyclic_users")
+                    .select("*")
+                    .eq("username", username.trim().toLowerCase())
+                    .eq("password", password)
+                    .eq("is_active", true)
+                    .maybeSingle()
+                    .then(({ data, error: dbError }) => {
+                      setLoading(false);
+                      if (dbError || !data) {
+                        setError("Usuario o clave incorrectos.");
+                        return;
+                      }
+                      setPendingUser(data as CyclicUser);
+                      setNewWspInput((data as CyclicUser).whatsapp || "");
+                      setModalMode("changepass");
+                    });
+                }}
+              >
+                Cambiar clave
+              </button>}
 
               <button
-                onClick={handleLogin}
+                onClick={inventoryMode === "register" ? handleInventoryAuth : handleLogin}
                 disabled={loading}
                 className="w-full rounded-2xl bg-orange-600 px-4 py-3 text-sm font-black text-white disabled:opacity-50"
               >
-                {loading ? "Ingresando..." : destination === "/inventarios" && inventoryMode === "register" ? "Registrarme e ingresar" : "Ingresar"}
+                {loading ? "Ingresando..." : inventoryMode === "register" ? "Registrarme e ingresar" : "Ingresar"}
               </button>
             </div>
           )}

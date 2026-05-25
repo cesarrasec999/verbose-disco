@@ -5644,13 +5644,6 @@ export default function InventariosPage() {
     localStorage.setItem(OPERATOR_MODE_KEY, "conteo");
   }
 
-  function logoutUser() {
-    setUser(null);
-    setValidatorTab("preparacion");
-    localStorage.removeItem("cyclic_user");
-    window.location.href = "/";
-  }
-
   function goLogin() {
     window.location.href = "/";
   }
@@ -5746,7 +5739,6 @@ export default function InventariosPage() {
         onBack={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
         onRefresh={refreshCurrentView}
         onGoModule={goModule}
-        onLogoutUser={logoutUser}
         onLogin={goLogin}
         onOpenOperatorCountMode={openOperatorCountMode}
         onOpenOperatorRecountMode={openOperatorRecountMode}
