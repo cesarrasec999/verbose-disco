@@ -12,13 +12,11 @@ import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { fetchCyclicDayData } from "@/features/ciclicos/api";
 import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
 import {
-    MODULE_ACCESS_OPTIONS,
     canAccessModule,
-    legacyModuleAccessForRole,
-    moduleLabel,
-    normalizedModuleAccess,
-    type ModuleAccessKey,
 } from "@/features/access/moduleAccess";
+import { NoInventariablesModule } from "@/features/no-inventariables/NoInventariablesModule";
+import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
+import { UsersModule } from "@/features/usuarios/UsersModule";
 import type {
     AllStoreAssignmentSummary,
     Assignment,
@@ -95,7 +93,6 @@ export default function DashboardPage() {
     const [stores, setStores]         = useState<Store[]>([]);
     const [allStores, setAllStores]   = useState<Store[]>([]);
     const [products, setProducts]     = useState<Product[]>([]);
-    const [allUsers, setAllUsers]     = useState<CyclicUser[]>([]);
 
     // ─── Selector de tienda / fecha ─────────────────────────
     const [selectedStoreId, setSelectedStoreId] = useState("");
@@ -164,11 +161,6 @@ export default function DashboardPage() {
     const [bulkAssignProgress, setBulkAssignProgress] = useState<{step:string;pct:number}|null>(null);
     const bulkAssignRef = useRef<HTMLInputElement|null>(null);
     const [nonInventoryProducts, setNonInventoryProducts] = useState<NonInventoryProduct[]>([]);
-    const [nonInventoryInput, setNonInventoryInput] = useState("");
-    const [nonInventorySearch, setNonInventorySearch] = useState("");
-    const nonInventoryExcelRef = useRef<HTMLInputElement|null>(null);
-    const [nonInventoryExcelBusy, setNonInventoryExcelBusy] = useState(false);
-    const [nonInventoryExcelFileName, setNonInventoryExcelFileName] = useState("");
 
     // ─── Validador: editar conteo ────────────────────────────
     const [editingCount, setEditingCount]   = useState<CountRecord|null>(null);
@@ -204,19 +196,6 @@ export default function DashboardPage() {
     const [newStoreCode, setNewStoreCode] = useState("");
 
     // ─── Admin: usuarios ─────────────────────────────────────
-    const [newUsername, setNewUsername]       = useState("");
-    const [newPassword, setNewPassword]       = useState("");
-    const [newFullName, setNewFullName]       = useState("");
-    const [newRole, setNewRole]               = useState<Role>("Operario");
-    const [newUserStoreId, setNewUserStoreId] = useState("");
-    const [newUserAllStores, setNewUserAllStores] = useState(false);
-    const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
-    const [newUserAuditAccess, setNewUserAuditAccess] = useState(false);
-    const [newUserModuleAccess, setNewUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic_count_take"]);
-    const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
-    const [editUserFullName, setEditUserFullName] = useState("");
-    const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
-    const [editUserWhatsapp, setEditUserWhatsapp] = useState("");
 
     // ─── WhatsApp masivo post-carga ──────────────────────────
     const [showBulkWspModal, setShowBulkWspModal] = useState(false);
@@ -238,12 +217,6 @@ export default function DashboardPage() {
     const [sessionFinished, setSessionFinished] = useState(false);
     const [recountFinished, setRecountFinished] = useState(false);
     const [countingStatus, setCountingStatus] = useState<"idle"|"counting"|"finished"|"recounting"|"recount_done">("idle");
-    const [editUserStoreId, setEditUserStoreId] = useState("");
-    const [editUserAllStores, setEditUserAllStores] = useState(false);
-    const [editUserActive, setEditUserActive] = useState(true);
-    const [editUserPassword, setEditUserPassword] = useState("");
-    const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
-    const [editUserModuleAccess, setEditUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic_count_take"]);
 
     const [locationSearch, setLocationSearch] = useState("");
     const [locationStoreId, setLocationStoreId] = useState("");
@@ -300,19 +273,6 @@ export default function DashboardPage() {
             .map(row => fullProductCode(row.sku).toUpperCase())
             .filter(Boolean)
     ), [nonInventoryProducts]);
-    const filteredNonInventoryProducts = useMemo(() => {
-        const q = nonInventorySearch.trim().toLowerCase();
-        const rows = nonInventoryProducts.filter(row => {
-            const description = row.product_description || row.description || "";
-            return !q ||
-                row.sku.toLowerCase().includes(q) ||
-                String(row.barcode || "").toLowerCase().includes(q) ||
-                description.toLowerCase().includes(q) ||
-                String(row.unit || "").toLowerCase().includes(q);
-        });
-        return rows.sort((a, b) => fullProductCode(a.sku).localeCompare(fullProductCode(b.sku), "es", { numeric: true, sensitivity: "base" }));
-    }, [nonInventoryProducts, nonInventorySearch]);
-
     // ════════════════════════════════════════════════════════
     //  INIT
     // ════════════════════════════════════════════════════════
@@ -385,7 +345,6 @@ export default function DashboardPage() {
         if (!isMobileAccess) {
             loadProducts();
             loadNonInventoryProducts();
-            if (user.role !== "Operario") loadAllUsers();
         }
     }, [user, isMobileAccess]);
 
@@ -574,7 +533,7 @@ export default function DashboardPage() {
 
     // Botón atrás del celular cierra overlays
     useEffect(() => {
-        const anyOpen = !!scannerTarget || !!editingCount || !!editingProduct || !!activeAssignment || !!editingUser || showRecount;
+        const anyOpen = !!scannerTarget || !!editingCount || !!editingProduct || !!activeAssignment || showRecount;
         if (anyOpen && !overlayOpenedRef.current) {
             window.history.pushState({ overlay: true }, "");
             overlayOpenedRef.current = true;
@@ -586,12 +545,11 @@ export default function DashboardPage() {
             if (editingCount)     { setEditingCount(null); return; }
             if (editingProduct)   { setEditingProduct(null); return; }
             if (activeAssignment) { setActiveAssignment(null); return; }
-            if (editingUser)      { setEditingUser(null); return; }
             if (showRecount)      { setShowRecount(false); setRecountAssignment(null); return; }
         };
         window.addEventListener("popstate", handler);
         return () => window.removeEventListener("popstate", handler);
-    }, [scannerTarget, editingCount, editingProduct, activeAssignment, editingUser, showRecount]);
+    }, [scannerTarget, editingCount, editingProduct, activeAssignment, showRecount]);
 
     // ════════════════════════════════════════════════════════
     //  HELPERS UI
@@ -743,31 +701,11 @@ export default function DashboardPage() {
     }
 
     async function loadNonInventoryProducts() {
-        const { data, error } = await supabase
-            .from("cyclic_non_inventory_products")
-            .select("id, product_id, sku, description, is_active, cyclic_products(sku, barcode, description, unit, cost)")
-            .eq("is_active", true)
-            .order("sku");
-        if (error) {
-            console.warn("No se pudo cargar no inventariables ciclicos:", error.message);
-            return;
+        try {
+            setNonInventoryProducts(await fetchNonInventoryProducts(supabase));
+        } catch (error: any) {
+            console.warn("No se pudo cargar no inventariables ciclicos:", error?.message || error);
         }
-        setNonInventoryProducts((data || []).map((row: any) => ({
-            id: row.id,
-            product_id: row.product_id,
-            sku: row.cyclic_products?.sku || row.sku,
-            description: row.description,
-            is_active: row.is_active,
-            barcode: row.cyclic_products?.barcode || null,
-            unit: row.cyclic_products?.unit || null,
-            cost: row.cyclic_products?.cost ?? null,
-            product_description: row.cyclic_products?.description || row.description || null,
-        })) as NonInventoryProduct[]);
-    }
-
-    async function loadAllUsers() {
-        const { data } = await supabase.from("cyclic_users").select("*").order("full_name");
-        setAllUsers((data || []) as CyclicUser[]);
     }
 
     async function loadOperarioData(storeId: string, date: string) {
@@ -3535,97 +3473,6 @@ export default function DashboardPage() {
         await assignProductsToStores(selected, "seleccionados");
     }
 
-    async function saveNonInventoryCodes(codesRaw: Array<string | number | null | undefined>, sourceLabel = "manual"): Promise<number | null> {
-        const codes = codesRaw
-            .map(code => fullProductCode(code).toUpperCase())
-            .filter(Boolean);
-        const uniqueCodes = [...new Set(codes)];
-        if (uniqueCodes.length === 0) { showMessage("Ingresa al menos un codigo.", "error"); return null; }
-
-        const productsBySku = new Map<string, Product>();
-        for (let i = 0; i < uniqueCodes.length; i += 500) {
-            const chunk = uniqueCodes.slice(i, i + 500);
-            const { data, error } = await supabase.from("cyclic_products").select("*").in("sku", chunk).eq("is_active", true);
-            if (error) { showMessage("Error buscando codigos: " + error.message, "error"); return null; }
-            for (const product of data || []) productsBySku.set(fullProductCode(product.sku), product as Product);
-        }
-
-        const rows = uniqueCodes.map(code => {
-            const product = productsBySku.get(code);
-            return {
-                product_id: product?.id || null,
-                sku: product?.sku || code,
-                description: product?.description || null,
-                is_active: true,
-                updated_at: new Date().toISOString(),
-                updated_by: user?.id || null,
-            };
-        });
-
-        for (let i = 0; i < rows.length; i += 500) {
-            const { error } = await supabase
-                .from("cyclic_non_inventory_products")
-                .upsert(rows.slice(i, i + 500), { onConflict: "sku" });
-            if (error) { showMessage("Error guardando no inventariables: " + error.message, "error"); return null; }
-        }
-
-        await loadNonInventoryProducts();
-        setAssignResults(prev => prev.filter(product => !uniqueCodes.includes(fullProductCode(product.sku))));
-        setAssignSelectedIds(prev => new Set([...prev].filter(id => !assignResults.some(product => product.id === id && uniqueCodes.includes(fullProductCode(product.sku))))));
-        showMessage(`✅ ${rows.length} codigo${rows.length !== 1 ? "s" : ""} marcado${rows.length !== 1 ? "s" : ""} como no inventariable${sourceLabel === "excel" ? " desde Excel" : ""}.`, "success");
-        return rows.length;
-    }
-
-    async function addNonInventoryCodes() {
-        const saved = await saveNonInventoryCodes(nonInventoryInput.split(/[\n,;]+/), "manual");
-        if (saved !== null) setNonInventoryInput("");
-    }
-
-    async function uploadNonInventoryExcel(file: File | null) {
-        if (!file || nonInventoryExcelBusy) return;
-        setNonInventoryExcelBusy(true);
-        setNonInventoryExcelFileName(file.name);
-        try {
-            const allRows = await readSafeSheetMatrix(file, { maxRows: 20000, maxCols: 10, raw: false });
-            const firstCol = allRows
-                .map(row => String(row?.[0] ?? "").trim())
-                .filter(Boolean);
-            const header = firstCol[0]?.toLowerCase() || "";
-            const hasHeader = ["codigo", "código", "codsap", "cod.sap", "sku", "producto"].some(label => header.includes(label));
-            const codes = hasHeader ? firstCol.slice(1) : firstCol;
-            await saveNonInventoryCodes(codes, "excel");
-        } catch (error: any) {
-            showMessage("Error leyendo Excel de no inventariables: " + (error?.message || error), "error");
-        } finally {
-            setNonInventoryExcelBusy(false);
-            if (nonInventoryExcelRef.current) nonInventoryExcelRef.current.value = "";
-        }
-    }
-
-    async function removeNonInventoryCode(row: NonInventoryProduct) {
-        const { error } = await supabase
-            .from("cyclic_non_inventory_products")
-            .update({ is_active: false, updated_at: new Date().toISOString(), updated_by: user?.id || null })
-            .eq("id", row.id);
-        if (error) { showMessage("Error quitando no inventariable: " + error.message, "error"); return; }
-        await loadNonInventoryProducts();
-        showMessage("Codigo habilitado para asignacion.", "success");
-    }
-
-    function exportNonInventoryProducts() {
-        const rows = filteredNonInventoryProducts.map(row => ({
-            SKU: row.sku,
-            BARRA: row.barcode || "",
-            DESCRIPCION: row.product_description || row.description || "",
-            UM: row.unit || "",
-            COSTO: Number(row.cost || 0),
-            ESTADO: row.is_active === false ? "Inactivo" : "Activo",
-        }));
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "No inventariables");
-        XLSX.writeFile(wb, `codigos_no_inventariables_${todayISO()}.xlsx`);
-    }
-
     async function assignProductLegacy(product: Product) {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_assignments")
@@ -4373,97 +4220,6 @@ export default function DashboardPage() {
         const { error } = await supabase.from("stores").update({ is_active: !store.is_active }).eq("id", store.id);
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         loadStores();
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  ADMIN — USUARIOS
-    // ════════════════════════════════════════════════════════
-    async function createUser() {
-        if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
-        if (newUserModuleAccess.length === 0) { showMessage("Selecciona al menos un modulo.", "error"); return; }
-        const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
-        if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
-        const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
-        const moduleAccess = [...new Set(newUserModuleAccess)];
-        const { error } = await supabase.from("cyclic_users").insert({
-            username: newUsername.trim().toLowerCase(), password: newPassword.trim(),
-            full_name: newFullName.trim(), role: newRole,
-            store_id: newUserAllStores ? null : (newUserStoreId || null),
-            can_access_all_stores: newUserAllStores,
-            can_access_audit: moduleAccess.includes("audit") || newRole === "Administrador" || newRole === "Supervisor" ? true : newUserAuditAccess,
-            module_access: moduleAccess,
-            is_active: true,
-            whatsapp: wsp || null,
-        });
-        if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false); setNewUserModuleAccess(["cyclic_count_take"]);
-        loadAllUsers();
-    }
-
-    function openEditUser(u: CyclicUser) {
-        setEditingUser(u);
-        setEditUserFullName(u.full_name || "");
-        setEditUserRole(u.role);
-        setEditUserStoreId(u.store_id || "");
-        setEditUserAllStores(u.can_access_all_stores);
-        setEditUserActive(u.is_active);
-        setEditUserPassword("");
-        setEditUserWhatsapp(u.whatsapp || "");
-        setEditUserAuditAccess(u.role === "Administrador" || u.role === "Supervisor" ? true : !!u.can_access_audit);
-        setEditUserModuleAccess(normalizedModuleAccess(u));
-    }
-
-    function toggleNewUserModuleAccess(key: ModuleAccessKey, checked: boolean) {
-        setNewUserModuleAccess(prev => {
-            const next = new Set(prev);
-            if (checked) next.add(key);
-            else next.delete(key);
-            if (key === "audit") setNewUserAuditAccess(checked);
-            return [...next];
-        });
-    }
-
-    function toggleEditUserModuleAccess(key: ModuleAccessKey, checked: boolean) {
-        setEditUserModuleAccess(prev => {
-            const next = new Set(prev);
-            if (checked) next.add(key);
-            else next.delete(key);
-            if (key === "audit") setEditUserAuditAccess(checked);
-            return [...next];
-        });
-    }
-
-    async function saveEditUser() {
-        if (!editingUser) return;
-        if (!editUserFullName.trim()) { showMessage("El nombre completo es obligatorio.", "error"); return; }
-        if (editUserModuleAccess.length === 0) { showMessage("Selecciona al menos un modulo.", "error"); return; }
-        const wsp = editUserWhatsapp.trim().replace(/\D/g, "");
-        const moduleAccess = [...new Set(editUserModuleAccess)];
-        const updates: any = {
-            full_name: editUserFullName.trim(),
-            role: editUserRole,
-            store_id: editUserAllStores ? null : (editUserStoreId || null),
-            can_access_all_stores: editUserAllStores,
-            can_access_audit: moduleAccess.includes("audit") || editUserRole === "Administrador" || editUserRole === "Supervisor" ? true : editUserAuditAccess,
-            module_access: moduleAccess,
-            is_active: editUserActive,
-            whatsapp: wsp || null,
-        };
-        if (editUserPassword.trim()) updates.password = editUserPassword.trim();
-        const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
-        if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario actualizado.", "success");
-        setEditingUser(null);
-        loadAllUsers();
-    }
-
-    async function deleteUser(u: CyclicUser) {
-        if (!confirm(`¿Eliminar usuario "${u.username}"? Esta acción no se puede deshacer.`)) return;
-        const { error } = await supabase.from("cyclic_users").delete().eq("id", u.id);
-        if (error) { showMessage("Error: " + error.message, "error"); return; }
-        showMessage("✅ Usuario eliminado.", "success");
-        loadAllUsers();
     }
 
     async function searchLocations(queryText = locationSearch) {
@@ -7394,69 +7150,15 @@ export default function DashboardPage() {
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
                     {canViewNonInventoryReports && valTab === "no_inventariables" && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
-                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                <div>
-                                    <h3 className="text-lg font-bold text-slate-900">Codigos no inventariables</h3>
-                                    <p className="text-slate-500 text-sm mt-1">Codigos excluidos de asignaciones ciclicas y cargas masivas.</p>
-                                </div>
-                                <button onClick={exportNonInventoryProducts} disabled={filteredNonInventoryProducts.length === 0} className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
-                                    <Download size={16} /> Descargar Excel
-                                </button>
-                            </div>
-
-                            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
-                                <input className="min-w-0 rounded-xl border bg-white px-3 py-3 text-sm text-slate-900" placeholder="Codsap exacto, uno o varios" value={nonInventoryInput} onChange={e => setNonInventoryInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addNonInventoryCodes(); }} />
-                                <button onClick={addNonInventoryCodes} className="rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white">Agregar</button>
-                                <button onClick={() => nonInventoryExcelRef.current?.click()} disabled={nonInventoryExcelBusy} className="rounded-xl border border-orange-300 bg-white px-4 py-3 text-sm font-black text-orange-700 disabled:opacity-50">
-                                    {nonInventoryExcelBusy ? "Subiendo..." : "Subir Excel"}
-                                </button>
-                                <input ref={nonInventoryExcelRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e => uploadNonInventoryExcel(e.target.files?.[0] || null)} />
-                            </div>
-                            {nonInventoryExcelFileName && <p className="text-xs font-semibold text-orange-700">Ultimo Excel: {nonInventoryExcelFileName}</p>}
-
-                            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                <div className="flex min-w-0 flex-1 items-center rounded-xl border bg-white px-3 py-2 md:max-w-xl">
-                                    <Search size={16} className="shrink-0 text-slate-400" />
-                                    <input value={nonInventorySearch} onChange={e => setNonInventorySearch(e.target.value)} placeholder="Buscar por codigo, barra, descripcion o UM" className="min-w-0 flex-1 px-2 text-sm outline-none" />
-                                </div>
-                                <div className="rounded-xl bg-slate-50 px-4 py-2 text-xs font-black text-slate-600">{filteredNonInventoryProducts.length} de {nonInventoryProducts.length} codigos</div>
-                            </div>
-
-                            <div className="overflow-auto rounded-2xl border">
-                                <table className="w-full min-w-[980px] text-sm">
-                                    <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                                        <tr>
-                                            <th className="p-3 text-left">SKU</th>
-                                            <th className="p-3 text-left">Barra</th>
-                                            <th className="p-3 text-left">Descripcion</th>
-                                            <th className="p-3 text-center">UM</th>
-                                            <th className="p-3 text-right">Costo</th>
-                                            <th className="p-3 text-center">Accion</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {filteredNonInventoryProducts.map(row => (
-                                            <tr key={row.id} className="border-t">
-                                                <td className="p-3 font-mono text-xs font-black text-slate-900">{row.sku}</td>
-                                                <td className="p-3 font-mono text-xs text-slate-500">{row.barcode || "-"}</td>
-                                                <td className="max-w-xl p-3 text-slate-700">{row.product_description || row.description || "-"}</td>
-                                                <td className="p-3 text-center font-semibold">{row.unit || "-"}</td>
-                                                <td className="p-3 text-right font-semibold">{formatMoney(Number(row.cost || 0))}</td>
-                                                <td className="p-3 text-center">
-                                                    <button onClick={() => removeNonInventoryCode(row)} className="rounded-xl border border-orange-300 bg-orange-50 px-3 py-2 text-xs font-black text-orange-700 hover:bg-orange-100">Habilitar</button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                        {filteredNonInventoryProducts.length === 0 && (
-                                            <tr>
-                                                <td colSpan={6} className="p-8 text-center text-sm font-semibold text-slate-400">No hay codigos no inventariables con ese filtro.</td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </section>
+                        <NoInventariablesModule
+                            user={user}
+                            products={nonInventoryProducts}
+                            assignResults={assignResults}
+                            onProductsChange={setNonInventoryProducts}
+                            onAssignResultsChange={setAssignResults}
+                            onAssignSelectedIdsChange={setAssignSelectedIds}
+                            showMessage={showMessage}
+                        />
                     )}
 
                     {canAssignProducts && valTab === "asignar" && (
@@ -8339,110 +8041,7 @@ export default function DashboardPage() {
                     )}
 
                     {activeTab === "admin" && adminTab === "usuarios" && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
-                            <h2 className="text-xl font-bold text-slate-900">Usuarios</h2>
-                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
-                                <p className="text-sm font-semibold text-slate-700">Crear nuevo usuario</p>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Nombre de usuario" value={newUsername} onChange={e => setNewUsername(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Contraseña" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="Nombre completo" value={newFullName} onChange={e => setNewFullName(e.target.value)} />
-                                    <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 — con código de país)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
-                                    <div>
-                                        <label className="text-xs text-slate-500 block mb-1">Rol</label>
-                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { const role = e.target.value as Role; setNewRole(role); setNewUserModuleAccess(legacyModuleAccessForRole(role, newUserAuditAccess)); if (role !== "Operario") setNewUserAllStores(true); }}>
-                                            <option value="Operario">Operario</option>
-                                            <option value="Validador">Validador</option>
-                                            <option value="Supervisor">Supervisor lectura</option>
-                                            <option value="Administrador">Administrador</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
-                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)} disabled={newUserAllStores}>
-                                            <option value="">— Sin asignar —</option>
-                                            {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                        </select>
-                                    </div>
-                                    <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
-                                        <input type="checkbox" checked={newUserAllStores} onChange={e => setNewUserAllStores(e.target.checked)} />
-                                        Puede ver todas las tiendas
-                                    </label>
-                                    <div className="rounded-2xl border bg-white p-3 md:col-span-2">
-                                        <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Modulos permitidos</p>
-                                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                            {MODULE_ACCESS_OPTIONS.map(option => (
-                                                <label key={option.key} className="flex items-center gap-2 rounded-xl border bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={newUserModuleAccess.includes(option.key)}
-                                                        onChange={e => toggleNewUserModuleAccess(option.key, e.target.checked)}
-                                                    />
-                                                    {option.label}
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                                <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createUser}>+ Crear usuario</button>
-                            </div>
-
-                            <div className="border rounded-2xl overflow-hidden">
-                                <div className="max-h-[450px] overflow-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-slate-100 sticky top-0">
-                                            <tr>
-                                                <th className="p-2 border text-left">Usuario</th>
-                                                <th className="p-2 border text-left">Nombre</th>
-                                                <th className="p-2 border">Rol</th>
-                                                <th className="p-2 border">Tienda</th>
-                                                <th className="p-2 border">WhatsApp</th>
-                                                <th className="p-2 border">Modulos</th>
-                                                <th className="p-2 border">Estado</th>
-                                                <th className="p-2 border">Acción</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {allUsers.map(u => {
-                                                const store = allStores.find(s => s.id === u.store_id);
-                                                return (
-                                                    <tr key={u.id} className={!u.is_active ? "opacity-40" : ""}>
-                                                        <td className="p-2 border font-mono text-xs">{u.username}</td>
-                                                        <td className="p-2 border font-medium">{u.full_name}</td>
-                                                        <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.role === "Administrador" ? "bg-purple-100 text-purple-700" : u.role === "Supervisor" ? "bg-emerald-100 text-emerald-700" : u.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{u.role}</span>
-                                                        </td>
-                                                        <td className="p-2 border text-center text-xs">{u.can_access_all_stores ? "Todas" : (store?.name || "—")}</td>
-                                                        <td className="p-2 border text-center text-xs">
-                                                            {u.whatsapp
-                                                                ? <a href={`https://wa.me/${u.whatsapp}`} target="_blank" rel="noreferrer" className="text-green-600 font-semibold hover:underline">📲 {u.whatsapp}</a>
-                                                                : <span className="text-slate-400">—</span>}
-                                                        </td>
-                                                        <td className="p-2 border text-center">
-                                                            <div className="flex max-w-xs flex-wrap justify-center gap-1">
-                                                                {normalizedModuleAccess(u).map(key => (
-                                                                    <span key={key} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">
-                                                                        {moduleLabel(key)}
-                                                                    </span>
-                                                                ))}
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
-                                                        </td>
-                                                        <td className="p-2 border text-center">
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => openEditUser(u)}>Editar</button>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deleteUser(u)}>✕</button>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                            {allUsers.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-slate-400">No hay usuarios.</td></tr>}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </section>
+                        <UsersModule stores={allStores} showMessage={showMessage} />
                     )}
 
                 </>
@@ -8672,83 +8271,6 @@ export default function DashboardPage() {
                         <div className="flex gap-3 pt-1">
                             <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditProduct}>Guardar cambios</button>
                             <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700" onClick={() => setEditingProduct(null)}>Cancelar</button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ════════════════════════════════════════════════════════
-                MODAL — EDITAR USUARIO (Admin)
-            ════════════════════════════════════════════════════════ */}
-            {editingUser && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center overflow-y-auto p-3 sm:p-4 z-50">
-                    <div className="app-modal-panel bg-white rounded-3xl p-5 w-full max-w-md space-y-4 shadow-2xl sm:p-6">
-                        <div className="flex items-start justify-between gap-3">
-                            <div>
-                                <h3 className="text-xl font-bold text-slate-900">Editar usuario</h3>
-                                <p className="text-slate-600 text-sm">{editingUser.username} · {editingUser.full_name}</p>
-                            </div>
-                            <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none" onClick={() => setEditingUser(null)}>×</button>
-                        </div>
-                        <div className="space-y-3">
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nombre completo</label>
-                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserFullName} onChange={e => setEditUserFullName(e.target.value)} />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
-                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={e => { const role = e.target.value as Role; setEditUserRole(role); setEditUserModuleAccess(legacyModuleAccessForRole(role, editUserAuditAccess)); if (role !== "Operario") setEditUserAllStores(true); }}>
-                                    <option value="Operario">Operario</option>
-                                    <option value="Validador">Validador</option>
-                                    <option value="Supervisor">Supervisor lectura</option>
-                                    <option value="Administrador">Administrador</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
-                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)} disabled={editUserAllStores}>
-                                    <option value="">— Sin asignar —</option>
-                                    {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                            </div>
-                            <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
-                                <input type="checkbox" checked={editUserAllStores} onChange={e => setEditUserAllStores(e.target.checked)} />
-                                Puede ver todas las tiendas
-                            </label>
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
-                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
-                                <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
-                            </div>
-                            <div className="rounded-2xl border bg-white p-3">
-                                <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Modulos permitidos</p>
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                    {MODULE_ACCESS_OPTIONS.map(option => (
-                                        <label key={option.key} className="flex items-center gap-2 rounded-xl border bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
-                                            <input
-                                                type="checkbox"
-                                                checked={editUserModuleAccess.includes(option.key)}
-                                                onChange={e => toggleEditUserModuleAccess(option.key, e.target.checked)}
-                                            />
-                                            {option.label}
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
-                                <div className="flex gap-3">
-                                    <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${editUserActive ? "bg-green-600 text-white border-green-600" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(true)}>✓ Activo</button>
-                                    <button className={`flex-1 py-2.5 rounded-xl font-semibold text-sm border ${!editUserActive ? "bg-red-500 text-white border-red-500" : "bg-white text-slate-700 border-slate-300"}`} onClick={() => setEditUserActive(false)}>Inactivo</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex gap-3 pt-1">
-                            <button className="flex-1 py-3 rounded-2xl bg-slate-900 text-white font-semibold" onClick={saveEditUser}>Guardar cambios</button>
-                            <button className="px-5 py-3 rounded-2xl border font-semibold text-slate-700" onClick={() => setEditingUser(null)}>Cancelar</button>
                         </div>
                     </div>
                 </div>
