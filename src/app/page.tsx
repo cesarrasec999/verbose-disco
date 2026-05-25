@@ -165,11 +165,6 @@ export default function LoginPage() {
       return false;
     }
     localStorage.setItem("cyclic_user", JSON.stringify(user));
-    if (module.destination === "/ubicaciones") {
-      sessionStorage.setItem("cyclic_active_tab", "ubicaciones");
-      window.location.assign("/dashboard");
-      return true;
-    }
     window.location.assign(module.destination);
     return true;
   }

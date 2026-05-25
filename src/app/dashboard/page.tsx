@@ -6074,6 +6074,65 @@ export default function DashboardPage() {
                         </div>
                     )}
 
+                    {(isAdmin || isSupervisor) && !isMobileAccess && (activeTab === "admin" || activeTab === "ubicaciones") && (
+                        <>
+                            <div className="px-5 pt-4 pb-1">
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
+                            </div>
+                            <div className="px-3 space-y-0.5">
+                                <button
+                                    onClick={() => {
+                                        setActiveTab(hasCyclicSubmodules ? "validador" : "operario");
+                                        setSidebarOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <ClipboardList size={16} />
+                                    <span className="truncate">Ciclicos</span>
+                                </button>
+                                {canUseLocationsModule && <button
+                                    onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
+                                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                        activeTab === "ubicaciones"
+                                            ? "bg-emerald-600 text-white shadow-lg"
+                                            : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                    }`}
+                                >
+                                    <Package size={16} />
+                                    <span className="truncate">Ubicaciones</span>
+                                </button>}
+                                {canUseAuditModule && <button
+                                    onClick={() => { window.location.href = "/auditoria"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <FileText size={16} />
+                                    <span className="truncate">Auditorias</span>
+                                </button>}
+                                {canUseGeneralInventoryModule && <button
+                                    onClick={() => { window.location.href = "/inventarios"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <Package size={16} />
+                                    <span className="truncate">Inventarios</span>
+                                </button>}
+                                {canUseConsultaModule && <button
+                                    onClick={() => { window.location.href = "/consulta-stock"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <PackageSearch size={16} />
+                                    <span className="truncate">Consulta</span>
+                                </button>}
+                                {canUseReportsModule && <button
+                                    onClick={() => { window.location.href = "/reportes"; }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <FileText size={16} />
+                                    <span className="truncate">Reportes</span>
+                                </button>}
+                            </div>
+                        </>
+                    )}
+
                     {hasReportSubmodules && !isMobileAccess && activeTab === "validador" && (valTab === "no_inventariables" || valTab === "resultados") && (
                         <>
                             <div className="px-5 pt-4 pb-1">
