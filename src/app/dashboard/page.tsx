@@ -68,6 +68,13 @@ function diffBadge(diff: number) {
 }
 
 type ModuleAccessKey = "cyclic" | "audit" | "general_inventory" | "picking" | "packing" | "replenishment";
+type LocationEntryDraftRecord = {
+    id: string;
+    location: string;
+    code: string;
+    quantity: string;
+    product: Product;
+};
 const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string }> = [
     { key: "cyclic", label: "Conteo Ciclico" },
     { key: "audit", label: "Auditorias" },
@@ -277,6 +284,8 @@ export default function DashboardPage() {
     const [locationEntryProducts, setLocationEntryProducts] = useState<LocationEntryProductRow[]>([
         { code: "", quantity: "", product: null, status: "", message: "" },
     ]);
+    const [locationEntryDraftRecords, setLocationEntryDraftRecords] = useState<LocationEntryDraftRecord[]>([]);
+    const [editingLocationEntryRecordId, setEditingLocationEntryRecordId] = useState<string | null>(null);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -4607,7 +4616,10 @@ export default function DashboardPage() {
         }
         setLocationEntryLocation("");
         setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
+        setLocationEntryDraftRecords([]);
+        setEditingLocationEntryRecordId(null);
         setLocationEntryOpen(true);
+        void loadLocationEntryDraftRecords();
         clearMessage();
     }
 
@@ -4627,6 +4639,44 @@ export default function DashboardPage() {
         setLocationEntryProducts(prev => prev.map((row, i) => i === index ? { ...row, quantity } : row));
     }
 
+    function mapOperatorLocationRecord(row: any): LocationEntryDraftRecord | null {
+        const productRow = row.cyclic_products || products.find(p => p.id === row.product_id);
+        if (!productRow) return null;
+        const product = {
+            id: row.product_id,
+            sku: productRow.sku || row.sku,
+            barcode: productRow.barcode || null,
+            description: productRow.description || "",
+            unit: productRow.unit || "",
+            cost: Number(productRow.cost) || 0,
+            is_active: productRow.is_active !== false,
+        } as Product;
+        return {
+            id: row.id,
+            location: row.location,
+            code: row.sku || product.sku,
+            quantity: row.stored_quantity === null || row.stored_quantity === undefined ? "" : String(row.stored_quantity),
+            product,
+        };
+    }
+
+    async function loadLocationEntryDraftRecords() {
+        if (!user?.id || !locationStoreId) return;
+        const { data, error } = await supabase
+            .from("product_location_operator_records")
+            .select("id,location,stored_quantity,sku,product_id,cyclic_products(id,sku,barcode,description,unit,cost,is_active)")
+            .eq("store_id", locationStoreId)
+            .eq("user_id", user.id)
+            .eq("status", "draft")
+            .order("updated_at", { ascending: true });
+        if (error) {
+            console.warn("No se pudieron cargar registros temporales de ubicacion:", error.message);
+            showMessage("Falta preparar la tabla de registros temporales en Supabase.", "error");
+            return;
+        }
+        setLocationEntryDraftRecords((data || []).map(mapOperatorLocationRecord).filter(Boolean) as LocationEntryDraftRecord[]);
+    }
+
     async function resolveLocationEntryProduct(index: number, codeOverride?: string) {
         const code = (codeOverride ?? locationEntryProducts[index]?.code ?? "").trim();
         if (!code) return;
@@ -4639,44 +4689,166 @@ export default function DashboardPage() {
         ));
     }
 
-    async function saveLocationEntryCard() {
+    function parseLocationEntryQuantity(quantityText: string) {
+        const quantity = quantityText.trim() ? Number(quantityText.replace(",", ".")) : null;
+        return quantity !== null && (!Number.isFinite(quantity) || quantity < 0) ? undefined : quantity;
+    }
+
+    async function buildLocationEntryDraftsFromForm(): Promise<LocationEntryDraftRecord[] | null> {
         const location = locationEntryLocation.trim().toUpperCase();
+        if (!location) { showMessage("Ingresa la ubicacion.", "error"); return null; }
+
+        const records: LocationEntryDraftRecord[] = [];
+        for (let i = 0; i < locationEntryProducts.length; i++) {
+            const entry = locationEntryProducts[i];
+            const code = entry.code.trim();
+            if (!code) continue;
+            const product = entry.product || await findProductForLocationEntry(code);
+            if (!product) {
+                setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Codigo no encontrado" } : row));
+                showMessage(`No encontre el codigo ${code}.`, "error");
+                return null;
+            }
+            const quantity = parseLocationEntryQuantity(entry.quantity);
+            if (quantity === undefined) {
+                setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Cantidad invalida" } : row));
+                showMessage(`Cantidad invalida para ${code}.`, "error");
+                return null;
+            }
+            records.push({
+                id: `${location}__${product.id}__${Date.now()}__${i}`,
+                location,
+                code,
+                quantity: entry.quantity.trim(),
+                product,
+            });
+        }
+
+        if (records.length === 0) { showMessage("Agrega al menos un producto.", "error"); return null; }
+        return records;
+    }
+
+    async function addLocationEntryDrafts() {
+        if (!user?.id || !locationStoreId) { showMessage("Selecciona tienda.", "error"); return; }
+        const records = await buildLocationEntryDraftsFromForm();
+        if (!records) return;
+        const now = new Date().toISOString();
+        const payload = records.map(row => ({
+            store_id: locationStoreId,
+            product_id: row.product.id,
+            sku: row.product.sku,
+            location: row.location,
+            stored_quantity: parseLocationEntryQuantity(row.quantity),
+            user_id: user.id,
+            status: "draft",
+            updated_at: now,
+        }));
+        if (editingLocationEntryRecordId && records.length === 1) {
+            const { error } = await supabase
+                .from("product_location_operator_records")
+                .update(payload[0])
+                .eq("id", editingLocationEntryRecordId)
+                .eq("user_id", user.id);
+            if (error) {
+                showMessage("No se pudo actualizar el registro temporal en BD: " + error.message, "error");
+                return;
+            }
+            setEditingLocationEntryRecordId(null);
+            await loadLocationEntryDraftRecords();
+            setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
+            showMessage("Registro temporal actualizado en BD.", "success");
+            return;
+        }
+        for (const draft of payload) {
+            const { data: existing, error: existingError } = await supabase
+                .from("product_location_operator_records")
+                .select("id")
+                .eq("store_id", draft.store_id)
+                .eq("user_id", draft.user_id)
+                .eq("product_id", draft.product_id)
+                .eq("location", draft.location)
+                .eq("status", "draft")
+                .maybeSingle();
+            if (existingError) {
+                showMessage("No se pudo revisar el registro temporal en BD: " + existingError.message, "error");
+                return;
+            }
+            const { error } = existing?.id
+                ? await supabase.from("product_location_operator_records").update(draft).eq("id", existing.id)
+                : await supabase.from("product_location_operator_records").insert(draft);
+            if (error) {
+                showMessage("No se pudo guardar el registro temporal en BD: " + error.message, "error");
+                return;
+            }
+        }
+        await loadLocationEntryDraftRecords();
+        setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
+        showMessage(`${records.length} registro${records.length !== 1 ? "s" : ""} guardado${records.length !== 1 ? "s" : ""} en BD.`, "success");
+    }
+
+    function editLocationEntryDraftRecord(record: LocationEntryDraftRecord) {
+        setLocationEntryLocation(record.location);
+        setLocationEntryProducts([{ code: record.code, quantity: record.quantity, product: record.product, status: "ok", message: record.product.description }]);
+        setEditingLocationEntryRecordId(record.id);
+        setLocationEntryDraftRecords(prev => prev.filter(row => row.id !== record.id));
+    }
+
+    async function removeLocationEntryDraftRecord(recordId: string) {
+        const { error } = await supabase.from("product_location_operator_records").delete().eq("id", recordId).eq("user_id", user?.id || "");
+        if (error) {
+            showMessage("No se pudo eliminar el registro temporal: " + error.message, "error");
+            return;
+        }
+        setLocationEntryDraftRecords(prev => prev.filter(row => row.id !== recordId));
+    }
+
+    async function saveLocationEntryCard() {
         if (!locationStoreId) { showMessage("Selecciona tienda.", "error"); return; }
-        if (!location) { showMessage("Ingresa la ubicacion.", "error"); return; }
 
         setLocationBusy(true);
         try {
-            const resolved: Array<{ product: Product; quantity: number | null }> = [];
-            for (let i = 0; i < locationEntryProducts.length; i++) {
-                const entry = locationEntryProducts[i];
-                const code = entry.code.trim();
-                if (!code) continue;
-                const product = entry.product || await findProductForLocationEntry(code);
-                if (!product) {
-                    setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Codigo no encontrado" } : row));
-                    showMessage(`No encontre el codigo ${code}.`, "error");
-                    return;
-                }
-                const quantity = entry.quantity.trim() ? Number(entry.quantity.replace(",", ".")) : null;
-                if (quantity !== null && (!Number.isFinite(quantity) || quantity < 0)) {
-                    setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Cantidad invalida" } : row));
-                    showMessage(`Cantidad invalida para ${code}.`, "error");
-                    return;
-                }
-                resolved.push({ product, quantity });
+            const formRecords = locationEntryProducts.some(row => row.code.trim()) ? await buildLocationEntryDraftsFromForm() : [];
+            if (formRecords === null) return;
+            if (editingLocationEntryRecordId && formRecords.length === 1) {
+                const row = formRecords[0];
+                const { error } = await supabase
+                    .from("product_location_operator_records")
+                    .update({
+                        store_id: locationStoreId,
+                        product_id: row.product.id,
+                        sku: row.product.sku,
+                        location: row.location,
+                        stored_quantity: parseLocationEntryQuantity(row.quantity),
+                        updated_at: new Date().toISOString(),
+                    })
+                    .eq("id", editingLocationEntryRecordId)
+                    .eq("user_id", user?.id || "");
+                if (error) throw error;
+            }
+            const records = [...locationEntryDraftRecords, ...formRecords];
+            const uniqueRecords = [...new Map(records.map(row => [`${row.location}__${row.product.id}`, row])).values()];
+            if (uniqueRecords.length === 0) { showMessage("Agrega al menos un producto.", "error"); return; }
+
+            for (const row of uniqueRecords) {
+                const quantity = parseLocationEntryQuantity(row.quantity);
+                await upsertProductLocations(row.product.id, row.product.sku, locationStoreId, [row.location], "Recepcion", quantity === undefined ? null : quantity);
+            }
+            const persistedIds = [...locationEntryDraftRecords.map(row => row.id), editingLocationEntryRecordId].filter(Boolean) as string[];
+            if (persistedIds.length > 0) {
+                const { error } = await supabase
+                    .from("product_location_operator_records")
+                    .update({ status: "saved", saved_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+                    .in("id", persistedIds)
+                    .eq("user_id", user?.id || "");
+                if (error) throw error;
             }
 
-            const uniqueProducts = [...new Map(resolved.map(row => [row.product.id, row])).values()];
-            if (uniqueProducts.length === 0) { showMessage("Agrega al menos un producto.", "error"); return; }
-
-            for (const row of uniqueProducts) {
-                await upsertProductLocations(row.product.id, row.product.sku, locationStoreId, [location], "Recepcion", row.quantity);
-            }
-
-            showMessage(`Ubicacion guardada para ${uniqueProducts.length} producto${uniqueProducts.length !== 1 ? "s" : ""}.`, "success");
+            showMessage(`${uniqueRecords.length} registro${uniqueRecords.length !== 1 ? "s" : ""} de ubicacion guardado${uniqueRecords.length !== 1 ? "s" : ""}.`, "success");
             setLocationEntryOpen(false);
             setLocationEntryLocation("");
             setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
+            setLocationEntryDraftRecords([]);
+            setEditingLocationEntryRecordId(null);
             if (locationSearch.trim()) await searchLocations();
         } finally {
             setLocationBusy(false);
@@ -8792,11 +8964,53 @@ export default function DashboardPage() {
                                     {row.status === "error" && <p className="text-xs font-semibold text-red-600">{row.message}</p>}
                                 </div>
                             ))}
+                            <button
+                                className="w-full rounded-2xl border-2 border-dashed border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 disabled:opacity-40"
+                                onClick={addLocationEntryDrafts}
+                                disabled={locationBusy}
+                            >
+                                Agregar a registro temporal
+                            </button>
                         </div>
+
+                        {locationEntryDraftRecords.length > 0 && (
+                            <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <h4 className="text-sm font-bold text-slate-800">Registro temporal</h4>
+                                    <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-bold text-slate-600">
+                                        {locationEntryDraftRecords.length}
+                                    </span>
+                                </div>
+                                <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                                    {locationEntryDraftRecords.map(record => (
+                                        <div key={record.id} className="rounded-xl border bg-white p-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="text-xs font-black uppercase text-slate-500">{record.location}</div>
+                                                    <div className="mt-1 font-mono text-sm font-black text-slate-900">{record.product.sku}</div>
+                                                    <div className="mt-0.5 line-clamp-2 text-xs font-semibold text-slate-600">{record.product.description}</div>
+                                                    <div className="mt-2 text-xs font-bold text-slate-500">
+                                                        Codigo: {record.code} · Cantidad: {record.quantity || "-"}
+                                                    </div>
+                                                </div>
+                                                <div className="flex shrink-0 gap-2">
+                                                    <button className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-700" onClick={() => editLocationEntryDraftRecord(record)}>
+                                                        Editar
+                                                    </button>
+                                                    <button className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-bold text-red-600" onClick={() => removeLocationEntryDraftRecord(record.id)}>
+                                                        Eliminar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
 
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
                             <button className="py-4 rounded-2xl bg-slate-900 text-white font-bold text-base disabled:opacity-40" onClick={saveLocationEntryCard} disabled={locationBusy}>
-                                {locationBusy ? "Guardando..." : "Guardar ubicacion"}
+                                {locationBusy ? "Guardando..." : locationEntryDraftRecords.length > 0 ? `Guardar ${locationEntryDraftRecords.length} registro${locationEntryDraftRecords.length !== 1 ? "s" : ""}` : "Guardar ubicacion"}
                             </button>
                             <button className="px-5 py-4 rounded-2xl border-2 font-semibold text-sm text-slate-700" onClick={() => setLocationEntryOpen(false)}>
                                 Cancelar
