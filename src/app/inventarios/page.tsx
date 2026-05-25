@@ -10,8 +10,19 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
-import { fetchOperatorCountsPage } from "@/features/inventarios/api";
+import {
+  fetchAllInventoryCounts,
+  fetchInventoryNonInventoryRows,
+  fetchNonInventorySkuSetForProducts,
+  fetchOperatorCountsPage,
+  fetchPagedSessionRows,
+  fetchProductCategories,
+  fetchProductRotationsForSession,
+  fetchStockGeneralBySkuForSession,
+  fetchSummaryRowsFromRpc,
+} from "@/features/inventarios/api";
 import { InventoryHeader } from "@/features/inventarios/components/InventoryHeader";
+import { InventoryTabs } from "@/features/inventarios/components/InventoryTabs";
 import type {
   CountRow,
   CyclicUser,
@@ -822,7 +833,7 @@ export default function InventariosPage() {
   }, [operator?.id, isValidator, selectedSession?.id, selectedSession?.status]);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!selectedSessionId || !isValidator) return;
 
     const channel = supabase
       .channel(`gi-session-${selectedSessionId}`)
@@ -866,7 +877,7 @@ export default function InventariosPage() {
         else markSessionTabStale(selectedSessionId, "reconteo");
         if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
         else markSessionTabStale(selectedSessionId, "validacion");
-      }, 1500);
+      }, 3000);
     };
 
     const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
@@ -937,7 +948,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         void loadOperatorRecountItems(selectedSessionId, operator.id);
-      }, 250);
+      }, 1000);
     };
 
     const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
@@ -945,24 +956,24 @@ export default function InventariosPage() {
       .channel(`gi-operator-recounts-${selectedSessionId}-${operator.id}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `session_id=eq.${selectedSessionId}` },
+        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `assigned_operator_id=eq.${operator.id}` },
         reloadAssignedRecounts
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
+        { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `operator_id=eq.${operator.id}` },
         reloadAssignedRecounts
       );
     if (validationRealtimeEnabled) {
       channel = channel
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
+          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `assigned_operator_id=eq.${operator.id}` },
           reloadAssignedRecounts
         )
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `session_id=eq.${selectedSessionId}` },
+          { event: "*", schema: "public", table: "general_inventory_validation_counts", filter: `operator_id=eq.${operator.id}` },
           reloadAssignedRecounts
         );
     }
@@ -2276,219 +2287,77 @@ export default function InventariosPage() {
   }
 
   async function loadAllCounts(sessionId: string, operatorId: string | null = null): Promise<CountRow[]> {
-    const rows: CountRow[] = [];
-    const pageSize = 1000;
-    let from = 0;
-    while (true) {
-      let query = supabase
-        .from("general_inventory_counts")
-        .select("*, general_inventory_operators(full_name)")
-        .eq("session_id", sessionId)
-        .order("counted_at", { ascending: false })
-        .order("id", { ascending: false });
-      if (operatorId) query = query.eq("operator_id", operatorId);
-      const { data, error } = await query.range(from, from + pageSize - 1);
-      if (error) {
-        throw error;
-      }
-      rows.push(...((data || []).map((row: any) => ({
-        ...row,
-        location_code: normalizeLocationCode(row.location_code),
-        operator_name: row.general_inventory_operators?.full_name || null,
-      })) as CountRow[]));
-      if (!data || data.length < pageSize) break;
-      from += pageSize;
-    }
-    return rows;
+    return fetchAllInventoryCounts(supabase, { sessionId, operatorId });
   }
 
   async function loadPagedSessionRows(table: string, select: string, sessionId: string, orderColumn = "id"): Promise<any[]> {
-    const rows: any[] = [];
-    const pageSize = 1000;
-    let from = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from(table)
-        .select(select)
-        .eq("session_id", sessionId)
-        .order(orderColumn, { ascending: true })
-        .range(from, from + pageSize - 1);
-      if (error) {
-        setMessage(`Error leyendo ${table}: ${error.message}`);
-        break;
-      }
-      rows.push(...(data || []));
-      if (!data || data.length < pageSize) break;
-      from += pageSize;
+    try {
+      return await fetchPagedSessionRows(supabase, { table, select, sessionId, orderColumn });
+    } catch (error) {
+      setMessage(`Error leyendo ${table}: ` + (error instanceof Error ? error.message : String(error)));
+      return [];
     }
-    return rows;
   }
 
   async function loadInventoryNonInventoryRows(sessionId: string): Promise<Array<{ sku: string }>> {
-    const [sessionRows, globalRows] = await Promise.all([
-      loadPagedSessionRows("general_inventory_non_inventory_products", "sku", sessionId, "sku"),
-      supabase.from("cyclic_non_inventory_products").select("sku").eq("is_active", true).order("sku"),
-    ]);
-    const skus = new Set<string>();
-    for (const row of sessionRows) {
-      const sku = normalizeCode(row.sku).toUpperCase();
-      if (sku) skus.add(sku);
-    }
-    for (const row of globalRows.data || []) {
-      const sku = normalizeCode(row.sku).toUpperCase();
-      if (sku) skus.add(sku);
-    }
-    return [...skus].map(sku => ({ sku }));
+    return fetchInventoryNonInventoryRows(supabase, sessionId);
   }
 
   async function loadNonInventorySkuSetForProducts(sessionId: string, skus: string[]): Promise<Set<string>> {
-    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    if (cleanSkus.length === 0) return new Set();
-    const rows: Array<{ sku: string }> = [];
-    for (let i = 0; i < cleanSkus.length; i += 500) {
-      const chunk = cleanSkus.slice(i, i + 500);
-      const [sessionRows, globalRows] = await Promise.all([
-        supabase.from("general_inventory_non_inventory_products").select("sku").eq("session_id", sessionId).in("sku", chunk),
-        supabase.from("cyclic_non_inventory_products").select("sku").eq("is_active", true).in("sku", chunk),
-      ]);
-      rows.push(...(sessionRows.data || []), ...(globalRows.data || []));
-    }
-    return new Set(rows.map(row => normalizeCode(row.sku).toUpperCase()).filter(Boolean));
+    return fetchNonInventorySkuSetForProducts(supabase, { sessionId, skus });
   }
 
   async function loadStockGeneralBySkuForSession(sessionId: string, skus: string[]): Promise<Map<string, StockGeneralRow>> {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
-    const store = stores.find(row => row.id === session?.store_id);
-    const sede = store?.erp_sede || store?.name || session?.store_name || "";
-    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    const stockBySku = new Map<string, StockGeneralRow>();
-    if (!sede || cleanSkus.length === 0) return stockBySku;
-
-    for (let i = 0; i < cleanSkus.length; i += 100) {
-      const chunk = cleanSkus.slice(i, i + 100);
-      const { data, error } = await supabase
-        .from("stock_general")
-        .select("codsap,stock,costo")
-        .eq("sede", sede)
-        .in("codsap", chunk);
-      if (error) {
-        setMessage("No se pudo cruzar stock actual de la tienda: " + error.message);
-        return stockBySku;
-      }
-      for (const row of (data || []) as StockGeneralRow[]) {
-        const sku = normalizeCode(row.codsap).toUpperCase();
-        if (sku) stockBySku.set(sku, row);
-      }
+    try {
+      return await fetchStockGeneralBySkuForSession(supabase, { session, stores, skus });
+    } catch (error) {
+      setMessage("No se pudo cruzar stock actual de la tienda: " + (error instanceof Error ? error.message : String(error)));
+      return new Map<string, StockGeneralRow>();
     }
-
-    return stockBySku;
   }
 
   async function loadProductCategories(productIds: string[]) {
-    const categories = new Map<string, Pick<SummaryRow, "brand" | "department" | "class_name" | "subclass_name">>();
-    const ids = [...new Set(productIds.filter(Boolean))];
-    if (ids.length === 0) return categories;
-
     try {
-      for (let i = 0; i < ids.length; i += 500) {
-        const { data, error } = await supabase
-          .from("cyclic_products")
-          .select("id,brand,department,class_name,subclass_name")
-          .in("id", ids.slice(i, i + 500));
-        if (error) throw error;
-        for (const row of data || []) {
-          categories.set(String(row.id), {
-            brand: row.brand || null,
-            department: row.department || null,
-            class_name: row.class_name || null,
-            subclass_name: row.subclass_name || null,
-          });
-        }
-      }
+      return await fetchProductCategories(supabase, productIds);
     } catch (error) {
       console.warn("No se pudieron cargar categorias de productos:", error);
+      return new Map<string, Pick<SummaryRow, "brand" | "department" | "class_name" | "subclass_name">>();
     }
-
-    return categories;
-  }
-
-  function normalizeRotationStoreKey(value: string | null | undefined) {
-    return String(value || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toUpperCase()
-      .replace(/[^A-Z0-9]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function rotationStoreKeysForSession(session: InventorySession | null | undefined) {
-    const aliases = [
-      "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
-      "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
-      "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
-      "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD",
-    ];
-    const keys = new Set<string>();
-    const store = session?.store_id ? stores.find(item => item.id === session.store_id) : null;
-    const sources = [session?.store_name, store?.name, store?.erp_sede, session?.store_id].filter(Boolean) as string[];
-    for (const source of sources) {
-      const normalized = normalizeRotationStoreKey(source);
-      if (!normalized) continue;
-      keys.add(normalized);
-      for (const alias of aliases) {
-        const normalizedAlias = normalizeRotationStoreKey(alias);
-        if (normalized.includes(normalizedAlias)) keys.add(normalizedAlias);
-      }
-      if (normalized.includes("EVITAMIENTO")) keys.add("AREQUIPA NEW K 21");
-      if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) keys.add("AREQUIPA MIRAFLORES");
-      if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
-      if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
-      if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
-    }
-    return [...keys];
-  }
-
-  function sessionRotationPeriod(session: InventorySession | null | undefined) {
-    const rawDate = session?.finished_at || session?.scheduled_date || session?.created_at || new Date().toISOString();
-    const date = new Date(rawDate);
-    if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 7) + "-01";
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    return `${year}-${month}-01`;
   }
 
   async function loadProductRotationsForSession(session: InventorySession | null | undefined, skus: string[]) {
-    const rotations = new Map<string, string>();
-    const cleanSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    const storeKeys = rotationStoreKeysForSession(session);
-    if (cleanSkus.length === 0 || storeKeys.length === 0) return rotations;
-
     try {
-      for (let i = 0; i < cleanSkus.length; i += 500) {
-        const { data, error } = await supabase
-          .from("product_rotation_monthly")
-          .select("product_code,rotation_category,period_month,store_key")
-          .in("store_key", storeKeys)
-          .in("product_code", cleanSkus.slice(i, i + 500))
-          .lte("period_month", sessionRotationPeriod(session))
-          .order("period_month", { ascending: false });
-        if (error) throw error;
-        for (const row of data || []) {
-          const sku = normalizeCode(row.product_code).toUpperCase();
-          if (sku && !rotations.has(sku)) rotations.set(sku, String(row.rotation_category || "").trim().toUpperCase());
-        }
-      }
+      return await fetchProductRotationsForSession(supabase, { session, stores, skus });
     } catch (error) {
       console.warn("No se pudieron cargar rotaciones mensuales:", error);
+      return new Map<string, string>();
     }
+  }
 
-    return rotations;
+  async function loadSummaryFromRpc(sessionId: string): Promise<SummaryRow[] | null> {
+    const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
+    return fetchSummaryRowsFromRpc(supabase, { sessionId, session: summarySession, stores });
   }
 
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     setSummaryLoading(true);
+    try {
+      const rpcRows = await loadSummaryFromRpc(sessionId);
+      if (rpcRows) {
+        rpcRows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+        setSummary(rpcRows);
+        setObservationDrafts(Object.fromEntries(rpcRows.map(row => [row.product_id, row.observation || ""])));
+        setSummaryLoadedSessionId(sessionId);
+        setSummaryHasPendingChanges(false);
+        markSessionTabLoaded(sessionId, "resumen");
+        setSummaryLoading(false);
+        return;
+      }
+    } catch (error) {
+      console.warn("No se pudo usar resumen SQL optimizado; uso calculo local:", error);
+    }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
     const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows, validationRows] = await Promise.all([
@@ -6022,33 +5891,13 @@ export default function InventariosPage() {
           )}
 
           {isValidator && selectedSessionId && (
-            <section className="rounded-2xl border bg-white p-2 shadow-sm">
-              <div className={`grid gap-2 ${user?.role === "Administrador" ? "grid-cols-2 md:grid-cols-7" : "grid-cols-2 md:grid-cols-6"}`}>
-                {canManageInventory && <button onClick={() => setValidatorTab("preparacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "preparacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Preparacion
-                </button>}
-                <button onClick={() => setValidatorTab("registros")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Registros
-                </button>
-                <button onClick={() => setValidatorTab("productividad")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "productividad" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Productividad
-                </button>
-                {canManageInventory && <button onClick={() => setValidatorTab("reconteo")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "reconteo" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Reconteo
-                </button>}
-                {canManageInventory && selectedSession?.validation_enabled && <button onClick={() => setValidatorTab("validacion")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "validacion" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Validacion
-                </button>}
-                <button onClick={() => setValidatorTab("resumen")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "resumen" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                  Resumen
-                </button>
-                {user?.role === "Administrador" && (
-                  <button onClick={() => setValidatorTab("usuarios")} className={`rounded-xl px-3 py-2 text-xs font-black ${validatorTab === "usuarios" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
-                    Usuarios
-                  </button>
-                )}
-              </div>
-            </section>
+            <InventoryTabs
+              activeTab={validatorTab}
+              canManageInventory={canManageInventory}
+              isAdmin={user?.role === "Administrador"}
+              validationEnabled={Boolean(selectedSession?.validation_enabled)}
+              onTabChange={setValidatorTab}
+            />
           )}
 
           {canManageInventory && validatorTab === "preparacion" && (

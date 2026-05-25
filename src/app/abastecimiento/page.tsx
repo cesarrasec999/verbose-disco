@@ -19,6 +19,7 @@ type CyclicUser = {
   role: Role;
   store_id: string | null;
   can_access_all_stores: boolean;
+  module_access?: string[] | null;
   is_active: boolean;
 };
 
@@ -160,6 +161,13 @@ function storeCodeCandidates(store: Store | null) {
   return [...codes];
 }
 
+function canAccessReplenishment(user: CyclicUser) {
+  if (Array.isArray(user.module_access) && user.module_access.length > 0) {
+    return user.module_access.includes("replenishment");
+  }
+  return user.role === "Administrador" || user.role === "Supervisor";
+}
+
 function supplyGroupKey(group: SupplyGroup) {
   return `${group.document_no}|${group.destination_store_code}|${group.source_store_code}`;
 }
@@ -277,7 +285,7 @@ export default function AbastecimientoPage() {
     }
     return map;
   }, [stores]);
-  const canSeeAllStores = user?.role === "Administrador" || user?.role === "Supervisor" || user?.can_access_all_stores;
+  const canSeeAllStores = Boolean(user?.can_access_all_stores);
 
   const countByLine = useMemo(() => {
     const map = new Map<string, number>();
@@ -323,6 +331,10 @@ export default function AbastecimientoPage() {
       return;
     }
     const parsed = JSON.parse(raw) as CyclicUser;
+    if (!canAccessReplenishment(parsed)) {
+      window.location.href = "/";
+      return;
+    }
     setUser(parsed);
     void loadInitial(parsed);
   }, []);
@@ -427,9 +439,12 @@ export default function AbastecimientoPage() {
       return;
     }
     const rows = (data || []) as Store[];
-    setStores(rows);
-    const preferred = activeUser.store_id && rows.find(store => store.id === activeUser.store_id);
-    setSelectedStoreId((preferred || rows[0])?.id || "");
+    const allowedRows = activeUser.can_access_all_stores
+      ? rows
+      : rows.filter(store => store.id === activeUser.store_id);
+    setStores(allowedRows);
+    const preferred = activeUser.store_id && allowedRows.find(store => store.id === activeUser.store_id);
+    setSelectedStoreId((preferred || allowedRows[0])?.id || "");
     setLoading(false);
   }
 

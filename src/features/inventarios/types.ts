@@ -16,6 +16,7 @@ export type CyclicUser = {
   role: Role;
   store_id: string | null;
   can_access_all_stores: boolean;
+  module_access?: string[] | null;
   is_active: boolean;
 };
 

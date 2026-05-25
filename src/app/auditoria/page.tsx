@@ -30,6 +30,7 @@ type CyclicUser = {
   store_id: string | null;
   can_access_all_stores: boolean;
   can_access_audit?: boolean;
+  module_access?: string[] | null;
   is_active: boolean;
 };
 
@@ -205,6 +206,13 @@ function number2(value: number | string | null | undefined) {
   return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
 }
 
+function canAccessAuditModule(user: CyclicUser) {
+  if (Array.isArray(user.module_access) && user.module_access.length > 0) {
+    return user.module_access.includes("audit");
+  }
+  return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || Boolean(user.can_access_audit);
+}
+
 export default function AuditoriaPage() {
   const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
@@ -273,37 +281,54 @@ export default function AuditoriaPage() {
   const selectedStore = useMemo(() => stores.find(s => s.id === storeId), [stores, storeId]);
   const isReadOnlySupervisor = user?.role === "Supervisor";
   const canManageAudit = user?.role === "Administrador" || user?.role === "Validador";
-  const canViewAuditSummary = user?.role === "Administrador" || user?.role === "Supervisor";
+  const canCountAudit = Boolean(user && (canManageAudit || canAccessAuditModule(user)));
+  const canViewAuditSummary = !isMobileAccess && user?.role === "Administrador";
+  const mobileOpenSessions = useMemo(() => {
+    if (!user) return [];
+    return sessions.filter(row =>
+      row.status === "in_progress" && (!user.store_id || user.can_access_all_stores || row.store_id === user.store_id)
+    );
+  }, [sessions, user]);
 
   useEffect(() => {
-    if (isMobileAccess) window.location.replace("/dashboard");
-  }, [isMobileAccess]);
-
-  useEffect(() => {
-    if (isMobileAccess) return;
     const raw = localStorage.getItem("cyclic_user");
     if (!raw) { window.location.replace("/"); return; }
     const parsed = JSON.parse(raw) as CyclicUser;
-    if (parsed.role === "Operario") { window.location.replace("/dashboard"); return; }
     supabase.from("cyclic_users").select("*").eq("id", parsed.id).maybeSingle().then(({ data }) => {
       const currentUser = (data || parsed) as CyclicUser;
-      if (currentUser.role !== "Administrador" && currentUser.role !== "Supervisor" && !currentUser.can_access_audit) {
+      if (!canAccessAuditModule(currentUser)) {
         window.location.replace("/dashboard");
         return;
       }
       setUser(currentUser);
       localStorage.setItem("cyclic_user", JSON.stringify(currentUser));
+      void loadSessions(currentUser);
+      const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
+      if (savedSessionId) void loadSavedSession(savedSessionId, currentUser);
     });
 
     supabase.from("stores").select("*").eq("is_active", true).order("name").then(({ data }) => {
-      const list = (data || []) as Store[];
+      const allStores = (data || []) as Store[];
+      const list = parsed.can_access_all_stores ? allStores : allStores.filter(store => store.id === parsed.store_id);
       setStores(list);
-      setStoreId(parsed.store_id || list[0]?.id || "");
+      setStoreId(parsed.can_access_all_stores ? (parsed.store_id || list[0]?.id || "") : (list[0]?.id || ""));
     });
-    loadSessions();
-    const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
-    if (savedSessionId) void loadSavedSession(savedSessionId);
   }, [isMobileAccess]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (isMobileAccess) {
+      const timer = window.setTimeout(() => {
+        setMainTab("register");
+        setRegisterTab("count");
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    if (!session && (user.role === "Administrador" || user.role === "Supervisor") && mainTab === "register") {
+      const timer = window.setTimeout(() => setMainTab("sessions"), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isMobileAccess, user, mainTab, session]);
 
   useEffect(() => {
     sessionStorage.setItem(AUDIT_MAIN_TAB_KEY, mainTab);
@@ -440,12 +465,16 @@ export default function AuditoriaPage() {
     }
   }
 
-  async function loadSessions() {
-    const { data } = await supabase
+  async function loadSessions(activeUser = user) {
+    let query = supabase
       .from("audit_sessions")
       .select("*, stores(name), cyclic_users(full_name)")
       .order("started_at", { ascending: false })
       .limit(50);
+    if (activeUser && !activeUser.can_access_all_stores && activeUser.store_id) {
+      query = query.eq("store_id", activeUser.store_id);
+    }
+    const { data } = await query;
     setSessions((data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[]);
   }
 
@@ -591,7 +620,7 @@ export default function AuditoriaPage() {
     setAdminSummaryLoading(false);
   }
 
-  async function loadSavedSession(sessionId: string) {
+  async function loadSavedSession(sessionId: string, activeUser = user) {
     const { data } = await supabase
       .from("audit_sessions")
       .select("*, stores(name), cyclic_users(full_name)")
@@ -602,6 +631,10 @@ export default function AuditoriaPage() {
       return;
     }
     const row = { ...data, store_name: data.stores?.name, auditor_name: data.cyclic_users?.full_name } as AuditSession;
+    if (activeUser && !activeUser.can_access_all_stores && activeUser.store_id && row.store_id !== activeUser.store_id) {
+      sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+      return;
+    }
     setSession(row);
     setStoreId(row.store_id);
     await loadSessionData(row.id);
@@ -662,7 +695,7 @@ export default function AuditoriaPage() {
 
   async function refreshAuditData() {
     setLoading(true);
-    await loadSessions();
+    await loadSessions(user);
     let updated = 0;
     if (session?.id) {
       updated = await refreshAuditSessionStocks(session.id);
@@ -673,10 +706,14 @@ export default function AuditoriaPage() {
   }
 
   async function openSession(row: AuditSession) {
+    if (user && !user.can_access_all_stores && user.store_id && row.store_id !== user.store_id) {
+      setMessage("Tu usuario no tiene acceso a esa tienda.");
+      return;
+    }
     setSession(row);
     setStoreId(row.store_id);
     setMainTab("register");
-    setRegisterTab(user?.role === "Administrador" || user?.role === "Supervisor" ? "records" : "count");
+    setRegisterTab(isMobileAccess ? "count" : user?.role === "Validador" ? "summary" : "records");
     await loadSessionData(row.id);
   }
 
@@ -1134,7 +1171,7 @@ export default function AuditoriaPage() {
   }
 
   async function saveCount() {
-    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    if (!canCountAudit) { setMessage("Tu usuario no tiene acceso para contar auditoria."); return; }
     if (savingCountRef.current) return;
     if (!session || !activeItem) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) {
@@ -1656,7 +1693,12 @@ export default function AuditoriaPage() {
             <h1 className="truncate text-base font-black leading-tight">Auditoria WMS</h1>
             <p className="truncate text-xs text-slate-500">{user.full_name} - {selectedStore?.name || "Selecciona tienda"}</p>
           </div>
-          <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm md:block">
+          <select
+            value={storeId}
+            onChange={e => changeStoreForNewSession(e.target.value)}
+            disabled={Boolean(user.store_id) && !user.can_access_all_stores}
+            className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm disabled:bg-slate-100 md:block"
+          >
             {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           {(user.role === "Administrador" || user.role === "Supervisor") && (
@@ -1673,7 +1715,7 @@ export default function AuditoriaPage() {
       </header>
 
       <div className="mx-auto max-w-7xl px-3 py-4 md:px-5">
-        <div className={`mb-4 grid gap-2 rounded-2xl border bg-white p-1.5 shadow-sm ${canViewAuditSummary ? "grid-cols-3" : "grid-cols-2"}`}>
+        <div className={`mb-4 hidden gap-2 rounded-2xl border bg-white p-1.5 shadow-sm md:grid ${canViewAuditSummary ? "grid-cols-3" : "grid-cols-2"}`}>
           <button onClick={() => setMainTab("sessions")} className={tabClass(visibleMainTab === "sessions")}><Settings2 size={16} /> Sesiones</button>
           <button onClick={() => setMainTab("register")} className={tabClass(visibleMainTab === "register")}><ClipboardList size={16} /> Registro</button>
           {canViewAuditSummary && (
@@ -1689,7 +1731,12 @@ export default function AuditoriaPage() {
               {canManageAudit ? <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <h2 className="font-black">Crear sesión de auditoría</h2>
                 <p className="mt-1 text-sm text-slate-500">Selecciona tienda, inicia la auditoría y carga la familia de productos a contar.</p>
-                <select value={storeId} onChange={e => changeStoreForNewSession(e.target.value)} className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm md:hidden">
+                <select
+                  value={storeId}
+                  onChange={e => changeStoreForNewSession(e.target.value)}
+                  disabled={Boolean(user.store_id) && !user.can_access_all_stores}
+                  className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm disabled:bg-slate-100 md:hidden"
+                >
                   {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
                 {session && (
@@ -1871,18 +1918,79 @@ export default function AuditoriaPage() {
 
         {visibleMainTab === "register" && (
           <section className="space-y-4">
-            <div className="grid grid-cols-3 gap-2">
-              {canManageAudit && <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>}
+            <div className="hidden grid-cols-3 gap-2 md:grid">
+              {canCountAudit && <button onClick={() => setRegisterTab("count")} className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</button>}
               <button onClick={() => setRegisterTab("records")} className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</button>
               <button onClick={() => setRegisterTab("summary")} className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</button>
             </div>
 
             {registerTab === "count" && (
-              <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-4 shadow-sm md:p-5">
+              <>
+              {isMobileAccess && (
+                <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-black">Sesiones abiertas</h2>
+                      <p className="mt-1 text-xs font-semibold text-slate-500">
+                        Selecciona la auditoria que vas a contar.
+                      </p>
+                    </div>
+                    <button onClick={() => void loadSessions()} className="rounded-xl border p-2 text-slate-600" title="Actualizar sesiones">
+                      <RefreshCw size={16} />
+                    </button>
+                  </div>
+
+                  {session ? (
+                    <div className="mt-3 rounded-2xl border border-green-200 bg-green-50 p-3">
+                      <div className="text-xs font-black uppercase tracking-wide text-green-700">Sesion seleccionada</div>
+                      <div className="mt-1 font-black text-green-950">{session.store_name || selectedStore?.name || session.store_id}</div>
+                      <div className="text-xs font-semibold text-green-800">
+                        {new Date(session.started_at).toLocaleString("es-PE")} - {session.auditor_name || "Auditoria"}
+                      </div>
+                      <button
+                        onClick={() => {
+                          clearSelectedSession();
+                          setRegisterTab("count");
+                        }}
+                        className="mt-3 w-full rounded-xl border border-green-300 bg-white px-3 py-2 text-xs font-black text-green-800"
+                      >
+                        Cambiar sesion
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {mobileOpenSessions.map(row => (
+                        <button
+                          key={row.id}
+                          onClick={() => void openSession(row)}
+                          className="w-full rounded-2xl border p-3 text-left shadow-sm hover:bg-slate-50"
+                        >
+                          <div className="font-black text-slate-950">{row.store_name || row.store_id}</div>
+                          <div className="mt-1 text-xs font-semibold text-slate-500">
+                            {new Date(row.started_at).toLocaleString("es-PE")} - {row.auditor_name || "Auditoria"}
+                          </div>
+                          <div className="mt-2 inline-flex rounded-full bg-green-100 px-2 py-1 text-[11px] font-black text-green-700">
+                            En progreso
+                          </div>
+                        </button>
+                      ))}
+                      {mobileOpenSessions.length === 0 && (
+                        <div className="rounded-2xl bg-slate-50 p-5 text-center text-sm font-semibold text-slate-500">
+                          No hay sesiones abiertas para tu tienda.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(!isMobileAccess || session) && <div className="mx-auto max-w-2xl rounded-2xl border bg-white p-4 shadow-sm md:p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-black">Conteo fisico</h2>
-                    <p className="text-xs text-slate-500">Pantalla compacta para celular.</p>
+                    <p className="text-xs text-slate-500">
+                      {session ? `Sesion: ${session.store_name || selectedStore?.name || session.store_id}` : "Selecciona una sesion para empezar."}
+                    </p>
                   </div>
                   <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "in_progress" ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}`}>{session?.status === "in_progress" ? "Activa" : "Sin sesión"}</span>
                 </div>
@@ -1933,7 +2041,8 @@ export default function AuditoriaPage() {
                     </div>
                   </div>
                 )}
-              </div>
+              </div>}
+              </>
             )}
 
             {registerTab === "records" && (

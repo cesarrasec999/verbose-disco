@@ -9,6 +9,7 @@ import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, LineChart, LogOut, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
+import { fetchCyclicDayData } from "@/features/ciclicos/api";
 import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
 import type {
     AllStoreAssignmentSummary,
@@ -64,6 +65,41 @@ function diffBadge(diff: number) {
     if (diff === 0) return <span className="text-green-700 font-semibold">0</span>;
     if (diff > 0)   return <span className="text-blue-700 font-semibold">+{formatNumber(diff)}</span>;
     return <span className="text-red-600 font-semibold">{formatNumber(diff)}</span>;
+}
+
+type ModuleAccessKey = "cyclic" | "audit" | "general_inventory" | "picking" | "packing" | "replenishment";
+const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string }> = [
+    { key: "cyclic", label: "Conteo Ciclico" },
+    { key: "audit", label: "Auditorias" },
+    { key: "general_inventory", label: "Inventario General" },
+    { key: "picking", label: "Picking" },
+    { key: "packing", label: "Etiquetado/Packing" },
+    { key: "replenishment", label: "Abastecimiento" },
+];
+
+function legacyModuleAccessForRole(role: Role, canAccessAudit?: boolean | null): ModuleAccessKey[] {
+    if (role === "Administrador") return MODULE_ACCESS_OPTIONS.map(option => option.key);
+    if (role === "Supervisor") return ["cyclic", "audit", "general_inventory", "picking", "packing"];
+    if (role === "Validador") return ["cyclic", ...(canAccessAudit ? ["audit" as ModuleAccessKey] : []), "general_inventory", "picking", "packing"];
+    return ["cyclic", "packing"];
+}
+
+function normalizedModuleAccess(userOrRole: CyclicUser | Role, canAccessAudit?: boolean | null): ModuleAccessKey[] {
+    if (typeof userOrRole !== "string" && Array.isArray(userOrRole.module_access) && userOrRole.module_access.length > 0) {
+        return userOrRole.module_access.filter(key => MODULE_ACCESS_OPTIONS.some(option => option.key === key)) as ModuleAccessKey[];
+    }
+    const role = typeof userOrRole === "string" ? userOrRole : userOrRole.role;
+    const audit = typeof userOrRole === "string" ? canAccessAudit : userOrRole.can_access_audit;
+    return legacyModuleAccessForRole(role, audit);
+}
+
+function hasExplicitModuleAccess(user: CyclicUser | null | undefined) {
+    return Array.isArray(user?.module_access) && user.module_access.length > 0;
+}
+
+function canAccessModule(user: CyclicUser | null | undefined, key: ModuleAccessKey) {
+    if (!user) return false;
+    return normalizedModuleAccess(user).includes(key);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -196,6 +232,7 @@ export default function DashboardPage() {
     const [newUserAllStores, setNewUserAllStores] = useState(false);
     const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
     const [newUserAuditAccess, setNewUserAuditAccess] = useState(false);
+    const [newUserModuleAccess, setNewUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic"]);
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
     const [editUserFullName, setEditUserFullName] = useState("");
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
@@ -226,6 +263,7 @@ export default function DashboardPage() {
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
     const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
+    const [editUserModuleAccess, setEditUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic"]);
 
     const [locationSearch, setLocationSearch] = useState("");
     const [locationStoreId, setLocationStoreId] = useState("");
@@ -237,7 +275,7 @@ export default function DashboardPage() {
     const [locationEntryOpen, setLocationEntryOpen] = useState(false);
     const [locationEntryLocation, setLocationEntryLocation] = useState("");
     const [locationEntryProducts, setLocationEntryProducts] = useState<LocationEntryProductRow[]>([
-        { code: "", product: null, status: "", message: "" },
+        { code: "", quantity: "", product: null, status: "", message: "" },
     ]);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
@@ -340,7 +378,7 @@ export default function DashboardPage() {
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
                 if (savedValStoreId && (savedValStoreId !== ALL_STORES_VALUE || savedValTab === "asignar" || savedValTab === "resultados")) setValStoreId(savedValStoreId);
-                setLocationStoreId(u.role === "Operario" ? (u.store_id || "") : (savedValStoreId && savedValStoreId !== ALL_STORES_VALUE ? savedValStoreId : ""));
+                setLocationStoreId(!u.can_access_all_stores ? (u.store_id || "") : (savedValStoreId && savedValStoreId !== ALL_STORES_VALUE ? savedValStoreId : ""));
                 if (savedValDate)    setValDate(savedValDate);
 
                 // Restaurar tienda y fecha seleccionadas (para admin que ve tab operario)
@@ -428,7 +466,7 @@ export default function DashboardPage() {
     }, [adminTab]);
 
     useEffect(() => {
-        if (user?.role === "Operario" && user.store_id && locationStoreId !== user.store_id) {
+        if (user && !user.can_access_all_stores && user.store_id && locationStoreId !== user.store_id) {
             setLocationStoreId(user.store_id);
         }
     }, [user, locationStoreId]);
@@ -457,36 +495,67 @@ export default function DashboardPage() {
     // realtime para operario
     useEffect(() => {
         if (!selectedStoreId || user?.role !== "Operario") return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const reloadOperarioData = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => loadOperarioData(selectedStoreId, selectedDate), 1000);
+        };
         const ch = supabase.channel(`cyclic-store-${selectedStoreId}`)
-            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${selectedStoreId}` }, () => loadOperarioData(selectedStoreId, selectedDate))
-            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts",      filter: `store_id=eq.${selectedStoreId}` }, () => loadOperarioData(selectedStoreId, selectedDate))
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${selectedStoreId}` }, reloadOperarioData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts",      filter: `store_id=eq.${selectedStoreId}` }, reloadOperarioData)
             .subscribe();
-        return () => { supabase.removeChannel(ch); };
+        return () => {
+            if (timer) clearTimeout(timer);
+            supabase.removeChannel(ch);
+        };
     }, [selectedStoreId, selectedDate, user]);
 
     // realtime para admin viendo tab operario
     useEffect(() => {
         if (!selectedStoreId || user?.role !== "Administrador" || activeTab !== "operario") return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const reloadOperarioData = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => loadOperarioData(selectedStoreId, selectedDate), 1000);
+        };
         const ch = supabase.channel(`cyclic-admin-operario-${selectedStoreId}`)
-            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${selectedStoreId}` }, () => loadOperarioData(selectedStoreId, selectedDate))
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${selectedStoreId}` }, reloadOperarioData)
             .subscribe();
-        return () => { supabase.removeChannel(ch); };
+        return () => {
+            if (timer) clearTimeout(timer);
+            supabase.removeChannel(ch);
+        };
     }, [selectedStoreId, selectedDate, user, activeTab]);
 
     // realtime para validador: recarga cuando operario registra conteos
     useEffect(() => {
         if (isMobileAccess || !valStoreId || activeTab !== "validador") return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
         if (valStoreId === ALL_STORES_VALUE) {
+            const reloadAllStores = () => {
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(() => loadAllStoreAssignmentSummary(valDate), 1500);
+            };
             const ch = supabase.channel(`cyclic-validador-all-${valDate}`)
-                .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments" }, () => loadAllStoreAssignmentSummary(valDate))
+                .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments" }, reloadAllStores)
                 .subscribe();
-            return () => { supabase.removeChannel(ch); };
+            return () => {
+                if (timer) clearTimeout(timer);
+                supabase.removeChannel(ch);
+            };
         }
+        const reloadValidadorData = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => loadValidadorData(valStoreId, valDate), 1500);
+        };
         const ch = supabase.channel(`cyclic-validador-${valStoreId}-${valDate}`)
-            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
-            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, () => loadValidadorData(valStoreId, valDate))
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_counts", filter: `store_id=eq.${valStoreId}` }, reloadValidadorData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "cyclic_assignments", filter: `store_id=eq.${valStoreId}` }, reloadValidadorData)
             .subscribe();
-        return () => { supabase.removeChannel(ch); };
+        return () => {
+            if (timer) clearTimeout(timer);
+            supabase.removeChannel(ch);
+        };
     }, [isMobileAccess, valStoreId, valDate, activeTab]);
 
     // scanner overlay
@@ -657,7 +726,7 @@ export default function DashboardPage() {
         const { data: all } = await supabase.from("stores").select("*").order("name");
         setAllStores((all || []) as Store[]);
         const active = (all || []).filter((s: any) => s.is_active) as Store[];
-        if (user.role === "Administrador" || user.can_access_all_stores) {
+        if (user.can_access_all_stores) {
             setStores(active);
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
             if (savedValStore === ALL_STORES_VALUE) {
@@ -670,6 +739,10 @@ export default function DashboardPage() {
         } else {
             const mine = user.store_id ? active.filter(s => s.id === user.store_id) : [];
             setStores(mine);
+            if (mine[0]?.id) {
+                setValStoreId(mine[0].id);
+                setLocationStoreId(mine[0].id);
+            }
         }
         setLoading(false);
     }
@@ -717,44 +790,21 @@ export default function DashboardPage() {
 
     async function loadOperarioData(storeId: string, date: string) {
         if (!storeId) return;
-        const { data: asgn } = await supabase
-            .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, barcode, description, unit, cost)")
-            .eq("store_id", storeId)
-            .eq("assigned_date", date)
-            .order("created_at");
-        const rows: Assignment[] = (asgn || []).map((a: any) => ({
-            id: a.id, store_id: a.store_id, product_id: a.product_id,
-            system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
-            description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            cost: Number(a.cyclic_products?.cost) || 0,
-        }));
+        const { assignments: rows, counts: enriched, sessionFlags } = await fetchCyclicDayData(supabase, { storeId, date });
         setAssignments(rows);
 
         if (rows.length === 0) { setCounts([]); setSessionFinished(false); setRecountFinished(false); setShowRecount(false); return; }
-        const assignIds = rows.map(r => r.id);
-        const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
-        const cRows = (cnts || []) as CountRecord[];
 
         // Leer flags de sesión guardados como registros especiales en cyclic_counts
         // location = '__session_finished__'  → conteo terminado
         // location = '__recount_started__'   → reconteo iniciado
         // location = '__recount_done__'      → reconteo finalizado
-        const sessionFlags = cRows.filter(c => isSessionFlagLocation(c.location));
         const keepRecountOpen = startingRecountRef.current && storeId === selectedStoreId && date === selectedDate;
         const isCounting    = sessionFlags.some(c => c.location === "__session_counting__");
         const isFinished    = sessionFlags.some(c => c.location === "__session_finished__");
         const isRecounting  = keepRecountOpen || sessionFlags.some(c => c.location === "__recount_started__");
         const isRecountDone = sessionFlags.some(c => c.location === "__recount_done__");
 
-        // Conteos reales (excluir filas de flags)
-        const realCounts = cRows.filter(c => !isSessionFlagLocation(c.location));
-        const enriched = realCounts.map(c => {
-            const asg = rows.find(a => a.id === c.assignment_id);
-            const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff };
-        });
         setCounts(enriched);
 
         // Restaurar estado UI desde flags de BD
@@ -793,33 +843,10 @@ export default function DashboardPage() {
             await loadAllStoreAssignmentSummary(date);
             return;
         }
-        const { data: asgn } = await supabase
-            .from("cyclic_assignments")
-            .select("*, cyclic_products(sku, barcode, description, unit, cost), stores(name)")
-            .eq("store_id", storeId)
-            .eq("assigned_date", date)
-            .order("created_at");
-        const rows: Assignment[] = (asgn || []).map((a: any) => ({
-            id: a.id, store_id: a.store_id, product_id: a.product_id,
-            system_stock: a.system_stock, assigned_date: a.assigned_date, assigned_by: a.assigned_by,
-            sku: a.cyclic_products?.sku, barcode: a.cyclic_products?.barcode,
-            description: a.cyclic_products?.description, unit: a.cyclic_products?.unit,
-            // Prioridad: cost del assignment > cost del producto maestro
-            cost: Number(a.cyclic_products?.cost) || 0,
-            store_name: a.stores?.name,
-        }));
+        const { assignments: rows, counts: enriched } = await fetchCyclicDayData(supabase, { storeId, date, includeStoreName: true });
         setAssignments(rows);
 
         if (rows.length === 0) { setCounts([]); return; }
-        const assignIds = rows.map(r => r.id);
-        const { data: cnts } = await supabase.from("cyclic_counts").select("*").in("assignment_id", assignIds);
-        const cRows = (cnts || []) as CountRecord[];
-        const realCounts = cRows.filter(c => !isSessionFlagLocation(c.location));
-        const enriched = realCounts.map(c => {
-            const asg = rows.find(a => a.id === c.assignment_id);
-            const diff = r2(Number(c.counted_quantity) - Number(asg?.system_stock || 0));
-            return { ...c, sku: asg?.sku, description: asg?.description, unit: asg?.unit, cost: asg?.cost, system_stock: asg?.system_stock, difference: diff, store_name: asg?.store_name };
-        });
         setCounts(enriched);
     }
 
@@ -3351,10 +3378,119 @@ export default function DashboardPage() {
         return rows;
     }
 
-    async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[], source: "ciclico" | "auditoria" | "inventario general" | "manual" = "ciclico") {
+    function locationQuantityKey(productId: string | null | undefined, location: string | null | undefined) {
+        return `${productId || ""}__${String(location || "").trim().toUpperCase()}`;
+    }
+
+    function pickQuantityFromSessionAggregates(rows: any[], sessionOrder: Map<string, number>) {
+        const byKeySession = new Map<string, Map<string, number>>();
+        for (const row of rows) {
+            const key = locationQuantityKey(row.product_id, row.location_code || row.location);
+            const sessionId = String(row.session_id || "");
+            if (!key || !sessionId) continue;
+            if (!byKeySession.has(key)) byKeySession.set(key, new Map());
+            const sessionMap = byKeySession.get(key)!;
+            sessionMap.set(sessionId, (sessionMap.get(sessionId) || 0) + Number(row.quantity || row.counted_quantity || 0));
+        }
+        const result = new Map<string, number>();
+        for (const [key, sessionMap] of byKeySession.entries()) {
+            const best = [...sessionMap.entries()].sort((a, b) => (sessionOrder.get(a[0]) ?? 999999) - (sessionOrder.get(b[0]) ?? 999999))[0];
+            if (best) result.set(key, best[1]);
+        }
+        return result;
+    }
+
+    async function hydrateLocationQuantities(rows: ProductLocation[]): Promise<ProductLocation[]> {
+        if (rows.length === 0) return rows;
+        const storeIds = [...new Set(rows.map(row => row.store_id).filter(Boolean))] as string[];
+        const productIds = [...new Set(rows.map(row => row.product_id).filter(Boolean))];
+        if (storeIds.length === 0 || productIds.length === 0) return rows;
+
+        const result = rows.map(row => ({ ...row }));
+
+        try {
+            const { data: sessionsData } = await supabase
+                .from("general_inventory_sessions")
+                .select("id,store_id,created_at,stock_frozen_at,scheduled_date")
+                .in("store_id", storeIds)
+                .order("created_at", { ascending: false })
+                .limit(120);
+            const sessions = (sessionsData || []) as Array<{ id: string; store_id: string }>;
+            const sessionIds = sessions.map(session => session.id);
+            const sessionOrder = new Map(sessionIds.map((id, index) => [id, index]));
+
+            const [validationResp, recountResp, countResp] = sessionIds.length > 0 ? await Promise.all([
+                supabase.from("general_inventory_validation_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+                supabase.from("general_inventory_recount_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+                supabase.from("general_inventory_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+            ]) : [{ data: [] }, { data: [] }, { data: [] }];
+
+            const validationMap = pickQuantityFromSessionAggregates(validationResp.data || [], sessionOrder);
+            const recountMap = pickQuantityFromSessionAggregates(recountResp.data || [], sessionOrder);
+            const countMap = pickQuantityFromSessionAggregates(countResp.data || [], sessionOrder);
+
+            for (const row of result) {
+                const source = row.last_source === "manual" ? "Recepcion" : row.last_source || "";
+                if (source !== "inventario general") continue;
+                const key = locationQuantityKey(row.product_id, row.location);
+                const quantity = validationMap.get(key) ?? recountMap.get(key) ?? countMap.get(key);
+                if (quantity !== undefined) row.stored_quantity = quantity;
+            }
+        } catch (error) {
+            console.warn("No se pudieron resolver cantidades de inventario general:", error);
+        }
+
+        try {
+            const { data: assignmentsData } = await supabase
+                .from("cyclic_assignments")
+                .select("id,store_id,product_id,assigned_date,created_at")
+                .in("store_id", storeIds)
+                .in("product_id", productIds)
+                .order("assigned_date", { ascending: false })
+                .limit(1200);
+            const assignments = (assignmentsData || []) as Array<{ id: string; store_id: string; product_id: string; assigned_date: string | null }>;
+            const latestDateByStoreProduct = new Map<string, string>();
+            for (const assignment of assignments) {
+                const key = `${assignment.store_id}__${assignment.product_id}`;
+                const date = assignment.assigned_date || "";
+                if (!latestDateByStoreProduct.has(key)) latestDateByStoreProduct.set(key, date);
+            }
+            const currentAssignmentIds = assignments
+                .filter(assignment => (assignment.assigned_date || "") === latestDateByStoreProduct.get(`${assignment.store_id}__${assignment.product_id}`))
+                .map(assignment => assignment.id);
+
+            const cyclicQuantityMap = new Map<string, number>();
+            for (let i = 0; i < currentAssignmentIds.length; i += 500) {
+                const chunk = currentAssignmentIds.slice(i, i + 500);
+                const { data } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id,product_id,location,counted_quantity")
+                    .in("assignment_id", chunk);
+                for (const row of (data || []) as any[]) {
+                    if (isSessionFlagLocation(row.location)) continue;
+                    const key = locationQuantityKey(row.product_id, row.location);
+                    cyclicQuantityMap.set(key, (cyclicQuantityMap.get(key) || 0) + Number(row.counted_quantity || 0));
+                }
+            }
+
+            for (const row of result) {
+                const source = row.last_source === "manual" ? "Recepcion" : row.last_source || "";
+                if (source !== "ciclico") continue;
+                const quantity = cyclicQuantityMap.get(locationQuantityKey(row.product_id, row.location));
+                if (quantity !== undefined) row.stored_quantity = quantity;
+            }
+        } catch (error) {
+            console.warn("No se pudieron resolver cantidades de ciclicos:", error);
+        }
+
+        return result;
+    }
+
+    async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[], source: "ciclico" | "auditoria" | "inventario general" | "manual" | "Recepcion" = "ciclico", storedQuantity?: number | null) {
         const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
         if (!productId || !sku || cleanLocations.length === 0) return;
         const now = new Date().toISOString();
+        const normalizedSource = source === "manual" ? "Recepcion" : source;
         const rows = cleanLocations.map(location => ({
             store_id: storeId || null,
             product_id: productId,
@@ -3363,8 +3499,9 @@ export default function DashboardPage() {
             is_active: true,
             updated_by: user?.id || null,
             updated_at: now,
-            last_source: source,
+            last_source: normalizedSource,
             last_seen_at: now,
+            ...(storedQuantity !== undefined ? { stored_quantity: storedQuantity } : {}),
             cyclic_registered: source === "ciclico",
             audit_registered: source === "auditoria",
             general_inventory_registered: source === "inventario general",
@@ -3374,8 +3511,8 @@ export default function DashboardPage() {
             let { error } = await supabase
                 .from("product_locations")
                 .upsert(chunk, { onConflict: "store_id,product_id,location" });
-            if (error && /last_source|last_seen_at|cyclic_registered|audit_registered|general_inventory_registered/i.test(error.message)) {
-                const fallbackRows = chunk.map(({ last_source, last_seen_at, cyclic_registered, audit_registered, general_inventory_registered, ...rest }) => rest);
+            if (error && /last_source|last_seen_at|stored_quantity|cyclic_registered|audit_registered|general_inventory_registered/i.test(error.message)) {
+                const fallbackRows = chunk.map(({ last_source, last_seen_at, stored_quantity, cyclic_registered, audit_registered, general_inventory_registered, ...rest }) => rest);
                 ({ error } = await supabase
                     .from("product_locations")
                     .upsert(fallbackRows, { onConflict: "store_id,product_id,location" }));
@@ -4261,21 +4398,24 @@ export default function DashboardPage() {
     // ════════════════════════════════════════════════════════
     async function createUser() {
         if (!newUsername.trim() || !newPassword.trim() || !newFullName.trim()) { showMessage("Usuario, contraseña y nombre son obligatorios.", "error"); return; }
+        if (newUserModuleAccess.length === 0) { showMessage("Selecciona al menos un modulo.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_users").select("id").eq("username", newUsername.trim().toLowerCase()).maybeSingle();
         if (existing) { showMessage("Nombre de usuario ya existe.", "error"); return; }
         const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
+        const moduleAccess = [...new Set(newUserModuleAccess)];
         const { error } = await supabase.from("cyclic_users").insert({
             username: newUsername.trim().toLowerCase(), password: newPassword.trim(),
             full_name: newFullName.trim(), role: newRole,
-            store_id: newRole === "Operario" ? (newUserStoreId || null) : null,
-            can_access_all_stores: newRole !== "Operario",
-            can_access_audit: newRole === "Administrador" || newRole === "Supervisor" ? true : newUserAuditAccess,
+            store_id: newUserAllStores ? null : (newUserStoreId || null),
+            can_access_all_stores: newUserAllStores,
+            can_access_audit: moduleAccess.includes("audit") || newRole === "Administrador" || newRole === "Supervisor" ? true : newUserAuditAccess,
+            module_access: moduleAccess,
             is_active: true,
             whatsapp: wsp || null,
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false);
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false); setNewUserModuleAccess(["cyclic"]);
         loadAllUsers();
     }
 
@@ -4289,18 +4429,42 @@ export default function DashboardPage() {
         setEditUserPassword("");
         setEditUserWhatsapp(u.whatsapp || "");
         setEditUserAuditAccess(u.role === "Administrador" || u.role === "Supervisor" ? true : !!u.can_access_audit);
+        setEditUserModuleAccess(normalizedModuleAccess(u));
+    }
+
+    function toggleNewUserModuleAccess(key: ModuleAccessKey, checked: boolean) {
+        setNewUserModuleAccess(prev => {
+            const next = new Set(prev);
+            if (checked) next.add(key);
+            else next.delete(key);
+            if (key === "audit") setNewUserAuditAccess(checked);
+            return [...next];
+        });
+    }
+
+    function toggleEditUserModuleAccess(key: ModuleAccessKey, checked: boolean) {
+        setEditUserModuleAccess(prev => {
+            const next = new Set(prev);
+            if (checked) next.add(key);
+            else next.delete(key);
+            if (key === "audit") setEditUserAuditAccess(checked);
+            return [...next];
+        });
     }
 
     async function saveEditUser() {
         if (!editingUser) return;
         if (!editUserFullName.trim()) { showMessage("El nombre completo es obligatorio.", "error"); return; }
+        if (editUserModuleAccess.length === 0) { showMessage("Selecciona al menos un modulo.", "error"); return; }
         const wsp = editUserWhatsapp.trim().replace(/\D/g, "");
+        const moduleAccess = [...new Set(editUserModuleAccess)];
         const updates: any = {
             full_name: editUserFullName.trim(),
             role: editUserRole,
-            store_id: editUserRole === "Operario" ? (editUserStoreId || null) : null,
-            can_access_all_stores: editUserRole !== "Operario",
-            can_access_audit: editUserRole === "Administrador" || editUserRole === "Supervisor" ? true : editUserAuditAccess,
+            store_id: editUserAllStores ? null : (editUserStoreId || null),
+            can_access_all_stores: editUserAllStores,
+            can_access_audit: moduleAccess.includes("audit") || editUserRole === "Administrador" || editUserRole === "Supervisor" ? true : editUserAuditAccess,
+            module_access: moduleAccess,
             is_active: editUserActive,
             whatsapp: wsp || null,
         };
@@ -4328,8 +4492,11 @@ export default function DashboardPage() {
             const normalizedTerm = term.toLowerCase();
             const safeLikeTerm = term.replace(/[,%()]/g, " ").trim();
             const productMatches = products.filter(product => {
-                const haystack = `${product.sku} ${product.description}`.toLowerCase();
-                return haystack.includes(normalizedTerm) || visibleProductCode(product.sku).includes(cleanCode(term));
+                const haystack = `${product.sku} ${product.barcode || ""} ${product.description}`.toLowerCase();
+                const cleanTerm = cleanCode(term);
+                return haystack.includes(normalizedTerm) ||
+                    visibleProductCode(product.sku).includes(cleanTerm) ||
+                    codeCandidates(product.barcode).some(candidate => candidate.toLowerCase().includes(normalizedTerm) || cleanCode(candidate).includes(cleanTerm));
             }).slice(0, 80);
             const productMap = new Map<string, Product>();
             productMatches.forEach(product => productMap.set(product.id, product));
@@ -4376,7 +4543,8 @@ export default function DashboardPage() {
             if (locationError) throw locationError;
             for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
 
-            setLocationResults([...byId.values()].sort((a, b) => {
+            const hydratedRows = await hydrateLocationQuantities([...byId.values()]);
+            setLocationResults(hydratedRows.sort((a, b) => {
                 const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
                 const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
                 if (timeA !== timeB) return timeB - timeA;
@@ -4393,12 +4561,15 @@ export default function DashboardPage() {
         const raw = String(codeValue || "").trim();
         const full = fullProductCode(raw);
         const visible = cleanCode(raw);
+        const candidates = codeCandidates(raw);
+        const fullCandidates = [...new Set([full, ...candidates.map(candidate => fullProductCode(candidate))].filter(Boolean))];
         if (!raw && !full) return null;
 
         const local = products.find(p =>
-            fullProductCode(p.sku) === full ||
+            fullCandidates.includes(fullProductCode(p.sku)) ||
             visibleProductCode(p.sku) === visible ||
-            String(p.barcode || "").trim() === raw
+            candidates.includes(String(p.barcode || "").trim()) ||
+            candidates.includes(cleanCode(p.barcode))
         );
         if (local) return local;
 
@@ -4406,16 +4577,15 @@ export default function DashboardPage() {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .or(`sku.eq.${full},barcode.eq.${raw}`)
-            .limit(2);
+            .or(`sku.in.(${fullCandidates.join(",")}),barcode.in.(${candidates.join(",")})`)
+            .limit(5);
         if ((byDirect || []).length === 1) return byDirect![0] as Product;
 
-        const { data: byBarcode } = await supabase
-            .from("codigos_barra")
-            .select("codsap,upc,alu")
-            .or(`upc.eq.${raw},alu.eq.${raw}`)
-            .not("codsap", "is", null)
-            .limit(5);
+        const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+            supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).not("codsap", "is", null).limit(10),
+            supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).not("codsap", "is", null).limit(10),
+        ]);
+        const byBarcode = [...(byUpc || []), ...(byAlu || [])];
         const mappedCodes = [...new Set((byBarcode || []).flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)))];
         if (mappedCodes.length === 1) {
             const { data: mapped } = await supabase
@@ -4436,13 +4606,13 @@ export default function DashboardPage() {
             return;
         }
         setLocationEntryLocation("");
-        setLocationEntryProducts([{ code: "", product: null, status: "", message: "" }]);
+        setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
         setLocationEntryOpen(true);
         clearMessage();
     }
 
     function addLocationEntryProductRow() {
-        setLocationEntryProducts(prev => [...prev, { code: "", product: null, status: "", message: "" }]);
+        setLocationEntryProducts(prev => [...prev, { code: "", quantity: "", product: null, status: "", message: "" }]);
     }
 
     function removeLocationEntryProductRow(index: number) {
@@ -4451,6 +4621,10 @@ export default function DashboardPage() {
 
     function updateLocationEntryProductCode(index: number, code: string) {
         setLocationEntryProducts(prev => prev.map((row, i) => i === index ? { ...row, code, product: null, status: "", message: "" } : row));
+    }
+
+    function updateLocationEntryProductQuantity(index: number, quantity: string) {
+        setLocationEntryProducts(prev => prev.map((row, i) => i === index ? { ...row, quantity } : row));
     }
 
     async function resolveLocationEntryProduct(index: number, codeOverride?: string) {
@@ -4472,30 +4646,37 @@ export default function DashboardPage() {
 
         setLocationBusy(true);
         try {
-            const resolved: Product[] = [];
+            const resolved: Array<{ product: Product; quantity: number | null }> = [];
             for (let i = 0; i < locationEntryProducts.length; i++) {
-                const code = locationEntryProducts[i].code.trim();
+                const entry = locationEntryProducts[i];
+                const code = entry.code.trim();
                 if (!code) continue;
-                const product = locationEntryProducts[i].product || await findProductForLocationEntry(code);
+                const product = entry.product || await findProductForLocationEntry(code);
                 if (!product) {
                     setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Codigo no encontrado" } : row));
                     showMessage(`No encontre el codigo ${code}.`, "error");
                     return;
                 }
-                resolved.push(product);
+                const quantity = entry.quantity.trim() ? Number(entry.quantity.replace(",", ".")) : null;
+                if (quantity !== null && (!Number.isFinite(quantity) || quantity < 0)) {
+                    setLocationEntryProducts(prev => prev.map((row, idx) => idx === i ? { ...row, status: "error", message: "Cantidad invalida" } : row));
+                    showMessage(`Cantidad invalida para ${code}.`, "error");
+                    return;
+                }
+                resolved.push({ product, quantity });
             }
 
-            const uniqueProducts = [...new Map(resolved.map(product => [product.id, product])).values()];
+            const uniqueProducts = [...new Map(resolved.map(row => [row.product.id, row])).values()];
             if (uniqueProducts.length === 0) { showMessage("Agrega al menos un producto.", "error"); return; }
 
-            for (const product of uniqueProducts) {
-                await upsertProductLocations(product.id, product.sku, locationStoreId, [location], "manual");
+            for (const row of uniqueProducts) {
+                await upsertProductLocations(row.product.id, row.product.sku, locationStoreId, [location], "Recepcion", row.quantity);
             }
 
             showMessage(`Ubicacion guardada para ${uniqueProducts.length} producto${uniqueProducts.length !== 1 ? "s" : ""}.`, "success");
             setLocationEntryOpen(false);
             setLocationEntryLocation("");
-            setLocationEntryProducts([{ code: "", product: null, status: "", message: "" }]);
+            setLocationEntryProducts([{ code: "", quantity: "", product: null, status: "", message: "" }]);
             if (locationSearch.trim()) await searchLocations();
         } finally {
             setLocationBusy(false);
@@ -4504,7 +4685,7 @@ export default function DashboardPage() {
 
     async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
         if (!location.trim()) return;
-        await upsertProductLocations(product.id, product.sku, storeId || "", [location], "manual");
+        await upsertProductLocations(product.id, product.sku, storeId || "", [location], "Recepcion");
         showMessage("Ubicación guardada.", "success");
         await searchLocations();
     }
@@ -4517,7 +4698,7 @@ export default function DashboardPage() {
             const now = new Date().toISOString();
             let { error } = await supabase
                 .from("product_locations")
-                .update({ location: clean, updated_by: user?.id || null, updated_at: now, last_source: "manual", last_seen_at: now })
+                .update({ location: clean, updated_by: user?.id || null, updated_at: now, last_source: "Recepcion", last_seen_at: now })
                 .eq("id", row.id);
             if (error && /last_source|last_seen_at/i.test(error.message)) {
                 ({ error } = await supabase
@@ -4588,7 +4769,7 @@ export default function DashboardPage() {
                         is_active: true,
                         updated_by: user?.id || null,
                         updated_at: now,
-                        last_source: "manual",
+                        last_source: "Recepcion",
                         last_seen_at: now,
                     };
                 })
@@ -4597,8 +4778,8 @@ export default function DashboardPage() {
             for (let i = 0; i < upsertRows.length; i += 500) {
                 const chunk = upsertRows.slice(i, i + 500);
                 let { error } = await supabase.from("product_locations").upsert(chunk, { onConflict: "store_id,product_id,location" });
-                if (error && /last_source|last_seen_at/i.test(error.message)) {
-                    const fallbackRows = chunk.map(({ last_source, last_seen_at, ...rest }) => rest);
+                if (error && /last_source|last_seen_at|stored_quantity/i.test(error.message)) {
+                    const fallbackRows = chunk.map(({ last_source, last_seen_at, stored_quantity, ...rest }) => rest);
                     ({ error } = await supabase.from("product_locations").upsert(fallbackRows, { onConflict: "store_id,product_id,location" }));
                 }
                 if (error) throw error;
@@ -4609,6 +4790,53 @@ export default function DashboardPage() {
             if (locationsInputRef.current) locationsInputRef.current.value = "";
         } catch (error: any) {
             showMessage("Error cargando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function exportLocationsExcel() {
+        setLocationBusy(true);
+        try {
+            const rows: any[] = [];
+            const pageSize = 1000;
+            for (let from = 0; ; from += pageSize) {
+                let query = supabase
+                    .from("product_locations")
+                    .select("id,store_id,sku,location,stored_quantity,is_active,last_source,last_seen_at,updated_at,cyclic_products(sku,description,unit),stores(name)")
+                    .eq("is_active", true)
+                    .order("sku", { ascending: true })
+                    .range(from, from + pageSize - 1);
+                if (locationStoreId) query = query.eq("store_id", locationStoreId);
+                const { data, error } = await query;
+                if (error) throw error;
+                rows.push(...(data || []));
+                if (!data || data.length < pageSize) break;
+            }
+
+            const exportRows = rows.map(row => {
+                const product = row.cyclic_products;
+                const store = allStores.find(s => s.id === row.store_id);
+                return {
+                    Tienda: row.stores?.name || store?.name || "Global",
+                    Codigo: product?.sku || row.sku || "",
+                    Descripcion: product?.description || "",
+                    UM: product?.unit || "",
+                    Ubicacion: row.location || "",
+                    Cantidad: row.stored_quantity ?? "",
+                    Activo: row.is_active ? "Si" : "No",
+                    Fuente: row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion",
+                    "Ultimo cambio": row.last_seen_at || row.updated_at || "",
+                };
+            });
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "Ubicaciones");
+            const selectedStore = allStores.find(s => s.id === locationStoreId)?.name || "todas";
+            XLSX.writeFile(workbook, `ubicaciones_${selectedStore.replace(/[^a-z0-9]+/gi, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+            showMessage(`${exportRows.length.toLocaleString("es-PE")} ubicaciones exportadas.`, "success");
+        } catch (error: any) {
+            showMessage("Error descargando ubicaciones: " + (error?.message || error), "error");
         } finally {
             setLocationBusy(false);
         }
@@ -5803,7 +6031,10 @@ export default function DashboardPage() {
     const isAdmin    = user?.role === "Administrador";
     const isSupervisor = user?.role === "Supervisor";
     const canValidateCyclic = user?.role === "Validador" || isAdmin;
-    const canManageLocations = Boolean(user);
+    const canManageLocations = Boolean(user && user.role !== "Operario");
+    const canBulkManageLocations = canManageLocations && !isMobileAccess;
+    const canRegisterLocations = Boolean(user && (isMobileAccess || user.role !== "Operario"));
+    const canEditLocations = canManageLocations && !isMobileAccess;
     const isValOrAdm = canValidateCyclic || isSupervisor;
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
@@ -7829,14 +8060,14 @@ export default function DashboardPage() {
                     {activeTab === "admin" && adminTab === "tiendas" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <h2 className="text-xl font-bold text-slate-900">Tiendas</h2>
-                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
+                            {canManageLocations && <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700">Nueva tienda</p>
                                 <div className="flex gap-3 flex-wrap">
                                     <input className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[160px]" placeholder="Nombre de la tienda" value={newStoreName} onChange={e => setNewStoreName(e.target.value)} />
                                     <input className="w-32 border rounded-2xl p-3 text-sm bg-white text-slate-900" placeholder="Código" value={newStoreCode} onChange={e => setNewStoreCode(e.target.value)} />
                                     <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createStore}>+ Crear</button>
                                 </div>
-                            </div>
+                            </div>}
                             <div className="border rounded-2xl overflow-hidden">
                                 <table className="w-full text-sm">
                                     <thead className="bg-slate-100">
@@ -7891,22 +8122,31 @@ export default function DashboardPage() {
                                 )}
                             </div>
 
-                            <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
-                                <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
-                                <p className="text-xs text-slate-500">Formato: columna A = codigo, columna B = ubicacion. Se guarda para la tienda seleccionada.</p>
-                                <div className="flex gap-3 flex-wrap items-center">
-                                    <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => locationsInputRef.current?.click()}>
-                                        {locationsFileName || "Seleccionar Excel"}
-                                    </button>
-                                    <input ref={locationsInputRef} type="file" accept=".xlsx,.xls" className="hidden"
-                                        onChange={e => { const f = e.target.files?.[0] || null; setLocationsFile(f); setLocationsFileName(f?.name || ""); e.target.value = ""; }} />
-                                    {locationsFile && (
-                                        <button className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={uploadLocationsExcel}>
-                                            Cargar ubicaciones
+                            {canBulkManageLocations && (
+                                <div className="rounded-2xl bg-slate-50 border p-4 space-y-3">
+                                    <p className="text-sm font-semibold text-slate-700">Carga masiva por Excel</p>
+                                    <p className="text-xs text-slate-500">Formato: columna A = codigo, columna B = ubicacion. Se guarda para la tienda seleccionada.</p>
+                                    <div className="flex gap-3 flex-wrap items-center">
+                                        <button className="px-4 py-2.5 rounded-2xl border font-semibold text-sm bg-white text-slate-700" onClick={() => locationsInputRef.current?.click()}>
+                                            {locationsFileName || "Seleccionar Excel"}
                                         </button>
-                                    )}
+                                        <input ref={locationsInputRef} type="file" accept=".xlsx,.xls" className="hidden"
+                                            onChange={e => { const f = e.target.files?.[0] || null; setLocationsFile(f); setLocationsFileName(f?.name || ""); e.target.value = ""; }} />
+                                        {locationsFile && (
+                                            <button className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={uploadLocationsExcel}>
+                                                Cargar ubicaciones
+                                            </button>
+                                        )}
+                                        <button
+                                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-green-700 text-white font-semibold text-sm disabled:opacity-40"
+                                            disabled={locationBusy}
+                                            onClick={exportLocationsExcel}
+                                        >
+                                            <Download size={16} /> Descargar ubicaciones
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             <div className="rounded-2xl border p-4 space-y-3">
                                 <p className="text-sm font-semibold text-slate-700">Buscar ubicaciones</p>
@@ -7924,7 +8164,7 @@ export default function DashboardPage() {
                                     <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
                                         {locationBusy ? "Consultando..." : "Consultar"}
                                     </button>
-                                    {canManageLocations && <button
+                                    {canRegisterLocations && <button
                                         className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
                                         disabled={locationBusy || !locationStoreId}
                                         onClick={openLocationEntryCard}
@@ -7943,9 +8183,10 @@ export default function DashboardPage() {
                                                 <th className="p-2 border text-left">Descripcion</th>
                                                 <th className="p-2 border">Tienda</th>
                                                 <th className="p-2 border text-left">Ubicacion</th>
+                                                <th className="p-2 border">Cantidad</th>
                                                 <th className="p-2 border">Ultimo cambio</th>
                                                 <th className="p-2 border">Registrado en</th>
-                                                <th className="p-2 border">Accion</th>
+                                                {!isMobileAccess && <th className="p-2 border">Accion</th>}
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -7961,23 +8202,26 @@ export default function DashboardPage() {
                                                         <td className="p-2 border text-slate-600">{productDescription}</td>
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                         <td className="p-2 border font-bold text-slate-900">{row.location}</td>
+                                                        <td className="p-2 border text-center font-black">{row.stored_quantity ?? "-"}</td>
                                                         <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
-                                                        <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source || "manual"}</td>
-                                                        <td className="p-2 border text-center whitespace-nowrap">
-                                                            {canManageLocations ? (
-                                                            <>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
-                                                                const next = prompt("Nueva ubicacion", row.location);
-                                                                if (next) void replaceProductLocation(row, next);
-                                                            }}>Editar</button>
-                                                            <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>
-                                                            </>
-                                                            ) : <span className="text-xs text-slate-400">Lectura</span>}
-                                                        </td>
+                                                        <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</td>
+                                                        {!isMobileAccess && (
+                                                            <td className="p-2 border text-center whitespace-nowrap">
+                                                                {canEditLocations ? (
+                                                                <>
+                                                                <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
+                                                                    const next = prompt("Nueva ubicacion", row.location);
+                                                                    if (next) void replaceProductLocation(row, next);
+                                                                }}>Editar</button>
+                                                                <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>
+                                                                </>
+                                                                ) : <span className="text-xs text-slate-400">Lectura</span>}
+                                                            </td>
+                                                        )}
                                                     </tr>
                                                 );
                                             })}
-                                            {locationResults.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-slate-400">Busca un producto o carga un Excel para ver ubicaciones.</td></tr>}
+                                            {locationResults.length === 0 && <tr><td colSpan={isMobileAccess ? 7 : 8} className="p-6 text-center text-slate-400">Busca un producto para ver ubicaciones.</td></tr>}
                                         </tbody>
                                     </table>
                                 </div>
@@ -7997,26 +8241,39 @@ export default function DashboardPage() {
                                     <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 — con código de país)" value={newUserWhatsapp} onChange={e => setNewUserWhatsapp(e.target.value)} />
                                     <div>
                                         <label className="text-xs text-slate-500 block mb-1">Rol</label>
-                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { setNewRole(e.target.value as Role); if (e.target.value !== "Operario") setNewUserAllStores(true); }}>
+                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={e => { const role = e.target.value as Role; setNewRole(role); setNewUserModuleAccess(legacyModuleAccessForRole(role, newUserAuditAccess)); if (role !== "Operario") setNewUserAllStores(true); }}>
                                             <option value="Operario">Operario</option>
                                             <option value="Validador">Validador</option>
                                             <option value="Supervisor">Supervisor lectura</option>
                                             <option value="Administrador">Administrador</option>
                                         </select>
                                     </div>
-                                    {newRole === "Operario" && (
-                                        <div>
-                                            <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
-                                            <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)}>
-                                                <option value="">— Sin asignar —</option>
-                                                {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                            </select>
-                                        </div>
-                                    )}
-                                    <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700 md:col-span-2">
-                                        <input type="checkbox" checked={newRole === "Administrador" || newRole === "Supervisor" || newUserAuditAccess} disabled={newRole === "Administrador" || newRole === "Supervisor"} onChange={e => setNewUserAuditAccess(e.target.checked)} />
-                                        Puede acceder a auditorías
+                                    <div>
+                                        <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
+                                        <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={e => setNewUserStoreId(e.target.value)} disabled={newUserAllStores}>
+                                            <option value="">— Sin asignar —</option>
+                                            {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
+                                        <input type="checkbox" checked={newUserAllStores} onChange={e => setNewUserAllStores(e.target.checked)} />
+                                        Puede ver todas las tiendas
                                     </label>
+                                    <div className="rounded-2xl border bg-white p-3 md:col-span-2">
+                                        <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Modulos permitidos</p>
+                                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                            {MODULE_ACCESS_OPTIONS.map(option => (
+                                                <label key={option.key} className="flex items-center gap-2 rounded-xl border bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={newUserModuleAccess.includes(option.key)}
+                                                        onChange={e => toggleNewUserModuleAccess(option.key, e.target.checked)}
+                                                    />
+                                                    {option.label}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
                                 </div>
                                 <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createUser}>+ Crear usuario</button>
                             </div>
@@ -8031,7 +8288,7 @@ export default function DashboardPage() {
                                                 <th className="p-2 border">Rol</th>
                                                 <th className="p-2 border">Tienda</th>
                                                 <th className="p-2 border">WhatsApp</th>
-                                                <th className="p-2 border">Auditoría</th>
+                                                <th className="p-2 border">Modulos</th>
                                                 <th className="p-2 border">Estado</th>
                                                 <th className="p-2 border">Acción</th>
                                             </tr>
@@ -8053,7 +8310,13 @@ export default function DashboardPage() {
                                                                 : <span className="text-slate-400">—</span>}
                                                         </td>
                                                         <td className="p-2 border text-center">
-                                                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{(u.role === "Administrador" || u.role === "Supervisor" || u.can_access_audit) ? "Si" : "No"}</span>
+                                                            <div className="flex max-w-xs flex-wrap justify-center gap-1">
+                                                                {normalizedModuleAccess(u).map(key => (
+                                                                    <span key={key} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">
+                                                                        {MODULE_ACCESS_OPTIONS.find(option => option.key === key)?.label || key}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
                                                         </td>
                                                         <td className="p-2 border text-center">
                                                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{u.is_active ? "Activo" : "Inactivo"}</span>
@@ -8116,7 +8379,7 @@ export default function DashboardPage() {
                                                 type="button"
                                                 onClick={() => setLocationRows(prev => prev.length === 1 && !prev[0].location ? [{ ...prev[0], location: row.location }] : [...prev, { location: row.location, qty: "" }])}
                                                 className="rounded-full border bg-white px-2 py-1 text-[11px] font-black text-slate-700"
-                                                title={`${row.last_source || "manual"}${row.last_seen_at ? ` - ${new Date(row.last_seen_at).toLocaleString("es-PE")}` : ""}`}
+                                                title={`${row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}${row.last_seen_at ? ` - ${new Date(row.last_seen_at).toLocaleString("es-PE")}` : ""}`}
                                             >
                                                 {row.location}
                                             </button>
@@ -8325,22 +8588,24 @@ export default function DashboardPage() {
                             </div>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
-                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={e => { setEditUserRole(e.target.value as Role); if (e.target.value !== "Operario") setEditUserAllStores(true); }}>
+                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={e => { const role = e.target.value as Role; setEditUserRole(role); setEditUserModuleAccess(legacyModuleAccessForRole(role, editUserAuditAccess)); if (role !== "Operario") setEditUserAllStores(true); }}>
                                     <option value="Operario">Operario</option>
                                     <option value="Validador">Validador</option>
                                     <option value="Supervisor">Supervisor lectura</option>
                                     <option value="Administrador">Administrador</option>
                                 </select>
                             </div>
-                            {editUserRole === "Operario" && (
-                                <div>
-                                    <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
-                                    <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)}>
-                                        <option value="">— Sin asignar —</option>
-                                        {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                    </select>
-                                </div>
-                            )}
+                            <div>
+                                <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
+                                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={e => setEditUserStoreId(e.target.value)} disabled={editUserAllStores}>
+                                    <option value="">— Sin asignar —</option>
+                                    {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                            </div>
+                            <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
+                                <input type="checkbox" checked={editUserAllStores} onChange={e => setEditUserAllStores(e.target.checked)} />
+                                Puede ver todas las tiendas
+                            </label>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Nueva contraseña <span className="text-slate-400 font-normal">(dejar vacío para no cambiar)</span></label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="Nueva contraseña..." value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} />
@@ -8349,10 +8614,21 @@ export default function DashboardPage() {
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">WhatsApp <span className="text-slate-400 font-normal">(con código de país, ej: 51987654321)</span></label>
                                 <input className="w-full border rounded-2xl p-3 text-slate-900 bg-white" placeholder="51987654321" value={editUserWhatsapp} onChange={e => setEditUserWhatsapp(e.target.value)} />
                             </div>
-                            <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
-                                <input type="checkbox" checked={editUserRole === "Administrador" || editUserRole === "Supervisor" || editUserAuditAccess} disabled={editUserRole === "Administrador" || editUserRole === "Supervisor"} onChange={e => setEditUserAuditAccess(e.target.checked)} />
-                                Puede acceder a auditorías
-                            </label>
+                            <div className="rounded-2xl border bg-white p-3">
+                                <p className="mb-2 text-xs font-black uppercase tracking-wide text-slate-500">Modulos permitidos</p>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {MODULE_ACCESS_OPTIONS.map(option => (
+                                        <label key={option.key} className="flex items-center gap-2 rounded-xl border bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
+                                            <input
+                                                type="checkbox"
+                                                checked={editUserModuleAccess.includes(option.key)}
+                                                onChange={e => toggleEditUserModuleAccess(option.key, e.target.checked)}
+                                            />
+                                            {option.label}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
                             <div>
                                 <label className="block text-sm font-semibold mb-1 text-slate-900">Estado</label>
                                 <div className="flex gap-3">
@@ -8498,6 +8774,16 @@ export default function DashboardPage() {
                                             <QrCode size={16} />
                                         </button>
                                     </div>
+                                    <input
+                                        className="w-full border-2 rounded-xl p-3 text-sm font-bold text-slate-900 bg-white"
+                                        placeholder="Cantidad ubicada o almacenada"
+                                        value={row.quantity}
+                                        onChange={e => updateLocationEntryProductQuantity(i, e.target.value)}
+                                        inputMode="decimal"
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                    />
                                     {row.product && (
                                         <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2 text-xs text-emerald-900">
                                             <b>{row.product.sku}</b> · {row.product.description}

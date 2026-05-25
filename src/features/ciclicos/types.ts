@@ -11,6 +11,7 @@ export type CyclicUser = {
   store_id: string | null;
   can_access_all_stores: boolean;
   can_access_audit?: boolean;
+  module_access?: string[] | null;
   is_active: boolean;
   whatsapp?: string | null;
 };
@@ -178,6 +179,7 @@ export type LocationRow = { location: string; qty: string };
 
 export type LocationEntryProductRow = {
   code: string;
+  quantity: string;
   product: Product | null;
   status: "" | "ok" | "error";
   message: string;
@@ -189,6 +191,7 @@ export type ProductLocation = {
   product_id: string;
   sku: string;
   location: string;
+  stored_quantity?: number | null;
   is_active: boolean;
   last_source?: string | null;
   last_seen_at?: string | null;
