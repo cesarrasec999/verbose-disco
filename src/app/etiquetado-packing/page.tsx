@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Download, LogOut, PackageCheck, RefreshCw, Save, Search, Tags } from "lucide-react";
+import { ArrowLeft, Download, LogOut, RefreshCw, Save, Search, Tags, UserPlus } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -31,6 +31,12 @@ type Product = {
   unit: string;
 };
 
+type BarcodeRow = {
+  codsap: string | number | null;
+  upc: string | null;
+  alu: string | null;
+};
+
 type PackingTask = {
   id: string;
   store_id: string | null;
@@ -49,6 +55,14 @@ type PackingTask = {
   stores?: { name?: string | null } | null;
 };
 
+type PackingPerson = {
+  id: string;
+  store_id: string | null;
+  full_name: string;
+  is_active: boolean;
+  created_at: string;
+};
+
 function fullProductCode(value: string | number | null | undefined): string {
   return String(value ?? "").trim().replace(/\.0+$/, "").toUpperCase();
 }
@@ -57,11 +71,40 @@ function canExport(user: CyclicUser | null) {
   return user?.role === "Administrador" || user?.role === "Validador";
 }
 
+function canManagePersonnel(user: CyclicUser | null) {
+  return user?.role === "Administrador" || user?.role === "Validador";
+}
+
 function canAccessPacking(user: CyclicUser) {
   if (Array.isArray(user.module_access) && user.module_access.length > 0) {
     return user.module_access.includes("packing");
   }
   return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || user.role === "Operario";
+}
+
+function formatDuration(start: string | null | undefined, end: string | null | undefined) {
+  if (!start || !end) return "";
+  const diffMs = new Date(end).getTime() - new Date(start).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "";
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds].map(value => String(value).padStart(2, "0")).join(":");
+}
+
+function formatExportDate(value: string | null | undefined) {
+  if (!value) return "";
+  return new Date(value).toLocaleDateString("es-PE");
+}
+
+function formatExportTime(value: string | null | undefined) {
+  if (!value) return "";
+  return new Date(value).toLocaleTimeString("es-PE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 export default function EtiquetadoPackingPage() {
@@ -75,6 +118,9 @@ export default function EtiquetadoPackingPage() {
   const [quantity, setQuantity] = useState("1");
   const [note, setNote] = useState("");
   const [tasks, setTasks] = useState<PackingTask[]>([]);
+  const [personnel, setPersonnel] = useState<PackingPerson[]>([]);
+  const [selectedPersonId, setSelectedPersonId] = useState("");
+  const [newPersonName, setNewPersonName] = useState("");
   const [statusFilter, setStatusFilter] = useState<"todos" | "pendiente" | "hecho" | "cancelado">("todos");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -83,6 +129,23 @@ export default function EtiquetadoPackingPage() {
     () => stores.find(store => store.id === storeId)?.name || "Sin tienda",
     [stores, storeId]
   );
+  const selectedPerson = useMemo(
+    () => personnel.find(person => person.id === selectedPersonId) || null,
+    [personnel, selectedPersonId]
+  );
+
+  async function loadInitialData(currentUser: CyclicUser) {
+    const { data } = await supabase.from("stores").select("id,name,code,is_active").eq("is_active", true).order("name");
+    const storeRows = (data || []) as Store[];
+    const allowedStores = currentUser.can_access_all_stores
+      ? storeRows
+      : storeRows.filter(store => store.id === currentUser.store_id);
+    setStores(allowedStores);
+    const firstStore = currentUser.can_access_all_stores ? (currentUser.store_id || allowedStores[0]?.id || "") : (allowedStores[0]?.id || "");
+    setStoreId(firstStore);
+    await loadPersonnel(firstStore);
+    await loadTasks(firstStore);
+  }
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -95,20 +158,31 @@ export default function EtiquetadoPackingPage() {
       window.location.replace("/");
       return;
     }
-    setUser(parsed);
-    void loadInitialData(parsed);
+    window.setTimeout(() => {
+      setUser(parsed);
+      void loadInitialData(parsed);
+    }, 0);
   }, []);
 
-  async function loadInitialData(currentUser: CyclicUser) {
-    const { data } = await supabase.from("stores").select("id,name,code,is_active").eq("is_active", true).order("name");
-    const storeRows = (data || []) as Store[];
-    const allowedStores = currentUser.can_access_all_stores
-      ? storeRows
-      : storeRows.filter(store => store.id === currentUser.store_id);
-    setStores(allowedStores);
-    const firstStore = currentUser.can_access_all_stores ? (currentUser.store_id || allowedStores[0]?.id || "") : (allowedStores[0]?.id || "");
-    setStoreId(firstStore);
-    await loadTasks(firstStore);
+  async function loadPersonnel(nextStoreId = storeId) {
+    setMessage("");
+    try {
+      let queryBuilder = supabase
+        .from("packing_personnel")
+        .select("id,store_id,full_name,is_active,created_at")
+        .eq("is_active", true)
+        .order("full_name", { ascending: true });
+      if (nextStoreId) queryBuilder = queryBuilder.or(`store_id.eq.${nextStoreId},store_id.is.null`);
+      const { data, error } = await queryBuilder;
+      if (error) throw error;
+      const rows = (data || []) as PackingPerson[];
+      setPersonnel(rows);
+      setSelectedPersonId(current => rows.some(person => person.id === current) ? current : "");
+    } catch (error: unknown) {
+      setPersonnel([]);
+      setSelectedPersonId("");
+      setMessage("No se pudo cargar el personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + (error instanceof Error ? error.message : String(error)));
+    }
   }
 
   async function loadTasks(nextStoreId = storeId) {
@@ -158,8 +232,8 @@ async function searchProducts() {
         .limit(50);
 
       if (!barcodeError) {
-        const mappedCodes = [...new Set((barcodeRows || [])
-          .map((row: any) => fullProductCode(row.codsap))
+        const mappedCodes = [...new Set(((barcodeRows || []) as BarcodeRow[])
+          .map(row => fullProductCode(row.codsap))
           .filter(Boolean))];
 
         if (mappedCodes.length > 0) {
@@ -185,9 +259,39 @@ async function searchProducts() {
     }
   }
 
+  async function addPersonnel() {
+    if (!canManagePersonnel(user)) return;
+    const fullName = newPersonName.trim().replace(/\s+/g, " ");
+    if (!fullName) {
+      setMessage("Ingresa el nombre completo del personal.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const { error } = await supabase.from("packing_personnel").insert({
+        store_id: storeId || null,
+        full_name: fullName,
+        is_active: true,
+      });
+      if (error) throw error;
+      setNewPersonName("");
+      setMessage(`${fullName} agregado al personal de ${selectedStoreName}.`);
+      await loadPersonnel(storeId);
+    } catch (error: unknown) {
+      setMessage("No se pudo agregar personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function saveTask() {
     if (!user || !selectedProduct) {
       setMessage("Busca y selecciona un producto.");
+      return;
+    }
+    if (!selectedPerson) {
+      setMessage("Selecciona el nombre de la persona antes de guardar marca.");
       return;
     }
     const numericQty = Number(quantity || 1);
@@ -210,7 +314,7 @@ async function searchProducts() {
         status: "pendiente",
         note: note.trim() || null,
         created_by: user.id,
-        created_by_name: user.full_name,
+        created_by_name: selectedPerson.full_name,
         updated_at: now,
       });
       if (error) throw error;
@@ -265,9 +369,10 @@ async function searchProducts() {
       Estado: row.status,
       Nota: row.note || "",
       Usuario: row.created_by_name || "",
-      "Hora inicio": row.created_at,
-      "Hora fin": row.finished_at || "",
-      Actualizado: row.updated_at,
+      Fecha: formatExportDate(row.created_at),
+      "Hora inicio": formatExportTime(row.created_at),
+      "Hora fin": formatExportTime(row.finished_at),
+      Duracion: formatDuration(row.created_at, row.finished_at),
     }));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "EtiquetadoPacking");
@@ -311,11 +416,43 @@ async function searchProducts() {
               <select
                 className="w-full rounded-2xl border bg-white px-3 py-3 text-sm font-semibold"
                 value={storeId}
-                onChange={event => { setStoreId(event.target.value); void loadTasks(event.target.value); }}
+                onChange={event => {
+                  setStoreId(event.target.value);
+                  setSelectedPersonId("");
+                  void loadPersonnel(event.target.value);
+                  void loadTasks(event.target.value);
+                }}
                 disabled={!user.can_access_all_stores && Boolean(user.store_id)}
               >
                 <option value="">Sin tienda</option>
                 {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+              </select>
+
+              {canManagePersonnel(user) && (
+                <div className="rounded-2xl border bg-slate-50 p-3">
+                  <label className="text-xs font-black uppercase tracking-wide text-slate-500">Agregar personal</label>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      className="min-w-0 flex-1 rounded-xl border bg-white px-3 py-2 text-sm font-semibold"
+                      placeholder="Nombre completo"
+                      value={newPersonName}
+                      onChange={event => setNewPersonName(event.target.value)}
+                      onKeyDown={event => { if (event.key === "Enter") void addPersonnel(); }}
+                    />
+                    <button onClick={addPersonnel} disabled={loading || !newPersonName.trim()} className="rounded-xl bg-slate-900 px-3 text-white disabled:opacity-40" title="Agregar personal">
+                      <UserPlus size={18} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <select
+                className="w-full rounded-2xl border bg-white px-3 py-3 text-sm font-semibold"
+                value={selectedPersonId}
+                onChange={event => setSelectedPersonId(event.target.value)}
+              >
+                <option value="">Selecciona personal</option>
+                {personnel.map(person => <option key={person.id} value={person.id}>{person.full_name}</option>)}
               </select>
 
               <div className="flex gap-2">
@@ -362,7 +499,7 @@ async function searchProducts() {
               <input className="w-full rounded-2xl border px-3 py-3 text-sm font-semibold" type="number" min="1" value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" />
               <textarea className="min-h-24 w-full rounded-2xl border px-3 py-3 text-sm font-semibold" value={note} onChange={event => setNote(event.target.value)} placeholder="Observacion opcional" />
 
-              <button onClick={saveTask} disabled={loading || !selectedProduct} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+              <button onClick={saveTask} disabled={loading || !selectedProduct || !selectedPerson} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 <Save size={18} /> Guardar marca
               </button>
             </div>
