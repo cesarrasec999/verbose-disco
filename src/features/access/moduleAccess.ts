@@ -10,11 +10,11 @@ export type ModuleAccessKey =
   | "cyclic_dashboard"
   | "reports_non_inventory"
   | "reports_results"
+  | "reports"
   | "locations"
   | "audit"
   | "general_inventory"
   | "consulta"
-  | "rotations"
   | "users"
   | "picking"
   | "packing";
@@ -46,7 +46,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "audit", label: "Auditorias", group: "Modulos" },
   { key: "general_inventory", label: "Inventarios", group: "Modulos" },
   { key: "consulta", label: "Consulta", group: "Modulos" },
-  { key: "rotations", label: "Rotaciones", group: "Modulos" },
+  { key: "reports", label: "Reportes", group: "Modulos" },
   { key: "users", label: "Usuarios", group: "Administracion" },
   { key: "picking", label: "Picking", group: "Modulos" },
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
@@ -70,6 +70,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "audit",
     "general_inventory",
     "consulta",
+    "reports",
     "picking",
     "packing",
   ];
@@ -84,6 +85,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     ...(canAccessAudit ? ["audit" as ModuleAccessKey] : []),
     "general_inventory",
     "consulta",
+    "reports",
     "picking",
     "packing",
   ];
@@ -97,6 +99,8 @@ export function expandLegacyModuleAccess(keys: string[], role: Role | string, ca
       legacyModuleAccessForRole(role, canAccessAudit)
         .filter(item => CYCLIC_SUBMODULE_KEYS.includes(item) || REPORT_SUBMODULE_KEYS.includes(item))
         .forEach(item => expanded.add(item));
+    } else if (key === "rotations") {
+      expanded.add("reports");
     } else if (key === "replenishment") {
       continue;
     } else if (MODULE_ACCESS_OPTIONS.some(option => option.key === key)) {

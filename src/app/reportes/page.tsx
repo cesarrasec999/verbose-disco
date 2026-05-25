@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { readSafeSheetMatrix } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
+import { canAccessModule } from "@/features/access/moduleAccess";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
@@ -16,6 +17,8 @@ type CyclicUser = {
   role: Role;
   store_id: string | null;
   can_access_all_stores: boolean;
+  can_access_audit?: boolean | null;
+  module_access?: string[] | null;
 };
 
 type Store = {
@@ -252,7 +255,16 @@ export default function ReportesPage() {
   }, [isMobileAccess]);
   const snapshotInputRef = useRef<HTMLInputElement | null>(null);
 
-  const canView = user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador";
+  const canView = Boolean(
+    user && (
+      canAccessModule(user, "reports") ||
+      canAccessModule(user, "reports_non_inventory") ||
+      canAccessModule(user, "reports_results") ||
+      user.role === "Administrador" ||
+      user.role === "Supervisor" ||
+      user.role === "Validador"
+    )
+  );
 
   useEffect(() => {
     if (!user) return;

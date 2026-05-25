@@ -6187,7 +6187,6 @@ export default function DashboardPage() {
     const canUseConsultaModule = canAccessModule(user, "consulta");
     const canUseAuditModule = canAccessModule(user, "audit");
     const canUseGeneralInventoryModule = canAccessModule(user, "general_inventory");
-    const canUseRotationsModule = canAccessModule(user, "rotations");
     const canUseUsersModule = canAccessModule(user, "users");
     const canValidateCyclic = canAssignProducts;
     const canManageLocations = Boolean(user && canUseLocationsModule && user.role !== "Operario");
@@ -6196,6 +6195,7 @@ export default function DashboardPage() {
     const canEditLocations = canManageLocations && !isMobileAccess;
     const hasCyclicSubmodules = canAssignProducts || canViewCountRecords || canViewSummaryByCode || canViewStoreProgress || canViewCyclicDashboard;
     const hasReportSubmodules = canViewNonInventoryReports || canViewResultsReports;
+    const canUseReportsModule = canAccessModule(user, "reports") || hasReportSubmodules;
     const isValOrAdm = hasCyclicSubmodules || hasReportSubmodules;
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
@@ -6405,12 +6405,12 @@ export default function DashboardPage() {
                                     <PackageSearch size={16} />
                                     <span className="truncate">Consulta</span>
                                 </button>}
-                                {canUseRotationsModule && <button
-                                    onClick={() => { window.location.href = "/rotaciones"; }}
+                                {canUseReportsModule && <button
+                                    onClick={() => { window.location.href = "/reportes"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
-                                    <LineChart size={16} />
-                                    <span className="truncate">Rotaciones</span>
+                                    <FileText size={16} />
+                                    <span className="truncate">Reportes</span>
                                 </button>}
                             </div>
                         </>

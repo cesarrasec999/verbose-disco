@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, LineChart, LogOut, MapPin, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -48,7 +48,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/rotaciones";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -67,7 +67,7 @@ const MODULES: Array<{
   { label: "Consulta", description: "Consulta de stock y codigos", destination: "/consulta-stock", icon: Search, accent: "bg-sky-600" },
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
-  { label: "Rotaciones", description: "Analisis de rotacion de productos", destination: "/rotaciones", icon: LineChart, accent: "bg-rose-600" },
+  { label: "Reportes", description: "Stock, rotaciones, ventas y presupuesto", destination: "/reportes", icon: FileText, accent: "bg-slate-900" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
@@ -78,7 +78,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/picking": "picking",
   "/etiquetado-packing": "packing",
   "/consulta-stock": "consulta",
-  "/rotaciones": "rotations",
+  "/reportes": "reports",
 };
 
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
@@ -146,6 +146,10 @@ export default function LoginPage() {
       ] satisfies ModuleAccessKey[];
       if (!dashboardHosted.some(key => access.includes(key))) return false;
       return true;
+    }
+    if (targetDestination === "/reportes") {
+      const access = userModuleAccess(user);
+      return access.includes("reports") || access.includes("reports_non_inventory") || access.includes("reports_results");
     }
     if (moduleKey && !userModuleAccess(user).includes(moduleKey)) return false;
     if (hasExplicitModuleAccess(user)) return true;
