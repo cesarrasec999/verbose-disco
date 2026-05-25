@@ -1511,18 +1511,16 @@ export default function InventariosPage() {
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
-    const { data, error } = await supabase
-      .from(countTable)
-      .select("*, general_inventory_operators(full_name)")
-      .eq("session_id", sessionId)
-      .order("updated_at", { ascending: false, nullsFirst: false })
-      .order("counted_at", { ascending: false });
-    if (error) {
-      setMessage(`No se pudieron leer registros de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
+
+    let countRows: any[] = [];
+    try {
+      countRows = await loadPagedSessionRows(countTable, "*, general_inventory_operators(full_name)", sessionId, "updated_at");
+    } catch (error) {
+      setMessage(`No se pudieron leer registros de ${validationMode ? "validacion" : "reconteo"}: ` + (error instanceof Error ? error.message : String(error)));
       return [];
     }
 
-    const countRows = (data || []) as any[];
+    countRows.sort((a, b) => new Date(b.updated_at || b.counted_at || 0).getTime() - new Date(a.updated_at || a.counted_at || 0).getTime());
     const itemIds = [...new Set(countRows.map(row => String(row[itemIdColumn] || "")).filter(Boolean))];
     const itemRows: any[] = [];
     for (let i = 0; i < itemIds.length; i += 100) {
