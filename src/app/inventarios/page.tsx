@@ -172,7 +172,7 @@ export default function InventariosPage() {
   const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
   const [recountAssignedStatusFilter, setRecountAssignedStatusFilter] = useState<RecountAssignedStatusFilter>("all");
   const [recountRecordsQuery, setRecountRecordsQuery] = useState("");
-  const [adminRecordLayer, setAdminRecordLayer] = useState<"recount" | "validation">("recount");
+  const [adminRecordLayer, setAdminRecordLayer] = useState<"all" | "recount" | "validation">("all");
   const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
   const [pendingRecountQuery, setPendingRecountQuery] = useState("");
   const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
@@ -666,6 +666,8 @@ export default function InventariosPage() {
   const filteredAdminRecountRecords = useMemo(() => {
     const q = recountRecordsQuery.trim().toLowerCase();
     return adminRecountRecords.filter(record => {
+      const layer = record.item.layer === "validation" ? "validation" : "recount";
+      if (adminRecordLayer !== "all" && layer !== adminRecordLayer) return false;
       if (!q && record.item.recount_type !== recountType) return false;
       return !q ||
         record.sku.toLowerCase().includes(q) ||
@@ -673,7 +675,7 @@ export default function InventariosPage() {
         record.location_code.toLowerCase().includes(q) ||
         String(record.operator_name || "").toLowerCase().includes(q);
     });
-  }, [adminRecountRecords, recountRecordsQuery, recountType]);
+  }, [adminRecountRecords, adminRecordLayer, recountRecordsQuery, recountType]);
 
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
@@ -799,7 +801,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     if (validatorTab === "reconteo" || validatorTab === "validacion") {
-      setAdminRecordLayer(validatorTab === "validacion" ? "validation" : "recount");
+      setAdminRecordLayer("all");
     }
   }, [validatorTab]);
 
@@ -1502,7 +1504,7 @@ export default function InventariosPage() {
     return originalByLocation;
   }
 
-  async function loadAdminRecountRecords(sessionId: string, validationMode = isValidationManagerTab) {
+  async function loadAdminRecountRecordsForLayer(sessionId: string, validationMode: boolean) {
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
@@ -1514,7 +1516,7 @@ export default function InventariosPage() {
       .order("counted_at", { ascending: false });
     if (error) {
       setMessage(`No se pudieron leer registros de ${validationMode ? "validacion" : "reconteo"}: ` + error.message);
-      return;
+      return [];
     }
 
     const countRows = (data || []) as any[];
@@ -1528,7 +1530,7 @@ export default function InventariosPage() {
         .in("id", chunk);
       if (itemRowsRes.error) {
         setMessage(`No se pudieron leer detalles de ${validationMode ? "validacion" : "reconteo"}: ` + itemRowsRes.error.message);
-        return;
+        return [];
       }
       itemRows.push(...(itemRowsRes.data || []));
     }
@@ -1639,10 +1641,23 @@ export default function InventariosPage() {
         } as OperatorRecountRecord;
       })
       .filter(Boolean) as OperatorRecountRecord[];
-    setAdminRecountRecords(rows);
+    return rows;
   }
 
-  async function switchAdminRecordLayer(layer: "recount" | "validation") {
+  async function loadAdminRecountRecords(sessionId: string, validationMode = isValidationManagerTab) {
+    const validationEnabled = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+    if (validationEnabled) {
+      const [recountRows, validationRows] = await Promise.all([
+        loadAdminRecountRecordsForLayer(sessionId, false),
+        loadAdminRecountRecordsForLayer(sessionId, true),
+      ]);
+      setAdminRecountRecords([...recountRows, ...validationRows].sort((a, b) => new Date(b.updated_at || b.counted_at || 0).getTime() - new Date(a.updated_at || a.counted_at || 0).getTime()));
+      return;
+    }
+    setAdminRecountRecords(await loadAdminRecountRecordsForLayer(sessionId, validationMode));
+  }
+
+  async function switchAdminRecordLayer(layer: "all" | "recount" | "validation") {
     setAdminRecordLayer(layer);
     if (selectedSessionId) await loadAdminRecountRecords(selectedSessionId, layer === "validation");
   }
@@ -6570,7 +6585,7 @@ export default function InventariosPage() {
                   onClick={() => setRecountManagerTab("registros")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  {adminRecordLayer === "validation" ? "Validaciones guardadas" : "Reconteos guardados"} ({filteredAdminRecountRecords.length})
+                  {adminRecordLayer === "validation" ? "Validaciones guardadas" : adminRecordLayer === "recount" ? "Reconteos guardados" : "Registros guardados"} ({filteredAdminRecountRecords.length})
                 </button>
               </div>
 
@@ -6957,10 +6972,17 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h3 className="font-black">{adminRecordLayer === "validation" ? "Registros guardados de validacion" : "Registros guardados de reconteo"}</h3>
+                    <h3 className="font-black">{adminRecordLayer === "validation" ? "Registros guardados de validacion" : adminRecordLayer === "recount" ? "Registros guardados de reconteo" : "Registros guardados"}</h3>
                     <p className="text-xs text-slate-500">Edicion y borrado por linea de lo registrado por los operadores.</p>
                   </div>
                   <div className="flex rounded-xl border p-1 text-xs font-black">
+                    <button
+                      type="button"
+                      onClick={() => { void switchAdminRecordLayer("all"); }}
+                      className={`rounded-lg px-3 py-2 ${adminRecordLayer === "all" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Todos
+                    </button>
                     <button
                       type="button"
                       onClick={() => { void switchAdminRecordLayer("recount"); }}
@@ -6993,6 +7015,7 @@ export default function InventariosPage() {
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
                         <th className="p-2 text-left">Contador</th>
+                        <th className="p-2 text-left">Registro</th>
                         <th className="p-2 text-center">Ult. edicion</th>
                         <th className="p-2 text-left">Tipo</th>
                         <th className="p-2 text-left">Ubicacion</th>
@@ -7012,6 +7035,7 @@ export default function InventariosPage() {
                       {filteredAdminRecountRecords.map(record => (
                         <tr key={record.id} className="border-t">
                           <td className="p-2 font-black text-slate-800">{record.operator_name || "Sin recontador"}</td>
+                          <td className="p-2 font-black text-slate-700">{record.item.layer === "validation" ? "Validacion" : "Reconteo"}</td>
                           <td className="p-2 text-center text-slate-500">{record.updated_at ? new Date(record.updated_at).toLocaleString("es-PE") : "-"}</td>
                           <td className={`p-2 font-black ${record.item.recount_type === "missing" ? "text-red-600" : "text-blue-700"}`}>
                             {record.item.recount_type === "missing" ? "Faltante" : "Sobrante"}
@@ -7037,7 +7061,7 @@ export default function InventariosPage() {
                       ))}
                       {filteredAdminRecountRecords.length === 0 && (
                         <tr>
-                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">Aun no hay {adminRecordLayer === "validation" ? "validaciones" : "reconteos"} guardados que coincidan con la busqueda.</td>
+                          <td colSpan={15} className="p-8 text-center text-sm text-slate-400">Aun no hay {adminRecordLayer === "validation" ? "validaciones" : adminRecordLayer === "recount" ? "reconteos" : "registros"} guardados que coincidan con la busqueda.</td>
                         </tr>
                       )}
                     </tbody>
