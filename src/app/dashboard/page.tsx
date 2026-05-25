@@ -11,6 +11,14 @@ import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { fetchCyclicDayData } from "@/features/ciclicos/api";
 import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
+import {
+    MODULE_ACCESS_OPTIONS,
+    canAccessModule,
+    legacyModuleAccessForRole,
+    moduleLabel,
+    normalizedModuleAccess,
+    type ModuleAccessKey,
+} from "@/features/access/moduleAccess";
 import type {
     AllStoreAssignmentSummary,
     Assignment,
@@ -67,7 +75,6 @@ function diffBadge(diff: number) {
     return <span className="text-red-600 font-semibold">{formatNumber(diff)}</span>;
 }
 
-type ModuleAccessKey = "cyclic" | "audit" | "general_inventory" | "picking" | "packing" | "replenishment";
 type LocationEntryDraftRecord = {
     id: string;
     location: string;
@@ -75,40 +82,6 @@ type LocationEntryDraftRecord = {
     quantity: string;
     product: Product;
 };
-const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string }> = [
-    { key: "cyclic", label: "Conteo Ciclico" },
-    { key: "audit", label: "Auditorias" },
-    { key: "general_inventory", label: "Inventario General" },
-    { key: "picking", label: "Picking" },
-    { key: "packing", label: "Etiquetado/Packing" },
-    { key: "replenishment", label: "Abastecimiento" },
-];
-
-function legacyModuleAccessForRole(role: Role, canAccessAudit?: boolean | null): ModuleAccessKey[] {
-    if (role === "Administrador") return MODULE_ACCESS_OPTIONS.map(option => option.key);
-    if (role === "Supervisor") return ["cyclic", "audit", "general_inventory", "picking", "packing"];
-    if (role === "Validador") return ["cyclic", ...(canAccessAudit ? ["audit" as ModuleAccessKey] : []), "general_inventory", "picking", "packing"];
-    return ["cyclic", "packing"];
-}
-
-function normalizedModuleAccess(userOrRole: CyclicUser | Role, canAccessAudit?: boolean | null): ModuleAccessKey[] {
-    if (typeof userOrRole !== "string" && Array.isArray(userOrRole.module_access) && userOrRole.module_access.length > 0) {
-        return userOrRole.module_access.filter(key => MODULE_ACCESS_OPTIONS.some(option => option.key === key)) as ModuleAccessKey[];
-    }
-    const role = typeof userOrRole === "string" ? userOrRole : userOrRole.role;
-    const audit = typeof userOrRole === "string" ? canAccessAudit : userOrRole.can_access_audit;
-    return legacyModuleAccessForRole(role, audit);
-}
-
-function hasExplicitModuleAccess(user: CyclicUser | null | undefined) {
-    return Array.isArray(user?.module_access) && user.module_access.length > 0;
-}
-
-function canAccessModule(user: CyclicUser | null | undefined, key: ModuleAccessKey) {
-    if (!user) return false;
-    return normalizedModuleAccess(user).includes(key);
-}
-
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════
@@ -205,7 +178,7 @@ export default function DashboardPage() {
     const [editNote, setEditNote]           = useState("");
 
     // ─── Admin: maestro productos ────────────────────────────
-    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("productos");
+    const [adminTab, setAdminTab]             = useState<"productos"|"tiendas"|"usuarios">("usuarios");
     const [prodSearch, setProdSearch]         = useState("");
     const [masterFile, setMasterFile]         = useState<File|null>(null);
     const [masterFileName, setMasterFileName] = useState("");
@@ -239,7 +212,7 @@ export default function DashboardPage() {
     const [newUserAllStores, setNewUserAllStores] = useState(false);
     const [newUserWhatsapp, setNewUserWhatsapp] = useState("");
     const [newUserAuditAccess, setNewUserAuditAccess] = useState(false);
-    const [newUserModuleAccess, setNewUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic"]);
+    const [newUserModuleAccess, setNewUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic_count_take"]);
     const [editingUser, setEditingUser]       = useState<CyclicUser|null>(null);
     const [editUserFullName, setEditUserFullName] = useState("");
     const [editUserRole, setEditUserRole]     = useState<Role>("Operario");
@@ -270,7 +243,7 @@ export default function DashboardPage() {
     const [editUserActive, setEditUserActive] = useState(true);
     const [editUserPassword, setEditUserPassword] = useState("");
     const [editUserAuditAccess, setEditUserAuditAccess] = useState(false);
-    const [editUserModuleAccess, setEditUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic"]);
+    const [editUserModuleAccess, setEditUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic_count_take"]);
 
     const [locationSearch, setLocationSearch] = useState("");
     const [locationStoreId, setLocationStoreId] = useState("");
@@ -382,7 +355,7 @@ export default function DashboardPage() {
                 if (savedValTab) setValTab(u.role === "Supervisor" && (savedValTab === "asignar" || savedValTab === "no_inventariables") ? "registros" : savedValTab);
 
                 const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
-                if (savedAdminTab && ["productos","tiendas","usuarios"].includes(savedAdminTab)) setAdminTab(savedAdminTab);
+                if (savedAdminTab === "usuarios") setAdminTab(savedAdminTab);
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
@@ -4424,7 +4397,7 @@ export default function DashboardPage() {
         });
         if (error) { showMessage("Error: " + error.message, "error"); return; }
         showMessage("✅ Usuario creado.", "success");
-        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false); setNewUserModuleAccess(["cyclic"]);
+        setNewUsername(""); setNewPassword(""); setNewFullName(""); setNewRole("Operario"); setNewUserStoreId(""); setNewUserWhatsapp(""); setNewUserAuditAccess(false); setNewUserModuleAccess(["cyclic_count_take"]);
         loadAllUsers();
     }
 
@@ -6202,12 +6175,28 @@ export default function DashboardPage() {
 
     const isAdmin    = user?.role === "Administrador";
     const isSupervisor = user?.role === "Supervisor";
-    const canValidateCyclic = user?.role === "Validador" || isAdmin;
-    const canManageLocations = Boolean(user && user.role !== "Operario");
+    const canTakeCount = canAccessModule(user, "cyclic_count_take");
+    const canAssignProducts = canAccessModule(user, "cyclic_assign_products");
+    const canViewCountRecords = canAccessModule(user, "cyclic_count_records");
+    const canViewSummaryByCode = canAccessModule(user, "cyclic_summary_by_code");
+    const canViewStoreProgress = canAccessModule(user, "cyclic_store_progress");
+    const canViewCyclicDashboard = canAccessModule(user, "cyclic_dashboard");
+    const canViewNonInventoryReports = canAccessModule(user, "reports_non_inventory");
+    const canViewResultsReports = canAccessModule(user, "reports_results");
+    const canUseLocationsModule = canAccessModule(user, "locations");
+    const canUseConsultaModule = canAccessModule(user, "consulta");
+    const canUseAuditModule = canAccessModule(user, "audit");
+    const canUseGeneralInventoryModule = canAccessModule(user, "general_inventory");
+    const canUseRotationsModule = canAccessModule(user, "rotations");
+    const canUseUsersModule = canAccessModule(user, "users");
+    const canValidateCyclic = canAssignProducts;
+    const canManageLocations = Boolean(user && canUseLocationsModule && user.role !== "Operario");
     const canBulkManageLocations = canManageLocations && !isMobileAccess;
-    const canRegisterLocations = Boolean(user && (isMobileAccess || user.role !== "Operario"));
+    const canRegisterLocations = Boolean(user && canUseLocationsModule && (isMobileAccess || user.role !== "Operario"));
     const canEditLocations = canManageLocations && !isMobileAccess;
-    const isValOrAdm = canValidateCyclic || isSupervisor;
+    const hasCyclicSubmodules = canAssignProducts || canViewCountRecords || canViewSummaryByCode || canViewStoreProgress || canViewCyclicDashboard;
+    const hasReportSubmodules = canViewNonInventoryReports || canViewResultsReports;
+    const isValOrAdm = hasCyclicSubmodules || hasReportSubmodules;
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
 
@@ -6242,8 +6231,8 @@ export default function DashboardPage() {
                 {/* Menú de navegación */}
                 <nav className="flex-1 py-3 overflow-y-auto">
 
-                    {/* MÓDULO OPERARIO */}
-                    {(user?.role === "Operario" || isAdmin) && (
+                    {/* CICLICOS — TOMA DE CONTEO */}
+                    {canTakeCount && (
                         <div className="px-3 mb-1">
                             <button
                                 onClick={() => {
@@ -6262,28 +6251,26 @@ export default function DashboardPage() {
                                 }`}
                             >
                                 <ClipboardList size={16} />
-                                <span>Operario</span>
+                                <span>Toma de Conteo</span>
                             </button>
                         </div>
                     )}
 
-                    {/* MÓDULO VALIDADOR */}
+                    {/* SUBMODULOS CICLICOS / REPORTES */}
                     {isValOrAdm && !isMobileAccess && (
                         <>
                             {/* Header de sección */}
                             <div className="px-5 pt-3 pb-1">
-                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Validador</p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Conteo ciclico</p>
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
-                                    { key: "asignar",   icon: Package,       label: "Asignar productos" },
-                                    { key: "no_inventariables", icon: Database, label: "No inventariables" },
-                                    { key: "registros", icon: ClipboardList, label: "Registros"          },
-                                    { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo" },
-                                    { key: "resultados",icon: Search,        label: "Resultados"         },
-                                    { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas"   },
-                                    { key: "dashboard", icon: LineChart,     label: "Dashboard"           },
-                                ] as const).filter(item => canValidateCyclic || (item.key !== "asignar" && item.key !== "no_inventariables")).map(item => (
+                                    { key: "asignar",   icon: Package,       label: "Asignar productos", permission: canAssignProducts },
+                                    { key: "registros", icon: ClipboardList, label: "Registros de conteo ciclico", permission: canViewCountRecords },
+                                    { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo", permission: canViewSummaryByCode },
+                                    { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas", permission: canViewStoreProgress },
+                                    { key: "dashboard", icon: LineChart,     label: "Dashboard", permission: canViewCyclicDashboard },
+                                ] as const).filter(item => item.permission).map(item => (
                                     (() => {
                                         const Icon = item.icon;
                                         return (
@@ -6312,12 +6299,47 @@ export default function DashboardPage() {
                                     })()
                                 ))}
                             </div>
+                            {hasReportSubmodules && (
+                                <>
+                                    <div className="px-5 pt-4 pb-1">
+                                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reportes</p>
+                                    </div>
+                                    <div className="px-3 space-y-0.5">
+                                        {([
+                                            { key: "no_inventariables", icon: Database, label: "No inventariables", permission: canViewNonInventoryReports },
+                                            { key: "resultados", icon: Search, label: "Resultados", permission: canViewResultsReports },
+                                        ] as const).filter(item => item.permission).map(item => (
+                                            (() => {
+                                                const Icon = item.icon;
+                                                return (
+                                                    <button
+                                                        key={item.key}
+                                                        onClick={() => {
+                                                            setActiveTab("validador");
+                                                            setValTab(item.key);
+                                                            setSidebarOpen(false);
+                                                        }}
+                                                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                                                            activeTab === "validador" && valTab === item.key
+                                                                ? "bg-blue-600 text-white shadow-lg"
+                                                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                                                        }`}
+                                                    >
+                                                        <Icon size={16} />
+                                                        <span className="truncate">{item.label}</span>
+                                                    </button>
+                                                );
+                                            })()
+                                        ))}
+                                    </div>
+                                </>
+                            )}
                         </>
                     )}
 
                     {(!isAdmin || isMobileAccess) && (
                         <div className="px-3 mt-1 space-y-0.5">
-                            <button
+                            {canUseLocationsModule && <button
                                 onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
                                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                     activeTab === "ubicaciones"
@@ -6327,32 +6349,20 @@ export default function DashboardPage() {
                             >
                                 <Package size={16} />
                                 <span className="truncate">Ubicaciones</span>
-                            </button>
-                            <button
+                            </button>}
+                            {canUseConsultaModule && <button
                                 onClick={() => { window.location.href = "/consulta-stock"; }}
                                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                             >
                                 <PackageSearch size={16} />
-                                <span className="truncate">Consulta de stock</span>
-                            </button>
-                        </div>
-                    )}
-
-                    {isValOrAdm && !isMobileAccess && (
-                        <div className="px-3 mt-1">
-                            <button
-                                onClick={() => { window.location.href = "/reportes"; }}
-                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                            >
-                                <FileText size={16} />
-                                <span className="truncate">Reportes</span>
-                            </button>
+                                <span className="truncate">Consulta</span>
+                            </button>}
                         </div>
                     )}
 
                     {(isAdmin || isSupervisor) && !isMobileAccess && (
                         <>
-                    {isAdmin && <div className="px-3 mt-1">
+                    {canUseLocationsModule && <div className="px-3 mt-1">
                         <button
                             onClick={() => { setActiveTab("ubicaciones"); setSidebarOpen(false); }}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -6374,35 +6384,28 @@ export default function DashboardPage() {
                                     <ClipboardList size={16} />
                                     <span className="truncate">Ciclicos</span>
                                 </button>
-                                <button
+                                {canUseAuditModule && <button
                                     onClick={() => { window.location.href = "/auditoria"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
                                     <FileText size={16} />
                                     <span className="truncate">Auditorias</span>
-                                </button>
-                                <button
+                                </button>}
+                                {canUseGeneralInventoryModule && <button
                                     onClick={() => { window.location.href = "/inventarios"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
                                     <Package size={16} />
                                     <span className="truncate">Inventarios</span>
-                                </button>
-                                <button
+                                </button>}
+                                {canUseConsultaModule && <button
                                     onClick={() => { window.location.href = "/consulta-stock"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
                                     <PackageSearch size={16} />
-                                    <span className="truncate">Consulta de stock</span>
-                                </button>
-                                <button
-                                    onClick={() => { window.location.href = "/abastecimiento"; }}
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
-                                >
-                                    <Truck size={16} />
-                                    <span className="truncate">Abastecimiento</span>
-                                </button>
-                                {isAdmin && <button
+                                    <span className="truncate">Consulta</span>
+                                </button>}
+                                {canUseRotationsModule && <button
                                     onClick={() => { window.location.href = "/rotaciones"; }}
                                     className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
                                 >
@@ -6421,10 +6424,8 @@ export default function DashboardPage() {
                             </div>
                             <div className="px-3 space-y-0.5">
                                 {([
-                                    { key: "productos", icon: Database,  label: "Maestro productos" },
-                                    { key: "tiendas",   icon: StoreIcon, label: "Tiendas"           },
                                     { key: "usuarios",  icon: Users,     label: "Usuarios"           },
-                                ] as const).map(item => (
+                                ] as const).filter(() => canUseUsersModule).map(item => (
                                     (() => {
                                         const Icon = item.icon;
                                         return (
@@ -6481,17 +6482,15 @@ export default function DashboardPage() {
                     </button>
                     <div className="flex-1 min-w-0">
                         <h1 className="font-bold text-slate-900 text-base leading-tight">
-                            {activeTab === "operario"  ? "Conteos del dia" :
+                            {activeTab === "operario"  ? "Toma de Conteo" :
                              activeTab === "validador" && valTab === "asignar"   ? "Asignar productos" :
                              activeTab === "validador" && valTab === "no_inventariables" ? "No inventariables" :
-                             activeTab === "validador" && valTab === "registros" ? "Registros de conteo" :
+                             activeTab === "validador" && valTab === "registros" ? "Registros de conteo ciclico" :
                              activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
                              activeTab === "validador" && valTab === "resultados"? "Resultados de conteo" :
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "ubicaciones" ? "Ubicaciones" :
-                             activeTab === "admin"     && adminTab === "productos" ? "Maestro de productos" :
-                             activeTab === "admin"     && adminTab === "tiendas"   ? "Tiendas" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
@@ -6517,7 +6516,7 @@ export default function DashboardPage() {
                                 }}
                             >
                                 <option value="">— Tienda —</option>
-                                {((canValidateCyclic && valTab === "asignar") || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
+                                {((canAssignProducts && valTab === "asignar") || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
                                 {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
                             {valTab !== "resultados" && (
@@ -6587,7 +6586,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && !showRecount && (
+            {activeTab === "operario" && canTakeCount && !showRecount && (
                 <>
                     <section className="bg-white rounded-2xl p-4 shadow space-y-3 md:rounded-3xl md:p-5">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:flex-wrap">
@@ -6836,7 +6835,7 @@ export default function DashboardPage() {
             {/* ════════════════════════════════════════════════════════
                 PANEL RECONTEO (Operario)
             ════════════════════════════════════════════════════════ */}
-            {activeTab === "operario" && (user?.role === "Operario" || isAdmin) && showRecount && (
+            {activeTab === "operario" && canTakeCount && showRecount && (
                 <>
                     <section className="bg-white rounded-3xl p-5 shadow space-y-3">
                         <div className="flex items-center justify-between gap-3">
@@ -7027,7 +7026,7 @@ export default function DashboardPage() {
                 <>
 
                     {/* ── SUB-TAB: PROGRESO POR TIENDA ─────────────────── */}
-                    {valTab === "progreso" && (
+                    {valTab === "progreso" && canViewStoreProgress && (
                         <>
                             {/* ── Progreso por tienda hoy ───────────────────── */}
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
@@ -7153,7 +7152,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: DASHBOARD ───────────────────────────── */}
-                    {valTab === "dashboard" && (
+                    {valTab === "dashboard" && canViewCyclicDashboard && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
@@ -7366,7 +7365,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: RESULTADOS DE CONTEO ───────────────── */}
-                    {valTab === "resultados" && (
+                    {valTab === "resultados" && canViewResultsReports && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-end justify-between">
                                 <div>
@@ -7456,7 +7455,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
-                    {canValidateCyclic && valTab === "no_inventariables" && (
+                    {canViewNonInventoryReports && valTab === "no_inventariables" && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                 <div>
@@ -7522,7 +7521,7 @@ export default function DashboardPage() {
                         </section>
                     )}
 
-                    {canValidateCyclic && valTab === "asignar" && (
+                    {canAssignProducts && valTab === "asignar" && (
                         <>
                             <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                                 <div>
@@ -7783,7 +7782,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: REGISTROS ─────────────────────────── */}
-                    {valTab === "registros" && (
+                    {valTab === "registros" && canViewCountRecords && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
                                 <div>
@@ -7878,7 +7877,7 @@ export default function DashboardPage() {
                     )}
 
                     {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
-                    {valTab === "resumen" && (
+                    {valTab === "resumen" && canViewSummaryByCode && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
                             {/* Breadcrumb desde dashboard */}
                             {dashDrillSource && (
@@ -8485,7 +8484,7 @@ export default function DashboardPage() {
                                                             <div className="flex max-w-xs flex-wrap justify-center gap-1">
                                                                 {normalizedModuleAccess(u).map(key => (
                                                                     <span key={key} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">
-                                                                        {MODULE_ACCESS_OPTIONS.find(option => option.key === key)?.label || key}
+                                                                        {moduleLabel(key)}
                                                                     </span>
                                                                 ))}
                                                             </div>

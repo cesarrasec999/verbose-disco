@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, Forklift, ScanLine, ShieldCheck, Tags, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, LineChart, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import {
+  hasExplicitModuleAccess,
+  normalizedModuleAccess,
+  type ModuleAccessKey,
+} from "@/features/access/moduleAccess";
 
 type CyclicUser = {
   id: string;
@@ -43,9 +48,8 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios" | "/picking" | "/abastecimiento" | "/etiquetado-packing";
+type LoginDestination = "/dashboard" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/rotaciones";
 type InventoryAuthMode = "login" | "register";
-type ModuleAccessKey = "cyclic" | "audit" | "general_inventory" | "picking" | "packing" | "replenishment";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
 
@@ -58,36 +62,25 @@ const MODULES: Array<{
 }> = [
   { label: "Conteo Ciclico", description: "Conteos por tienda y validacion diaria", destination: "/dashboard", icon: ClipboardCheck, accent: "bg-blue-600" },
   { label: "Auditorias", description: "Revision y control de auditorias", destination: "/auditoria", icon: ShieldCheck, accent: "bg-amber-500" },
-  { label: "Inventario General", description: "Conteo por ubicaciones y reconteos", destination: "/inventarios", icon: Warehouse, accent: "bg-emerald-600" },
+  { label: "Inventarios", description: "Conteo por ubicaciones y reconteos", destination: "/inventarios", icon: Warehouse, accent: "bg-emerald-600" },
+  { label: "Consulta", description: "Consulta de stock y codigos", destination: "/consulta-stock", icon: Search, accent: "bg-sky-600" },
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
-  { label: "Abastecimiento", description: "Seguimiento de solicitudes y recepcion", destination: "/abastecimiento", icon: Forklift, accent: "bg-orange-600" },
+  { label: "Rotaciones", description: "Analisis de rotacion de productos", destination: "/rotaciones", icon: LineChart, accent: "bg-rose-600" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
-  "/dashboard": "cyclic",
+  "/dashboard": "cyclic_count_take",
   "/auditoria": "audit",
   "/inventarios": "general_inventory",
   "/picking": "picking",
   "/etiquetado-packing": "packing",
-  "/abastecimiento": "replenishment",
+  "/consulta-stock": "consulta",
+  "/rotaciones": "rotations",
 };
 
-function legacyModuleAccess(user: CyclicUser): ModuleAccessKey[] {
-  if (user.role === "Administrador") return ["cyclic", "audit", "general_inventory", "picking", "packing", "replenishment"];
-  if (user.role === "Supervisor") return ["cyclic", "audit", "general_inventory", "picking", "packing"];
-  if (user.role === "Validador") return ["cyclic", "audit", "general_inventory", "picking", "packing"];
-  return ["cyclic", "packing"];
-}
-
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
-  return Array.isArray(user.module_access) && user.module_access.length > 0
-    ? user.module_access.filter(Boolean) as ModuleAccessKey[]
-    : legacyModuleAccess(user);
-}
-
-function hasExplicitModuleAccess(user: CyclicUser) {
-  return Array.isArray(user.module_access) && user.module_access.length > 0;
+  return normalizedModuleAccess(user);
 }
 
 function normalizePhone(value: string) {
@@ -125,6 +118,23 @@ export default function LoginPage() {
 
   function canEnterDestination(user: CyclicUser) {
     const moduleKey = DESTINATION_MODULE[destination];
+    if (destination === "/dashboard") {
+      const access = userModuleAccess(user);
+      const dashboardHosted = [
+        "cyclic_count_take",
+        "cyclic_assign_products",
+        "cyclic_count_records",
+        "cyclic_summary_by_code",
+        "cyclic_store_progress",
+        "cyclic_dashboard",
+        "reports_non_inventory",
+        "reports_results",
+        "locations",
+        "users",
+      ] satisfies ModuleAccessKey[];
+      if (!dashboardHosted.some(key => access.includes(key))) return false;
+      return true;
+    }
     if (moduleKey && !userModuleAccess(user).includes(moduleKey)) return false;
     if (hasExplicitModuleAccess(user)) return true;
     if (destination === "/auditoria") return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || user.can_access_audit;
