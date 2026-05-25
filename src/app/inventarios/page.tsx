@@ -3304,39 +3304,73 @@ export default function InventariosPage() {
   }
 
   async function loadProtectedOkProductIdsForStockUpdate(sessionId: string) {
-    const [snapshotRows, countRows, recountCountRows, recountItemRows] = await Promise.all([
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const validationEnabled = Boolean(session?.validation_enabled);
+    const [snapshotRows, countRows, recountCountRows, recountItemRows, validationRows, nonInventoryRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "product_id,system_stock", sessionId, "product_id"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,quantity", sessionId, "product_id"),
       loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,quantity,counted_at,updated_at", sessionId, "product_id"),
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
+      loadValidationSummaryRows(sessionId, validationEnabled),
+      loadInventoryNonInventoryRows(sessionId),
     ]);
+    const { validationCountRows, validationItemRows } = validationRows;
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
     const originalCountedByProduct = new Map<string, number>();
     for (const row of countRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const productId = String(row.product_id || "");
       if (!productId) continue;
       originalCountedByProduct.set(productId, (originalCountedByProduct.get(productId) || 0) + Number(row.quantity || 0));
     }
 
     const recountItemById = new Map(recountItemRows.map(row => [String(row.id || ""), row]));
-    const latestRecountTypeByProduct = new Map<string, { type: RecountType; timestamp: number }>();
+    const latestRecountItemByProduct = new Map<string, { id: string; timestamp: number }>();
     for (const row of recountCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = recountItemById.get(String(row.recount_item_id || ""));
-      if (!item?.product_id || item.status !== "counted" || !item.recount_type) continue;
+      if (!item?.id || !item.product_id || item.status !== "counted") continue;
       const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
       const productId = String(item.product_id || "");
-      const current = latestRecountTypeByProduct.get(productId);
+      const current = latestRecountItemByProduct.get(productId);
       if (!current || timestamp >= current.timestamp) {
-        latestRecountTypeByProduct.set(productId, { type: item.recount_type as RecountType, timestamp });
+        latestRecountItemByProduct.set(productId, { id: String(item.id), timestamp });
       }
     }
 
     const recountTotalByProduct = new Map<string, number>();
     for (const row of recountCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
       const item = recountItemById.get(String(row.recount_item_id || ""));
       const productId = item?.product_id ? String(item.product_id) : "";
-      const latestType = productId ? latestRecountTypeByProduct.get(productId)?.type : null;
-      if (productId && item?.status === "counted" && item.recount_type === latestType) {
+      const latestItemId = productId ? latestRecountItemByProduct.get(productId)?.id : null;
+      if (productId && item?.status === "counted" && String(item.id) === latestItemId) {
         recountTotalByProduct.set(productId, (recountTotalByProduct.get(productId) || 0) + Number(row.quantity || 0));
+      }
+    }
+
+    const validationItemById = new Map(validationItemRows.map(row => [String(row.id || ""), row]));
+    const latestValidationItemByProduct = new Map<string, { id: string; timestamp: number }>();
+    for (const row of validationCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = validationItemById.get(String(row.validation_item_id || ""));
+      if (!item?.id || !item.product_id || item.status !== "counted") continue;
+      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
+      const productId = String(item.product_id || "");
+      const current = latestValidationItemByProduct.get(productId);
+      if (!current || timestamp >= current.timestamp) {
+        latestValidationItemByProduct.set(productId, { id: String(item.id), timestamp });
+      }
+    }
+
+    const validationTotalByProduct = new Map<string, number>();
+    for (const row of validationCountRows) {
+      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
+      const item = validationItemById.get(String(row.validation_item_id || ""));
+      const productId = item?.product_id ? String(item.product_id) : "";
+      const latestItemId = productId ? latestValidationItemByProduct.get(productId)?.id : null;
+      if (productId && item?.status === "counted" && String(item.id) === latestItemId) {
+        validationTotalByProduct.set(productId, (validationTotalByProduct.get(productId) || 0) + Number(row.quantity || 0));
       }
     }
 
@@ -3344,7 +3378,11 @@ export default function InventariosPage() {
     for (const snap of snapshotRows) {
       const productId = String(snap.product_id || "");
       if (!productId) continue;
-      const counted = recountTotalByProduct.has(productId) ? recountTotalByProduct.get(productId)! : originalCountedByProduct.get(productId) || 0;
+      const counted = validationTotalByProduct.has(productId)
+        ? validationTotalByProduct.get(productId)!
+        : recountTotalByProduct.has(productId)
+          ? recountTotalByProduct.get(productId)!
+          : originalCountedByProduct.get(productId) || 0;
       const systemStock = Number(snap.system_stock || 0);
       if (counted > 0 && counted === systemStock) protectedIds.add(productId);
     }
