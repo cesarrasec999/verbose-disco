@@ -5958,6 +5958,20 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     const hasReportSubmodules = canViewNonInventoryReports || canViewResultsReports;
     const canUseReportsModule = canAccessModule(user, "reports") || hasReportSubmodules;
     const isValOrAdm = hasCyclicSubmodules || hasReportSubmodules;
+    const canUseCyclicModule = canTakeCount || hasCyclicSubmodules;
+    if (user && !forcedTab && !isMobileAccess && !canUseCyclicModule) {
+        if (canUseLocationsModule) window.location.replace("/ubicaciones");
+        else if (canUseConsultaModule) window.location.replace("/consulta-stock");
+        else if (canUseGeneralInventoryModule) window.location.replace("/inventarios");
+        else if (canUseAuditModule) window.location.replace("/auditoria");
+        else if (canUseReportsModule) window.location.replace("/reportes");
+        else if (canUseUsersModule) window.location.replace("/ubicaciones");
+        return (
+            <main className="min-h-screen bg-slate-100 flex items-center justify-center">
+                <div className="text-slate-500 text-lg">Redirigiendo...</div>
+            </main>
+        );
+    }
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">
 

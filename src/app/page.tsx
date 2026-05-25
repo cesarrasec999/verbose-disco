@@ -132,19 +132,15 @@ export default function LoginPage() {
     const moduleKey = DESTINATION_MODULE[targetDestination];
     if (targetDestination === "/dashboard") {
       const access = userModuleAccess(user);
-      const dashboardHosted = [
+      const cyclicModules = [
         "cyclic_count_take",
         "cyclic_assign_products",
         "cyclic_count_records",
         "cyclic_summary_by_code",
         "cyclic_store_progress",
         "cyclic_dashboard",
-        "reports_non_inventory",
-        "reports_results",
-        "locations",
-        "users",
       ] satisfies ModuleAccessKey[];
-      if (!dashboardHosted.some(key => access.includes(key))) return false;
+      if (!cyclicModules.some(key => access.includes(key))) return false;
       return true;
     }
     if (targetDestination === "/reportes") {
