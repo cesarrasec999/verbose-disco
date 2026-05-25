@@ -172,6 +172,7 @@ export default function InventariosPage() {
   const [recountAssignedQuery, setRecountAssignedQuery] = useState("");
   const [recountAssignedStatusFilter, setRecountAssignedStatusFilter] = useState<RecountAssignedStatusFilter>("all");
   const [recountRecordsQuery, setRecountRecordsQuery] = useState("");
+  const [adminRecordLayer, setAdminRecordLayer] = useState<"recount" | "validation">("recount");
   const [recountManagerTab, setRecountManagerTab] = useState<RecountManagerTab>("pendientes");
   const [pendingRecountQuery, setPendingRecountQuery] = useState("");
   const [selectedPendingRecountKeys, setSelectedPendingRecountKeys] = useState<Set<string>>(new Set());
@@ -665,7 +666,7 @@ export default function InventariosPage() {
   const filteredAdminRecountRecords = useMemo(() => {
     const q = recountRecordsQuery.trim().toLowerCase();
     return adminRecountRecords.filter(record => {
-      if (record.item.recount_type !== recountType) return false;
+      if (!q && record.item.recount_type !== recountType) return false;
       return !q ||
         record.sku.toLowerCase().includes(q) ||
         record.description.toLowerCase().includes(q) ||
@@ -795,6 +796,12 @@ export default function InventariosPage() {
     if (isSessionTabFresh(selectedSessionId, validatorTab)) return;
     void loadSessionData(selectedSessionId, validatorTab);
   }, [selectedSessionId, validatorTab, isValidator, operator?.id]);
+
+  useEffect(() => {
+    if (validatorTab === "reconteo" || validatorTab === "validacion") {
+      setAdminRecordLayer(validatorTab === "validacion" ? "validation" : "recount");
+    }
+  }, [validatorTab]);
 
   useEffect(() => {
     if (isReadOnlySupervisor && (validatorTab === "preparacion" || validatorTab === "reconteo" || validatorTab === "usuarios")) {
@@ -1633,6 +1640,11 @@ export default function InventariosPage() {
       })
       .filter(Boolean) as OperatorRecountRecord[];
     setAdminRecountRecords(rows);
+  }
+
+  async function switchAdminRecordLayer(layer: "recount" | "validation") {
+    setAdminRecordLayer(layer);
+    if (selectedSessionId) await loadAdminRecountRecords(selectedSessionId, layer === "validation");
   }
 
   async function loadRecountAssignments(sessionId: string, validationMode = isValidationManagerTab) {
@@ -6558,7 +6570,7 @@ export default function InventariosPage() {
                   onClick={() => setRecountManagerTab("registros")}
                   className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
                 >
-                  {isValidationManagerTab ? "Validaciones guardadas" : "Registros guardados"} ({filteredAdminRecountRecords.length})
+                  {adminRecordLayer === "validation" ? "Validaciones guardadas" : "Reconteos guardados"} ({filteredAdminRecountRecords.length})
                 </button>
               </div>
 
@@ -6945,8 +6957,25 @@ export default function InventariosPage() {
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h3 className="font-black">Registros guardados de reconteo</h3>
-                    <p className="text-xs text-slate-500">Edicion y borrado por linea de lo registrado por los recontadores.</p>
+                    <h3 className="font-black">{adminRecordLayer === "validation" ? "Registros guardados de validacion" : "Registros guardados de reconteo"}</h3>
+                    <p className="text-xs text-slate-500">Edicion y borrado por linea de lo registrado por los operadores.</p>
+                  </div>
+                  <div className="flex rounded-xl border p-1 text-xs font-black">
+                    <button
+                      type="button"
+                      onClick={() => { void switchAdminRecordLayer("recount"); }}
+                      className={`rounded-lg px-3 py-2 ${adminRecordLayer === "recount" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Reconteo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void switchAdminRecordLayer("validation"); }}
+                      disabled={!selectedSession?.validation_enabled}
+                      className={`rounded-lg px-3 py-2 disabled:opacity-40 ${adminRecordLayer === "validation" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Validacion
+                    </button>
                   </div>
                   <div className="flex min-w-[260px] flex-1 items-center rounded-xl border px-3 py-2 md:max-w-md">
                     <Search size={16} className="shrink-0 text-slate-400" />
@@ -7008,7 +7037,7 @@ export default function InventariosPage() {
                       ))}
                       {filteredAdminRecountRecords.length === 0 && (
                         <tr>
-                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">Aun no hay registros guardados de reconteo.</td>
+                          <td colSpan={14} className="p-8 text-center text-sm text-slate-400">Aun no hay {adminRecordLayer === "validation" ? "validaciones" : "reconteos"} guardados que coincidan con la busqueda.</td>
                         </tr>
                       )}
                     </tbody>
