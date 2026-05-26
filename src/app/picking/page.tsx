@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ClipboardList, Download, Home, RefreshCw, ScanLine, Send, UserPlus } from "lucide-react";
+import { ArrowLeft, BarChart3, ClipboardList, Download, Home, RefreshCw, ScanLine, Send, UserPlus } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -32,6 +32,7 @@ type PickingRequest = {
   line_count: number;
   qty_requested_total: number;
   qty_pending_total: number;
+  source_updated_at?: string | null;
 };
 
 type PickingLine = {
@@ -81,6 +82,8 @@ type LocationRow = {
   location: string;
 };
 
+type PickingPanel = "asignacion" | "reportes";
+
 function canAccessPicking(user: CyclicUser) {
   return canAccessModule(user, "picking");
 }
@@ -112,6 +115,40 @@ function csvValue(value: unknown) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
+function formatSync(value: string | null) {
+  if (!value) return "Sin sincronizacion registrada";
+  return new Date(value).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" });
+}
+
+function formatQty(value: number) {
+  return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 2 }).format(value);
+}
+
+function storeLabel(request: PickingRequest | null | undefined) {
+  return request?.source_store_name || request?.source_store_code || "-";
+}
+
+function DonutCard({ title, done, total, detail }: { title: string; done: number; total: number; detail: string }) {
+  const progress = pct(done, total);
+  return (
+    <div className="rounded-2xl border bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-4">
+        <div
+          className="grid h-24 w-24 shrink-0 place-items-center rounded-full"
+          style={{ background: `conic-gradient(#7c3aed ${progress * 3.6}deg, #e2e8f0 0deg)` }}
+        >
+          <div className="grid h-16 w-16 place-items-center rounded-full bg-white text-lg font-black">{progress}%</div>
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-black uppercase text-slate-500">{title}</p>
+          <p className="mt-1 text-xl font-black text-slate-950">{formatQty(done)} / {formatQty(total)}</p>
+          <p className="mt-1 text-xs font-bold text-slate-500">{detail}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PickingPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -130,6 +167,9 @@ export default function PickingPage() {
   const [scanProduct, setScanProduct] = useState("");
   const [scanQty, setScanQty] = useState("1");
   const [locationsByLine, setLocationsByLine] = useState<Record<string, string[]>>({});
+  const [stockByLine, setStockByLine] = useState<Record<string, number>>({});
+  const [lastErpSync, setLastErpSync] = useState<string | null>(null);
+  const [panel, setPanel] = useState<PickingPanel>("asignacion");
 
   const manager = canManagePicking(user);
 
@@ -179,12 +219,63 @@ export default function PickingPage() {
     return { required, assigned, picked, progress: pct(picked, required) };
   }, [assignments, requests]);
 
+  const reportRows = useMemo(() => {
+    return lines.map(line => {
+      const request = requests.find(item => item.id === line.request_id);
+      const lineAssignments = assignments.filter(item => item.line_id === line.id);
+      const assigned = lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
+      const picked = lineAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
+      return {
+        line,
+        request,
+        assigned,
+        picked,
+        diffRequired: picked - num(line.qty_requested),
+        diffStock: picked - num(stockByLine[line.id]),
+        stock: num(stockByLine[line.id]),
+        pickers: lineAssignments.map(item => item.picker_name).join(", ") || "-",
+      };
+    });
+  }, [assignments, lines, requests, stockByLine]);
+
+  const reportByStore = useMemo(() => {
+    const grouped = new Map<string, { label: string; total: number; done: number }>();
+    for (const row of reportRows) {
+      const label = storeLabel(row.request);
+      const current = grouped.get(label) || { label, total: 0, done: 0 };
+      current.total += num(row.line.qty_requested);
+      current.done += row.picked;
+      grouped.set(label, current);
+    }
+    return [...grouped.values()].sort((a, b) => b.total - a.total);
+  }, [reportRows]);
+
+  const reportByPicker = useMemo(() => {
+    const grouped = new Map<string, { label: string; total: number; done: number }>();
+    for (const assignment of assignments) {
+      const current = grouped.get(assignment.picker_name) || { label: assignment.picker_name, total: 0, done: 0 };
+      current.total += num(assignment.assigned_qty);
+      current.done += num(assignment.picked_qty);
+      grouped.set(assignment.picker_name, current);
+    }
+    return [...grouped.values()].sort((a, b) => b.total - a.total);
+  }, [assignments]);
+
+  const selectedRequestReport = useMemo(() => {
+    if (!selectedRequest) return { total: 0, done: 0 };
+    const rows = reportRows.filter(row => row.request?.id === selectedRequest.id);
+    return {
+      total: rows.reduce((sum, row) => sum + num(row.line.qty_requested), 0),
+      done: rows.reduce((sum, row) => sum + row.picked, 0),
+    };
+  }, [reportRows, selectedRequest]);
+
   const loadData = useCallback(async (currentUser: CyclicUser) => {
     setLoading(true);
     setMessage("");
     const currentUserCanManage = canManagePicking(currentUser);
 
-    const [requestsResp, usersResp, storesResp] = await Promise.all([
+    const [requestsResp, usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
       supabase
         .from("picking_requests")
         .select("*")
@@ -197,6 +288,8 @@ export default function PickingPage() {
         .eq("is_active", true)
         .order("full_name"),
       supabase.from("stores").select("id,code,name,erp_sede").eq("is_active", true),
+      supabase.from("erp_sync_status").select("synced_at,updated_at").eq("id", "picking_requests").maybeSingle(),
+      supabase.from("picking_requests").select("source_updated_at,updated_at").order("source_updated_at", { ascending: false }).limit(1),
     ]);
 
     if (requestsResp.error) {
@@ -207,6 +300,7 @@ export default function PickingPage() {
 
     const requestRows = (requestsResp.data || []) as PickingRequest[];
     setRequests(requestRows);
+    setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
     if (!selectedRequestId && requestRows[0]) setSelectedRequestId(requestRows[0].id);
     setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => canAccessModule(item, "picking")));
     setStores((storesResp.data || []) as StoreRow[]);
@@ -240,6 +334,61 @@ export default function PickingPage() {
     setAssignments((assignmentsResp.data || []) as PickingAssignment[]);
     setLoading(false);
   }, [selectedRequestId]);
+
+  useEffect(() => {
+    async function loadStock() {
+      if (requests.length === 0 || lines.length === 0 || stores.length === 0) {
+        setStockByLine({});
+        return;
+      }
+      const sourceSedes = [...new Set(requests.map(request => {
+        const sourceCode = normalize(request.source_store_code);
+        const sourceName = normalize(request.source_store_name);
+        const store = stores.find(item =>
+          normalize(item.code) === sourceCode ||
+          normalize(item.erp_sede) === sourceCode ||
+          normalize(item.name) === sourceName
+        );
+        return String(store?.erp_sede || store?.name || request.source_store_name || request.source_store_code || "").trim();
+      }).filter(Boolean))];
+      const codes = [...new Set(lines.flatMap(line => [line.product_code, line.sku].filter(Boolean) as string[]).map(normalize))];
+      if (sourceSedes.length === 0 || codes.length === 0) {
+        setStockByLine({});
+        return;
+      }
+
+      const stockRows: Array<{ sede: string | null; codsap: string | null; stock: number | string | null }> = [];
+      for (let i = 0; i < codes.length; i += 500) {
+        const { data } = await supabase
+          .from("stock_general")
+          .select("sede,codsap,stock")
+          .in("sede", sourceSedes)
+          .in("codsap", codes.slice(i, i + 500));
+        stockRows.push(...((data || []) as typeof stockRows));
+      }
+      const bySedeCode = new Map<string, number>();
+      for (const row of stockRows) {
+        const key = `${normalize(row.sede)}__${normalize(row.codsap)}`;
+        bySedeCode.set(key, (bySedeCode.get(key) || 0) + num(row.stock));
+      }
+      const next: Record<string, number> = {};
+      for (const line of lines) {
+        const request = requests.find(item => item.id === line.request_id);
+        const sourceCode = normalize(request?.source_store_code);
+        const sourceName = normalize(request?.source_store_name);
+        const store = stores.find(item =>
+          normalize(item.code) === sourceCode ||
+          normalize(item.erp_sede) === sourceCode ||
+          normalize(item.name) === sourceName
+        );
+        const sede = normalize(store?.erp_sede || store?.name || request?.source_store_name || request?.source_store_code);
+        next[line.id] = bySedeCode.get(`${sede}__${normalize(line.product_code)}`) || bySedeCode.get(`${sede}__${normalize(line.sku)}`) || 0;
+      }
+      setStockByLine(next);
+    }
+
+    void loadStock();
+  }, [lines, requests, stores]);
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -472,6 +621,29 @@ export default function PickingPage() {
       <section className="mx-auto max-w-7xl p-4">
         {message && <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>}
 
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
+          <div>
+            <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Picking</p>
+            <p className="text-sm font-black text-slate-900">{formatSync(lastErpSync)}</p>
+          </div>
+          {manager && (
+            <div className="flex rounded-2xl border bg-slate-100 p-1">
+              <button
+                onClick={() => setPanel("asignacion")}
+                className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "asignacion" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+              >
+                Asignacion
+              </button>
+              <button
+                onClick={() => setPanel("reportes")}
+                className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "reportes" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+              >
+                Reportes
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="grid gap-3 md:grid-cols-4">
           {[
             ["Requerimientos", requests.length],
@@ -488,7 +660,7 @@ export default function PickingPage() {
 
         {loading ? (
           <div className="mt-6 rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-500">Cargando picking...</div>
-        ) : manager ? (
+        ) : manager && panel === "asignacion" ? (
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
@@ -570,6 +742,7 @@ export default function PickingPage() {
                           <th className="p-3 text-left">Codigo</th>
                           <th className="p-3 text-left">Ubicaciones A-Z</th>
                           <th className="p-3 text-right">Req.</th>
+                          <th className="p-3 text-right">Stock</th>
                           <th className="p-3 text-right">Asig.</th>
                           <th className="p-3 text-right">Picado</th>
                           <th className="p-3 text-left">Picadores</th>
@@ -589,6 +762,7 @@ export default function PickingPage() {
                                 {(locationsByLine[line.id] || []).slice(0, 8).join(", ") || "Sin ubicacion registrada"}
                               </td>
                               <td className="p-3 text-right font-black">{num(line.qty_requested)}</td>
+                              <td className="p-3 text-right font-black text-slate-600">{formatQty(num(stockByLine[line.id]))}</td>
                               <td className="p-3 text-right font-black">{lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0)}</td>
                               <td className="p-3 text-right font-black text-violet-700">{lineAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0)}</td>
                               <td className="p-3">
@@ -612,6 +786,118 @@ export default function PickingPage() {
               )}
             </section>
           </div>
+        ) : manager && panel === "reportes" ? (
+          <section className="mt-4 space-y-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <DonutCard title="Global" done={totals.picked} total={totals.required} detail="Picado vs solicitado total" />
+              <DonutCard
+                title="Requerimiento seleccionado"
+                done={selectedRequestReport.done}
+                total={selectedRequestReport.total}
+                detail={selectedRequest?.doc_number || selectedRequest?.inv_request_no || "Sin seleccion"}
+              />
+              <DonutCard
+                title="Tienda con mayor carga"
+                done={reportByStore[0]?.done || 0}
+                total={reportByStore[0]?.total || 0}
+                detail={reportByStore[0]?.label || "Sin tienda"}
+              />
+              <DonutCard
+                title="Picador con mayor carga"
+                done={reportByPicker[0]?.done || 0}
+                total={reportByPicker[0]?.total || 0}
+                detail={reportByPicker[0]?.label || "Sin picador"}
+              />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center gap-2">
+                  <BarChart3 size={18} />
+                  <h2 className="font-black">Avance por tienda</h2>
+                </div>
+                <div className="space-y-3">
+                  {reportByStore.map(row => (
+                    <div key={row.label}>
+                      <div className="mb-1 flex justify-between text-xs font-black text-slate-500">
+                        <span>{row.label}</span>
+                        <span>{formatQty(row.done)} / {formatQty(row.total)} ({pct(row.done, row.total)}%)</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
+                    </div>
+                  ))}
+                  {reportByStore.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Sin datos por tienda.</p>}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center gap-2">
+                  <BarChart3 size={18} />
+                  <h2 className="font-black">Avance por picador</h2>
+                </div>
+                <div className="space-y-3">
+                  {reportByPicker.map(row => (
+                    <div key={row.label}>
+                      <div className="mb-1 flex justify-between text-xs font-black text-slate-500">
+                        <span>{row.label}</span>
+                        <span>{formatQty(row.done)} / {formatQty(row.total)} ({pct(row.done, row.total)}%)</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-emerald-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
+                    </div>
+                  ))}
+                  {reportByPicker.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Sin asignaciones por picador.</p>}
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b p-4">
+                <div>
+                  <h2 className="font-black">Diferencias por codigo</h2>
+                  <p className="text-xs font-bold text-slate-500">Picado vs solicitado y picado vs stock actual de la tienda que entrega.</p>
+                </div>
+                <button onClick={() => downloadReport("global")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                  <Download size={16} />
+                </button>
+              </div>
+              <div className="max-h-[460px] overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-100 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="p-3 text-left">Requerimiento</th>
+                      <th className="p-3 text-left">Tienda</th>
+                      <th className="p-3 text-left">Codigo</th>
+                      <th className="p-3 text-left">Picador</th>
+                      <th className="p-3 text-right">Solicitado</th>
+                      <th className="p-3 text-right">Picado</th>
+                      <th className="p-3 text-right">Stock</th>
+                      <th className="p-3 text-right">Dif. solicitud</th>
+                      <th className="p-3 text-right">Dif. stock</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportRows.map(row => (
+                      <tr key={row.line.id} className="border-t">
+                        <td className="p-3 font-bold">{row.request?.doc_number || row.request?.inv_request_no || "-"}</td>
+                        <td className="p-3 text-xs font-bold text-slate-500">{storeLabel(row.request)}</td>
+                        <td className="p-3">
+                          <p className="font-black">{row.line.product_code}</p>
+                          <p className="text-xs text-slate-500">{row.line.description}</p>
+                        </td>
+                        <td className="p-3 text-xs font-bold text-slate-500">{row.pickers}</td>
+                        <td className="p-3 text-right font-black">{formatQty(num(row.line.qty_requested))}</td>
+                        <td className="p-3 text-right font-black text-violet-700">{formatQty(row.picked)}</td>
+                        <td className="p-3 text-right font-black">{formatQty(row.stock)}</td>
+                        <td className={`p-3 text-right font-black ${row.diffRequired < 0 ? "text-red-600" : row.diffRequired > 0 ? "text-blue-700" : "text-emerald-700"}`}>{formatQty(row.diffRequired)}</td>
+                        <td className={`p-3 text-right font-black ${row.diffStock > 0 ? "text-red-600" : "text-slate-700"}`}>{formatQty(row.diffStock)}</td>
+                      </tr>
+                    ))}
+                    {reportRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         ) : (
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -634,6 +920,7 @@ export default function PickingPage() {
                       <p className="font-black">{line?.product_code || "Codigo"}</p>
                       <p className="text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
                       <p className="mt-1 text-xs text-slate-500">{line?.description}</p>
+                      <p className="mt-1 text-xs font-black text-slate-600">Stock actual: {formatQty(num(line ? stockByLine[line.id] : 0))}</p>
                       <div className="mt-3 h-2 rounded-full bg-slate-100">
                         <div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(num(assignment.picked_qty), num(assignment.assigned_qty))}%` }} />
                       </div>
@@ -667,6 +954,10 @@ export default function PickingPage() {
                     <div className="rounded-2xl border bg-slate-50 p-4">
                       <p className="text-xs font-black text-slate-500">Pendiente</p>
                       <p className="text-2xl font-black">{Math.max(0, num(activeAssignment.assigned_qty) - num(activeAssignment.picked_qty))}</p>
+                    </div>
+                    <div className="rounded-2xl border bg-slate-50 p-4 md:col-span-3">
+                      <p className="text-xs font-black text-slate-500">Stock actual en tienda que entrega</p>
+                      <p className="text-2xl font-black">{formatQty(num(stockByLine[activeLine.id]))}</p>
                     </div>
                   </div>
 

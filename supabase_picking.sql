@@ -132,4 +132,10 @@ grant select, insert, update, delete on public.picking_request_lines to anon, au
 grant select, insert, update, delete on public.picking_assignments to anon, authenticated, service_role;
 grant select, insert, update, delete on public.picking_scans to anon, authenticated, service_role;
 
+insert into public.erp_sync_status (id, source_path, synced_at, updated_at)
+values ('picking_requests', '\\192.168.5.53\Users\cesar.quispe\erp-sync', now(), now())
+on conflict (id) do update set
+  source_path = excluded.source_path,
+  updated_at = now();
+
 notify pgrst, 'reload schema';

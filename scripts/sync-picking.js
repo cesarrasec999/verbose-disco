@@ -71,6 +71,10 @@ function writeStatus(text) {
   console.log(text)
 }
 
+function localDateTime(value) {
+  return new Date(value).toLocaleString('es-PE', { hour12: false })
+}
+
 function readState() {
   if (!fs.existsSync(STATE_FILE)) return null
   try {
@@ -197,7 +201,7 @@ function mapRequests(rows) {
 
 async function syncOnce({ since, until }) {
   let pool
-  writeStatus(`Iniciando picking desde ${since.toISOString()} hasta ${until.toISOString()}`)
+  writeStatus(`Revisando requerimientos nuevos desde ${localDateTime(since)} hasta ${localDateTime(until)} hora local`)
   try {
     pool = await new sql.ConnectionPool(sqlConfig).connect()
     const result = await pool.request()
@@ -224,6 +228,13 @@ async function syncOnce({ since, until }) {
       await upsert('picking_request_lines', linesWithRequest, 'id')
     }
 
+    await supabase.from('erp_sync_status').upsert({
+      id: 'picking_requests',
+      source_path: __dirname,
+      synced_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'id' })
+
     writeStatus(`Sincronizacion picking terminada: requerimientos=${requests.length}, lineas=${lines.length}`)
   } finally {
     if (pool) await pool.close()
@@ -239,7 +250,7 @@ async function main() {
     const startedAt = args.since ? new Date(String(args.since)) : now
     state = { startedAt: startedAt.toISOString(), lastSyncAt: startedAt.toISOString() }
     writeState(state)
-    writeStatus(`Estado inicial creado. No se importo historial anterior a ${state.startedAt}`)
+    writeStatus(`Estado inicial creado. No se importo historial anterior a ${localDateTime(state.startedAt)} hora local`)
   }
 
   const since = args.since ? new Date(String(args.since)) : new Date(state.lastSyncAt || state.startedAt)
