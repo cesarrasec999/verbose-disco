@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, Home, RefreshCw, ScanLine, Send, UserPlus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, Send, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -63,6 +63,21 @@ type PickingAssignment = {
   created_at: string;
 };
 
+type PickingScan = {
+  id: string;
+  assignment_id: string;
+  request_id: string;
+  line_id: string;
+  picker_id: string | null;
+  picker_name: string | null;
+  location_code: string;
+  scanned_product_code: string | null;
+  scanned_barcode: string | null;
+  qty: number;
+  is_match: boolean;
+  created_at: string;
+};
+
 type StoreRow = {
   id: string;
   code: string;
@@ -80,9 +95,23 @@ type LocationRow = {
   product_id: string | null;
   sku: string | null;
   location: string;
+  stored_quantity?: number | string | null;
 };
 
-type PickingPanel = "asignacion" | "reportes";
+type PickingPanel = "asignacion" | "reportes" | "registros";
+type LocationSort = "asc" | "desc";
+type ScannerTarget = "location" | "product" | null;
+
+type Html5QrLike = {
+  start: (
+    cameraConfig: { facingMode: string },
+    config: { fps: number; qrbox: { width: number; height: number } },
+    onSuccess: (decodedText: string) => void,
+    onError?: (errorMessage: string) => void
+  ) => Promise<unknown>;
+  stop: () => Promise<unknown>;
+  clear: () => void | Promise<unknown>;
+};
 
 function canAccessPicking(user: CyclicUser) {
   return canAccessModule(user, "picking");
@@ -156,6 +185,7 @@ export default function PickingPage() {
   const [requests, setRequests] = useState<PickingRequest[]>([]);
   const [lines, setLines] = useState<PickingLine[]>([]);
   const [assignments, setAssignments] = useState<PickingAssignment[]>([]);
+  const [scans, setScans] = useState<PickingScan[]>([]);
   const [pickers, setPickers] = useState<CyclicUser[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
@@ -171,6 +201,14 @@ export default function PickingPage() {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
+  const [locationSort, setLocationSort] = useState<LocationSort>("asc");
+  const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
+  const [scannerRunning, setScannerRunning] = useState(false);
+  const [codeMismatch, setCodeMismatch] = useState<{ expected: string; scanned: string } | null>(null);
+  const scannerRef = useRef<Html5QrLike | null>(null);
+  const scanHandledRef = useRef(false);
+  const scannerContainerId = "picking-scanner";
 
   const manager = canManagePicking(user);
 
@@ -201,6 +239,16 @@ export default function PickingPage() {
     [lines, selectedRequest?.id]
   );
 
+  const sortedVisibleLines = useMemo(() => {
+    return [...visibleLines].sort((a, b) => {
+      const aLoc = (locationsByLine[a.id] || [])[0] || "ZZZ";
+      const bLoc = (locationsByLine[b.id] || [])[0] || "ZZZ";
+      const cmp = aLoc.localeCompare(bLoc, "es");
+      if (cmp !== 0) return locationSort === "asc" ? cmp : -cmp;
+      return a.product_code.localeCompare(b.product_code, "es");
+    });
+  }, [locationSort, locationsByLine, visibleLines]);
+
   const assignmentsByLine = useMemo(() => {
     const grouped = new Map<string, PickingAssignment[]>();
     for (const assignment of assignments) {
@@ -215,9 +263,21 @@ export default function PickingPage() {
     return assignments.filter(assignment => assignment.picker_id === user.id || normalize(assignment.picker_name) === normalize(user.full_name));
   }, [assignments, user]);
 
+  const sortedMyAssignments = useMemo(() => {
+    return [...myAssignments].sort((a, b) => {
+      const aLoc = (locationsByLine[a.line_id] || [])[0] || "ZZZ";
+      const bLoc = (locationsByLine[b.line_id] || [])[0] || "ZZZ";
+      const cmp = aLoc.localeCompare(bLoc, "es");
+      if (cmp !== 0) return cmp;
+      const aLine = lines.find(line => line.id === a.line_id);
+      const bLine = lines.find(line => line.id === b.line_id);
+      return String(aLine?.product_code || "").localeCompare(String(bLine?.product_code || ""), "es");
+    });
+  }, [lines, locationsByLine, myAssignments]);
+
   const activeAssignment = useMemo(
-    () => myAssignments.find(item => item.id === activeAssignmentId) || myAssignments[0] || null,
-    [activeAssignmentId, myAssignments]
+    () => sortedMyAssignments.find(item => item.id === activeAssignmentId) || sortedMyAssignments[0] || null,
+    [activeAssignmentId, sortedMyAssignments]
   );
 
   const activeLine = useMemo(
@@ -271,7 +331,7 @@ export default function PickingPage() {
     return [...grouped.values()].sort((a, b) => b.total - a.total);
   }, [reportRows]);
 
-  const reportByPicker = useMemo(() => {
+    const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
     for (const assignment of assignments) {
       const current = grouped.get(assignment.picker_name) || { label: assignment.picker_name, total: 0, done: 0 };
@@ -290,6 +350,14 @@ export default function PickingPage() {
       done: rows.reduce((sum, row) => sum + row.picked, 0),
     };
   }, [reportRows, selectedRequest]);
+
+  const scanRows = useMemo(() => {
+    return scans.map(scan => {
+      const line = lines.find(item => item.id === scan.line_id);
+      const request = requests.find(item => item.id === scan.request_id);
+      return { scan, line, request };
+    });
+  }, [lines, requests, scans]);
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
     setLoading(true);
@@ -329,6 +397,7 @@ export default function PickingPage() {
     if (requestRows.length === 0) {
       setLines([]);
       setAssignments([]);
+      setScans([]);
       setLoading(false);
       return;
     }
@@ -341,18 +410,23 @@ export default function PickingPage() {
       .neq("status", "cancelado")
       .order("created_at", { ascending: false });
 
-    const [linesResp, assignmentsResp] = await Promise.all([
+    const [linesResp, assignmentsResp, scansResp] = await Promise.all([
       supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id"),
       currentUserCanManage
         ? assignmentQuery
         : assignmentQuery.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`),
+      currentUserCanManage
+        ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(500)
+        : Promise.resolve({ data: [] }),
     ]);
 
     if (linesResp.error) setMessage("No pude leer lineas de picking: " + linesResp.error.message);
     if (assignmentsResp.error) setMessage("No pude leer asignaciones: " + assignmentsResp.error.message);
+    if ("error" in scansResp && scansResp.error) setMessage("No pude leer registros: " + scansResp.error.message);
 
     setLines((linesResp.data || []) as PickingLine[]);
     setAssignments((assignmentsResp.data || []) as PickingAssignment[]);
+    setScans((scansResp.data || []) as PickingScan[]);
     setLoading(false);
   }, [selectedRequestId]);
 
@@ -417,6 +491,56 @@ export default function PickingPage() {
     void loadStock();
   }, [lines, requests, stores]);
 
+  const closeScanner = useCallback(async () => {
+    try {
+      await scannerRef.current?.stop();
+      await scannerRef.current?.clear();
+    } catch {}
+    scannerRef.current = null;
+    scanHandledRef.current = false;
+    setScannerRunning(false);
+    setScannerTarget(null);
+  }, []);
+
+  useEffect(() => {
+    if (!scannerTarget) return;
+    let cancelled = false;
+
+    async function startScanner() {
+      try {
+        setScannerRunning(false);
+        scanHandledRef.current = false;
+        const mod = await import("html5-qrcode");
+        const qr = new mod.Html5Qrcode(scannerContainerId) as Html5QrLike;
+        scannerRef.current = qr;
+        await qr.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 260, height: 260 } },
+          decodedText => {
+            if (scanHandledRef.current) return;
+            const clean = decodedText.trim();
+            if (!clean) return;
+            scanHandledRef.current = true;
+            if (scannerTarget === "location") setScanLocation(clean);
+            if (scannerTarget === "product") setScanProduct(clean);
+            void closeScanner();
+          },
+          undefined
+        );
+        if (!cancelled) setScannerRunning(true);
+      } catch (error) {
+        setMessage("No se pudo abrir el escaner: " + (error instanceof Error ? error.message : String(error)));
+        void closeScanner();
+      }
+    }
+
+    void startScanner();
+    return () => {
+      cancelled = true;
+      void closeScanner();
+    };
+  }, [closeScanner, scannerTarget]);
+
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
     if (!raw) {
@@ -455,8 +579,8 @@ export default function PickingPage() {
       if (keys.length === 0) return;
 
       const [bySkuResp, byBarcodeResp] = await Promise.all([
-        supabase.from("products").select("id,sku,barcode").in("sku", keys),
-        supabase.from("products").select("id,sku,barcode").in("barcode", keys),
+        supabase.from("cyclic_products").select("id,sku,barcode").in("sku", keys),
+        supabase.from("cyclic_products").select("id,sku,barcode").in("barcode", keys),
       ]);
       const products = ([...(bySkuResp.data || []), ...(byBarcodeResp.data || [])] as ProductRow[]);
       const productByKey = new Map<string, ProductRow>();
@@ -465,31 +589,98 @@ export default function PickingPage() {
         productByKey.set(normalize(product.barcode), product);
       }
       const productIds = [...new Set(products.map(product => product.id))];
-      if (productIds.length === 0) return;
+      const [byProductResp, byLocationSkuResp] = await Promise.all([
+        productIds.length > 0
+          ? supabase
+              .from("product_locations")
+              .select("product_id,sku,location,stored_quantity")
+              .eq("is_active", true)
+              .eq("store_id", store.id)
+              .in("product_id", productIds)
+              .order("location")
+          : Promise.resolve({ data: [] }),
+        supabase
+          .from("product_locations")
+          .select("product_id,sku,location,stored_quantity")
+          .eq("is_active", true)
+          .eq("store_id", store.id)
+          .in("sku", keys)
+          .order("location"),
+      ]);
 
-      const { data } = await supabase
-        .from("product_locations")
-        .select("product_id,sku,location")
-        .eq("is_active", true)
-        .eq("store_id", store.id)
-        .in("product_id", productIds)
-        .order("location");
-
-      const locations = (data || []) as LocationRow[];
+      const locations = ([...(byProductResp.data || []), ...(byLocationSkuResp.data || [])] as LocationRow[]);
+      const quantityByProductLocation = new Map<string, number>();
+      if (productIds.length > 0) {
+        const { data: sessionsData } = await supabase
+          .from("general_inventory_sessions")
+          .select("id")
+          .eq("store_id", store.id)
+          .order("created_at", { ascending: false })
+          .limit(40);
+        const sessionIds = ((sessionsData || []) as Array<{ id: string }>).map(session => session.id);
+        const sessionOrder = new Map(sessionIds.map((id, index) => [id, index]));
+        if (sessionIds.length > 0) {
+          const [validationResp, recountResp, countResp] = await Promise.all([
+            supabase.from("general_inventory_validation_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+            supabase.from("general_inventory_recount_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+            supabase.from("general_inventory_counts").select("session_id,product_id,location_code,quantity").in("session_id", sessionIds).in("product_id", productIds),
+          ]);
+          const allCountRows = [
+            ...(validationResp.data || []),
+            ...(recountResp.data || []),
+            ...(countResp.data || []),
+          ] as Array<{ session_id: string; product_id: string; location_code: string | null; quantity: number | string | null }>;
+          const byKeySession = new Map<string, Map<string, number>>();
+          for (const row of allCountRows) {
+            const location = normalize(row.location_code);
+            if (!row.product_id || !location) continue;
+            const key = `${row.product_id}__${location}`;
+            if (!byKeySession.has(key)) byKeySession.set(key, new Map());
+            const sessionMap = byKeySession.get(key)!;
+            sessionMap.set(row.session_id, (sessionMap.get(row.session_id) || 0) + num(row.quantity));
+          }
+          for (const [key, sessionMap] of byKeySession.entries()) {
+            const latest = [...sessionMap.entries()].sort((a, b) => (sessionOrder.get(a[0]) ?? 999999) - (sessionOrder.get(b[0]) ?? 999999))[0];
+            if (latest) quantityByProductLocation.set(key, latest[1]);
+          }
+        }
+      }
       const next: Record<string, string[]> = {};
       for (const line of linesToLocate) {
         const product = productByKey.get(normalize(line.product_code)) || productByKey.get(normalize(line.sku)) || productByKey.get(normalize(line.barcode));
         const productLocations = locations
-          .filter(row => row.product_id === product?.id || normalize(row.sku) === normalize(line.sku))
-          .map(row => row.location)
-          .filter(Boolean);
-        next[line.id] = [...new Set(productLocations)].sort((a, b) => a.localeCompare(b));
+          .filter(row =>
+            row.product_id === product?.id ||
+            normalize(row.sku) === normalize(line.sku) ||
+            normalize(row.sku) === normalize(line.product_code)
+          )
+          .map(row => {
+            const countedQty = row.product_id ? quantityByProductLocation.get(`${row.product_id}__${normalize(row.location)}`) : undefined;
+            const quantity = countedQty ?? num(row.stored_quantity);
+            return { location: row.location, quantity };
+          })
+          .filter(row => row.location && row.quantity > 0)
+          .map(row => `${row.location} (${formatQty(row.quantity)})`);
+        next[line.id] = [...new Set(productLocations)].sort((a, b) => (
+          locationSort === "asc" ? a.localeCompare(b, "es") : b.localeCompare(a, "es")
+        ));
       }
       setLocationsByLine(next);
     }
 
     void loadLocations();
-  }, [activeRequest, lines, manager, myAssignments, selectedRequest, stores, visibleLines]);
+  }, [activeRequest, lines, locationSort, manager, myAssignments, selectedRequest, stores, visibleLines]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSelectedLineIds(prev => {
+        const allowed = new Set(visibleLines.map(line => line.id));
+        const next = new Set([...prev].filter(id => allowed.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [visibleLines]);
 
   async function assignPicker() {
     if (!user || !selectedRequest || !selectedLineId || !selectedPickerId) {
@@ -528,6 +719,69 @@ export default function PickingPage() {
     await loadData(user);
   }
 
+  async function assignSelectedLines() {
+    if (!user || !selectedRequest || !selectedPickerId) {
+      setMessage("Selecciona picador y codigos.");
+      return;
+    }
+    const picker = pickers.find(item => item.id === selectedPickerId);
+    if (!picker) {
+      setMessage("Selecciona un picador valido.");
+      return;
+    }
+    const rows = sortedVisibleLines
+      .filter(line => selectedLineIds.has(line.id))
+      .map(line => {
+        const alreadyAssigned = assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
+        const pending = Math.max(0, num(line.qty_requested) - alreadyAssigned);
+        return { line, pending };
+      })
+      .filter(item => item.pending > 0);
+
+    if (rows.length === 0) {
+      setMessage("Los codigos seleccionados no tienen pendiente por asignar.");
+      return;
+    }
+
+    const { error } = await supabase.from("picking_assignments").insert(rows.map(({ line, pending }) => ({
+      request_id: selectedRequest.id,
+      line_id: line.id,
+      picker_id: picker.id,
+      picker_name: picker.full_name,
+      assigned_qty: pending,
+      status: "pendiente",
+      created_by: user.id,
+      created_by_name: user.full_name,
+    })));
+    if (error) {
+      setMessage("No se pudo asignar seleccionados: " + error.message);
+      return;
+    }
+    setSelectedLineIds(new Set());
+    setMessage(`${rows.length} codigos asignados a ${picker.full_name}.`);
+    await loadData(user);
+  }
+
+  function toggleLine(lineId: string) {
+    setSelectedLineIds(prev => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  }
+
+  function selectFirstPending(quantity: number) {
+    const next = new Set<string>();
+    for (const line of sortedVisibleLines) {
+      const assigned = assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
+      if (num(line.qty_requested) - assigned <= 0) continue;
+      next.add(line.id);
+      if (next.size >= quantity) break;
+    }
+    setSelectedLineIds(next);
+  }
+
   async function saveScan() {
     if (!user || !activeAssignment || !activeLine || !activeRequest) return;
     const qty = num(scanQty);
@@ -537,6 +791,13 @@ export default function PickingPage() {
     }
     const pickedNext = num(activeAssignment.picked_qty) + qty;
     const isMatch = [activeLine.product_code, activeLine.sku, activeLine.barcode].some(value => normalize(value) === normalize(scanProduct));
+    if (!isMatch) {
+      setCodeMismatch({
+        expected: [activeLine.product_code, activeLine.sku, activeLine.barcode].filter(Boolean).join(" / "),
+        scanned: scanProduct.trim(),
+      });
+      return;
+    }
     const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
 
     const { error: scanError } = await supabase.from("picking_scans").insert({
@@ -576,7 +837,7 @@ export default function PickingPage() {
     setScanLocation("");
     setScanProduct("");
     setScanQty("1");
-    setMessage(isMatch ? "Picking registrado." : "Registrado con alerta: el codigo no coincide.");
+    setMessage("Picking registrado.");
     await loadData(user);
   }
 
@@ -679,6 +940,12 @@ export default function PickingPage() {
                 >
                   Reportes
                 </button>
+                <button
+                  onClick={() => setPanel("registros")}
+                  className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "registros" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                >
+                  Registros
+                </button>
               </div>
             </div>
           )}
@@ -756,31 +1023,69 @@ export default function PickingPage() {
                   </div>
 
                   <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
-                    <p className="mb-3 text-sm font-black">Asignar a picador</p>
-                    <div className="grid gap-2 md:grid-cols-[1fr_1fr_140px_auto]">
-                      <select value={selectedLineId} onChange={event => setSelectedLineId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
-                        <option value="">Codigo</option>
-                        {visibleLines.map(line => (
-                          <option key={line.id} value={line.id}>{line.product_code} - Pend. {Math.max(0, num(line.qty_requested) - (assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0))}</option>
-                        ))}
-                      </select>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-black">Asignar a picador</p>
+                        <p className="text-xs font-bold text-slate-500">Selecciona codigos o toma los primeros pendientes segun ubicacion.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => selectFirstPending(30)} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Primeros 30</button>
+                        <button onClick={() => setSelectedLineIds(new Set(sortedVisibleLines.map(line => line.id)))} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Todos</button>
+                        <button onClick={() => setSelectedLineIds(new Set())} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Limpiar</button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-[1fr_auto]">
                       <select value={selectedPickerId} onChange={event => setSelectedPickerId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
                         <option value="">Picador</option>
                         {pickers.map(picker => <option key={picker.id} value={picker.id}>{picker.full_name}</option>)}
                       </select>
-                      <input value={assignQty} onChange={event => setAssignQty(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
-                      <button onClick={assignPicker} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
+                      <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
                         <UserPlus size={16} />
+                        <span className="ml-2">Asignar seleccionados ({selectedLineIds.size})</span>
                       </button>
                     </div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-black text-slate-500">Asignar codigo puntual</summary>
+                      <div className="mt-2 grid gap-2 md:grid-cols-[1fr_140px_auto]">
+                        <select value={selectedLineId} onChange={event => setSelectedLineId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
+                          <option value="">Codigo</option>
+                          {sortedVisibleLines.map(line => (
+                            <option key={line.id} value={line.id}>{line.product_code} - Pend. {Math.max(0, num(line.qty_requested) - (assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0))}</option>
+                          ))}
+                        </select>
+                        <input value={assignQty} onChange={event => setAssignQty(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
+                        <button onClick={assignPicker} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
+                          Asignar puntual
+                        </button>
+                      </div>
+                    </details>
                   </div>
 
                   <div className="mt-4 overflow-hidden rounded-2xl border">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-white p-3">
+                      <p className="text-xs font-black uppercase text-slate-500">{selectedLineIds.size} seleccionados</p>
+                      <button
+                        onClick={() => setLocationSort(locationSort === "asc" ? "desc" : "asc")}
+                        className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50"
+                      >
+                        Ubicaciones {locationSort === "asc" ? "A-Z" : "Z-A"}
+                      </button>
+                    </div>
                     <table className="w-full text-sm">
                       <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                         <tr>
+                          <th className="w-10 p-3 text-left">
+                            <input
+                              type="checkbox"
+                              checked={sortedVisibleLines.length > 0 && sortedVisibleLines.every(line => selectedLineIds.has(line.id))}
+                              onChange={event => {
+                                if (event.target.checked) setSelectedLineIds(new Set(sortedVisibleLines.map(line => line.id)));
+                                else setSelectedLineIds(new Set());
+                              }}
+                            />
+                          </th>
                           <th className="p-3 text-left">Codigo</th>
-                          <th className="p-3 text-left">Ubicaciones A-Z</th>
+                          <th className="p-3 text-left">Ubicaciones {locationSort === "asc" ? "A-Z" : "Z-A"}</th>
                           <th className="p-3 text-right">Req.</th>
                           <th className="p-3 text-right">Stock</th>
                           <th className="p-3 text-right">Asig.</th>
@@ -789,10 +1094,13 @@ export default function PickingPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {visibleLines.map(line => {
+                        {sortedVisibleLines.map(line => {
                           const lineAssignments = assignmentsByLine.get(line.id) || [];
                           return (
                             <tr key={line.id} className="border-t align-top">
+                              <td className="p-3">
+                                <input type="checkbox" checked={selectedLineIds.has(line.id)} onChange={() => toggleLine(line.id)} />
+                              </td>
                               <td className="p-3">
                                 <p className="font-black">{line.product_code}</p>
                                 <p className="text-xs text-slate-500">{line.description}</p>
@@ -938,6 +1246,46 @@ export default function PickingPage() {
               </div>
             </div>
           </section>
+        ) : manager && panel === "registros" ? (
+          <section className="mt-4 overflow-hidden rounded-2xl border bg-white shadow-sm">
+            <div className="border-b p-4">
+              <h2 className="font-black">Registros de picadores</h2>
+              <p className="text-xs font-bold text-slate-500">Hora, picador, codigo solicitado, unidad ERP, ubicacion escaneada y cantidad registrada.</p>
+            </div>
+            <div className="max-h-[68vh] overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-100 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="p-3 text-left">Hora</th>
+                    <th className="p-3 text-left">Picador</th>
+                    <th className="p-3 text-left">Requerimiento</th>
+                    <th className="p-3 text-left">Codigo</th>
+                    <th className="p-3 text-left">Descripcion</th>
+                    <th className="p-3 text-left">UM</th>
+                    <th className="p-3 text-left">Ubicacion</th>
+                    <th className="p-3 text-right">Cantidad</th>
+                    <th className="p-3 text-left">Escaneado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scanRows.map(({ scan, line, request }) => (
+                    <tr key={scan.id} className="border-t">
+                      <td className="p-3 text-xs font-bold text-slate-500">{dateText(scan.created_at)}</td>
+                      <td className="p-3 font-bold">{scan.picker_name || "-"}</td>
+                      <td className="p-3 font-bold">{request?.doc_number || request?.inv_request_no || "-"}</td>
+                      <td className="p-3 font-black">{line?.product_code || "-"}</td>
+                      <td className="p-3 text-xs font-bold text-slate-500">{line?.description || "-"}</td>
+                      <td className="p-3 font-black">{line?.unit || "-"}</td>
+                      <td className="p-3 font-black">{scan.location_code}</td>
+                      <td className="p-3 text-right font-black">{formatQty(num(scan.qty))}</td>
+                      <td className={`p-3 text-xs font-black ${scan.is_match ? "text-emerald-700" : "text-red-600"}`}>{scan.scanned_product_code || scan.scanned_barcode || "-"}</td>
+                    </tr>
+                  ))}
+                  {scanRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Aun no hay registros de picadores.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
         ) : (
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -948,9 +1296,10 @@ export default function PickingPage() {
                 </button>
               </div>
               <div className="space-y-2">
-                {myAssignments.map(assignment => {
+                {sortedMyAssignments.map(assignment => {
                   const line = lines.find(item => item.id === assignment.line_id);
                   const request = requests.find(item => item.id === assignment.request_id);
+                  const cardLocations = line ? (locationsByLine[line.id] || []) : [];
                   return (
                     <button
                       key={assignment.id}
@@ -960,6 +1309,12 @@ export default function PickingPage() {
                       <p className="font-black">{line?.product_code || "Codigo"}</p>
                       <p className="text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
                       <p className="mt-1 text-xs text-slate-500">{line?.description}</p>
+                      <p className="mt-1 text-xs font-black text-slate-600">UM: {line?.unit || "-"}</p>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {cardLocations.length > 0 ? cardLocations.map(location => (
+                          <span key={location} className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">{location}</span>
+                        )) : <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-black text-slate-500">Sin ubicacion con stock</span>}
+                      </div>
                       <p className="mt-1 text-xs font-black text-slate-600">Stock actual: {formatQty(num(line ? stockByLine[line.id] : 0))}</p>
                       <div className="mt-3 h-2 rounded-full bg-slate-100">
                         <div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(num(assignment.picked_qty), num(assignment.assigned_qty))}%` }} />
@@ -979,6 +1334,7 @@ export default function PickingPage() {
                     <p className="text-xs font-black uppercase text-slate-500">{activeRequest?.doc_number || activeRequest?.inv_request_no}</p>
                     <h2 className="text-2xl font-black">{activeLine.product_code}</h2>
                     <p className="text-sm font-semibold text-slate-500">{activeLine.description}</p>
+                    <p className="text-xs font-black text-slate-600">Unidad ERP: {activeLine.unit || "-"}</p>
                     <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).join(", ") || "sin ubicacion registrada"}</p>
                   </div>
 
@@ -1009,8 +1365,18 @@ export default function PickingPage() {
                       </button>
                     </div>
                     <div className="grid gap-3">
-                      <input value={scanLocation} onChange={event => setScanLocation(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear ubicacion" autoFocus />
-                      <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear producto o barra" />
+                      <div className="grid grid-cols-[1fr_auto] gap-2">
+                        <input value={scanLocation} onChange={event => setScanLocation(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear ubicacion" autoFocus />
+                        <button onClick={() => setScannerTarget("location")} className="rounded-xl bg-slate-950 px-4 py-3 text-white" title="Abrir escaner de ubicacion">
+                          <QrCode size={20} />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-[1fr_auto] gap-2">
+                        <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear producto o barra" />
+                        <button onClick={() => setScannerTarget("product")} className="rounded-xl bg-slate-950 px-4 py-3 text-white" title="Abrir escaner de producto">
+                          <QrCode size={20} />
+                        </button>
+                      </div>
                       <input value={scanQty} onChange={event => setScanQty(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Cantidad" inputMode="decimal" />
                       <button onClick={saveScan} className="rounded-2xl bg-violet-600 px-4 py-4 text-base font-black text-white hover:bg-violet-700">
                         <ClipboardList className="mr-2 inline" size={18} />
@@ -1026,6 +1392,41 @@ export default function PickingPage() {
           </div>
         )}
       </section>
+
+      {scannerTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="font-black">{scannerTarget === "location" ? "Escanear ubicacion" : "Escanear producto"}</h2>
+                <p className="text-xs font-bold text-slate-500">{scannerRunning ? "Camara activa" : "Iniciando camara..."}</p>
+              </div>
+              <button onClick={() => closeScanner()} className="rounded-xl border px-3 py-2 hover:bg-slate-50" title="Cerrar escaner">
+                <X size={18} />
+              </button>
+            </div>
+            <div id={scannerContainerId} className="overflow-hidden rounded-2xl border bg-slate-100" />
+          </div>
+        </div>
+      )}
+
+      {codeMismatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-2xl">
+            <h2 className="text-lg font-black text-red-600">Codigo no solicitado</h2>
+            <p className="mt-2 text-sm font-bold text-slate-600">El producto escaneado no coincide con el codigo asignado.</p>
+            <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm">
+              <p className="text-xs font-black uppercase text-slate-500">Solicitado</p>
+              <p className="font-black">{codeMismatch.expected}</p>
+              <p className="mt-2 text-xs font-black uppercase text-slate-500">Escaneado</p>
+              <p className="font-black text-red-600">{codeMismatch.scanned}</p>
+            </div>
+            <button onClick={() => setCodeMismatch(null)} className="mt-4 w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white">
+              Entendido
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
