@@ -398,6 +398,11 @@ export default function PickingPage() {
     };
   }, [reportRows, selectedRequest]);
 
+  const selectedReportRequest = useMemo(
+    () => reportRequests.find(row => row.request.id === selectedRequest?.id)?.request || null,
+    [reportRequests, selectedRequest?.id]
+  );
+
   const scanRows = useMemo(() => {
     return scans.map(scan => {
       const line = lines.find(item => item.id === scan.line_id);
@@ -1342,32 +1347,6 @@ export default function PickingPage() {
               />
             </div>
 
-            <div className="rounded-2xl border bg-white p-4 shadow-sm">
-              <h2 className="font-black">Requerimientos en proceso y completados</h2>
-              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {reportRequests.map(row => (
-                  <button
-                    key={row.request.id}
-                    onDoubleClick={() => setSelectedRequestId(row.request.id)}
-                    onClick={() => setSelectedRequestId(row.request.id)}
-                    className={`rounded-2xl border p-4 text-left hover:border-violet-500 ${selectedRequest?.id === row.request.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-black">{row.request.doc_number || row.request.inv_request_no}</p>
-                        <p className="text-xs font-bold text-slate-500">Solicita: {requesterStoreLabel(row.request)}</p>
-                        <p className="text-xs font-bold text-slate-500">Entrega: {storeLabel(row.request)}</p>
-                      </div>
-                      <span className={`rounded-full px-2 py-1 text-xs font-black ${row.status === "Completado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{row.status}</span>
-                    </div>
-                    <div className="mt-3 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
-                    <p className="mt-1 text-xs font-black text-slate-500">{formatQty(row.done)} / {formatQty(row.total)} picado</p>
-                  </button>
-                ))}
-                {reportRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">Aun no hay requerimientos asignados.</p>}
-              </div>
-            </div>
-
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex items-center gap-2">
@@ -1408,7 +1387,33 @@ export default function PickingPage() {
               </div>
             </div>
 
-            {selectedRequest && <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <h2 className="font-black">Requerimientos en proceso y completados</h2>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {reportRequests.map(row => (
+                  <button
+                    key={row.request.id}
+                    onDoubleClick={() => setSelectedRequestId(row.request.id)}
+                    onClick={() => setSelectedRequestId(row.request.id)}
+                    className={`rounded-2xl border p-4 text-left hover:border-violet-500 ${selectedReportRequest?.id === row.request.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-black">{row.request.doc_number || row.request.inv_request_no}</p>
+                        <p className="text-xs font-bold text-slate-500">Solicita: {requesterStoreLabel(row.request)}</p>
+                        <p className="text-xs font-bold text-slate-500">Entrega: {storeLabel(row.request)}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-xs font-black ${row.status === "Completado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{row.status}</span>
+                    </div>
+                    <div className="mt-3 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
+                    <p className="mt-1 text-xs font-black text-slate-500">{formatQty(row.done)} / {formatQty(row.total)} picado</p>
+                  </button>
+                ))}
+                {reportRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">Aun no hay requerimientos asignados.</p>}
+              </div>
+            </div>
+
+            {selectedReportRequest && <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b p-4">
                 <div>
                   <h2 className="font-black">Diferencias por codigo</h2>
@@ -1434,7 +1439,7 @@ export default function PickingPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {reportRows.filter(row => row.request?.id === selectedRequest.id).map(row => (
+                    {reportRows.filter(row => row.request?.id === selectedReportRequest.id).map(row => (
                       <tr key={row.line.id} className="border-t">
                         <td className="p-3 font-bold">{row.request?.doc_number || row.request?.inv_request_no || "-"}</td>
                         <td className="p-3 text-xs font-bold text-slate-500">{storeLabel(row.request)}</td>
@@ -1450,7 +1455,7 @@ export default function PickingPage() {
                         <td className={`p-3 text-right font-black ${row.diffStock > 0 ? "text-red-600" : "text-slate-700"}`}>{formatQty(row.diffStock)}</td>
                       </tr>
                     ))}
-                    {reportRows.filter(row => row.request?.id === selectedRequest.id).length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
+                    {reportRows.filter(row => row.request?.id === selectedReportRequest.id).length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
                   </tbody>
                 </table>
               </div>
