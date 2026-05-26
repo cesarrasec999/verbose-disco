@@ -24,6 +24,12 @@ create table if not exists public.picking_requests (
   updated_at timestamptz not null default now()
 );
 
+alter table public.picking_requests
+  add column if not exists hidden_at timestamptz,
+  add column if not exists hidden_by uuid references public.cyclic_users(id),
+  add column if not exists hidden_by_name text,
+  add column if not exists hidden_reason text;
+
 create table if not exists public.picking_request_lines (
   id text primary key,
   request_id uuid references public.picking_requests(id) on delete cascade,

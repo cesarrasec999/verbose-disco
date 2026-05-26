@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, Send, UserPlus, X } from "lucide-react";
+import { ArrowLeft, BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -33,6 +33,10 @@ type PickingRequest = {
   qty_requested_total: number;
   qty_pending_total: number;
   source_updated_at?: string | null;
+  hidden_at?: string | null;
+  hidden_by?: string | null;
+  hidden_by_name?: string | null;
+  hidden_reason?: string | null;
 };
 
 type PickingLine = {
@@ -213,11 +217,13 @@ export default function PickingPage() {
   const [editingScanId, setEditingScanId] = useState("");
   const [editScanLocation, setEditScanLocation] = useState("");
   const [editScanQty, setEditScanQty] = useState("");
+  const [reassignPickerByAssignmentId, setReassignPickerByAssignmentId] = useState<Record<string, string>>({});
   const scannerRef = useRef<Html5QrLike | null>(null);
   const scanHandledRef = useRef(false);
   const scannerContainerId = "picking-scanner";
 
   const manager = canManagePicking(user);
+  const admin = user?.role === "Administrador";
 
   const sourceStoreOptions = useMemo(() => {
     const grouped = new Map<string, string>();
@@ -341,15 +347,6 @@ export default function PickingPage() {
     return [...grouped.values()].sort((a, b) => b.total - a.total);
   }, [reportRows]);
 
-  const assignmentPendingRequests = useMemo(() => {
-    return filteredRequests.filter(request => {
-      const assigned = assignments
-        .filter(item => item.request_id === request.id)
-        .reduce((sum, item) => sum + num(item.assigned_qty), 0);
-      return assigned < num(request.qty_requested_total);
-    });
-  }, [assignments, filteredRequests]);
-
   const reportRequests = useMemo(() => {
     return filteredRequests
       .map(request => {
@@ -440,7 +437,7 @@ export default function PickingPage() {
       return;
     }
 
-    const requestRows = (requestsResp.data || []) as PickingRequest[];
+    const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
     setRequests(requestRows);
     setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
     if (!selectedRequestId && requestRows[0]) setSelectedRequestId(requestRows[0].id);
@@ -815,6 +812,74 @@ export default function PickingPage() {
     await loadData(user);
   }
 
+  async function reassignAssignment(assignmentId: string) {
+    if (!manager || !user) return;
+    const assignment = assignments.find(item => item.id === assignmentId);
+    const picker = pickers.find(item => item.id === reassignPickerByAssignmentId[assignmentId]);
+    if (!assignment || !picker) {
+      setMessage("Selecciona el nuevo picador.");
+      return;
+    }
+    if (assignment.picker_id === picker.id || normalize(assignment.picker_name) === normalize(picker.full_name)) {
+      setMessage("Ese codigo ya esta asignado a ese picador.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("picking_assignments")
+      .update({
+        picker_id: picker.id,
+        picker_name: picker.full_name,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", assignment.id);
+
+    if (error) {
+      setMessage("No se pudo reasignar: " + error.message);
+      return;
+    }
+
+    setAssignments(prev => prev.map(item => (
+      item.id === assignment.id ? { ...item, picker_id: picker.id, picker_name: picker.full_name } : item
+    )));
+    setReassignPickerByAssignmentId(prev => {
+      const next = { ...prev };
+      delete next[assignment.id];
+      return next;
+    });
+    setMessage(`Codigo reasignado a ${picker.full_name}.`);
+    await loadData(user);
+  }
+
+  async function forceHideRequest(request: PickingRequest) {
+    if (!admin || !user) {
+      setMessage("Solo el administrador puede forzar la eliminacion de requerimientos.");
+      return;
+    }
+    const confirmed = window.confirm(`Forzar eliminacion del requerimiento ${request.doc_number || request.inv_request_no}? Ya no aparecera como pendiente en picking.`);
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("picking_requests")
+      .update({
+        hidden_at: new Date().toISOString(),
+        hidden_by: user.id,
+        hidden_by_name: user.full_name,
+        hidden_reason: "Forzado por administrador",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", request.id);
+
+    if (error) {
+      setMessage("No se pudo ocultar el requerimiento. Ejecuta el SQL actualizado de picking si falta hidden_at: " + error.message);
+      return;
+    }
+
+    setRequests(prev => prev.filter(item => item.id !== request.id));
+    if (selectedRequestId === request.id) setSelectedRequestId("");
+    setMessage("Requerimiento ocultado por administrador.");
+  }
+
   function toggleLine(lineId: string) {
     setSelectedLineIds(prev => {
       const next = new Set(prev);
@@ -976,13 +1041,6 @@ export default function PickingPage() {
     URL.revokeObjectURL(url);
   }
 
-  function sendWhatsapp() {
-    const pending = myAssignments.reduce((sum, item) => sum + Math.max(0, num(item.assigned_qty) - num(item.picked_qty)), 0);
-    const picked = myAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
-    const text = `Reporte Picking%0AOperador: ${encodeURIComponent(user?.full_name || "")}%0APicado: ${picked}%0APendiente: ${pending}`;
-    window.open(`https://wa.me/?text=${text}`, "_blank");
-  }
-
   if (!user) {
     return <main className="min-h-screen bg-slate-100 p-6 text-slate-700">Validando acceso...</main>;
   }
@@ -1082,10 +1140,10 @@ export default function PickingPage() {
                 </button>
               </div>
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
-                {assignmentPendingRequests.map(request => {
+                {filteredRequests.map(request => {
                   const requestAssignments = assignments.filter(item => item.request_id === request.id);
-                  const assigned = requestAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
-                  const progress = pct(assigned, num(request.qty_requested_total));
+                  const assignedLines = new Set(requestAssignments.map(item => item.line_id)).size;
+                  const progress = pct(assignedLines, num(request.line_count));
                   return (
                     <button
                       key={request.id}
@@ -1103,10 +1161,11 @@ export default function PickingPage() {
                       <div className="mt-3 h-2 rounded-full bg-slate-100">
                         <div className="h-2 rounded-full bg-violet-600" style={{ width: `${progress}%` }} />
                       </div>
+                      <p className="mt-1 text-xs font-black text-slate-500">{assignedLines} / {request.line_count} codigos asignados</p>
                     </button>
                   );
                 })}
-                {assignmentPendingRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">No hay requerimientos pendientes por asignar para esta sede.</p>}
+                {filteredRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">No hay requerimientos activos para esta sede.</p>}
               </div>
             </aside>
 
@@ -1122,9 +1181,16 @@ export default function PickingPage() {
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
                     </div>
-                    <button onClick={() => window.location.href = "/"} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
-                      <ArrowLeft size={16} />
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      {admin && (
+                        <button onClick={() => forceHideRequest(selectedRequest)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-black text-red-700 hover:bg-red-100">
+                          Forzar eliminacion
+                        </button>
+                      )}
+                      <button onClick={() => window.location.href = "/"} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                        <ArrowLeft size={16} />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
@@ -1219,11 +1285,24 @@ export default function PickingPage() {
                               <td className="p-3 text-right font-black">{lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0)}</td>
                               <td className="p-3 text-right font-black text-violet-700">{lineAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0)}</td>
                               <td className="p-3">
-                                <div className="space-y-1">
+                                <div className="space-y-2">
                                   {lineAssignments.map(item => (
-                                    <span key={item.id} className="block rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">
-                                      {item.picker_name}: {num(item.picked_qty)}/{num(item.assigned_qty)}
-                                    </span>
+                                    <div key={item.id} className="rounded-xl bg-slate-100 p-2">
+                                      <p className="text-xs font-bold text-slate-700">{item.picker_name}: {num(item.picked_qty)}/{num(item.assigned_qty)}</p>
+                                      <div className="mt-1 grid gap-1 sm:grid-cols-[1fr_auto]">
+                                        <select
+                                          value={reassignPickerByAssignmentId[item.id] || ""}
+                                          onChange={event => setReassignPickerByAssignmentId(prev => ({ ...prev, [item.id]: event.target.value }))}
+                                          className="min-w-0 rounded-lg border bg-white px-2 py-1 text-xs font-bold"
+                                        >
+                                          <option value="">Reasignar a...</option>
+                                          {pickers.map(picker => <option key={picker.id} value={picker.id}>{picker.full_name}</option>)}
+                                        </select>
+                                        <button onClick={() => reassignAssignment(item.id)} className="rounded-lg bg-slate-950 px-2 py-1 text-xs font-black text-white">
+                                          Reasignar
+                                        </button>
+                                      </div>
+                                    </div>
                                   ))}
                                 </div>
                               </td>
@@ -1451,10 +1530,9 @@ export default function PickingPage() {
                         </div>
                         <p className="mt-1 line-clamp-2 text-xs text-slate-500">{line?.description}</p>
                         <div className="mt-2 flex flex-wrap gap-1">
-                          {cardLocations.length > 0 ? cardLocations.slice(0, 3).map(location => (
-                            <span key={location} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-black text-emerald-700">{location}</span>
+                          {cardLocations.length > 0 ? cardLocations.map(location => (
+                            <span key={location} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-black text-emerald-700">{location.replace(/\s*\([^)]*\)\s*$/, "")}</span>
                           )) : <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-black text-slate-500">Sin ubicacion con stock</span>}
-                          {cardLocations.length > 3 && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-black text-slate-500">+{cardLocations.length - 3}</span>}
                         </div>
                         <div className="mt-2 grid grid-cols-4 overflow-hidden rounded-lg border bg-slate-50 text-center text-[11px] font-black">
                           <div className="border-r px-1 py-1">
@@ -1480,16 +1558,14 @@ export default function PickingPage() {
                       </button>
                       {isActive && activeLine && (
                         <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-3 shadow-sm md:col-span-2 xl:col-span-3">
-                          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-violet-100 pb-3">
+                          <div className="border-b border-violet-100 pb-3">
                             <div className="min-w-0">
                               <p className="text-xs font-black uppercase text-slate-500">{activeRequest?.doc_number || activeRequest?.inv_request_no}</p>
                               <h2 className="text-lg font-black leading-tight">{activeLine.product_code}</h2>
                               <p className="text-xs font-semibold text-slate-500">{activeLine.description}</p>
-                              <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).join(", ") || "sin ubicacion registrada"}</p>
+                              <p className="text-xs font-black text-slate-700">Unidad solicitada: {activeLine.unit || "-"}</p>
+                              <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).map(location => location.replace(/\s*\([^)]*\)\s*$/, "")).join(", ") || "sin ubicacion registrada"}</p>
                             </div>
-                            <button onClick={sendWhatsapp} className="rounded-xl border bg-white px-3 py-2 text-sm font-bold hover:bg-slate-50" title="Enviar por WhatsApp">
-                              <Send size={16} />
-                            </button>
                           </div>
 
                           <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_120px_auto_auto]">
