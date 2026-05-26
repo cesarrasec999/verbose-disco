@@ -157,6 +157,10 @@ function storeLabel(request: PickingRequest | null | undefined) {
   return request?.source_store_name || request?.source_store_code || "-";
 }
 
+function requesterStoreLabel(request: PickingRequest | null | undefined) {
+  return request?.destination_store_name || request?.destination_store_code || "-";
+}
+
 function DonutCard({ title, done, total, detail }: { title: string; done: number; total: number; detail: string }) {
   const progress = pct(done, total);
   return (
@@ -206,6 +210,9 @@ export default function PickingPage() {
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [scannerRunning, setScannerRunning] = useState(false);
   const [codeMismatch, setCodeMismatch] = useState<{ expected: string; scanned: string } | null>(null);
+  const [editingScanId, setEditingScanId] = useState("");
+  const [editScanLocation, setEditScanLocation] = useState("");
+  const [editScanQty, setEditScanQty] = useState("");
   const scannerRef = useRef<Html5QrLike | null>(null);
   const scanHandledRef = useRef(false);
   const scannerContainerId = "picking-scanner";
@@ -276,7 +283,10 @@ export default function PickingPage() {
   }, [lines, locationsByLine, myAssignments]);
 
   const activeAssignment = useMemo(
-    () => sortedMyAssignments.find(item => item.id === activeAssignmentId) || sortedMyAssignments[0] || null,
+    () => {
+      const open = sortedMyAssignments.filter(item => num(item.picked_qty) < num(item.assigned_qty));
+      return open.find(item => item.id === activeAssignmentId) || open[0] || null;
+    },
     [activeAssignmentId, sortedMyAssignments]
   );
 
@@ -322,7 +332,7 @@ export default function PickingPage() {
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
     for (const row of reportRows) {
-      const label = storeLabel(row.request);
+      const label = requesterStoreLabel(row.request);
       const current = grouped.get(label) || { label, total: 0, done: 0 };
       current.total += num(row.line.qty_requested);
       current.done += row.picked;
@@ -330,6 +340,33 @@ export default function PickingPage() {
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
   }, [reportRows]);
+
+  const assignmentPendingRequests = useMemo(() => {
+    return filteredRequests.filter(request => {
+      const assigned = assignments
+        .filter(item => item.request_id === request.id)
+        .reduce((sum, item) => sum + num(item.assigned_qty), 0);
+      return assigned < num(request.qty_requested_total);
+    });
+  }, [assignments, filteredRequests]);
+
+  const reportRequests = useMemo(() => {
+    return filteredRequests
+      .map(request => {
+        const rows = reportRows.filter(row => row.request?.id === request.id);
+        const total = rows.reduce((sum, row) => sum + num(row.line.qty_requested), 0);
+        const done = rows.reduce((sum, row) => sum + row.picked, 0);
+        const assigned = assignments.filter(item => item.request_id === request.id).reduce((sum, item) => sum + num(item.assigned_qty), 0);
+        const status = done >= total && total > 0 ? "Completado" : assigned > 0 ? "En proceso" : "Pendiente";
+        return { request, total, done, assigned, status };
+      })
+      .filter(row => row.assigned > 0)
+      .sort((a, b) => {
+        if (a.status === "En proceso" && b.status !== "En proceso") return -1;
+        if (a.status !== "En proceso" && b.status === "En proceso") return 1;
+        return (b.request.creation_date || "").localeCompare(a.request.creation_date || "");
+      });
+  }, [assignments, filteredRequests, reportRows]);
 
     const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
@@ -358,6 +395,22 @@ export default function PickingPage() {
       return { scan, line, request };
     });
   }, [lines, requests, scans]);
+
+  const operatorTotals = useMemo(() => {
+    const assigned = myAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
+    const picked = myAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
+    return { assigned, picked, progress: pct(picked, assigned) };
+  }, [myAssignments]);
+
+  const openOperatorAssignments = useMemo(
+    () => sortedMyAssignments.filter(item => num(item.picked_qty) < num(item.assigned_qty)),
+    [sortedMyAssignments]
+  );
+
+  const operatorScanRows = useMemo(
+    () => scanRows.filter(row => row.scan.picker_id === user?.id || normalize(row.scan.picker_name) === normalize(user?.full_name)),
+    [scanRows, user]
+  );
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
     setLoading(true);
@@ -417,7 +470,7 @@ export default function PickingPage() {
         : assignmentQuery.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`),
       currentUserCanManage
         ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(500)
-        : Promise.resolve({ data: [] }),
+        : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(200),
     ]);
 
     if (linesResp.error) setMessage("No pude leer lineas de picking: " + linesResp.error.message);
@@ -841,6 +894,53 @@ export default function PickingPage() {
     await loadData(user);
   }
 
+  function startEditScan(scan: PickingScan) {
+    setEditingScanId(scan.id);
+    setEditScanLocation(scan.location_code);
+    setEditScanQty(String(num(scan.qty)));
+  }
+
+  async function saveEditScan() {
+    if (!user || !editingScanId) return;
+    const qty = num(editScanQty);
+    if (!editScanLocation.trim() || qty <= 0) {
+      setMessage("Ingresa ubicacion y cantidad valida.");
+      return;
+    }
+    const scan = scans.find(item => item.id === editingScanId);
+    if (!scan) return;
+    const assignment = assignments.find(item => item.id === scan.assignment_id);
+    if (!assignment) return;
+    const assignmentScans = scans.filter(item => item.assignment_id === assignment.id);
+    const pickedNext = assignmentScans.reduce((sum, item) => sum + (item.id === scan.id ? qty : num(item.qty)), 0);
+    const status = pickedNext >= num(assignment.assigned_qty) ? "completado" : "en_proceso";
+
+    const { error: scanError } = await supabase
+      .from("picking_scans")
+      .update({ location_code: normalize(editScanLocation), qty })
+      .eq("id", editingScanId)
+      .eq("picker_id", user.id);
+    if (scanError) {
+      setMessage("No se pudo editar el registro: " + scanError.message);
+      return;
+    }
+
+    const { error: assignmentError } = await supabase
+      .from("picking_assignments")
+      .update({ picked_qty: pickedNext, status, updated_at: new Date().toISOString(), completed_at: status === "completado" ? new Date().toISOString() : null })
+      .eq("id", assignment.id);
+    if (assignmentError) {
+      setMessage("Registro editado, pero no se actualizo avance: " + assignmentError.message);
+      return;
+    }
+
+    setEditingScanId("");
+    setEditScanLocation("");
+    setEditScanQty("");
+    setMessage("Registro actualizado.");
+    await loadData(user);
+  }
+
   function downloadReport(scope: "global" | "mine") {
     const rows = (scope === "mine" ? myAssignments : assignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
@@ -909,7 +1009,7 @@ export default function PickingPage() {
       <section className="mx-auto max-w-7xl p-4">
         {message && <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>}
 
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
+        {manager && <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
           <div>
             <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Picking</p>
             <p className="text-sm font-black text-slate-900">{formatSync(lastErpSync)}</p>
@@ -949,21 +1049,20 @@ export default function PickingPage() {
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
-        <div className="grid gap-3 md:grid-cols-4">
+        {manager && panel === "asignacion" && <div className="grid gap-3 md:grid-cols-3">
           {[
             ["Requerimientos", filteredRequests.length],
             ["Codigos requeridos", totals.required],
             ["Codigos asignados", totals.assigned],
-            ["Avance global", `${totals.progress}%`],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-black uppercase text-slate-500">{label}</p>
               <p className="mt-2 text-2xl font-black text-slate-950">{value}</p>
             </div>
           ))}
-        </div>
+        </div>}
 
         {loading ? (
           <div className="mt-6 rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-500">Cargando picking...</div>
@@ -977,10 +1076,10 @@ export default function PickingPage() {
                 </button>
               </div>
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
-                {filteredRequests.map(request => {
+                {assignmentPendingRequests.map(request => {
                   const requestAssignments = assignments.filter(item => item.request_id === request.id);
-                  const picked = requestAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
-                  const progress = pct(picked, num(request.qty_requested_total));
+                  const assigned = requestAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
+                  const progress = pct(assigned, num(request.qty_requested_total));
                   return (
                     <button
                       key={request.id}
@@ -1001,7 +1100,7 @@ export default function PickingPage() {
                     </button>
                   );
                 })}
-                {filteredRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Aun no hay requerimientos activos para esta sede.</p>}
+                {assignmentPendingRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">No hay requerimientos pendientes por asignar para esta sede.</p>}
               </div>
             </aside>
 
@@ -1136,7 +1235,7 @@ export default function PickingPage() {
           </div>
         ) : manager && panel === "reportes" ? (
           <section className="mt-4 space-y-4">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-2">
               <DonutCard title="Global" done={totals.picked} total={totals.required} detail="Picado vs solicitado total" />
               <DonutCard
                 title="Requerimiento seleccionado"
@@ -1144,25 +1243,39 @@ export default function PickingPage() {
                 total={selectedRequestReport.total}
                 detail={selectedRequest?.doc_number || selectedRequest?.inv_request_no || "Sin seleccion"}
               />
-              <DonutCard
-                title="Tienda con mayor carga"
-                done={reportByStore[0]?.done || 0}
-                total={reportByStore[0]?.total || 0}
-                detail={reportByStore[0]?.label || "Sin tienda"}
-              />
-              <DonutCard
-                title="Picador con mayor carga"
-                done={reportByPicker[0]?.done || 0}
-                total={reportByPicker[0]?.total || 0}
-                detail={reportByPicker[0]?.label || "Sin picador"}
-              />
+            </div>
+
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <h2 className="font-black">Requerimientos en proceso y completados</h2>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {reportRequests.map(row => (
+                  <button
+                    key={row.request.id}
+                    onDoubleClick={() => setSelectedRequestId(row.request.id)}
+                    onClick={() => setSelectedRequestId(row.request.id)}
+                    className={`rounded-2xl border p-4 text-left hover:border-violet-500 ${selectedRequest?.id === row.request.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-black">{row.request.doc_number || row.request.inv_request_no}</p>
+                        <p className="text-xs font-bold text-slate-500">Solicita: {requesterStoreLabel(row.request)}</p>
+                        <p className="text-xs font-bold text-slate-500">Entrega: {storeLabel(row.request)}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-xs font-black ${row.status === "Completado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{row.status}</span>
+                    </div>
+                    <div className="mt-3 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
+                    <p className="mt-1 text-xs font-black text-slate-500">{formatQty(row.done)} / {formatQty(row.total)} picado</p>
+                  </button>
+                ))}
+                {reportRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">Aun no hay requerimientos asignados.</p>}
+              </div>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="mb-3 flex items-center gap-2">
                   <BarChart3 size={18} />
-                  <h2 className="font-black">Avance por tienda</h2>
+                  <h2 className="font-black">Avance por tienda solicitante</h2>
                 </div>
                 <div className="space-y-3">
                   {reportByStore.map(row => (
@@ -1198,7 +1311,7 @@ export default function PickingPage() {
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+            {selectedRequest && <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b p-4">
                 <div>
                   <h2 className="font-black">Diferencias por codigo</h2>
@@ -1224,7 +1337,7 @@ export default function PickingPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {reportRows.map(row => (
+                    {reportRows.filter(row => row.request?.id === selectedRequest.id).map(row => (
                       <tr key={row.line.id} className="border-t">
                         <td className="p-3 font-bold">{row.request?.doc_number || row.request?.inv_request_no || "-"}</td>
                         <td className="p-3 text-xs font-bold text-slate-500">{storeLabel(row.request)}</td>
@@ -1240,11 +1353,11 @@ export default function PickingPage() {
                         <td className={`p-3 text-right font-black ${row.diffStock > 0 ? "text-red-600" : "text-slate-700"}`}>{formatQty(row.diffStock)}</td>
                       </tr>
                     ))}
-                    {reportRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
+                    {reportRows.filter(row => row.request?.id === selectedRequest.id).length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
                   </tbody>
                 </table>
               </div>
-            </div>
+            </div>}
           </section>
         ) : manager && panel === "registros" ? (
           <section className="mt-4 overflow-hidden rounded-2xl border bg-white shadow-sm">
@@ -1287,16 +1400,29 @@ export default function PickingPage() {
             </div>
           </section>
         ) : (
-          <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
-            <aside className="rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="mt-4 space-y-4">
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-2 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase text-slate-500">Mi avance</p>
+                  <p className="text-2xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
+                </div>
+                <span className="rounded-full bg-violet-100 px-3 py-1 text-sm font-black text-violet-700">{operatorTotals.progress}%</span>
+              </div>
+              <div className="h-3 rounded-full bg-slate-100">
+                <div className="h-3 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
+              </div>
+            </section>
+
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-black">Mis codigos</h2>
+                <h2 className="font-black">Codigos asignados</h2>
                 <button onClick={() => downloadReport("mine")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
                   <Download size={16} />
                 </button>
               </div>
-              <div className="space-y-2">
-                {sortedMyAssignments.map(assignment => {
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {openOperatorAssignments.map(assignment => {
                   const line = lines.find(item => item.id === assignment.line_id);
                   const request = requests.find(item => item.id === assignment.request_id);
                   const cardLocations = line ? (locationsByLine[line.id] || []) : [];
@@ -1304,7 +1430,7 @@ export default function PickingPage() {
                     <button
                       key={assignment.id}
                       onClick={() => setActiveAssignmentId(assignment.id)}
-                      className={`w-full rounded-2xl border p-3 text-left hover:border-violet-400 ${activeAssignment?.id === assignment.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
+                      className={`w-full rounded-2xl border p-4 text-left hover:border-violet-400 ${activeAssignment?.id === assignment.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
                     >
                       <p className="font-black">{line?.product_code || "Codigo"}</p>
                       <p className="text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
@@ -1323,9 +1449,9 @@ export default function PickingPage() {
                     </button>
                   );
                 })}
-                {myAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">No tienes codigos asignados.</p>}
+                {openOperatorAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">No tienes codigos pendientes.</p>}
               </div>
-            </aside>
+            </section>
 
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               {activeAssignment && activeLine ? (
@@ -1382,12 +1508,45 @@ export default function PickingPage() {
                         <ClipboardList className="mr-2 inline" size={18} />
                         Guardar escaneo
                       </button>
+                      <button onClick={() => { setScanLocation(""); setScanProduct(""); setScanQty("1"); }} className="rounded-2xl border px-4 py-3 text-sm font-black hover:bg-slate-50">
+                        Agregar otra ubicacion
+                      </button>
                     </div>
                   </div>
                 </>
               ) : (
                 <div className="p-10 text-center text-sm font-bold text-slate-400">Selecciona un codigo asignado.</div>
               )}
+            </section>
+
+            <section className="rounded-2xl border bg-white p-4 shadow-sm">
+              <h2 className="font-black">Mis registros</h2>
+              <p className="text-xs font-bold text-slate-500">Puedes editar ubicacion y cantidad. No se eliminan registros.</p>
+              <div className="mt-3 space-y-2">
+                {operatorScanRows.map(({ scan, line }) => (
+                  <div key={scan.id} className="rounded-2xl border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-black">{line?.product_code || scan.scanned_product_code}</p>
+                        <p className="text-xs font-bold text-slate-500">{line?.description}</p>
+                        <p className="text-xs font-black text-slate-600">{dateText(scan.created_at)}</p>
+                      </div>
+                      <button onClick={() => startEditScan(scan)} className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50">Editar</button>
+                    </div>
+                    {editingScanId === scan.id ? (
+                      <div className="mt-3 grid gap-2 md:grid-cols-[1fr_120px_auto_auto]">
+                        <input value={editScanLocation} onChange={event => setEditScanLocation(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Ubicacion" />
+                        <input value={editScanQty} onChange={event => setEditScanQty(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
+                        <button onClick={saveEditScan} className="rounded-xl bg-slate-950 px-3 py-2 text-sm font-black text-white">Guardar</button>
+                        <button onClick={() => setEditingScanId("")} className="rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50">Cancelar</button>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm font-black text-slate-700">Ubicacion {scan.location_code} | Cantidad {formatQty(num(scan.qty))}</p>
+                    )}
+                  </div>
+                ))}
+                {operatorScanRows.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Aun no tienes registros.</p>}
+              </div>
             </section>
           </div>
         )}
