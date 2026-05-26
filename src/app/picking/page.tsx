@@ -319,7 +319,13 @@ export default function PickingPage() {
     const requestIds = new Set(filteredRequests.map(request => request.id));
     const requiredCodes = lines.filter(line => requestIds.has(line.request_id)).length;
     const assignedCodes = new Set(assignments.filter(assignment => requestIds.has(assignment.request_id)).map(assignment => assignment.line_id)).size;
-    return { requiredCodes, assignedCodes };
+    const assignedRequests = filteredRequests.filter(request => {
+      const requestLines = lines.filter(line => line.request_id === request.id);
+      if (requestLines.length === 0) return false;
+      const assignedLineIds = new Set(assignments.filter(assignment => assignment.request_id === request.id).map(assignment => assignment.line_id));
+      return requestLines.every(line => assignedLineIds.has(line.id));
+    }).length;
+    return { requiredCodes, assignedCodes, pendingCodes: Math.max(0, requiredCodes - assignedCodes), assignedRequests };
   }, [assignments, filteredRequests, lines]);
 
   const reportRows = useMemo(() => {
@@ -1122,11 +1128,13 @@ export default function PickingPage() {
           )}
         </div>}
 
-        {manager && panel === "asignacion" && <div className="grid gap-3 md:grid-cols-3">
+        {manager && panel === "asignacion" && <div className="grid gap-3 md:grid-cols-5">
           {[
-            ["Requerimientos", filteredRequests.length],
+            ["Requerimientos totales", filteredRequests.length],
+            ["Requerimientos asignados", assignmentCodeTotals.assignedRequests],
             ["Codigos requeridos", assignmentCodeTotals.requiredCodes],
             ["Codigos asignados", assignmentCodeTotals.assignedCodes],
+            ["Codigos pendientes", assignmentCodeTotals.pendingCodes],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-black uppercase text-slate-500">{label}</p>
