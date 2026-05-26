@@ -170,12 +170,30 @@ export default function PickingPage() {
   const [stockByLine, setStockByLine] = useState<Record<string, number>>({});
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
+  const [selectedSourceStore, setSelectedSourceStore] = useState("all");
 
   const manager = canManagePicking(user);
 
+  const sourceStoreOptions = useMemo(() => {
+    const grouped = new Map<string, string>();
+    for (const request of requests) {
+      const key = normalize(request.source_store_code || request.source_store_name);
+      if (!key) continue;
+      grouped.set(key, request.source_store_name || request.source_store_code);
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [requests]);
+
+  const filteredRequests = useMemo(
+    () => selectedSourceStore === "all"
+      ? requests
+      : requests.filter(request => normalize(request.source_store_code || request.source_store_name) === selectedSourceStore),
+    [requests, selectedSourceStore]
+  );
+
   const selectedRequest = useMemo(
-    () => requests.find(request => request.id === selectedRequestId) || requests[0] || null,
-    [requests, selectedRequestId]
+    () => filteredRequests.find(request => request.id === selectedRequestId) || filteredRequests[0] || null,
+    [filteredRequests, selectedRequestId]
   );
 
   const visibleLines = useMemo(
@@ -213,14 +231,17 @@ export default function PickingPage() {
   );
 
   const totals = useMemo(() => {
-    const required = requests.reduce((sum, request) => sum + num(request.qty_requested_total), 0);
-    const assigned = assignments.reduce((sum, assignment) => sum + num(assignment.assigned_qty), 0);
-    const picked = assignments.reduce((sum, assignment) => sum + num(assignment.picked_qty), 0);
+    const requestIds = new Set(filteredRequests.map(request => request.id));
+    const scopedAssignments = assignments.filter(assignment => requestIds.has(assignment.request_id));
+    const required = filteredRequests.reduce((sum, request) => sum + num(request.qty_requested_total), 0);
+    const assigned = scopedAssignments.reduce((sum, assignment) => sum + num(assignment.assigned_qty), 0);
+    const picked = scopedAssignments.reduce((sum, assignment) => sum + num(assignment.picked_qty), 0);
     return { required, assigned, picked, progress: pct(picked, required) };
-  }, [assignments, requests]);
+  }, [assignments, filteredRequests]);
 
   const reportRows = useMemo(() => {
-    return lines.map(line => {
+    const requestIds = new Set(filteredRequests.map(request => request.id));
+    return lines.filter(line => requestIds.has(line.request_id)).map(line => {
       const request = requests.find(item => item.id === line.request_id);
       const lineAssignments = assignments.filter(item => item.line_id === line.id);
       const assigned = lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
@@ -236,7 +257,7 @@ export default function PickingPage() {
         pickers: lineAssignments.map(item => item.picker_name).join(", ") || "-",
       };
     });
-  }, [assignments, lines, requests, stockByLine]);
+  }, [assignments, filteredRequests, lines, requests, stockByLine]);
 
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
@@ -334,6 +355,12 @@ export default function PickingPage() {
     setAssignments((assignmentsResp.data || []) as PickingAssignment[]);
     setLoading(false);
   }, [selectedRequestId]);
+
+  useEffect(() => {
+    if (!selectedRequest || selectedRequestId === selectedRequest.id) return;
+    const timer = window.setTimeout(() => setSelectedRequestId(selectedRequest.id), 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedRequest, selectedRequestId]);
 
   useEffect(() => {
     async function loadStock() {
@@ -627,26 +654,39 @@ export default function PickingPage() {
             <p className="text-sm font-black text-slate-900">{formatSync(lastErpSync)}</p>
           </div>
           {manager && (
-            <div className="flex rounded-2xl border bg-slate-100 p-1">
-              <button
-                onClick={() => setPanel("asignacion")}
-                className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "asignacion" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs font-black uppercase text-slate-500">Tienda entrega</label>
+              <select
+                value={selectedSourceStore}
+                onChange={event => setSelectedSourceStore(event.target.value)}
+                className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
               >
-                Asignacion
-              </button>
-              <button
-                onClick={() => setPanel("reportes")}
-                className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "reportes" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
-              >
-                Reportes
-              </button>
+                <option value="all">Todas las sedes</option>
+                {sourceStoreOptions.map(option => (
+                  <option key={option.key} value={option.key}>{option.label}</option>
+                ))}
+              </select>
+              <div className="flex rounded-2xl border bg-slate-100 p-1">
+                <button
+                  onClick={() => setPanel("asignacion")}
+                  className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "asignacion" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                >
+                  Asignacion
+                </button>
+                <button
+                  onClick={() => setPanel("reportes")}
+                  className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "reportes" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                >
+                  Reportes
+                </button>
+              </div>
             </div>
           )}
         </div>
 
         <div className="grid gap-3 md:grid-cols-4">
           {[
-            ["Requerimientos", requests.length],
+            ["Requerimientos", filteredRequests.length],
             ["Codigos requeridos", totals.required],
             ["Codigos asignados", totals.assigned],
             ["Avance global", `${totals.progress}%`],
@@ -670,7 +710,7 @@ export default function PickingPage() {
                 </button>
               </div>
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
-                {requests.map(request => {
+                {filteredRequests.map(request => {
                   const requestAssignments = assignments.filter(item => item.request_id === request.id);
                   const picked = requestAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
                   const progress = pct(picked, num(request.qty_requested_total));
@@ -694,7 +734,7 @@ export default function PickingPage() {
                     </button>
                   );
                 })}
-                {requests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Aun no hay requerimientos activos sincronizados.</p>}
+                {filteredRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Aun no hay requerimientos activos para esta sede.</p>}
               </div>
             </aside>
 

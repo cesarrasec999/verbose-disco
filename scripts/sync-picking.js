@@ -75,6 +75,23 @@ function localDateTime(value) {
   return new Date(value).toLocaleString('es-PE', { hour12: false })
 }
 
+function sqlLocalDateTime(value) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(value)).reduce((acc, part) => {
+    acc[part.type] = part.value
+    return acc
+  }, {})
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`
+}
+
 function readState() {
   if (!fs.existsSync(STATE_FILE)) return null
   try {
@@ -142,8 +159,8 @@ function requestLinesQuery() {
         ir.IRFlag1 IN (2, 6)
         OR UPPER(COALESCE(flag.IRFlag1Description, '')) IN ('ABASTECIMIENTO', 'ABASTECIMIENTO URGENTE')
       )
-      AND ir.CreationDate >= @since
-      AND ir.CreationDate < @until
+      AND ir.CreationDate >= CONVERT(datetime2, @since)
+      AND ir.CreationDate < CONVERT(datetime2, @until)
   `
 }
 
@@ -205,8 +222,8 @@ async function syncOnce({ since, until }) {
   try {
     pool = await new sql.ConnectionPool(sqlConfig).connect()
     const result = await pool.request()
-      .input('since', sql.DateTime2, since)
-      .input('until', sql.DateTime2, until)
+      .input('since', sql.VarChar, sqlLocalDateTime(since))
+      .input('until', sql.VarChar, sqlLocalDateTime(until))
       .query(requestLinesQuery())
 
     const requests = mapRequests(result.recordset)
