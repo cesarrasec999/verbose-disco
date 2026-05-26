@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
+import { BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -314,6 +314,13 @@ export default function PickingPage() {
     const picked = scopedAssignments.reduce((sum, assignment) => sum + num(assignment.picked_qty), 0);
     return { required, assigned, picked, progress: pct(picked, required) };
   }, [assignments, filteredRequests]);
+
+  const assignmentCodeTotals = useMemo(() => {
+    const requestIds = new Set(filteredRequests.map(request => request.id));
+    const requiredCodes = lines.filter(line => requestIds.has(line.request_id)).length;
+    const assignedCodes = new Set(assignments.filter(assignment => requestIds.has(assignment.request_id)).map(assignment => assignment.line_id)).size;
+    return { requiredCodes, assignedCodes };
+  }, [assignments, filteredRequests, lines]);
 
   const reportRows = useMemo(() => {
     const requestIds = new Set(filteredRequests.map(request => request.id));
@@ -1118,8 +1125,8 @@ export default function PickingPage() {
         {manager && panel === "asignacion" && <div className="grid gap-3 md:grid-cols-3">
           {[
             ["Requerimientos", filteredRequests.length],
-            ["Codigos requeridos", totals.required],
-            ["Codigos asignados", totals.assigned],
+            ["Codigos requeridos", assignmentCodeTotals.requiredCodes],
+            ["Codigos asignados", assignmentCodeTotals.assignedCodes],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-black uppercase text-slate-500">{label}</p>
@@ -1181,16 +1188,13 @@ export default function PickingPage() {
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {admin && (
+                    {admin && (
+                      <div className="flex flex-wrap gap-2">
                         <button onClick={() => forceHideRequest(selectedRequest)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-black text-red-700 hover:bg-red-100">
                           Forzar eliminacion
                         </button>
-                      )}
-                      <button onClick={() => window.location.href = "/"} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
-                        <ArrowLeft size={16} />
-                      </button>
-                    </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
