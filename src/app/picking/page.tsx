@@ -890,6 +890,9 @@ export default function PickingPage() {
     setScanLocation("");
     setScanProduct("");
     setScanQty("1");
+    setAssignments(prev => prev.map(item => (
+      item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
+    )));
     setMessage("Picking registrado.");
     await loadData(user);
   }
@@ -937,6 +940,9 @@ export default function PickingPage() {
     setEditingScanId("");
     setEditScanLocation("");
     setEditScanQty("");
+    setAssignments(prev => prev.map(item => (
+      item.id === assignment.id ? { ...item, picked_qty: pickedNext, status } : item
+    )));
     setMessage("Registro actualizado.");
     await loadData(user);
   }
@@ -1401,16 +1407,16 @@ export default function PickingPage() {
           </section>
         ) : (
           <div className="mt-4 space-y-4">
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-2 flex items-center justify-between">
+            <section className="rounded-2xl border bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-black uppercase text-slate-500">Mi avance</p>
-                  <p className="text-2xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
+                  <p className="text-xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
                 </div>
-                <span className="rounded-full bg-violet-100 px-3 py-1 text-sm font-black text-violet-700">{operatorTotals.progress}%</span>
+                <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-black text-violet-700">{operatorTotals.progress}%</span>
               </div>
-              <div className="h-3 rounded-full bg-slate-100">
-                <div className="h-3 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
+              <div className="h-2 rounded-full bg-slate-100">
+                <div className="h-2 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
               </div>
             </section>
 
@@ -1426,97 +1432,95 @@ export default function PickingPage() {
                   const line = lines.find(item => item.id === assignment.line_id);
                   const request = requests.find(item => item.id === assignment.request_id);
                   const cardLocations = line ? (locationsByLine[line.id] || []) : [];
+                  const pickedQty = num(assignment.picked_qty);
+                  const assignedQty = num(assignment.assigned_qty);
+                  const pendingQty = Math.max(0, assignedQty - pickedQty);
+                  const isActive = activeAssignment?.id === assignment.id && activeAssignmentId === assignment.id;
                   return (
-                    <button
-                      key={assignment.id}
-                      onClick={() => setActiveAssignmentId(assignment.id)}
-                      className={`w-full rounded-2xl border p-4 text-left hover:border-violet-400 ${activeAssignment?.id === assignment.id ? "border-violet-600 bg-violet-50" : "bg-white"}`}
-                    >
-                      <p className="font-black">{line?.product_code || "Codigo"}</p>
-                      <p className="text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
-                      <p className="mt-1 text-xs text-slate-500">{line?.description}</p>
-                      <p className="mt-1 text-xs font-black text-slate-600">UM: {line?.unit || "-"}</p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {cardLocations.length > 0 ? cardLocations.map(location => (
-                          <span key={location} className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">{location}</span>
-                        )) : <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-black text-slate-500">Sin ubicacion con stock</span>}
-                      </div>
-                      <p className="mt-1 text-xs font-black text-slate-600">Stock actual: {formatQty(num(line ? stockByLine[line.id] : 0))}</p>
-                      <div className="mt-3 h-2 rounded-full bg-slate-100">
-                        <div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(num(assignment.picked_qty), num(assignment.assigned_qty))}%` }} />
-                      </div>
-                      <p className="mt-1 text-xs font-black text-slate-500">{num(assignment.picked_qty)} / {num(assignment.assigned_qty)}</p>
-                    </button>
+                    <div key={assignment.id} className="contents">
+                      <button
+                        onClick={() => setActiveAssignmentId(assignment.id)}
+                        className={`w-full rounded-xl border p-3 text-left transition hover:border-violet-400 ${isActive ? "border-violet-600 bg-violet-50" : "bg-white"}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-black leading-tight">{line?.product_code || "Codigo"}</p>
+                            <p className="truncate text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
+                          </div>
+                          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{line?.unit || "-"}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-500">{line?.description}</p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {cardLocations.length > 0 ? cardLocations.slice(0, 3).map(location => (
+                            <span key={location} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-black text-emerald-700">{location}</span>
+                          )) : <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-black text-slate-500">Sin ubicacion con stock</span>}
+                          {cardLocations.length > 3 && <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-black text-slate-500">+{cardLocations.length - 3}</span>}
+                        </div>
+                        <div className="mt-2 grid grid-cols-4 overflow-hidden rounded-lg border bg-slate-50 text-center text-[11px] font-black">
+                          <div className="border-r px-1 py-1">
+                            <p className="text-slate-400">Asignado</p>
+                            <p>{formatQty(assignedQty)}</p>
+                          </div>
+                          <div className="border-r px-1 py-1">
+                            <p className="text-slate-400">Picado</p>
+                            <p className="text-violet-700">{formatQty(pickedQty)}</p>
+                          </div>
+                          <div className="border-r px-1 py-1">
+                            <p className="text-slate-400">Pendiente</p>
+                            <p>{formatQty(pendingQty)}</p>
+                          </div>
+                          <div className="px-1 py-1">
+                            <p className="text-slate-400">Stock actual</p>
+                            <p>{formatQty(num(line ? stockByLine[line.id] : 0))}</p>
+                          </div>
+                        </div>
+                        <div className="mt-2 h-1.5 rounded-full bg-slate-100">
+                          <div className="h-1.5 rounded-full bg-violet-600" style={{ width: `${pct(pickedQty, assignedQty)}%` }} />
+                        </div>
+                      </button>
+                      {isActive && activeLine && (
+                        <div className="rounded-2xl border border-violet-200 bg-violet-50/60 p-3 shadow-sm md:col-span-2 xl:col-span-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-violet-100 pb-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-black uppercase text-slate-500">{activeRequest?.doc_number || activeRequest?.inv_request_no}</p>
+                              <h2 className="text-lg font-black leading-tight">{activeLine.product_code}</h2>
+                              <p className="text-xs font-semibold text-slate-500">{activeLine.description}</p>
+                              <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).join(", ") || "sin ubicacion registrada"}</p>
+                            </div>
+                            <button onClick={sendWhatsapp} className="rounded-xl border bg-white px-3 py-2 text-sm font-bold hover:bg-slate-50" title="Enviar por WhatsApp">
+                              <Send size={16} />
+                            </button>
+                          </div>
+
+                          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_120px_auto_auto]">
+                            <div className="grid grid-cols-[1fr_auto] gap-2">
+                              <input value={scanLocation} onChange={event => setScanLocation(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Escanear ubicacion" autoFocus />
+                              <button onClick={() => setScannerTarget("location")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escaner de ubicacion">
+                                <QrCode size={18} />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-[1fr_auto] gap-2">
+                              <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Escanear producto o barra" />
+                              <button onClick={() => setScannerTarget("product")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escaner de producto">
+                                <QrCode size={18} />
+                              </button>
+                            </div>
+                            <input value={scanQty} onChange={event => setScanQty(event.target.value)} className="rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
+                            <button onClick={saveScan} className="rounded-xl bg-violet-600 px-3 py-2 text-sm font-black text-white hover:bg-violet-700">
+                              <ClipboardList className="mr-1 inline" size={16} />
+                              Guardar
+                            </button>
+                            <button onClick={() => { setScanLocation(""); setScanProduct(""); setScanQty("1"); }} className="rounded-xl border bg-white px-3 py-2 text-sm font-black hover:bg-slate-50">
+                              Otra
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
                 {openOperatorAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">No tienes codigos pendientes.</p>}
               </div>
-            </section>
-
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
-              {activeAssignment && activeLine ? (
-                <>
-                  <div className="border-b pb-4">
-                    <p className="text-xs font-black uppercase text-slate-500">{activeRequest?.doc_number || activeRequest?.inv_request_no}</p>
-                    <h2 className="text-2xl font-black">{activeLine.product_code}</h2>
-                    <p className="text-sm font-semibold text-slate-500">{activeLine.description}</p>
-                    <p className="text-xs font-black text-slate-600">Unidad ERP: {activeLine.unit || "-"}</p>
-                    <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).join(", ") || "sin ubicacion registrada"}</p>
-                  </div>
-
-                  <div className="mt-4 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-2xl border bg-slate-50 p-4">
-                      <p className="text-xs font-black text-slate-500">Asignado</p>
-                      <p className="text-2xl font-black">{num(activeAssignment.assigned_qty)}</p>
-                    </div>
-                    <div className="rounded-2xl border bg-slate-50 p-4">
-                      <p className="text-xs font-black text-slate-500">Picado</p>
-                      <p className="text-2xl font-black text-violet-700">{num(activeAssignment.picked_qty)}</p>
-                    </div>
-                    <div className="rounded-2xl border bg-slate-50 p-4">
-                      <p className="text-xs font-black text-slate-500">Pendiente</p>
-                      <p className="text-2xl font-black">{Math.max(0, num(activeAssignment.assigned_qty) - num(activeAssignment.picked_qty))}</p>
-                    </div>
-                    <div className="rounded-2xl border bg-slate-50 p-4 md:col-span-3">
-                      <p className="text-xs font-black text-slate-500">Stock actual en tienda que entrega</p>
-                      <p className="text-2xl font-black">{formatQty(num(stockByLine[activeLine.id]))}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 rounded-2xl border p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <p className="font-black">Registrar picking</p>
-                      <button onClick={sendWhatsapp} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
-                        <Send size={16} />
-                      </button>
-                    </div>
-                    <div className="grid gap-3">
-                      <div className="grid grid-cols-[1fr_auto] gap-2">
-                        <input value={scanLocation} onChange={event => setScanLocation(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear ubicacion" autoFocus />
-                        <button onClick={() => setScannerTarget("location")} className="rounded-xl bg-slate-950 px-4 py-3 text-white" title="Abrir escaner de ubicacion">
-                          <QrCode size={20} />
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-[1fr_auto] gap-2">
-                        <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Escanear producto o barra" />
-                        <button onClick={() => setScannerTarget("product")} className="rounded-xl bg-slate-950 px-4 py-3 text-white" title="Abrir escaner de producto">
-                          <QrCode size={20} />
-                        </button>
-                      </div>
-                      <input value={scanQty} onChange={event => setScanQty(event.target.value)} className="rounded-xl border px-4 py-3 text-base font-bold" placeholder="Cantidad" inputMode="decimal" />
-                      <button onClick={saveScan} className="rounded-2xl bg-violet-600 px-4 py-4 text-base font-black text-white hover:bg-violet-700">
-                        <ClipboardList className="mr-2 inline" size={18} />
-                        Guardar escaneo
-                      </button>
-                      <button onClick={() => { setScanLocation(""); setScanProduct(""); setScanQty("1"); }} className="rounded-2xl border px-4 py-3 text-sm font-black hover:bg-slate-50">
-                        Agregar otra ubicacion
-                      </button>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="p-10 text-center text-sm font-bold text-slate-400">Selecciona un codigo asignado.</div>
-              )}
             </section>
 
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
