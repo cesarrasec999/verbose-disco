@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
+import { BarChart3, ClipboardList, Download, Home, Printer, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
@@ -1157,33 +1157,188 @@ export default function PickingPage() {
     await loadData(user);
   }
 
-  function downloadReport(scope: "global" | "mine") {
+  async function downloadReport(scope: "global" | "mine") {
+    const XLSX = await import("xlsx");
     const rows = (scope === "mine" ? myAssignments : assignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
       const request = requests.find(item => item.id === assignment.request_id);
-      return [
-        request?.doc_number || request?.inv_request_no || "",
-        request?.source_store_name || request?.source_store_code || "",
-        request?.destination_store_name || request?.destination_store_code || "",
-        assignment.picker_name,
-        line?.product_code || "",
-        line?.barcode || "",
-        line?.description || "",
-        assignment.assigned_qty,
-        assignment.picked_qty,
-        num(assignment.assigned_qty) - num(assignment.picked_qty),
-        assignment.status,
-      ];
+      return {
+        "REQUERIMIENTO": request?.doc_number || request?.inv_request_no || "",
+        "TIENDA ENTREGA": request?.source_store_name || request?.source_store_code || "",
+        "TIENDA REQUIERE": request?.destination_store_name || request?.destination_store_code || "",
+        "PICADOR": assignment.picker_name,
+        "N": line?.line_id ?? "",
+        "ID (CODIGO)": line?.product_code || "",
+        "BARRA": line?.barcode || "",
+        "DESCRIPCION": line?.description || "",
+        "PRES (UM)": line?.unit || "",
+        "RQ (ASIGNADO)": num(assignment.assigned_qty),
+        "PICADO": num(assignment.picked_qty),
+        "PENDIENTE": num(assignment.assigned_qty) - num(assignment.picked_qty),
+        "STOCK": num(stockByLine[assignment.line_id] ?? 0),
+        "ZONA": (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", "),
+        "ESTADO": assignment.status,
+        "FECHA ASIGNACION": assignment.created_at ? new Date(assignment.created_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : "",
+      };
     });
-    const header = ["requerimiento", "tienda_entrega", "tienda_requiere", "picador", "codigo", "barra", "descripcion", "asignado", "picado", "pendiente", "estado"];
-    const csv = [header, ...rows].map(row => row.map(csvValue).join(",")).join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `picking_${scope}_${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+
+    // Ajustar ancho de columnas
+    const colWidths = [
+      { wch: 18 }, // REQUERIMIENTO
+      { wch: 22 }, // TIENDA ENTREGA
+      { wch: 22 }, // TIENDA REQUIERE
+      { wch: 22 }, // PICADOR
+      { wch: 6 },  // N
+      { wch: 14 }, // ID
+      { wch: 14 }, // BARRA
+      { wch: 50 }, // DESCRIPCION
+      { wch: 10 }, // PRES
+      { wch: 14 }, // RQ
+      { wch: 10 }, // PICADO
+      { wch: 12 }, // PENDIENTE
+      { wch: 10 }, // STOCK
+      { wch: 20 }, // ZONA
+      { wch: 14 }, // ESTADO
+      { wch: 18 }, // FECHA
+    ];
+    ws["!cols"] = colWidths;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "PICKING");
+    const fileName = `picking_${scope}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  }
+
+  function printPickerAssignment(pickerName: string) {
+    const pickerAssignments = assignments.filter(
+      item => item.picker_name === pickerName || item.picker_id === pickers.find(p => p.full_name === pickerName)?.id
+    );
+    if (pickerAssignments.length === 0) {
+      setMessage("Este picador no tiene codigos asignados.");
+      return;
+    }
+
+    const now = new Date().toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" });
+    const requestIds = [...new Set(pickerAssignments.map(a => a.request_id))];
+    const relatedRequests = requests.filter(r => requestIds.includes(r.id));
+    const storeName = relatedRequests[0]?.source_store_name || relatedRequests[0]?.source_store_code || "Tienda";
+    const docNumbers = relatedRequests.map(r => r.doc_number || r.inv_request_no).filter(Boolean).join(", ");
+
+    const rowsHtml = pickerAssignments.map((assignment, index) => {
+      const line = lines.find(item => item.id === assignment.line_id);
+      const zona = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", ") || "-";
+      return `
+        <tr>
+          <td style="text-align:center">${index + 1}</td>
+          <td style="text-align:center">${line?.product_code || "-"}</td>
+          <td>${line?.description || "-"}</td>
+          <td style="text-align:center">${line?.unit || "-"}</td>
+          <td style="text-align:center">${num(assignment.assigned_qty)}</td>
+          <td style="text-align:center"></td>
+          <td style="text-align:center"></td>
+          <td style="text-align:center">${num(stockByLine[assignment.line_id] ?? 0)}</td>
+          <td style="text-align:center">${zona}</td>
+        </tr>`;
+    }).join("");
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Picking - ${pickerName}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; padding: 12px; }
+    .header-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+    .logo { font-size: 13px; font-weight: 900; letter-spacing: 1px; color: #4c1d95; }
+    .title { font-size: 13px; font-weight: 900; text-align: center; }
+    .version { font-size: 9px; color: #666; text-align: right; }
+    .motivo-block { text-align: right; font-size: 9px; }
+    .motivo-label { font-weight: 900; text-transform: uppercase; color: #555; }
+    .motivo-val { font-weight: 700; }
+    .info-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; padding: 4px 0; }
+    .info-item { font-size: 9px; }
+    .info-item span { font-weight: 900; text-transform: uppercase; color: #555; margin-right: 4px; }
+    .picker-badge { font-size: 12px; font-weight: 900; color: #4c1d95; border: 2px solid #4c1d95; padding: 2px 10px; border-radius: 6px; }
+    .validator { font-size: 10px; margin: 6px 0; }
+    .validator span { font-weight: 900; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    thead th { background: #1e1b4b; color: white; padding: 4px 3px; text-align: center; font-size: 9px; text-transform: uppercase; border: 1px solid #333; }
+    tbody td { border: 1px solid #ccc; padding: 3px 3px; vertical-align: middle; }
+    tbody tr:nth-child(even) { background: #f5f3ff; }
+    .td-desc { max-width: 200px; word-break: break-word; }
+    tfoot td { background: #e0e7ff; font-weight: 900; font-size: 9px; border: 1px solid #ccc; padding: 3px; text-align: center; }
+    @media print {
+      body { padding: 6px; }
+      @page { margin: 8mm; size: A4 landscape; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header-top">
+    <div class="logo">RASECORP</div>
+    <div class="title">LISTA DE PICKING - ASIGNACION</div>
+    <div>
+      <div class="motivo-block">
+        <div class="motivo-label">Motivo de requerimiento</div>
+        <div class="motivo-val">${relatedRequests[0]?.reason || "ABASTECIMIENTO"}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-row">
+    <div class="info-item"><span>Tienda:</span>${storeName}</div>
+    <div class="info-item"><span>Doc:</span>${docNumbers}</div>
+    <div class="info-item"><span>Fecha asignacion:</span>${now}</div>
+    <div class="picker-badge">PICADOR: ${pickerName}</div>
+  </div>
+
+  <div class="validator">
+    <span>VERIFICADORA:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;___________________________
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px">N</th>
+        <th style="width:70px">ID (Codigo)</th>
+        <th>Descripcion</th>
+        <th style="width:36px">PRES</th>
+        <th style="width:36px">RQ</th>
+        <th style="width:36px">PICADO</th>
+        <th style="width:46px">DIFERENCIA</th>
+        <th style="width:46px">STOCK</th>
+        <th style="width:80px">ZONA</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rowsHtml}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4">TOTAL CODIGOS: ${pickerAssignments.length}</td>
+        <td>${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+      </tr>
+    </tfoot>
+  </table>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank");
+    if (!win) {
+      setMessage("No se pudo abrir la ventana de impresion. Permite ventanas emergentes.");
+      return;
+    }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 400);
   }
 
   if (!user) {
@@ -1375,6 +1530,29 @@ export default function PickingPage() {
                       </div>
                     </details>
                   </div>
+
+                  {(() => {
+                    const requestAssignments = assignments.filter(a => a.request_id === selectedRequest?.id);
+                    const pickerNamesInRequest = [...new Set(requestAssignments.map(a => a.picker_name))].filter(Boolean).sort();
+                    if (pickerNamesInRequest.length === 0) return null;
+                    return (
+                      <div className="mt-3 rounded-2xl border bg-violet-50 p-3">
+                        <p className="mb-2 text-xs font-black uppercase text-violet-700">Imprimir asignacion por picador</p>
+                        <div className="flex flex-wrap gap-2">
+                          {pickerNamesInRequest.map(name => (
+                            <button
+                              key={name}
+                              onClick={() => printPickerAssignment(name)}
+                              className="flex items-center gap-1 rounded-xl border border-violet-300 bg-white px-3 py-2 text-xs font-black text-violet-800 hover:bg-violet-100"
+                            >
+                              <Printer size={13} />
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="mt-4 overflow-hidden rounded-2xl border">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-white p-3">
