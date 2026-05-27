@@ -1319,8 +1319,9 @@ export default function ReportesPage() {
 
         {activeTab === "ventas" && (
           <>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
               <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Venta del dia</p><p className="mt-1 text-xl font-black">{money(salesTotals.daySales)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Venta total</p><p className="mt-1 text-xl font-black">{money(salesTotals.sales)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo del dia</p><p className="mt-1 text-xl font-black">{money(salesTotals.dayCost)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen del dia</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesDayMargin)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Venta proyectada</p><p className="mt-1 text-xl font-black">{money(salesTotals.projectedSales)}</p></div>
