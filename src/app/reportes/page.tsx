@@ -1004,7 +1004,8 @@ export default function ReportesPage() {
     inventory: r2(acc.inventory + row.inventory_value),
   }), { daySales: 0, dayCost: 0, sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0 }), [salesRows]);
 
-  const salesMargin = salesTotals.sales > 0 ? ((salesTotals.sales - salesTotals.cost) / salesTotals.sales) * 100 : 0;
+  const salesDayMargin = salesTotals.daySales > 0 ? ((salesTotals.daySales - salesTotals.dayCost) / salesTotals.daySales) * 100 : 0;
+  const projectedMargin = salesTotals.projectedSales > 0 ? ((salesTotals.projectedSales - salesTotals.projectedCost) / salesTotals.projectedSales) * 100 : 0;
   const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.budget);
   const budgetCompliance = salesTotals.budget > 0 ? (salesTotals.inventory / salesTotals.budget) * 100 : 0;
   const breakTotals = useMemo(() => rotationBreakRows.reduce((acc, row) => {
@@ -1318,35 +1319,38 @@ export default function ReportesPage() {
 
         {activeTab === "ventas" && (
           <>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Venta acumulada</p><p className="mt-1 text-xl font-black">{money(salesTotals.sales)}</p></div>
-              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo de venta</p><p className="mt-1 text-xl font-black">{money(salesTotals.cost)}</p></div>
-              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesMargin)}</p></div>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Venta del dia</p><p className="mt-1 text-xl font-black">{money(salesTotals.daySales)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Costo del dia</p><p className="mt-1 text-xl font-black">{money(salesTotals.dayCost)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen del dia</p><p className="mt-1 text-xl font-black text-green-700">{percent(salesDayMargin)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Venta proyectada</p><p className="mt-1 text-xl font-black">{money(salesTotals.projectedSales)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Margen proyectado</p><p className="mt-1 text-xl font-black text-green-700">{percent(projectedMargin)}</p></div>
             </div>
             {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
-                <h2 className="font-black">Ventas totales por tienda</h2>
-                <Formula>venta neta = ventas - notas de credito. Venta proyectada = venta neta acumulada x dias habiles del mes / dias habiles transcurridos. Margen = (venta neta - costo venta) / venta neta.</Formula>
+                <h2 className="font-black">Ventas del dia por tienda</h2>
+                <Formula>venta del dia = venta neta sincronizada para la fecha seleccionada. Venta proyectada = venta neta acumulada x dias habiles del mes / dias habiles transcurridos.</Formula>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] text-sm">
+                <table className="w-full min-w-[1220px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
-                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Venta</th><th className="border p-2 text-right">Costo venta</th><th className="border p-2 text-right">Margen</th><th className="border p-2 text-right">Venta proyectada</th><th className="border p-2 text-right">Costo proyectado</th></tr>
+                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Venta dia seleccionado</th><th className="border p-2 text-right">Costo dia</th><th className="border p-2 text-right">Margen dia</th><th className="border p-2 text-right">Venta acumulada</th><th className="border p-2 text-right">Venta proyectada</th><th className="border p-2 text-right">Costo proyectado</th><th className="border p-2 text-right">Margen proyectado</th></tr>
                   </thead>
                   <tbody>
                     {salesRows.map(row => (
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
-                        <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
-                        <td className="border p-2 text-right">{money(row.cost_amount)}</td>
-                        <td className="border p-2 text-right font-black text-green-700">{percent(row.margin * 100)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.day_sales_amount)}</td>
+                        <td className="border p-2 text-right">{money(row.day_cost_amount)}</td>
+                        <td className="border p-2 text-right font-black text-green-700">{percent(row.day_sales_amount > 0 ? ((row.day_sales_amount - row.day_cost_amount) / row.day_sales_amount) * 100 : 0)}</td>
+                        <td className="border p-2 text-right">{money(row.sales_amount)}</td>
                         <td className="border p-2 text-right font-black">{money(row.projected_sales)}</td>
                         <td className="border p-2 text-right font-black">{money(row.projected_cost)}</td>
+                        <td className="border p-2 text-right font-black text-green-700">{percent(row.projected_sales > 0 ? ((row.projected_sales - row.projected_cost) / row.projected_sales) * 100 : 0)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">Actualiza para ver ventas sincronizadas.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={8} className="p-8 text-center text-slate-400">Actualiza para ver ventas sincronizadas.</td></tr>}
                   </tbody>
                 </table>
               </div>
