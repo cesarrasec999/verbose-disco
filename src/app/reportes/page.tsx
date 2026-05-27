@@ -109,6 +109,10 @@ function r2(value: number) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 }
 
+function isoDatePart(value: unknown) {
+  return String(value || "").slice(0, 10);
+}
+
 function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -850,6 +854,8 @@ export default function ReportesPage() {
       if (selectedStore && !selectedIsCdGpc) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
       const { data, error } = await query;
       if (error) throw error;
+      const loadedSalesDates = [...new Set((data || []).map(row => isoDatePart(row.sales_date)).filter(Boolean))].sort();
+      const latestLoadedSalesDate = loadedSalesDates[loadedSalesDates.length - 1] || "";
 
       const storeByKey = new Map<string, Store>();
       for (const store of calculationStores) {
@@ -867,6 +873,7 @@ export default function ReportesPage() {
           documents: 0,
         });
       }
+      let selectedDayRows = 0;
       for (const row of data || []) {
         const key = normalizeRotationStoreKey(String(row.store_key || row.store_name || ""));
         const store = storeByKey.get(key);
@@ -886,7 +893,8 @@ export default function ReportesPage() {
         current.documents += Number(row.documents || 0);
         grouped.set(groupKey, current);
 
-        if (String(row.sales_date || "") === salesEndDate) {
+        if (isoDatePart(row.sales_date) === salesEndDate) {
+          selectedDayRows += 1;
           const dayCurrent = dayGrouped.get(groupKey) || {
             store_id: store.id,
             store_name: store.name,
@@ -938,7 +946,10 @@ export default function ReportesPage() {
       const visibleRows = selectedStoreId === "all" ? rows : rows.filter(row => row.store_id === selectedStoreId);
       visibleRows.sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
       setSalesRows(visibleRows);
-      setSalesUpdatedAt(`Dias habiles: ${elapsedBusinessDays}/${totalBusinessDays}`);
+      setSalesUpdatedAt(`Fecha seleccionada: ${salesEndDate} | Filas del dia: ${selectedDayRows} | Ultima venta sincronizada: ${latestLoadedSalesDate || "sin datos"} | Dias habiles: ${elapsedBusinessDays}/${totalBusinessDays}`);
+      if (selectedDayRows === 0 && latestLoadedSalesDate && latestLoadedSalesDate < salesEndDate) {
+        setMessage(`No hay ventas sincronizadas para ${salesEndDate}. Ultima fecha disponible en ventas: ${latestLoadedSalesDate}.`);
+      }
       setProgress("");
     } catch (error: unknown) {
       setMessage("No se pudo leer ventas. Primero ejecuta el SQL y alimenta erp_store_sales_daily desde el sync del servidor. Detalle: " + (error instanceof Error ? error.message : String(error)));
