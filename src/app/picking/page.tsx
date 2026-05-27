@@ -1231,7 +1231,18 @@ export default function PickingPage() {
     const docNumbers = relatedRequests.map(r => r.doc_number || r.inv_request_no).filter(Boolean).join(", ");
     const motivo = relatedRequests[0]?.reason || "ABASTECIMIENTO";
 
-    const rowsHtml = pickerAssignments.map((assignment, index) => {
+    // Mismo orden que ve el picador en pantalla: primera ubicacion A-Z, desempate por codigo de producto A-Z
+    const sortedPickerAssignments = [...pickerAssignments].sort((a, b) => {
+      const aLoc = (locationsByLine[a.line_id] || []).map(cleanLocationLabel)[0] || "ZZZ";
+      const bLoc = (locationsByLine[b.line_id] || []).map(cleanLocationLabel)[0] || "ZZZ";
+      const cmp = aLoc.localeCompare(bLoc, "es");
+      if (cmp !== 0) return cmp;
+      const aLine = lines.find(line => line.id === a.line_id);
+      const bLine = lines.find(line => line.id === b.line_id);
+      return String(aLine?.product_code || "").localeCompare(String(bLine?.product_code || ""), "es");
+    });
+
+    const rowsHtml = sortedPickerAssignments.map((assignment, index) => {
       const line = lines.find(item => item.id === assignment.line_id);
       // Zona = primeras 2 letras de la primera ubicacion registrada
       const firstLocation = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel)[0] || "";
@@ -1312,7 +1323,7 @@ export default function PickingPage() {
     <div class="info-item"><b>Tienda que entrega (CD)</b>${tiendaEntrega}</div>
     <div class="info-item"><b>Documento</b>${docNumbers}</div>
     <div class="info-item" style="grid-column:1/2"><b>Fecha y hora de asignacion</b>${now}</div>
-    <div class="info-item" style="grid-column:2/4"><b>Total codigos asignados al picador</b>${pickerAssignments.length} codigos &nbsp;|&nbsp; ${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)} unidades</div>
+    <div class="info-item" style="grid-column:2/4"><b>Total codigos asignados al picador</b>${sortedPickerAssignments.length} codigos &nbsp;|&nbsp; ${sortedPickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)} unidades</div>
   </div>
 
   <div class="picker-verif">
@@ -1344,8 +1355,8 @@ export default function PickingPage() {
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="4" class="c">TOTAL: ${pickerAssignments.length} codigos</td>
-        <td class="c">${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
+        <td colspan="4" class="c">TOTAL: ${sortedPickerAssignments.length} codigos</td>
+        <td class="c">${sortedPickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
         <td></td>
         <td></td>
         <td></td>
