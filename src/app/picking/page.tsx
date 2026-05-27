@@ -1223,23 +1223,30 @@ export default function PickingPage() {
     const now = new Date().toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" });
     const requestIds = [...new Set(pickerAssignments.map(a => a.request_id))];
     const relatedRequests = requests.filter(r => requestIds.includes(r.id));
-    const storeName = relatedRequests[0]?.source_store_name || relatedRequests[0]?.source_store_code || "Tienda";
+
+    // Tienda que hace el requerimiento (destination = quien pide)
+    const tiendaRequiere = relatedRequests[0]?.destination_store_name || relatedRequests[0]?.destination_store_code || "Tienda";
+    // Tienda que atiende el requerimiento (source = CD-GPC que entrega)
+    const tiendaEntrega = relatedRequests[0]?.source_store_name || relatedRequests[0]?.source_store_code || "CD";
     const docNumbers = relatedRequests.map(r => r.doc_number || r.inv_request_no).filter(Boolean).join(", ");
+    const motivo = relatedRequests[0]?.reason || "ABASTECIMIENTO";
 
     const rowsHtml = pickerAssignments.map((assignment, index) => {
       const line = lines.find(item => item.id === assignment.line_id);
-      const zona = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", ") || "-";
+      // Zona = primeras 2 letras de la primera ubicacion registrada
+      const firstLocation = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel)[0] || "";
+      const zona = firstLocation ? firstLocation.substring(0, 2).toUpperCase() : "-";
       return `
         <tr>
-          <td style="text-align:center">${index + 1}</td>
-          <td style="text-align:center">${line?.product_code || "-"}</td>
-          <td>${line?.description || "-"}</td>
-          <td style="text-align:center">${line?.unit || "-"}</td>
-          <td style="text-align:center">${num(assignment.assigned_qty)}</td>
-          <td style="text-align:center"></td>
-          <td style="text-align:center"></td>
-          <td style="text-align:center">${num(stockByLine[assignment.line_id] ?? 0)}</td>
-          <td style="text-align:center">${zona}</td>
+          <td class="c">${index + 1}</td>
+          <td class="c">${line?.product_code || "-"}</td>
+          <td class="desc">${line?.description || "-"}</td>
+          <td class="c">${line?.unit || "-"}</td>
+          <td class="c">${num(assignment.assigned_qty)}</td>
+          <td class="c"></td>
+          <td class="obs"></td>
+          <td class="c">${num(stockByLine[assignment.line_id] ?? 0)}</td>
+          <td class="c">${zona}</td>
         </tr>`;
     }).join("");
 
@@ -1247,70 +1254,89 @@ export default function PickingPage() {
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
-  <title>Picking - ${pickerName}</title>
+  <title>Verificacion - ${pickerName}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, sans-serif; font-size: 10px; color: #111; padding: 12px; }
-    .header-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
-    .logo { font-size: 13px; font-weight: 900; letter-spacing: 1px; color: #4c1d95; }
-    .title { font-size: 13px; font-weight: 900; text-align: center; }
-    .version { font-size: 9px; color: #666; text-align: right; }
-    .motivo-block { text-align: right; font-size: 9px; }
-    .motivo-label { font-weight: 900; text-transform: uppercase; color: #555; }
-    .motivo-val { font-weight: 700; }
-    .info-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; padding: 4px 0; }
-    .info-item { font-size: 9px; }
-    .info-item span { font-weight: 900; text-transform: uppercase; color: #555; margin-right: 4px; }
-    .picker-badge { font-size: 12px; font-weight: 900; color: #4c1d95; border: 2px solid #4c1d95; padding: 2px 10px; border-radius: 6px; }
-    .validator { font-size: 10px; margin: 6px 0; }
-    .validator span { font-weight: 900; }
+    body { font-family: Arial, sans-serif; font-size: 9px; color: #111; padding: 10mm 10mm 8mm 10mm; }
+
+    /* ENCABEZADO */
+    .header-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-bottom: 5px; }
+    .logo { font-size: 14px; font-weight: 900; letter-spacing: 1px; color: #1e1b4b; }
+    .title { font-size: 13px; font-weight: 900; text-align: center; text-transform: uppercase; letter-spacing: 0.5px; }
+    .motivo-block { text-align: right; }
+    .motivo-label { font-size: 8px; font-weight: 900; text-transform: uppercase; color: #666; }
+    .motivo-val { font-size: 9px; font-weight: 700; }
+
+    /* LINEA INFO */
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; border-top: 1.5px solid #1e1b4b; border-bottom: 1.5px solid #1e1b4b; padding: 4px 0; margin: 5px 0; }
+    .info-item { font-size: 8.5px; }
+    .info-item b { font-weight: 900; text-transform: uppercase; color: #444; display: block; font-size: 7.5px; margin-bottom: 1px; }
+
+    /* PICADOR Y VERIFICADORA */
+    .picker-verif { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 5px 0; }
+    .picker-badge { font-size: 11px; font-weight: 900; color: #1e1b4b; border: 2px solid #1e1b4b; padding: 3px 8px; border-radius: 5px; display: inline-block; }
+    .validator-line { font-size: 9px; line-height: 2; border-bottom: 1px solid #333; padding-bottom: 1px; }
+    .validator-line b { font-weight: 900; }
+
+    /* TABLA */
     table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-    thead th { background: #1e1b4b; color: white; padding: 4px 3px; text-align: center; font-size: 9px; text-transform: uppercase; border: 1px solid #333; }
-    tbody td { border: 1px solid #ccc; padding: 3px 3px; vertical-align: middle; }
-    tbody tr:nth-child(even) { background: #f5f3ff; }
-    .td-desc { max-width: 200px; word-break: break-word; }
-    tfoot td { background: #e0e7ff; font-weight: 900; font-size: 9px; border: 1px solid #ccc; padding: 3px; text-align: center; }
+    thead th { background: #1e1b4b; color: white; padding: 4px 2px; text-align: center; font-size: 8px; text-transform: uppercase; border: 1px solid #111; }
+    thead th.left { text-align: left; padding-left: 3px; }
+    tbody td { border: 1px solid #bbb; padding: 2.5px 2px; vertical-align: middle; font-size: 8.5px; }
+    tbody td.c { text-align: center; }
+    tbody td.desc { font-size: 8px; word-break: break-word; }
+    tbody td.obs { min-height: 14px; }
+    tbody tr:nth-child(even) { background: #f0eeff; }
+    tfoot td { background: #dde4ff; font-weight: 900; font-size: 8.5px; border: 1px solid #999; padding: 3px 2px; }
+    tfoot td.c { text-align: center; }
+
     @media print {
-      body { padding: 6px; }
-      @page { margin: 8mm; size: A4 landscape; }
+      body { padding: 8mm; }
+      @page { margin: 6mm; size: A4 portrait; }
     }
   </style>
 </head>
 <body>
+
   <div class="header-top">
     <div class="logo">RASECORP</div>
-    <div class="title">LISTA DE PICKING - ASIGNACION</div>
-    <div>
-      <div class="motivo-block">
-        <div class="motivo-label">Motivo de requerimiento</div>
-        <div class="motivo-val">${relatedRequests[0]?.reason || "ABASTECIMIENTO"}</div>
-      </div>
+    <div class="title">Lista de Picking &mdash; Verificacion</div>
+    <div class="motivo-block">
+      <div class="motivo-label">Motivo de requerimiento</div>
+      <div class="motivo-val">${motivo}</div>
     </div>
   </div>
 
-  <div class="info-row">
-    <div class="info-item"><span>Tienda:</span>${storeName}</div>
-    <div class="info-item"><span>Doc:</span>${docNumbers}</div>
-    <div class="info-item"><span>Fecha asignacion:</span>${now}</div>
-    <div class="picker-badge">PICADOR: ${pickerName}</div>
+  <div class="info-grid">
+    <div class="info-item"><b>Tienda que requiere</b>${tiendaRequiere}</div>
+    <div class="info-item"><b>Tienda que entrega (CD)</b>${tiendaEntrega}</div>
+    <div class="info-item"><b>Documento</b>${docNumbers}</div>
+    <div class="info-item" style="grid-column:1/2"><b>Fecha y hora de asignacion</b>${now}</div>
+    <div class="info-item" style="grid-column:2/4"><b>Total codigos asignados al picador</b>${pickerAssignments.length} codigos &nbsp;|&nbsp; ${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)} unidades</div>
   </div>
 
-  <div class="validator">
-    <span>VERIFICADORA:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;___________________________
+  <div class="picker-verif">
+    <div>
+      <div style="font-size:7.5px;font-weight:900;text-transform:uppercase;color:#666;margin-bottom:3px;">Picador</div>
+      <div class="picker-badge">${pickerName}</div>
+    </div>
+    <div>
+      <div class="validator-line"><b>Verificadora:</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+    </div>
   </div>
 
   <table>
     <thead>
       <tr>
-        <th style="width:28px">N</th>
-        <th style="width:70px">ID (Codigo)</th>
-        <th>Descripcion</th>
-        <th style="width:36px">PRES</th>
-        <th style="width:36px">RQ</th>
+        <th style="width:22px">N</th>
+        <th style="width:62px">ID</th>
+        <th class="left">Descripcion</th>
+        <th style="width:30px">PRES</th>
+        <th style="width:32px">RQ</th>
         <th style="width:36px">PICADO</th>
-        <th style="width:46px">DIFERENCIA</th>
-        <th style="width:46px">STOCK</th>
-        <th style="width:80px">ZONA</th>
+        <th style="width:90px">OBSERVACION</th>
+        <th style="width:36px">STOCK</th>
+        <th style="width:30px">ZONA</th>
       </tr>
     </thead>
     <tbody>
@@ -1318,8 +1344,8 @@ export default function PickingPage() {
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="4">TOTAL CODIGOS: ${pickerAssignments.length}</td>
-        <td>${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
+        <td colspan="4" class="c">TOTAL: ${pickerAssignments.length} codigos</td>
+        <td class="c">${pickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
         <td></td>
         <td></td>
         <td></td>
@@ -1327,6 +1353,7 @@ export default function PickingPage() {
       </tr>
     </tfoot>
   </table>
+
 </body>
 </html>`;
 
