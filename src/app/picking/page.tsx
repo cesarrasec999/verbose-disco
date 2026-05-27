@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, ClipboardList, Download, Home, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
 
 type CyclicUser = {
   id: string;
@@ -106,6 +107,11 @@ type PickingPanel = "asignacion" | "reportes" | "registros";
 type LocationSort = "asc" | "desc";
 type ScannerTarget = "location" | "product" | null;
 
+type ScanEntry = {
+  location: string;
+  qty: string;
+};
+
 type Html5QrLike = {
   start: (
     cameraConfig: { facingMode: string },
@@ -157,6 +163,10 @@ function formatQty(value: number) {
   return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 2 }).format(value);
 }
 
+function cleanLocationLabel(value: string) {
+  return String(value || "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
 function storeLabel(request: PickingRequest | null | undefined) {
   return request?.source_store_name || request?.source_store_code || "-";
 }
@@ -201,9 +211,8 @@ export default function PickingPage() {
   const [selectedPickerId, setSelectedPickerId] = useState("");
   const [assignQty, setAssignQty] = useState("");
   const [activeAssignmentId, setActiveAssignmentId] = useState("");
-  const [scanLocation, setScanLocation] = useState("");
   const [scanProduct, setScanProduct] = useState("");
-  const [scanQty, setScanQty] = useState("1");
+  const [scanEntries, setScanEntries] = useState<ScanEntry[]>([{ location: "", qty: "1" }]);
   const [locationsByLine, setLocationsByLine] = useState<Record<string, string[]>>({});
   const [stockByLine, setStockByLine] = useState<Record<string, number>>({});
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
@@ -218,6 +227,7 @@ export default function PickingPage() {
   const [editScanLocation, setEditScanLocation] = useState("");
   const [editScanQty, setEditScanQty] = useState("");
   const [reassignPickerByAssignmentId, setReassignPickerByAssignmentId] = useState<Record<string, string>>({});
+  const [scannerLocationIndex, setScannerLocationIndex] = useState(0);
   const scannerRef = useRef<Html5QrLike | null>(null);
   const scanHandledRef = useRef(false);
   const scannerContainerId = "picking-scanner";
@@ -578,18 +588,34 @@ export default function PickingPage() {
       try {
         setScannerRunning(false);
         scanHandledRef.current = false;
-        const mod = await import("html5-qrcode");
-        const qr = new mod.Html5Qrcode(scannerContainerId) as Html5QrLike;
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+        const qr = new Html5Qrcode(scannerContainerId, {
+          verbose: false,
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,
+            Html5QrcodeSupportedFormats.CODABAR,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.ITF,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+        }) as Html5QrLike;
         scannerRef.current = qr;
         await qr.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 260, height: 260 } },
+          { fps: 10, qrbox: { width: 260, height: scannerTarget === "product" ? 180 : 260 } },
           decodedText => {
             if (scanHandledRef.current) return;
             const clean = decodedText.trim();
             if (!clean) return;
             scanHandledRef.current = true;
-            if (scannerTarget === "location") setScanLocation(clean);
+            if (scannerTarget === "location") {
+              setScanEntries(prev => prev.map((row, index) => index === scannerLocationIndex ? { ...row, location: clean } : row));
+            }
             if (scannerTarget === "product") setScanProduct(clean);
             void closeScanner();
           },
@@ -607,7 +633,7 @@ export default function PickingPage() {
       cancelled = true;
       void closeScanner();
     };
-  }, [closeScanner, scannerTarget]);
+  }, [closeScanner, scannerLocationIndex, scannerTarget]);
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -918,36 +944,74 @@ export default function PickingPage() {
     setSelectedLineIds(next);
   }
 
+  function updateScanEntry(index: number, field: keyof ScanEntry, value: string) {
+    setScanEntries(prev => prev.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+  }
+
+  function addScanEntry() {
+    setScanEntries(prev => [...prev, { location: "", qty: "" }]);
+  }
+
+  function removeScanEntry(index: number) {
+    setScanEntries(prev => prev.length <= 1 ? prev : prev.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  async function scannedCodeMatchesActiveLine(scanned: string, line: PickingLine) {
+    const raw = String(scanned || "").trim();
+    const candidates = [...new Set([
+      raw,
+      cleanCode(raw),
+      fullProductCode(raw),
+    ].filter(Boolean).map(normalize))];
+    const expected = [line.product_code, line.sku, line.barcode].filter(Boolean).map(value => normalize(value));
+    if (candidates.some(candidate => expected.includes(candidate))) return true;
+
+    try {
+      const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).not("codsap", "is", null).limit(20),
+      ]);
+      const mappedCodes = [...new Set([...(byUpc || []), ...(byAlu || [])].flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)).map(normalize))];
+      return mappedCodes.some(code => expected.includes(code));
+    } catch (error) {
+      console.warn("No se pudo validar UPC/ALU en picking:", error);
+      return false;
+    }
+  }
+
   async function saveScan() {
     if (!user || !activeAssignment || !activeLine || !activeRequest) return;
-    const qty = num(scanQty);
-    if (!scanLocation.trim() || !scanProduct.trim() || qty <= 0) {
-      setMessage("Escanea ubicacion, producto y cantidad.");
+    const rows = scanEntries
+      .map(row => ({ location: cleanLocationLabel(row.location), qtyText: row.qty.trim(), qty: num(row.qty) }))
+      .filter(row => row.location || row.qtyText);
+    if (!scanProduct.trim() || rows.length === 0 || rows.some(row => !row.location || row.qty <= 0)) {
+      setMessage("Escanea producto y completa ubicacion/cantidad en todas las lineas.");
       return;
     }
-    const pickedNext = num(activeAssignment.picked_qty) + qty;
-    const isMatch = [activeLine.product_code, activeLine.sku, activeLine.barcode].some(value => normalize(value) === normalize(scanProduct));
+    const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
+    const pickedNext = num(activeAssignment.picked_qty) + totalQty;
+    const isMatch = await scannedCodeMatchesActiveLine(scanProduct, activeLine);
     if (!isMatch) {
       setCodeMismatch({
-        expected: [activeLine.product_code, activeLine.sku, activeLine.barcode].filter(Boolean).join(" / "),
+        expected: [activeLine.product_code, activeLine.sku, activeLine.barcode, "UPC/ALU asociado"].filter(Boolean).join(" / "),
         scanned: scanProduct.trim(),
       });
       return;
     }
     const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
 
-    const { error: scanError } = await supabase.from("picking_scans").insert({
+    const { error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
       assignment_id: activeAssignment.id,
       request_id: activeRequest.id,
       line_id: activeLine.id,
       picker_id: user.id,
       picker_name: user.full_name,
-      location_code: normalize(scanLocation),
+      location_code: normalize(row.location),
       scanned_product_code: scanProduct.trim(),
       scanned_barcode: scanProduct.trim(),
-      qty,
+      qty: row.qty,
       is_match: isMatch,
-    });
+    })));
     if (scanError) {
       setMessage("No se pudo guardar el escaneo: " + scanError.message);
       return;
@@ -970,9 +1034,8 @@ export default function PickingPage() {
       return;
     }
 
-    setScanLocation("");
     setScanProduct("");
-    setScanQty("1");
+    setScanEntries([{ location: "", qty: "1" }]);
     setAssignments(prev => prev.map(item => (
       item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
@@ -1548,7 +1611,7 @@ export default function PickingPage() {
                         <p className="mt-1 line-clamp-2 text-xs text-slate-500">{line?.description}</p>
                         <div className="mt-2 flex flex-wrap gap-1">
                           {cardLocations.length > 0 ? cardLocations.map(location => (
-                            <span key={location} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-black text-emerald-700">{location.replace(/\s*\([^)]*\)\s*$/, "")}</span>
+                            <span key={location} className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-black text-emerald-700">{cleanLocationLabel(location)}</span>
                           )) : <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-black text-slate-500">Sin ubicacion con stock</span>}
                         </div>
                         <div className="mt-2 grid grid-cols-4 overflow-hidden rounded-lg border bg-slate-50 text-center text-[11px] font-black">
@@ -1581,31 +1644,60 @@ export default function PickingPage() {
                               <h2 className="text-lg font-black leading-tight">{activeLine.product_code}</h2>
                               <p className="text-xs font-semibold text-slate-500">{activeLine.description}</p>
                               <p className="text-xs font-black text-slate-700">Unidad solicitada: {activeLine.unit || "-"}</p>
-                              <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).map(location => location.replace(/\s*\([^)]*\)\s*$/, "")).join(", ") || "sin ubicacion registrada"}</p>
+                              <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).map(cleanLocationLabel).join(", ") || "sin ubicacion registrada"}</p>
                             </div>
                           </div>
 
-                          <div className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_120px_auto_auto]">
-                            <div className="grid grid-cols-[1fr_auto] gap-2">
-                              <input value={scanLocation} onChange={event => setScanLocation(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Escanear ubicacion" autoFocus />
-                              <button onClick={() => setScannerTarget("location")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escaner de ubicacion">
-                                <QrCode size={18} />
-                              </button>
-                            </div>
+                          <div className="mt-3 grid gap-2">
                             <div className="grid grid-cols-[1fr_auto] gap-2">
                               <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Escanear producto o barra" />
                               <button onClick={() => setScannerTarget("product")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escaner de producto">
                                 <QrCode size={18} />
                               </button>
                             </div>
-                            <input value={scanQty} onChange={event => setScanQty(event.target.value)} className="rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
-                            <button onClick={saveScan} className="rounded-xl bg-violet-600 px-3 py-2 text-sm font-black text-white hover:bg-violet-700">
-                              <ClipboardList className="mr-1 inline" size={16} />
-                              Guardar
-                            </button>
-                            <button onClick={() => { setScanLocation(""); setScanProduct(""); setScanQty("1"); }} className="rounded-xl border bg-white px-3 py-2 text-sm font-black hover:bg-slate-50">
-                              Otra
-                            </button>
+                            {scanEntries.map((entry, index) => {
+                              const availableLocations = [...new Set((locationsByLine[activeLine.id] || []).map(cleanLocationLabel).filter(Boolean))];
+                              return (
+                                <div key={index} className="grid gap-2 rounded-xl border bg-white p-2 md:grid-cols-[1fr_110px_auto_auto]">
+                                  <div className="grid grid-cols-[1fr_auto] gap-2">
+                                    <input
+                                      value={entry.location}
+                                      onChange={event => updateScanEntry(index, "location", event.target.value)}
+                                      list={`picking-locations-${activeLine.id}-${index}`}
+                                      className="min-w-0 rounded-xl border px-3 py-2 text-sm font-bold uppercase"
+                                      placeholder="Escanear o elegir ubicacion"
+                                      autoFocus={index === 0}
+                                    />
+                                    <button
+                                      onClick={() => { setScannerLocationIndex(index); setScannerTarget("location"); }}
+                                      className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white"
+                                      title="Abrir escaner de ubicacion"
+                                    >
+                                      <QrCode size={18} />
+                                    </button>
+                                  </div>
+                                  <input value={entry.qty} onChange={event => updateScanEntry(index, "qty", event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
+                                  <button onClick={addScanEntry} className="rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50">
+                                    Agregar ubicacion
+                                  </button>
+                                  <button onClick={() => removeScanEntry(index)} className="rounded-xl border px-3 py-2 text-sm font-black text-red-600 hover:bg-red-50" disabled={scanEntries.length === 1}>
+                                    Quitar
+                                  </button>
+                                  <datalist id={`picking-locations-${activeLine.id}-${index}`}>
+                                    {availableLocations.map(location => <option key={location} value={location} />)}
+                                  </datalist>
+                                </div>
+                              );
+                            })}
+                            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                              <button onClick={saveScan} className="rounded-xl bg-violet-600 px-3 py-3 text-sm font-black text-white hover:bg-violet-700">
+                                <ClipboardList className="mr-1 inline" size={16} />
+                                Guardar picking
+                              </button>
+                              <button onClick={() => { setScanProduct(""); setScanEntries([{ location: "", qty: "1" }]); }} className="rounded-xl border bg-white px-3 py-3 text-sm font-black hover:bg-slate-50">
+                                Limpiar
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}
