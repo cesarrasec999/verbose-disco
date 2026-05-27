@@ -98,6 +98,7 @@ type SalesReportRow = SalesDailyRow & {
   margin: number;
   projected_sales: number;
   projected_cost: number;
+  inventory_budget_cost: number;
   inventory_budget: number;
   inventory_value: number;
   inventory_vs_budget: number;
@@ -927,6 +928,7 @@ export default function ReportesPage() {
           margin,
           projected_sales: projectedSales,
           projected_cost: projectedCost,
+          inventory_budget_cost: projectedCost,
           inventory_budget: inventoryBudget,
           inventory_value: inventoryValue,
           inventory_vs_budget: r2(inventoryValue - inventoryBudget),
@@ -938,7 +940,7 @@ export default function ReportesPage() {
       const cdInventoryBudget = r2(otherRows.reduce((sum, row) => sum + row.inventory_budget, 0));
       for (const row of rows) {
         if (!isCdGpcStoreName(row.store_name)) continue;
-        row.projected_cost = cdProjectedCost;
+        row.inventory_budget_cost = cdProjectedCost;
         row.inventory_budget = cdInventoryBudget;
         row.inventory_vs_budget = r2(row.inventory_value - row.inventory_budget);
       }
@@ -990,6 +992,7 @@ export default function ReportesPage() {
       Margen: row.margin,
       VentaProyectada: row.projected_sales,
       CostoVentaProyectado: row.projected_cost,
+      CostoBasePresupuesto: row.inventory_budget_cost,
       PresupuestoInventario: row.inventory_budget,
       ValorizadoInventario: row.inventory_value,
       InventarioVsPresupuesto: row.inventory_vs_budget,
@@ -1394,7 +1397,7 @@ export default function ReportesPage() {
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                        <td className="border p-2 text-right font-black">{money(row.projected_cost)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_budget_cost)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>

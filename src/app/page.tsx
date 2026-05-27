@@ -8,6 +8,13 @@ import {
   normalizedModuleAccess,
   type ModuleAccessKey,
 } from "@/features/access/moduleAccess";
+import {
+  endSingleDeviceSession,
+  onStoredSessionExpired,
+  readStoredUser,
+  startSingleDeviceSession,
+  writeStoredUser,
+} from "@/lib/singleDeviceSession";
 
 type CyclicUser = {
   id: string;
@@ -21,6 +28,8 @@ type CyclicUser = {
   module_access?: string[] | null;
   is_active: boolean;
   whatsapp?: string | null;
+  cyclic_session_token?: string;
+  cyclic_device_id?: string;
 };
 
 type InventoryOperator = {
@@ -93,14 +102,7 @@ export default function LoginPage() {
   const [selectedModule, setSelectedModule] = useState<(typeof MODULES)[number] | null>(null);
   const [authenticatedUser, setAuthenticatedUser] = useState<CyclicUser | null>(() => {
     if (typeof window === "undefined") return null;
-    const raw = localStorage.getItem("cyclic_user");
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as CyclicUser;
-    } catch {
-      localStorage.removeItem("cyclic_user");
-      return null;
-    }
+    return readStoredUser<CyclicUser>();
   });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -160,7 +162,7 @@ export default function LoginPage() {
       setError("Tu usuario no tiene acceso a este modulo.");
       return false;
     }
-    localStorage.setItem("cyclic_user", JSON.stringify(user));
+    writeStoredUser(user);
     window.location.assign(module.destination);
     return true;
   }
@@ -328,8 +330,14 @@ export default function LoginPage() {
       return;
     }
 
-    localStorage.setItem("cyclic_user", JSON.stringify(user));
-    setAuthenticatedUser(user);
+    try {
+      const sessionUser = await startSingleDeviceSession(user);
+      setAuthenticatedUser(sessionUser);
+    } catch (sessionError) {
+      setError("No se pudo iniciar la sesion unica. Ejecuta la migracion de sesiones y vuelve a intentar. Detalle: " + (sessionError instanceof Error ? sessionError.message : String(sessionError)));
+      setLoading(false);
+      return;
+    }
     setSelectedModule(null);
     setUsername("");
     setPassword("");
@@ -352,8 +360,13 @@ export default function LoginPage() {
       return;
     }
     const updatedUser = { ...pendingUser, whatsapp: wsp };
-    localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
-    setAuthenticatedUser(updatedUser);
+    try {
+      const sessionUser = await startSingleDeviceSession(updatedUser);
+      setAuthenticatedUser(sessionUser);
+    } catch (sessionError) {
+      setModalError("Numero guardado, pero no se pudo iniciar la sesion unica. Ejecuta la migracion de sesiones. Detalle: " + (sessionError instanceof Error ? sessionError.message : String(sessionError)));
+      return;
+    }
     setSelectedModule(null);
     setModalMode(null);
     setPendingUser(null);
@@ -381,14 +394,27 @@ export default function LoginPage() {
       return;
     }
     const updatedUser = { ...pendingUser, password: newPass, whatsapp: wsp || pendingUser.whatsapp };
-    localStorage.setItem("cyclic_user", JSON.stringify(updatedUser));
-    setAuthenticatedUser(updatedUser);
+    try {
+      const sessionUser = await startSingleDeviceSession(updatedUser);
+      setAuthenticatedUser(sessionUser);
+    } catch (sessionError) {
+      setModalError("Datos actualizados, pero no se pudo iniciar la sesion unica. Ejecuta la migracion de sesiones. Detalle: " + (sessionError instanceof Error ? sessionError.message : String(sessionError)));
+      return;
+    }
     setSelectedModule(null);
     setModalMode(null);
     setPendingUser(null);
     setNewPass("");
     setConfirmPass("");
   }
+
+  useEffect(() => onStoredSessionExpired(() => {
+    setAuthenticatedUser(null);
+    setSelectedModule(null);
+    setUsername("");
+    setPassword("");
+    setError("Tu sesion fue cerrada porque se inicio en otro dispositivo.");
+  }), []);
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#07182d] px-4 py-6 text-slate-900">
@@ -520,7 +546,7 @@ export default function LoginPage() {
                 type="button"
                 className="mt-5 rounded-2xl border px-4 py-2 text-sm font-black text-slate-600 hover:bg-slate-50"
                 onClick={() => {
-                  localStorage.removeItem("cyclic_user");
+                  void endSingleDeviceSession();
                   sessionStorage.clear();
                   setAuthenticatedUser(null);
                   setSelectedModule(null);
