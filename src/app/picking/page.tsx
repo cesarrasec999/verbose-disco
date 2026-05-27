@@ -1211,40 +1211,76 @@ export default function PickingPage() {
     XLSX.writeFile(wb, fileName);
   }
 
-  function printPickerAssignment(pickerName: string) {
-    const pickerAssignments = assignments.filter(
-      item => item.picker_name === pickerName || item.picker_id === pickers.find(p => p.full_name === pickerName)?.id
-    );
-    if (pickerAssignments.length === 0) {
-      setMessage("Este picador no tiene codigos asignados.");
+  // Agrupa las asignaciones de un requerimiento por picador + lote (mismo minuto de created_at)
+  // y devuelve los lotes ordenados cronologicamente con su indice por picador
+  function buildAssignmentBatches(requestId: string) {
+    const requestAssignments = assignments.filter(a => a.request_id === requestId);
+
+    // Agrupar: clave = pickerName + minuto de created_at (ej: "PICADOR 1 CD__2026-05-27T10:32")
+    const batchMap = new Map<string, PickingAssignment[]>();
+    for (const a of requestAssignments) {
+      const minute = a.created_at ? a.created_at.slice(0, 16) : "0000-00-00T00:00";
+      const key = `${a.picker_name}__${minute}`;
+      if (!batchMap.has(key)) batchMap.set(key, []);
+      batchMap.get(key)!.push(a);
+    }
+
+    // Ordenar lotes por minuto ascendente (orden cronologico)
+    const sortedKeys = [...batchMap.keys()].sort((a, b) => {
+      const tA = a.split("__")[1] || "";
+      const tB = b.split("__")[1] || "";
+      return tA.localeCompare(tB);
+    });
+
+    // Contar cuantos lotes previos tiene cada picador para calcular el indice [1], [2]...
+    const pickerBatchCount = new Map<string, number>();
+    return sortedKeys.map(key => {
+      const pickerName = key.split("__")[0];
+      const count = (pickerBatchCount.get(pickerName) || 0) + 1;
+      pickerBatchCount.set(pickerName, count);
+      return {
+        key,
+        pickerName,
+        batchIndex: count,
+        assignedAt: batchMap.get(key)![0].created_at,
+        assignments: batchMap.get(key)!,
+      };
+    });
+  }
+
+  function printBatchAssignment(batchAssignments: PickingAssignment[], pickerName: string, batchIndex: number, batchTotal: number) {
+    if (batchAssignments.length === 0) {
+      setMessage("Este lote no tiene codigos.");
       return;
     }
 
-    const now = new Date().toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" });
-    const requestIds = [...new Set(pickerAssignments.map(a => a.request_id))];
-    const relatedRequests = requests.filter(r => requestIds.includes(r.id));
+    const assignedAt = batchAssignments[0].created_at
+      ? new Date(batchAssignments[0].created_at).toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" })
+      : new Date().toLocaleString("es-PE", { dateStyle: "long", timeStyle: "short" });
 
-    // Tienda que hace el requerimiento (destination = quien pide)
+    const requestIds = [...new Set(batchAssignments.map(a => a.request_id))];
+    const relatedRequests = requests.filter(r => requestIds.includes(r.id));
     const tiendaRequiere = relatedRequests[0]?.destination_store_name || relatedRequests[0]?.destination_store_code || "Tienda";
-    // Tienda que atiende el requerimiento (source = CD-GPC que entrega)
     const tiendaEntrega = relatedRequests[0]?.source_store_name || relatedRequests[0]?.source_store_code || "CD";
     const docNumbers = relatedRequests.map(r => r.doc_number || r.inv_request_no).filter(Boolean).join(", ");
     const motivo = relatedRequests[0]?.reason || "ABASTECIMIENTO";
 
-    // Mismo orden que ve el picador en pantalla: primera ubicacion A-Z, desempate por codigo de producto A-Z
-    const sortedPickerAssignments = [...pickerAssignments].sort((a, b) => {
+    // Mismo orden que ve el picador: primera ubicacion A-Z, desempate por codigo de producto A-Z
+    const sorted = [...batchAssignments].sort((a, b) => {
       const aLoc = (locationsByLine[a.line_id] || []).map(cleanLocationLabel)[0] || "ZZZ";
       const bLoc = (locationsByLine[b.line_id] || []).map(cleanLocationLabel)[0] || "ZZZ";
       const cmp = aLoc.localeCompare(bLoc, "es");
       if (cmp !== 0) return cmp;
-      const aLine = lines.find(line => line.id === a.line_id);
-      const bLine = lines.find(line => line.id === b.line_id);
+      const aLine = lines.find(l => l.id === a.line_id);
+      const bLine = lines.find(l => l.id === b.line_id);
       return String(aLine?.product_code || "").localeCompare(String(bLine?.product_code || ""), "es");
     });
 
-    const rowsHtml = sortedPickerAssignments.map((assignment, index) => {
+    const totalCodigos = sorted.length;
+    const totalUnidades = sorted.reduce((s, a) => s + num(a.assigned_qty), 0);
+
+    const rowsHtml = sorted.map((assignment, index) => {
       const line = lines.find(item => item.id === assignment.line_id);
-      // Zona = primeras 2 letras de la primera ubicacion registrada
       const firstLocation = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel)[0] || "";
       const zona = firstLocation ? firstLocation.substring(0, 2).toUpperCase() : "-";
       return `
@@ -1265,12 +1301,11 @@ export default function PickingPage() {
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
-  <title>Verificacion - ${pickerName}</title>
+  <title>Verificacion - ${pickerName} [${batchIndex}]</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Arial, sans-serif; font-size: 9px; color: #111; padding: 10mm 10mm 8mm 10mm; }
 
-    /* ENCABEZADO */
     .header-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-bottom: 5px; }
     .logo { font-size: 14px; font-weight: 900; letter-spacing: 1px; color: #1e1b4b; }
     .title { font-size: 13px; font-weight: 900; text-align: center; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -1278,18 +1313,17 @@ export default function PickingPage() {
     .motivo-label { font-size: 8px; font-weight: 900; text-transform: uppercase; color: #666; }
     .motivo-val { font-size: 9px; font-weight: 700; }
 
-    /* LINEA INFO */
+    .batch-badge { display: inline-block; background: #1e1b4b; color: white; font-size: 11px; font-weight: 900; padding: 2px 10px; border-radius: 4px; margin-left: 8px; letter-spacing: 0.5px; }
+
     .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; border-top: 1.5px solid #1e1b4b; border-bottom: 1.5px solid #1e1b4b; padding: 4px 0; margin: 5px 0; }
     .info-item { font-size: 8.5px; }
     .info-item b { font-weight: 900; text-transform: uppercase; color: #444; display: block; font-size: 7.5px; margin-bottom: 1px; }
 
-    /* PICADOR Y VERIFICADORA */
     .picker-verif { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 5px 0; }
     .picker-badge { font-size: 11px; font-weight: 900; color: #1e1b4b; border: 2px solid #1e1b4b; padding: 3px 8px; border-radius: 5px; display: inline-block; }
-    .validator-line { font-size: 9px; line-height: 2; border-bottom: 1px solid #333; padding-bottom: 1px; }
+    .validator-line { font-size: 9px; line-height: 2.2; border-bottom: 1px solid #333; padding-bottom: 1px; }
     .validator-line b { font-weight: 900; }
 
-    /* TABLA */
     table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     thead th { background: #1e1b4b; color: white; padding: 4px 2px; text-align: center; font-size: 8px; text-transform: uppercase; border: 1px solid #111; }
     thead th.left { text-align: left; padding-left: 3px; }
@@ -1311,7 +1345,10 @@ export default function PickingPage() {
 
   <div class="header-top">
     <div class="logo">RASECORP</div>
-    <div class="title">Lista de Picking &mdash; Verificacion</div>
+    <div style="text-align:center">
+      <span class="title">Lista de Picking &mdash; Verificacion</span>
+      <span class="batch-badge">Asignacion ${batchIndex} de ${batchTotal}</span>
+    </div>
     <div class="motivo-block">
       <div class="motivo-label">Motivo de requerimiento</div>
       <div class="motivo-val">${motivo}</div>
@@ -1322,14 +1359,14 @@ export default function PickingPage() {
     <div class="info-item"><b>Tienda que requiere</b>${tiendaRequiere}</div>
     <div class="info-item"><b>Tienda que entrega (CD)</b>${tiendaEntrega}</div>
     <div class="info-item"><b>Documento</b>${docNumbers}</div>
-    <div class="info-item" style="grid-column:1/2"><b>Fecha y hora de asignacion</b>${now}</div>
-    <div class="info-item" style="grid-column:2/4"><b>Total codigos asignados al picador</b>${sortedPickerAssignments.length} codigos &nbsp;|&nbsp; ${sortedPickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)} unidades</div>
+    <div class="info-item" style="grid-column:1/2"><b>Fecha y hora de asignacion</b>${assignedAt}</div>
+    <div class="info-item" style="grid-column:2/4"><b>Codigos en este lote</b>${totalCodigos} codigos &nbsp;|&nbsp; ${totalUnidades} unidades</div>
   </div>
 
   <div class="picker-verif">
     <div>
       <div style="font-size:7.5px;font-weight:900;text-transform:uppercase;color:#666;margin-bottom:3px;">Picador</div>
-      <div class="picker-badge">${pickerName}</div>
+      <div class="picker-badge">${pickerName} &nbsp;<span style="font-size:9px;color:#666;">[${batchIndex}/${batchTotal}]</span></div>
     </div>
     <div>
       <div class="validator-line"><b>Verificadora:</b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
@@ -1355,8 +1392,8 @@ export default function PickingPage() {
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="4" class="c">TOTAL: ${sortedPickerAssignments.length} codigos</td>
-        <td class="c">${sortedPickerAssignments.reduce((s, a) => s + num(a.assigned_qty), 0)}</td>
+        <td colspan="4" class="c">TOTAL LOTE: ${totalCodigos} codigos</td>
+        <td class="c">${totalUnidades}</td>
         <td></td>
         <td></td>
         <td></td>
@@ -1570,21 +1607,26 @@ export default function PickingPage() {
                   </div>
 
                   {(() => {
-                    const requestAssignments = assignments.filter(a => a.request_id === selectedRequest?.id);
-                    const pickerNamesInRequest = [...new Set(requestAssignments.map(a => a.picker_name))].filter(Boolean).sort();
-                    if (pickerNamesInRequest.length === 0) return null;
+                    if (!selectedRequest) return null;
+                    const batches = buildAssignmentBatches(selectedRequest.id);
+                    if (batches.length === 0) return null;
+                    // Calcular cuantos lotes totales tiene cada picador para mostrar "X de Y"
+                    const pickerTotals = new Map<string, number>();
+                    for (const b of batches) pickerTotals.set(b.pickerName, (pickerTotals.get(b.pickerName) || 0) + 1);
                     return (
                       <div className="mt-3 rounded-2xl border bg-violet-50 p-3">
-                        <p className="mb-2 text-xs font-black uppercase text-violet-700">Imprimir asignacion por picador</p>
+                        <p className="mb-2 text-xs font-black uppercase text-violet-700">Imprimir por lote de asignacion</p>
                         <div className="flex flex-wrap gap-2">
-                          {pickerNamesInRequest.map(name => (
+                          {batches.map(batch => (
                             <button
-                              key={name}
-                              onClick={() => printPickerAssignment(name)}
+                              key={batch.key}
+                              onClick={() => printBatchAssignment(batch.assignments, batch.pickerName, batch.batchIndex, pickerTotals.get(batch.pickerName) || 1)}
                               className="flex items-center gap-1 rounded-xl border border-violet-300 bg-white px-3 py-2 text-xs font-black text-violet-800 hover:bg-violet-100"
+                              title={`Asignado el ${batch.assignedAt ? new Date(batch.assignedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : "-"} · ${batch.assignments.length} codigos`}
                             >
                               <Printer size={13} />
-                              {name}
+                              <span>{batch.pickerName} [{batch.batchIndex}]</span>
+                              <span className="ml-1 rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-black text-violet-700">{batch.assignments.length}</span>
                             </button>
                           ))}
                         </div>
