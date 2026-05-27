@@ -107,6 +107,15 @@ function formatExportTime(value: string | null | undefined) {
   });
 }
 
+function errorText(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const row = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    return [row.message, row.details, row.hint, row.code ? `Codigo: ${row.code}` : ""].filter(Boolean).join(" | ");
+  }
+  return String(error);
+}
+
 export default function EtiquetadoPackingPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -181,7 +190,7 @@ export default function EtiquetadoPackingPage() {
     } catch (error: unknown) {
       setPersonnel([]);
       setSelectedPersonId("");
-      setMessage("No se pudo cargar el personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("No se pudo cargar el personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + errorText(error));
     }
   }
 
@@ -200,7 +209,7 @@ export default function EtiquetadoPackingPage() {
       if (error) throw error;
       setTasks((data || []) as PackingTask[]);
     } catch (error: unknown) {
-      const text = error instanceof Error ? error.message : String(error);
+      const text = errorText(error);
       setMessage("No se pudo cargar Etiquetado/Packing. Ejecuta supabase_etiquetado_packing.sql: " + text);
     } finally {
       setLoading(false);
@@ -253,7 +262,7 @@ async function searchProducts() {
       if (rows.length === 1) setSelectedProduct(rows[0]);
       if (rows.length === 0) setMessage("No se encontro el producto.");
     } catch (error: unknown) {
-      setMessage("Error buscando producto: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error buscando producto: " + errorText(error));
     } finally {
       setLoading(false);
     }
@@ -279,7 +288,7 @@ async function searchProducts() {
       setMessage(`${fullName} agregado al personal de ${selectedStoreName}.`);
       await loadPersonnel(storeId);
     } catch (error: unknown) {
-      setMessage("No se pudo agregar personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("No se pudo agregar personal. Ejecuta la actualizacion de Supabase para packing_personnel: " + errorText(error));
     } finally {
       setLoading(false);
     }
