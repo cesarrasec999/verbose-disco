@@ -262,16 +262,6 @@ export default function PickingPage() {
     [lines, selectedRequest?.id]
   );
 
-  const sortedVisibleLines = useMemo(() => {
-    return [...visibleLines].sort((a, b) => {
-      const aLoc = (locationsByLine[a.id] || [])[0] || "ZZZ";
-      const bLoc = (locationsByLine[b.id] || [])[0] || "ZZZ";
-      const cmp = aLoc.localeCompare(bLoc, "es");
-      if (cmp !== 0) return locationSort === "asc" ? cmp : -cmp;
-      return a.product_code.localeCompare(b.product_code, "es");
-    });
-  }, [locationSort, locationsByLine, visibleLines]);
-
   const assignmentsByLine = useMemo(() => {
     const grouped = new Map<string, PickingAssignment[]>();
     for (const assignment of assignments) {
@@ -280,6 +270,22 @@ export default function PickingPage() {
     }
     return grouped;
   }, [assignments]);
+
+  const sortedVisibleLines = useMemo(() => {
+    return [...visibleLines].sort((a, b) => {
+      const aAssigned = assignmentsByLine.get(a.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
+      const bAssigned = assignmentsByLine.get(b.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
+      const aPending = Math.max(0, num(a.qty_requested) - aAssigned);
+      const bPending = Math.max(0, num(b.qty_requested) - bAssigned);
+      if (aPending > 0 && bPending <= 0) return -1;
+      if (aPending <= 0 && bPending > 0) return 1;
+      const aLoc = (locationsByLine[a.id] || [])[0] || "ZZZ";
+      const bLoc = (locationsByLine[b.id] || [])[0] || "ZZZ";
+      const cmp = aLoc.localeCompare(bLoc, "es");
+      if (cmp !== 0) return locationSort === "asc" ? cmp : -cmp;
+      return a.product_code.localeCompare(b.product_code, "es");
+    });
+  }, [assignmentsByLine, locationSort, locationsByLine, visibleLines]);
 
   const myAssignments = useMemo(() => {
     if (!user) return [];
@@ -1093,6 +1099,64 @@ export default function PickingPage() {
     await loadData(user);
   }
 
+  async function deleteScan(scan: PickingScan) {
+    if (!user) return;
+    const canDelete = manager || scan.picker_id === user.id || normalize(scan.picker_name) === normalize(user.full_name);
+    if (!canDelete) {
+      setMessage("No puedes eliminar un registro de otro picador.");
+      return;
+    }
+    const confirmed = window.confirm(`Eliminar registro de ${scan.location_code} por ${formatQty(num(scan.qty))}? Se actualizara el avance del codigo.`);
+    if (!confirmed) return;
+
+    const assignment = assignments.find(item => item.id === scan.assignment_id);
+    if (!assignment) {
+      setMessage("No se encontro la asignacion del registro.");
+      return;
+    }
+
+    let deleteQuery = supabase.from("picking_scans").delete().eq("id", scan.id);
+    if (!manager) deleteQuery = deleteQuery.eq("picker_id", user.id);
+    const { error: deleteError } = await deleteQuery;
+    if (deleteError) {
+      setMessage("No se pudo eliminar el registro: " + deleteError.message);
+      return;
+    }
+
+    const { data: remainingRows, error: remainingError } = await supabase
+      .from("picking_scans")
+      .select("qty")
+      .eq("assignment_id", assignment.id);
+    if (remainingError) {
+      setMessage("Registro eliminado, pero no se pudo recalcular avance: " + remainingError.message);
+      return;
+    }
+
+    const pickedNext = ((remainingRows || []) as Array<{ qty: number | string | null }>).reduce((sum, row) => sum + num(row.qty), 0);
+    const status = pickedNext <= 0 ? "pendiente" : pickedNext >= num(assignment.assigned_qty) ? "completado" : "en_proceso";
+    const { error: assignmentError } = await supabase
+      .from("picking_assignments")
+      .update({
+        picked_qty: pickedNext,
+        status,
+        updated_at: new Date().toISOString(),
+        completed_at: status === "completado" ? new Date().toISOString() : null,
+      })
+      .eq("id", assignment.id);
+    if (assignmentError) {
+      setMessage("Registro eliminado, pero no se actualizo avance: " + assignmentError.message);
+      return;
+    }
+
+    setScans(prev => prev.filter(item => item.id !== scan.id));
+    setAssignments(prev => prev.map(item => (
+      item.id === assignment.id ? { ...item, picked_qty: pickedNext, status } : item
+    )));
+    if (editingScanId === scan.id) setEditingScanId("");
+    setMessage("Registro eliminado.");
+    await loadData(user);
+  }
+
   function downloadReport(scope: "global" | "mine") {
     const rows = (scope === "mine" ? myAssignments : assignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
@@ -1543,6 +1607,7 @@ export default function PickingPage() {
                     <th className="p-3 text-left">Ubicacion</th>
                     <th className="p-3 text-right">Cantidad</th>
                     <th className="p-3 text-left">Escaneado</th>
+                    <th className="p-3 text-right">Accion</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1557,9 +1622,14 @@ export default function PickingPage() {
                       <td className="p-3 font-black">{scan.location_code}</td>
                       <td className="p-3 text-right font-black">{formatQty(num(scan.qty))}</td>
                       <td className={`p-3 text-xs font-black ${scan.is_match ? "text-emerald-700" : "text-red-600"}`}>{scan.scanned_product_code || scan.scanned_barcode || "-"}</td>
+                      <td className="p-3 text-right">
+                        <button onClick={() => deleteScan(scan)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50">
+                          Eliminar
+                        </button>
+                      </td>
                     </tr>
                   ))}
-                  {scanRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Aun no hay registros de picadores.</td></tr>}
+                  {scanRows.length === 0 && <tr><td colSpan={10} className="p-8 text-center text-sm font-bold text-slate-400">Aun no hay registros de picadores.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1710,7 +1780,7 @@ export default function PickingPage() {
 
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Mis registros</h2>
-              <p className="text-xs font-bold text-slate-500">Puedes editar ubicacion y cantidad. No se eliminan registros.</p>
+              <p className="text-xs font-bold text-slate-500">Puedes editar o eliminar registros. Se pedira confirmacion antes de eliminar.</p>
               <div className="mt-3 space-y-2">
                 {operatorScanRows.map(({ scan, line }) => (
                   <div key={scan.id} className="rounded-2xl border p-3">
@@ -1720,7 +1790,10 @@ export default function PickingPage() {
                         <p className="text-xs font-bold text-slate-500">{line?.description}</p>
                         <p className="text-xs font-black text-slate-600">{dateText(scan.created_at)}</p>
                       </div>
-                      <button onClick={() => startEditScan(scan)} className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50">Editar</button>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={() => startEditScan(scan)} className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50">Editar</button>
+                        <button onClick={() => deleteScan(scan)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50">Eliminar</button>
+                      </div>
                     </div>
                     {editingScanId === scan.id ? (
                       <div className="mt-3 grid gap-2 md:grid-cols-[1fr_120px_auto_auto]">
