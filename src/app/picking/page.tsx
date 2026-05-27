@@ -475,7 +475,7 @@ export default function PickingPage() {
     setRequests(requestRows);
     setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
     if (!selectedRequestId && requestRows[0]) setSelectedRequestId(requestRows[0].id);
-    setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => canAccessModule(item, "picking")));
+    setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => item.role === "Operario" && canAccessModule(item, "picking")));
     setStores((storesResp.data || []) as StoreRow[]);
 
     if (requestRows.length === 0) {
