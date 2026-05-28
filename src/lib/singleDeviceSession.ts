@@ -12,6 +12,8 @@ type SessionUser = {
   cyclic_device_id?: string;
 };
 
+const ACTIVE_SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
+
 function randomToken() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -30,7 +32,16 @@ export function readStoredUser<T extends SessionUser = SessionUser>(): T | null 
 }
 
 export function writeStoredUser<T extends SessionUser>(user: T) {
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  const current = readStoredUser<SessionUser>();
+  const shouldPreserveSession = current?.id === user.id;
+  const nextUser = shouldPreserveSession
+    ? {
+        ...user,
+        cyclic_session_token: user.cyclic_session_token || current.cyclic_session_token,
+        cyclic_device_id: user.cyclic_device_id || current.cyclic_device_id,
+      }
+    : user;
+  localStorage.setItem(USER_KEY, JSON.stringify(nextUser));
 }
 
 export function clearStoredUser() {
@@ -44,8 +55,15 @@ export function onStoredSessionExpired(handler: () => void) {
 }
 
 export async function startSingleDeviceSession<T extends SessionUser>(user: T): Promise<T> {
-  const token = randomToken();
   const deviceId = getOrCreateDeviceId();
+  const { data: existing } = await supabase
+    .from("cyclic_user_sessions")
+    .select("session_token,device_id,last_seen_at")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const lastSeenMs = existing?.last_seen_at ? new Date(existing.last_seen_at).getTime() : 0;
+  const sameActiveDevice = existing?.device_id === deviceId && Date.now() - lastSeenMs < ACTIVE_SESSION_GRACE_MS;
+  const token = sameActiveDevice && existing?.session_token ? existing.session_token : randomToken();
   const nextUser = { ...user, cyclic_session_token: token, cyclic_device_id: deviceId };
 
   const { error } = await supabase.from("cyclic_user_sessions").upsert({
@@ -61,15 +79,18 @@ export async function startSingleDeviceSession<T extends SessionUser>(user: T): 
 }
 
 export async function touchSingleDeviceSession(user = readStoredUser()) {
-  if (!user?.id || !user.cyclic_session_token) return true;
+  if (!user?.id) return true;
+  if (!user.cyclic_session_token) return false;
   const { data, error } = await supabase
     .from("cyclic_user_sessions")
-    .select("session_token")
+    .select("session_token,device_id")
     .eq("user_id", user.id)
     .maybeSingle();
   if (error) return true;
 
-  const isCurrent = data?.session_token === user.cyclic_session_token;
+  const isCurrent =
+    data?.session_token === user.cyclic_session_token &&
+    (!user.cyclic_device_id || !data.device_id || data.device_id === user.cyclic_device_id);
   if (!isCurrent) return false;
 
   await supabase

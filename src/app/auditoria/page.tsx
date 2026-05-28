@@ -8,6 +8,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
+import { writeStoredUser } from "@/lib/singleDeviceSession";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -302,7 +303,7 @@ export default function AuditoriaPage() {
         return;
       }
       setUser(currentUser);
-      localStorage.setItem("cyclic_user", JSON.stringify(currentUser));
+      writeStoredUser(currentUser);
       void loadSessions(currentUser);
       const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
       if (savedSessionId) void loadSavedSession(savedSessionId, currentUser);

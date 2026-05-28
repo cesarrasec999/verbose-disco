@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
+import { writeStoredUser } from "@/lib/singleDeviceSession";
 import * as XLSX from "xlsx";
 import { BarChart3, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
@@ -291,7 +292,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 const { data } = await supabase.from("cyclic_users").select("*").eq("id", parsed.id).maybeSingle();
                 const u = (data || parsed) as CyclicUser;
                 if (!u.is_active) { localStorage.removeItem("cyclic_user"); window.location.replace("/"); return; }
-                localStorage.setItem("cyclic_user", JSON.stringify(u));
+                writeStoredUser(u);
                 setUser(u);
 
                 const savedTab = forcedTab || (sessionStorage.getItem("cyclic_active_tab") as TabKey | null);

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
-import { supabase } from "@/lib/supabase/client";
+import { useEffect, useRef } from "react";
 import { clearStoredUser, readStoredUser, touchSingleDeviceSession } from "@/lib/singleDeviceSession";
+
+const CHECK_INTERVAL_MS = 60000;
 
 function expireCurrentBrowserSession() {
   clearStoredUser();
@@ -10,38 +11,41 @@ function expireCurrentBrowserSession() {
 }
 
 export default function SingleDeviceSessionGuard() {
+  const verifyingRef = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
-    const user = readStoredUser();
-    if (!user?.id) return;
-    if (!user.cyclic_session_token) {
-      expireCurrentBrowserSession();
-      return;
-    }
 
     async function verify() {
-      const isCurrent = await touchSingleDeviceSession(user);
+      const user = readStoredUser();
+      if (!user?.id) return;
+      if (verifyingRef.current) return;
+      verifyingRef.current = true;
+      let isCurrent = true;
+      try {
+        isCurrent = await touchSingleDeviceSession(user);
+      } catch {
+        isCurrent = true;
+      } finally {
+        verifyingRef.current = false;
+      }
       if (!cancelled && !isCurrent) expireCurrentBrowserSession();
     }
 
     void verify();
-    const timer = window.setInterval(() => void verify(), 15000);
-    const channel = supabase
-      .channel(`single-device-session-${user.id}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "cyclic_user_sessions", filter: `user_id=eq.${user.id}` },
-        payload => {
-          const nextToken = (payload.new as { session_token?: string } | null)?.session_token;
-          if (nextToken && nextToken !== user.cyclic_session_token) expireCurrentBrowserSession();
-        }
-      )
-      .subscribe();
+    const timer = window.setInterval(() => void verify(), CHECK_INTERVAL_MS);
+    const onFocus = () => void verify();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void verify();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
-      void supabase.removeChannel(channel);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
