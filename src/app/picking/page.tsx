@@ -103,7 +103,7 @@ type LocationRow = {
   stored_quantity?: number | string | null;
 };
 
-type PickingPanel = "asignacion" | "reportes" | "registros";
+type PickingPanel = "asignacion" | "reportes" | "registros" | "productividad";
 type LocationSort = "asc" | "desc";
 type ScannerTarget = "location" | "product" | null;
 
@@ -202,6 +202,35 @@ function DonutCard({ title, done, total, detail }: { title: string; done: number
   );
 }
 
+function BarListCard({ title, rows, colorClass }: { title: string; rows: Array<{ label: string; value: number }>; colorClass: string }) {
+  const max = Math.max(...rows.map(row => row.value), 0);
+  return (
+    <div className="rounded-2xl border bg-white p-4 shadow-sm">
+      <div className="mb-3 flex items-center gap-2">
+        <BarChart3 size={18} />
+        <h2 className="font-black">{title}</h2>
+      </div>
+      <div className="space-y-3">
+        {rows.map(row => {
+          const width = max > 0 ? Math.max(3, Math.round((row.value / max) * 100)) : 0;
+          return (
+            <div key={row.label}>
+              <div className="mb-1 flex justify-between gap-3 text-xs font-black text-slate-500">
+                <span className="truncate">{row.label}</span>
+                <span>{formatQty(row.value)}</span>
+              </div>
+              <div className="h-3 rounded-full bg-slate-100">
+                <div className={`h-3 rounded-full ${colorClass}`} style={{ width: `${width}%` }} />
+              </div>
+            </div>
+          );
+        })}
+        {rows.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">Sin datos para mostrar.</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function PickingPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -223,6 +252,9 @@ export default function PickingPage() {
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
   const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
+  const [selectedReportPicker, setSelectedReportPicker] = useState("all");
+  const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
+  const [selectedRegistryRequesterStore, setSelectedRegistryRequesterStore] = useState("all");
   const [assignmentDate, setAssignmentDate] = useState("");
   const [reportDate, setReportDate] = useState("");
   const [registryDate, setRegistryDate] = useState("");
@@ -289,13 +321,13 @@ export default function PickingPage() {
     return next;
   }, [pickers]);
 
-  function assignmentPickerName(assignment: PickingAssignment) {
+  const assignmentPickerName = useCallback((assignment: PickingAssignment) => {
     return assignment.picker_id ? pickerNameById.get(assignment.picker_id) || assignment.picker_name : assignment.picker_name;
-  }
+  }, [pickerNameById]);
 
-  function scanPickerName(scan: PickingScan) {
+  const scanPickerName = useCallback((scan: PickingScan) => {
     return scan.picker_id ? pickerNameById.get(scan.picker_id) || scan.picker_name || "-" : scan.picker_name || "-";
-  }
+  }, [pickerNameById]);
 
   const selectedLineAssignments = useMemo(
     () => assignments.filter(assignment => selectedLineIds.has(assignment.line_id)),
@@ -385,8 +417,23 @@ export default function PickingPage() {
 
   const reportAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
-    return assignments.filter(assignment => requestIds.has(assignment.request_id) && sameDate(assignment.created_at, reportDate));
-  }, [assignments, reportDate, sourceFilteredRequests]);
+    return assignments.filter(assignment => {
+      if (!requestIds.has(assignment.request_id) || !sameDate(assignment.created_at, reportDate)) return false;
+      return selectedReportPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedReportPicker;
+    });
+  }, [assignments, reportDate, selectedReportPicker, sourceFilteredRequests]);
+
+  const reportPickerOptions = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const grouped = new Map<string, string>();
+    for (const assignment of assignments) {
+      if (!requestIds.has(assignment.request_id) || !sameDate(assignment.created_at, reportDate)) continue;
+      const key = normalize(assignment.picker_id || assignment.picker_name);
+      if (!key) continue;
+      grouped.set(key, assignmentPickerName(assignment));
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [assignmentPickerName, assignments, reportDate, sourceFilteredRequests]);
 
   const reportScansByAssignment = useMemo(() => {
     const assignmentIds = new Set(reportAssignments.map(assignment => assignment.id));
@@ -411,12 +458,12 @@ export default function PickingPage() {
         assigned,
         picked,
         diffRequired: picked - assigned,
-        diffStock: picked - num(stockByLine[line.id]),
+        diffStock: num(stockByLine[line.id]) - picked,
         stock: num(stockByLine[line.id]),
         pickers: lineAssignments.map(assignmentPickerName).join(", ") || "-",
       };
     });
-  }, [lines, pickerNameById, reportAssignments, reportScansByAssignment, requests, stockByLine]);
+  }, [assignmentPickerName, lines, reportAssignments, reportScansByAssignment, requests, stockByLine]);
 
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
@@ -458,7 +505,7 @@ export default function PickingPage() {
       grouped.set(label, current);
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
-  }, [pickerNameById, reportAssignments, reportScansByAssignment]);
+  }, [assignmentPickerName, reportAssignments, reportScansByAssignment]);
 
   const reportTotals = useMemo(() => {
     const required = reportRows.reduce((sum, row) => sum + row.assigned, 0);
@@ -480,7 +527,7 @@ export default function PickingPage() {
     };
   }, [reportRows, selectedReportRequest]);
 
-  const scanRows = useMemo(() => {
+  const allScanRows = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
     return scans.filter(scan => requestIds.has(scan.request_id) && sameDate(scan.created_at, registryDate)).map(scan => {
       const line = lines.find(item => item.id === scan.line_id);
@@ -488,6 +535,65 @@ export default function PickingPage() {
       return { scan, line, request };
     });
   }, [lines, registryDate, requests, scans, sourceFilteredRequests]);
+
+  const registryPickerOptions = useMemo(() => {
+    const grouped = new Map<string, string>();
+    for (const row of allScanRows) {
+      const key = normalize(row.scan.picker_id || row.scan.picker_name);
+      if (!key) continue;
+      grouped.set(key, scanPickerName(row.scan));
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [allScanRows, scanPickerName]);
+
+  const registryRequesterStoreOptions = useMemo(() => {
+    const grouped = new Map<string, string>();
+    for (const row of allScanRows) {
+      const key = requesterStoreKey(row.request);
+      if (!key) continue;
+      grouped.set(key, requesterStoreLabel(row.request));
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [allScanRows]);
+
+  const scanRows = useMemo(() => {
+    return allScanRows.filter(row => {
+      const pickerKey = normalize(row.scan.picker_id || row.scan.picker_name);
+      const requesterKey = requesterStoreKey(row.request);
+      if (selectedRegistryPicker !== "all" && pickerKey !== selectedRegistryPicker) return false;
+      if (selectedRegistryRequesterStore !== "all" && requesterKey !== selectedRegistryRequesterStore) return false;
+      return true;
+    });
+  }, [allScanRows, selectedRegistryPicker, selectedRegistryRequesterStore]);
+
+  const productivityRows = useMemo(() => {
+    const grouped = new Map<string, { label: string; codes: Set<string>; units: number; locations: Set<string> }>();
+    for (const row of allScanRows) {
+      const key = normalize(row.scan.picker_id || row.scan.picker_name) || scanPickerName(row.scan);
+      const current = grouped.get(key) || { label: scanPickerName(row.scan), codes: new Set<string>(), units: 0, locations: new Set<string>() };
+      if (row.scan.line_id) current.codes.add(row.scan.line_id);
+      current.units += num(row.scan.qty);
+      const location = normalize(row.scan.location_code);
+      if (location) current.locations.add(location);
+      grouped.set(key, current);
+    }
+    return [...grouped.values()].sort((a, b) => b.units - a.units);
+  }, [allScanRows, scanPickerName]);
+
+  const productivityByCodes = useMemo(
+    () => productivityRows.map(row => ({ label: row.label, value: row.codes.size })).sort((a, b) => b.value - a.value),
+    [productivityRows]
+  );
+
+  const productivityByUnits = useMemo(
+    () => productivityRows.map(row => ({ label: row.label, value: row.units })).sort((a, b) => b.value - a.value),
+    [productivityRows]
+  );
+
+  const productivityByLocations = useMemo(
+    () => productivityRows.map(row => ({ label: row.label, value: row.locations.size })).sort((a, b) => b.value - a.value),
+    [productivityRows]
+  );
 
   const operatorTotals = useMemo(() => {
     const assigned = filteredMyAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
@@ -501,12 +607,12 @@ export default function PickingPage() {
   );
 
   const operatorScanRows = useMemo(
-    () => scanRows.filter(row => {
+    () => allScanRows.filter(row => {
       const isMine = row.scan.picker_id === user?.id || normalize(row.scan.picker_name) === normalize(user?.full_name);
       if (!isMine) return false;
       return selectedRequesterStore === "all" || requesterStoreKey(row.request) === selectedRequesterStore;
     }),
-    [scanRows, selectedRequesterStore, user]
+    [allScanRows, selectedRequesterStore, user]
   );
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
@@ -615,6 +721,27 @@ export default function PickingPage() {
     const timer = window.setTimeout(() => setSelectedRequesterStore("all"), 0);
     return () => window.clearTimeout(timer);
   }, [requesterStoreOptions, selectedRequesterStore]);
+
+  useEffect(() => {
+    if (selectedReportPicker === "all") return;
+    if (reportPickerOptions.some(option => option.key === selectedReportPicker)) return;
+    const timer = window.setTimeout(() => setSelectedReportPicker("all"), 0);
+    return () => window.clearTimeout(timer);
+  }, [reportPickerOptions, selectedReportPicker]);
+
+  useEffect(() => {
+    if (selectedRegistryPicker === "all") return;
+    if (registryPickerOptions.some(option => option.key === selectedRegistryPicker)) return;
+    const timer = window.setTimeout(() => setSelectedRegistryPicker("all"), 0);
+    return () => window.clearTimeout(timer);
+  }, [registryPickerOptions, selectedRegistryPicker]);
+
+  useEffect(() => {
+    if (selectedRegistryRequesterStore === "all") return;
+    if (registryRequesterStoreOptions.some(option => option.key === selectedRegistryRequesterStore)) return;
+    const timer = window.setTimeout(() => setSelectedRegistryRequesterStore("all"), 0);
+    return () => window.clearTimeout(timer);
+  }, [registryRequesterStoreOptions, selectedRegistryRequesterStore]);
 
   useEffect(() => {
     async function loadStock() {
@@ -1601,6 +1728,12 @@ export default function PickingPage() {
                 >
                   Registros
                 </button>
+                <button
+                  onClick={() => setPanel("productividad")}
+                  className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "productividad" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                >
+                  Productividad
+                </button>
               </div>
             </div>
           )}
@@ -1896,11 +2029,24 @@ export default function PickingPage() {
               <div className="flex flex-wrap items-center justify-between gap-2 border-b p-4">
                 <div>
                   <h2 className="font-black">Diferencias por codigo</h2>
-                  <p className="text-xs font-bold text-slate-500">Picado vs solicitado y picado vs stock actual de la tienda que entrega.</p>
+                  <p className="text-xs font-bold text-slate-500">Picado vs solicitado y stock restante despues de lo picado.</p>
                 </div>
-                <button onClick={() => downloadReport("global")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
-                  <Download size={16} />
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-black uppercase text-slate-500">Picador</label>
+                  <select
+                    value={selectedReportPicker}
+                    onChange={event => setSelectedReportPicker(event.target.value)}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  >
+                    <option value="all">Todos los picadores</option>
+                    {reportPickerOptions.map(option => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                  <button onClick={() => downloadReport("global")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                    <Download size={16} />
+                  </button>
+                </div>
               </div>
               <div className="max-h-[460px] overflow-auto">
                 <table className="w-full text-sm">
@@ -1931,7 +2077,7 @@ export default function PickingPage() {
                         <td className="p-3 text-right font-black text-violet-700">{formatQty(row.picked)}</td>
                         <td className="p-3 text-right font-black">{formatQty(row.stock)}</td>
                         <td className={`p-3 text-right font-black ${row.diffRequired < 0 ? "text-red-600" : row.diffRequired > 0 ? "text-blue-700" : "text-emerald-700"}`}>{formatQty(row.diffRequired)}</td>
-                        <td className={`p-3 text-right font-black ${row.diffStock > 0 ? "text-red-600" : "text-slate-700"}`}>{formatQty(row.diffStock)}</td>
+                        <td className={`p-3 text-right font-black ${row.diffStock < 0 ? "text-red-600" : "text-slate-700"}`}>{formatQty(row.diffStock)}</td>
                       </tr>
                     ))}
                     {reportRows.filter(row => row.request?.id === selectedReportRequest.id).length === 0 && <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias para mostrar.</td></tr>}
@@ -1942,9 +2088,35 @@ export default function PickingPage() {
           </section>
         ) : manager && panel === "registros" ? (
           <section className="mt-4 overflow-hidden rounded-2xl border bg-white shadow-sm">
-            <div className="border-b p-4">
-              <h2 className="font-black">Registros de picadores</h2>
-              <p className="text-xs font-bold text-slate-500">Hora, picador, codigo solicitado, unidad ERP, ubicacion escaneada y cantidad registrada.</p>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
+              <div>
+                <h2 className="font-black">Registros de picadores</h2>
+                <p className="text-xs font-bold text-slate-500">Hora, picador, codigo solicitado, unidad ERP, ubicacion escaneada y cantidad registrada.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs font-black uppercase text-slate-500">Picador</label>
+                <select
+                  value={selectedRegistryPicker}
+                  onChange={event => setSelectedRegistryPicker(event.target.value)}
+                  className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                >
+                  <option value="all">Todos los picadores</option>
+                  {registryPickerOptions.map(option => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
+                <label className="text-xs font-black uppercase text-slate-500">Tienda solicitante</label>
+                <select
+                  value={selectedRegistryRequesterStore}
+                  onChange={event => setSelectedRegistryRequesterStore(event.target.value)}
+                  className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                >
+                  <option value="all">Todas las tiendas</option>
+                  {registryRequesterStoreOptions.map(option => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="max-h-[68vh] overflow-auto">
               <table className="w-full text-sm">
@@ -1952,6 +2124,7 @@ export default function PickingPage() {
                   <tr>
                     <th className="p-3 text-left">Hora</th>
                     <th className="p-3 text-left">Picador</th>
+                    <th className="p-3 text-left">Tienda solicitante</th>
                     <th className="p-3 text-left">Requerimiento</th>
                     <th className="p-3 text-left">Codigo</th>
                     <th className="p-3 text-left">Descripcion</th>
@@ -1967,6 +2140,7 @@ export default function PickingPage() {
                     <tr key={scan.id} className="border-t">
                       <td className="p-3 text-xs font-bold text-slate-500">{dateText(scan.created_at)}</td>
                       <td className="p-3 font-bold">{scanPickerName(scan)}</td>
+                      <td className="p-3 text-xs font-bold text-slate-500">{requesterStoreLabel(request)}</td>
                       <td className="p-3 font-bold">{request?.doc_number || request?.inv_request_no || "-"}</td>
                       <td className="p-3 font-black">{line?.product_code || "-"}</td>
                       <td className="p-3 text-xs font-bold text-slate-500">{line?.description || "-"}</td>
@@ -1981,9 +2155,21 @@ export default function PickingPage() {
                       </td>
                     </tr>
                   ))}
-                  {scanRows.length === 0 && <tr><td colSpan={10} className="p-8 text-center text-sm font-bold text-slate-400">Aun no hay registros de picadores.</td></tr>}
+                  {scanRows.length === 0 && <tr><td colSpan={11} className="p-8 text-center text-sm font-bold text-slate-400">Aun no hay registros de picadores.</td></tr>}
                 </tbody>
               </table>
+            </div>
+          </section>
+        ) : manager && panel === "productividad" ? (
+          <section className="mt-4 space-y-4">
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <h2 className="font-black">Productividad</h2>
+              <p className="text-xs font-bold text-slate-500">Resumen por picador segun los registros del filtro de tienda entrega y fecha.</p>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-3">
+              <BarListCard title="Codigos registrados" rows={productivityByCodes} colorClass="bg-violet-600" />
+              <BarListCard title="Unidades registradas" rows={productivityByUnits} colorClass="bg-emerald-600" />
+              <BarListCard title="Ubicaciones registradas" rows={productivityByLocations} colorClass="bg-cyan-600" />
             </div>
           </section>
         ) : (
