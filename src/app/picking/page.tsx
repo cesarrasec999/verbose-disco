@@ -283,6 +283,20 @@ export default function PickingPage() {
     return grouped;
   }, [assignments]);
 
+  const pickerNameById = useMemo(() => {
+    const next = new Map<string, string>();
+    for (const picker of pickers) next.set(picker.id, picker.full_name);
+    return next;
+  }, [pickers]);
+
+  function assignmentPickerName(assignment: PickingAssignment) {
+    return assignment.picker_id ? pickerNameById.get(assignment.picker_id) || assignment.picker_name : assignment.picker_name;
+  }
+
+  function scanPickerName(scan: PickingScan) {
+    return scan.picker_id ? pickerNameById.get(scan.picker_id) || scan.picker_name || "-" : scan.picker_name || "-";
+  }
+
   const selectedLineAssignments = useMemo(
     () => assignments.filter(assignment => selectedLineIds.has(assignment.line_id)),
     [assignments, selectedLineIds]
@@ -374,25 +388,35 @@ export default function PickingPage() {
     return assignments.filter(assignment => requestIds.has(assignment.request_id) && sameDate(assignment.created_at, reportDate));
   }, [assignments, reportDate, sourceFilteredRequests]);
 
+  const reportScansByAssignment = useMemo(() => {
+    const assignmentIds = new Set(reportAssignments.map(assignment => assignment.id));
+    const grouped = new Map<string, number>();
+    for (const scan of scans) {
+      if (!assignmentIds.has(scan.assignment_id) || !sameDate(scan.created_at, reportDate)) continue;
+      grouped.set(scan.assignment_id, (grouped.get(scan.assignment_id) || 0) + num(scan.qty));
+    }
+    return grouped;
+  }, [reportAssignments, reportDate, scans]);
+
   const reportRows = useMemo(() => {
     const lineIds = new Set(reportAssignments.map(assignment => assignment.line_id));
     return lines.filter(line => lineIds.has(line.id)).map(line => {
       const request = requests.find(item => item.id === line.request_id);
       const lineAssignments = reportAssignments.filter(item => item.line_id === line.id);
       const assigned = lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
-      const picked = lineAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
+      const picked = lineAssignments.reduce((sum, item) => sum + (reportScansByAssignment.get(item.id) || 0), 0);
       return {
         line,
         request,
         assigned,
         picked,
-        diffRequired: picked - num(line.qty_requested),
+        diffRequired: picked - assigned,
         diffStock: picked - num(stockByLine[line.id]),
         stock: num(stockByLine[line.id]),
-        pickers: lineAssignments.map(item => item.picker_name).join(", ") || "-",
+        pickers: lineAssignments.map(assignmentPickerName).join(", ") || "-",
       };
     });
-  }, [lines, reportAssignments, requests, stockByLine]);
+  }, [lines, pickerNameById, reportAssignments, reportScansByAssignment, requests, stockByLine]);
 
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
@@ -427,13 +451,14 @@ export default function PickingPage() {
     const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
     for (const assignment of reportAssignments) {
-      const current = grouped.get(assignment.picker_name) || { label: assignment.picker_name, total: 0, done: 0 };
+      const label = assignmentPickerName(assignment);
+      const current = grouped.get(label) || { label, total: 0, done: 0 };
       current.total += num(assignment.assigned_qty);
-      current.done += num(assignment.picked_qty);
-      grouped.set(assignment.picker_name, current);
+      current.done += reportScansByAssignment.get(assignment.id) || 0;
+      grouped.set(label, current);
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
-  }, [reportAssignments]);
+  }, [pickerNameById, reportAssignments, reportScansByAssignment]);
 
   const reportTotals = useMemo(() => {
     const required = reportRows.reduce((sum, row) => sum + row.assigned, 0);
@@ -1222,22 +1247,25 @@ export default function PickingPage() {
     const scopedGlobalAssignments = panel === "reportes"
       ? reportAssignments
       : assignments.filter(assignment => assignmentRequestIds.has(assignment.request_id));
-    const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
+      const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
       const request = requests.find(item => item.id === assignment.request_id);
+      const pickedForScope = scope === "global" && panel === "reportes"
+        ? reportScansByAssignment.get(assignment.id) || 0
+        : num(assignment.picked_qty);
       return {
         "REQUERIMIENTO": request?.doc_number || request?.inv_request_no || "",
         "TIENDA ENTREGA": request?.source_store_name || request?.source_store_code || "",
         "TIENDA REQUIERE": request?.destination_store_name || request?.destination_store_code || "",
-        "PICADOR": assignment.picker_name,
+        "PICADOR": assignmentPickerName(assignment),
         "N": line?.line_id ?? "",
         "ID (CODIGO)": line?.product_code || "",
         "BARRA": line?.barcode || "",
         "DESCRIPCION": line?.description || "",
         "PRES (UM)": line?.unit || "",
         "RQ (ASIGNADO)": num(assignment.assigned_qty),
-        "PICADO": num(assignment.picked_qty),
-        "PENDIENTE": num(assignment.assigned_qty) - num(assignment.picked_qty),
+        "PICADO": pickedForScope,
+        "PENDIENTE": num(assignment.assigned_qty) - pickedForScope,
         "STOCK": num(stockByLine[assignment.line_id] ?? 0),
         "ZONA": (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", "),
         "ESTADO": assignment.status,
@@ -1769,7 +1797,7 @@ export default function PickingPage() {
                                 <div className="space-y-2">
                                   {lineAssignments.map(item => (
                                     <div key={item.id} className="rounded-xl bg-slate-100 p-2">
-                                      <p className="text-xs font-bold text-slate-700">{item.picker_name}: {num(item.picked_qty)}/{num(item.assigned_qty)}</p>
+                                      <p className="text-xs font-bold text-slate-700">{assignmentPickerName(item)}: {num(item.picked_qty)}/{num(item.assigned_qty)}</p>
                                     </div>
                                   ))}
                                 </div>
@@ -1938,7 +1966,7 @@ export default function PickingPage() {
                   {scanRows.map(({ scan, line, request }) => (
                     <tr key={scan.id} className="border-t">
                       <td className="p-3 text-xs font-bold text-slate-500">{dateText(scan.created_at)}</td>
-                      <td className="p-3 font-bold">{scan.picker_name || "-"}</td>
+                      <td className="p-3 font-bold">{scanPickerName(scan)}</td>
                       <td className="p-3 font-bold">{request?.doc_number || request?.inv_request_no || "-"}</td>
                       <td className="p-3 font-black">{line?.product_code || "-"}</td>
                       <td className="p-3 text-xs font-bold text-slate-500">{line?.description || "-"}</td>
