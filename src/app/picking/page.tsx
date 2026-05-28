@@ -487,30 +487,53 @@ export default function PickingPage() {
     }
 
     const requestIds = requestRows.map(request => request.id);
-    const assignmentQuery = supabase
-      .from("picking_assignments")
-      .select("*")
-      .in("request_id", requestIds)
-      .neq("status", "cancelado")
-      .order("created_at", { ascending: false });
 
-    const [linesResp, assignmentsResp, scansResp] = await Promise.all([
-      supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id"),
+    // Trae TODAS las filas paginando de 1000 en 1000 para evitar el limite de Supabase
+    async function fetchAll<T>(buildQuery: (from: number, to: number) => Promise<{ data: T[] | null; error: unknown }>): Promise<T[]> {
+      const PAGE = 1000;
+      let all: T[] = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await buildQuery(from, from + PAGE - 1);
+        if (error) break;
+        const rows = data || [];
+        all = all.concat(rows);
+        if (rows.length < PAGE) break;
+        from += PAGE;
+      }
+      return all;
+    }
+
+    const [allLines, allAssignments, scansResp] = await Promise.all([
+      // Lineas: paginar para traer los 219+ codigos sin corte
+      fetchAll<PickingLine>((from, to) =>
+        supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+      ),
+      // Asignaciones: paginar tambien para no perder lotes
+      fetchAll<PickingAssignment>((from, to) => {
+        const base = supabase
+          .from("picking_assignments")
+          .select("*")
+          .in("request_id", requestIds)
+          .neq("status", "cancelado")
+          .order("created_at", { ascending: false })
+          .range(from, to);
+        const q = currentUserCanManage
+          ? base
+          : base.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`);
+        return q as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>;
+      }),
+      // Scans: limite generoso, no requiere paginacion completa
       currentUserCanManage
-        ? assignmentQuery
-        : assignmentQuery.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`),
-      currentUserCanManage
-        ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(500)
-        : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(200),
+        ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000)
+        : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500),
     ]);
 
-    if (linesResp.error) setMessage("No pude leer lineas de picking: " + linesResp.error.message);
-    if (assignmentsResp.error) setMessage("No pude leer asignaciones: " + assignmentsResp.error.message);
-    if ("error" in scansResp && scansResp.error) setMessage("No pude leer registros: " + scansResp.error.message);
+    if ("error" in scansResp && scansResp.error) setMessage("No pude leer registros: " + (scansResp.error as { message: string }).message);
 
-    setLines((linesResp.data || []) as PickingLine[]);
-    setAssignments((assignmentsResp.data || []) as PickingAssignment[]);
-    setScans((scansResp.data || []) as PickingScan[]);
+    setLines(allLines);
+    setAssignments(allAssignments);
+    setScans(("data" in scansResp ? scansResp.data || [] : []) as PickingScan[]);
     setLoading(false);
   }, [selectedRequestId]);
 
