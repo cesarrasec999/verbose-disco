@@ -146,12 +146,14 @@ function dateText(value: string | null) {
   return new Date(value).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
 }
 
-function normalize(value: string | null | undefined) {
-  return String(value || "").trim().toUpperCase();
+function sameDate(value: string | null | undefined, date: string) {
+  if (!date) return true;
+  if (!value) return false;
+  return String(value).slice(0, 10) === date;
 }
 
-function csvValue(value: unknown) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+function normalize(value: string | null | undefined) {
+  return String(value || "").trim().toUpperCase();
 }
 
 function formatSync(value: string | null) {
@@ -211,9 +213,7 @@ export default function PickingPage() {
   const [pickers, setPickers] = useState<CyclicUser[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
-  const [selectedLineId, setSelectedLineId] = useState("");
   const [selectedPickerId, setSelectedPickerId] = useState("");
-  const [assignQty, setAssignQty] = useState("");
   const [activeAssignmentId, setActiveAssignmentId] = useState("");
   const [scanProduct, setScanProduct] = useState("");
   const [scanEntries, setScanEntries] = useState<ScanEntry[]>([{ location: "", qty: "1" }]);
@@ -223,6 +223,9 @@ export default function PickingPage() {
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
   const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
+  const [assignmentDate, setAssignmentDate] = useState("");
+  const [reportDate, setReportDate] = useState("");
+  const [registryDate, setRegistryDate] = useState("");
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
   const [locationSort, setLocationSort] = useState<LocationSort>("asc");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -231,7 +234,6 @@ export default function PickingPage() {
   const [editingScanId, setEditingScanId] = useState("");
   const [editScanLocation, setEditScanLocation] = useState("");
   const [editScanQty, setEditScanQty] = useState("");
-  const [reassignPickerByAssignmentId, setReassignPickerByAssignmentId] = useState<Record<string, string>>({});
   const [scannerLocationIndex, setScannerLocationIndex] = useState(0);
   const scannerRef = useRef<Html5QrLike | null>(null);
   const scanHandledRef = useRef(false);
@@ -250,11 +252,16 @@ export default function PickingPage() {
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
   }, [requests]);
 
-  const filteredRequests = useMemo(
+  const sourceFilteredRequests = useMemo(
     () => selectedSourceStore === "all"
       ? requests
       : requests.filter(request => normalize(request.source_store_code || request.source_store_name) === selectedSourceStore),
     [requests, selectedSourceStore]
+  );
+
+  const filteredRequests = useMemo(
+    () => sourceFilteredRequests.filter(request => sameDate(request.creation_date, assignmentDate)),
+    [assignmentDate, sourceFilteredRequests]
   );
 
   const selectedRequest = useMemo(
@@ -275,6 +282,11 @@ export default function PickingPage() {
     }
     return grouped;
   }, [assignments]);
+
+  const selectedLineAssignments = useMemo(
+    () => assignments.filter(assignment => selectedLineIds.has(assignment.line_id)),
+    [assignments, selectedLineIds]
+  );
 
   const sortedVisibleLines = useMemo(() => {
     return [...visibleLines].sort((a, b) => {
@@ -344,15 +356,6 @@ export default function PickingPage() {
     [activeAssignment?.request_id, requests]
   );
 
-  const totals = useMemo(() => {
-    const requestIds = new Set(filteredRequests.map(request => request.id));
-    const scopedAssignments = assignments.filter(assignment => requestIds.has(assignment.request_id));
-    const required = filteredRequests.reduce((sum, request) => sum + num(request.qty_requested_total), 0);
-    const assigned = scopedAssignments.reduce((sum, assignment) => sum + num(assignment.assigned_qty), 0);
-    const picked = scopedAssignments.reduce((sum, assignment) => sum + num(assignment.picked_qty), 0);
-    return { required, assigned, picked, progress: pct(picked, required) };
-  }, [assignments, filteredRequests]);
-
   const assignmentCodeTotals = useMemo(() => {
     const requestIds = new Set(filteredRequests.map(request => request.id));
     const requiredCodes = lines.filter(line => requestIds.has(line.request_id)).length;
@@ -366,11 +369,16 @@ export default function PickingPage() {
     return { requiredCodes, assignedCodes, pendingCodes: Math.max(0, requiredCodes - assignedCodes), assignedRequests };
   }, [assignments, filteredRequests, lines]);
 
+  const reportAssignments = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    return assignments.filter(assignment => requestIds.has(assignment.request_id) && sameDate(assignment.created_at, reportDate));
+  }, [assignments, reportDate, sourceFilteredRequests]);
+
   const reportRows = useMemo(() => {
-    const requestIds = new Set(filteredRequests.map(request => request.id));
-    return lines.filter(line => requestIds.has(line.request_id)).map(line => {
+    const lineIds = new Set(reportAssignments.map(assignment => assignment.line_id));
+    return lines.filter(line => lineIds.has(line.id)).map(line => {
       const request = requests.find(item => item.id === line.request_id);
-      const lineAssignments = assignments.filter(item => item.line_id === line.id);
+      const lineAssignments = reportAssignments.filter(item => item.line_id === line.id);
       const assigned = lineAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
       const picked = lineAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
       return {
@@ -384,14 +392,14 @@ export default function PickingPage() {
         pickers: lineAssignments.map(item => item.picker_name).join(", ") || "-",
       };
     });
-  }, [assignments, filteredRequests, lines, requests, stockByLine]);
+  }, [lines, reportAssignments, requests, stockByLine]);
 
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
     for (const row of reportRows) {
       const label = requesterStoreLabel(row.request);
       const current = grouped.get(label) || { label, total: 0, done: 0 };
-      current.total += num(row.line.qty_requested);
+      current.total += row.assigned;
       current.done += row.picked;
       grouped.set(label, current);
     }
@@ -399,12 +407,12 @@ export default function PickingPage() {
   }, [reportRows]);
 
   const reportRequests = useMemo(() => {
-    return filteredRequests
+    return sourceFilteredRequests
       .map(request => {
         const rows = reportRows.filter(row => row.request?.id === request.id);
-        const total = rows.reduce((sum, row) => sum + num(row.line.qty_requested), 0);
+        const total = rows.reduce((sum, row) => sum + row.assigned, 0);
         const done = rows.reduce((sum, row) => sum + row.picked, 0);
-        const assigned = assignments.filter(item => item.request_id === request.id).reduce((sum, item) => sum + num(item.assigned_qty), 0);
+        const assigned = reportAssignments.filter(item => item.request_id === request.id).reduce((sum, item) => sum + num(item.assigned_qty), 0);
         const status = done >= total && total > 0 ? "Completado" : assigned > 0 ? "En proceso" : "Pendiente";
         return { request, total, done, assigned, status };
       })
@@ -414,40 +422,47 @@ export default function PickingPage() {
         if (a.status !== "En proceso" && b.status === "En proceso") return 1;
         return (b.request.creation_date || "").localeCompare(a.request.creation_date || "");
       });
-  }, [assignments, filteredRequests, reportRows]);
+  }, [reportAssignments, reportRows, sourceFilteredRequests]);
 
     const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
-    for (const assignment of assignments) {
+    for (const assignment of reportAssignments) {
       const current = grouped.get(assignment.picker_name) || { label: assignment.picker_name, total: 0, done: 0 };
       current.total += num(assignment.assigned_qty);
       current.done += num(assignment.picked_qty);
       grouped.set(assignment.picker_name, current);
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
-  }, [assignments]);
+  }, [reportAssignments]);
 
-  const selectedRequestReport = useMemo(() => {
-    if (!selectedRequest) return { total: 0, done: 0 };
-    const rows = reportRows.filter(row => row.request?.id === selectedRequest.id);
-    return {
-      total: rows.reduce((sum, row) => sum + num(row.line.qty_requested), 0),
-      done: rows.reduce((sum, row) => sum + row.picked, 0),
-    };
-  }, [reportRows, selectedRequest]);
+  const reportTotals = useMemo(() => {
+    const required = reportRows.reduce((sum, row) => sum + row.assigned, 0);
+    const picked = reportRows.reduce((sum, row) => sum + row.picked, 0);
+    return { required, picked, progress: pct(picked, required) };
+  }, [reportRows]);
 
   const selectedReportRequest = useMemo(
-    () => reportRequests.find(row => row.request.id === selectedRequest?.id)?.request || null,
-    [reportRequests, selectedRequest?.id]
+    () => reportRequests.find(row => row.request.id === selectedRequestId)?.request || reportRequests[0]?.request || null,
+    [reportRequests, selectedRequestId]
   );
 
+  const selectedRequestReport = useMemo(() => {
+    if (!selectedReportRequest) return { total: 0, done: 0 };
+    const rows = reportRows.filter(row => row.request?.id === selectedReportRequest.id);
+    return {
+      total: rows.reduce((sum, row) => sum + row.assigned, 0),
+      done: rows.reduce((sum, row) => sum + row.picked, 0),
+    };
+  }, [reportRows, selectedReportRequest]);
+
   const scanRows = useMemo(() => {
-    return scans.map(scan => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    return scans.filter(scan => requestIds.has(scan.request_id) && sameDate(scan.created_at, registryDate)).map(scan => {
       const line = lines.find(item => item.id === scan.line_id);
       const request = requests.find(item => item.id === scan.request_id);
       return { scan, line, request };
     });
-  }, [lines, requests, scans]);
+  }, [lines, registryDate, requests, scans, sourceFilteredRequests]);
 
   const operatorTotals = useMemo(() => {
     const assigned = filteredMyAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
@@ -838,43 +853,6 @@ export default function PickingPage() {
     return () => window.clearTimeout(timer);
   }, [visibleLines]);
 
-  async function assignPicker() {
-    if (!user || !selectedRequest || !selectedLineId || !selectedPickerId) {
-      setMessage("Selecciona requerimiento, codigo y picador.");
-      return;
-    }
-    const line = lines.find(item => item.id === selectedLineId);
-    const picker = pickers.find(item => item.id === selectedPickerId);
-    const qty = num(assignQty);
-    if (!line || !picker || qty <= 0) {
-      setMessage("Ingresa una cantidad valida para asignar.");
-      return;
-    }
-    const alreadyAssigned = assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
-    if (alreadyAssigned + qty > num(line.qty_requested)) {
-      setMessage("La asignacion supera la cantidad requerida.");
-      return;
-    }
-
-    const { error } = await supabase.from("picking_assignments").insert({
-      request_id: selectedRequest.id,
-      line_id: line.id,
-      picker_id: picker.id,
-      picker_name: picker.full_name,
-      assigned_qty: qty,
-      status: "pendiente",
-      created_by: user.id,
-      created_by_name: user.full_name,
-    });
-    if (error) {
-      setMessage("No se pudo asignar: " + error.message);
-      return;
-    }
-    setAssignQty("");
-    setMessage("Asignacion registrada.");
-    await loadData(user);
-  }
-
   async function assignSelectedLines() {
     if (!user || !selectedRequest || !selectedPickerId) {
       setMessage("Selecciona picador y codigos.");
@@ -918,16 +896,18 @@ export default function PickingPage() {
     await loadData(user);
   }
 
-  async function reassignAssignment(assignmentId: string) {
+  async function reassignSelectedAssignments() {
     if (!manager || !user) return;
-    const assignment = assignments.find(item => item.id === assignmentId);
-    const picker = pickers.find(item => item.id === reassignPickerByAssignmentId[assignmentId]);
-    if (!assignment || !picker) {
+    const picker = pickers.find(item => item.id === selectedPickerId);
+    if (!picker) {
       setMessage("Selecciona el nuevo picador.");
       return;
     }
-    if (assignment.picker_id === picker.id || normalize(assignment.picker_name) === normalize(picker.full_name)) {
-      setMessage("Ese codigo ya esta asignado a ese picador.");
+    const rows = selectedLineAssignments.filter(assignment => (
+      assignment.picker_id !== picker.id && normalize(assignment.picker_name) !== normalize(picker.full_name)
+    ));
+    if (rows.length === 0) {
+      setMessage("Selecciona codigos con asignaciones de otro picador.");
       return;
     }
 
@@ -938,22 +918,45 @@ export default function PickingPage() {
         picker_name: picker.full_name,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", assignment.id);
+      .in("id", rows.map(assignment => assignment.id));
 
     if (error) {
-      setMessage("No se pudo reasignar: " + error.message);
+      setMessage("No se pudo reasignar seleccionados: " + error.message);
       return;
     }
 
+    const rowIds = new Set(rows.map(assignment => assignment.id));
     setAssignments(prev => prev.map(item => (
-      item.id === assignment.id ? { ...item, picker_id: picker.id, picker_name: picker.full_name } : item
+      rowIds.has(item.id) ? { ...item, picker_id: picker.id, picker_name: picker.full_name } : item
     )));
-    setReassignPickerByAssignmentId(prev => {
-      const next = { ...prev };
-      delete next[assignment.id];
-      return next;
-    });
-    setMessage(`Codigo reasignado a ${picker.full_name}.`);
+    setMessage(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} reasignada${rows.length !== 1 ? "s" : ""} a ${picker.full_name}.`);
+    await loadData(user);
+  }
+
+  async function removeSelectedAssignments() {
+    if (!manager || !user) return;
+    const rows = selectedLineAssignments;
+    if (rows.length === 0) {
+      setMessage("Selecciona codigos con asignaciones para quitar.");
+      return;
+    }
+    const pickedRows = rows.filter(assignment => num(assignment.picked_qty) > 0);
+    if (pickedRows.length > 0) {
+      const confirmed = window.confirm(`Hay ${pickedRows.length} asignacion${pickedRows.length !== 1 ? "es" : ""} con picking registrado. Al quitar asignacion tambien se eliminaran esos registros. ¿Continuar?`);
+      if (!confirmed) return;
+    }
+
+    const ids = rows.map(assignment => assignment.id);
+    const { error } = await supabase.from("picking_assignments").delete().in("id", ids);
+    if (error) {
+      setMessage("No se pudo quitar la asignacion: " + error.message);
+      return;
+    }
+
+    const idSet = new Set(ids);
+    setAssignments(prev => prev.filter(item => !idSet.has(item.id)));
+    setScans(prev => prev.filter(item => !idSet.has(item.assignment_id)));
+    setMessage(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} quitada${rows.length !== 1 ? "s" : ""}. Los codigos vuelven a quedar disponibles.`);
     await loadData(user);
   }
 
@@ -1215,7 +1218,11 @@ export default function PickingPage() {
 
   async function downloadReport(scope: "global" | "mine") {
     const XLSX = await import("xlsx");
-    const rows = (scope === "mine" ? filteredMyAssignments : assignments).map(assignment => {
+    const assignmentRequestIds = new Set(filteredRequests.map(request => request.id));
+    const scopedGlobalAssignments = panel === "reportes"
+      ? reportAssignments
+      : assignments.filter(assignment => assignmentRequestIds.has(assignment.request_id));
+    const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
       const request = requests.find(item => item.id === assignment.request_id);
       return {
@@ -1522,6 +1529,31 @@ export default function PickingPage() {
                   <option key={option.key} value={option.key}>{option.label}</option>
                 ))}
               </select>
+              <label className="text-xs font-black uppercase text-slate-500">
+                {panel === "asignacion" ? "Creacion" : panel === "reportes" ? "Asignacion" : "Registro"}
+              </label>
+              <input
+                type="date"
+                value={panel === "asignacion" ? assignmentDate : panel === "reportes" ? reportDate : registryDate}
+                onChange={event => {
+                  if (panel === "asignacion") setAssignmentDate(event.target.value);
+                  else if (panel === "reportes") setReportDate(event.target.value);
+                  else setRegistryDate(event.target.value);
+                }}
+                className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+              />
+              {(panel === "asignacion" ? assignmentDate : panel === "reportes" ? reportDate : registryDate) && (
+                <button
+                  onClick={() => {
+                    if (panel === "asignacion") setAssignmentDate("");
+                    else if (panel === "reportes") setReportDate("");
+                    else setRegistryDate("");
+                  }}
+                  className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                >
+                  Limpiar fecha
+                </button>
+              )}
               <div className="flex rounded-2xl border bg-slate-100 p-1">
                 <button
                   onClick={() => setPanel("asignacion")}
@@ -1635,31 +1667,22 @@ export default function PickingPage() {
                         <button onClick={() => setSelectedLineIds(new Set())} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Limpiar</button>
                       </div>
                     </div>
-                    <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                    <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto_auto]">
                       <select value={selectedPickerId} onChange={event => setSelectedPickerId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
                         <option value="">Picador</option>
                         {pickers.map(picker => <option key={picker.id} value={picker.id}>{picker.full_name}</option>)}
                       </select>
+                      <button onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
+                        Reasignar seleccionados ({selectedLineAssignments.length})
+                      </button>
+                      <button onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50">
+                        Quitar asignacion ({selectedLineAssignments.length})
+                      </button>
                       <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
                         <UserPlus size={16} />
                         <span className="ml-2">Asignar seleccionados ({selectedLineIds.size})</span>
                       </button>
                     </div>
-                    <details className="mt-3">
-                      <summary className="cursor-pointer text-xs font-black text-slate-500">Asignar codigo puntual</summary>
-                      <div className="mt-2 grid gap-2 md:grid-cols-[1fr_140px_auto]">
-                        <select value={selectedLineId} onChange={event => setSelectedLineId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
-                          <option value="">Codigo</option>
-                          {sortedVisibleLines.map(line => (
-                            <option key={line.id} value={line.id}>{line.product_code} - Pend. {Math.max(0, num(line.qty_requested) - (assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0))}</option>
-                          ))}
-                        </select>
-                        <input value={assignQty} onChange={event => setAssignQty(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
-                        <button onClick={assignPicker} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
-                          Asignar puntual
-                        </button>
-                      </div>
-                    </details>
                   </div>
 
                   {(() => {
@@ -1747,19 +1770,6 @@ export default function PickingPage() {
                                   {lineAssignments.map(item => (
                                     <div key={item.id} className="rounded-xl bg-slate-100 p-2">
                                       <p className="text-xs font-bold text-slate-700">{item.picker_name}: {num(item.picked_qty)}/{num(item.assigned_qty)}</p>
-                                      <div className="mt-1 grid gap-1 sm:grid-cols-[1fr_auto]">
-                                        <select
-                                          value={reassignPickerByAssignmentId[item.id] || ""}
-                                          onChange={event => setReassignPickerByAssignmentId(prev => ({ ...prev, [item.id]: event.target.value }))}
-                                          className="min-w-0 rounded-lg border bg-white px-2 py-1 text-xs font-bold"
-                                        >
-                                          <option value="">Reasignar a...</option>
-                                          {pickers.map(picker => <option key={picker.id} value={picker.id}>{picker.full_name}</option>)}
-                                        </select>
-                                        <button onClick={() => reassignAssignment(item.id)} className="rounded-lg bg-slate-950 px-2 py-1 text-xs font-black text-white">
-                                          Reasignar
-                                        </button>
-                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -1779,12 +1789,12 @@ export default function PickingPage() {
         ) : manager && panel === "reportes" ? (
           <section className="mt-4 space-y-4">
             <div className="grid gap-3 md:grid-cols-2">
-              <DonutCard title="Global" done={totals.picked} total={totals.required} detail="Picado vs solicitado total" />
+              <DonutCard title="Global" done={reportTotals.picked} total={reportTotals.required} detail="Picado vs asignado en el filtro" />
               <DonutCard
                 title="Requerimiento seleccionado"
                 done={selectedRequestReport.done}
                 total={selectedRequestReport.total}
-                detail={selectedRequest?.doc_number || selectedRequest?.inv_request_no || "Sin seleccion"}
+                detail={selectedReportRequest?.doc_number || selectedReportRequest?.inv_request_no || "Sin seleccion"}
               />
             </div>
 
