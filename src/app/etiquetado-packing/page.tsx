@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, Home, RefreshCw, Save, Search, Tags, UserPlus } from "lucide-react";
+import { Check, Download, Edit2, Home, RefreshCw, Save, Search, Tags, UserPlus, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 
@@ -133,6 +133,11 @@ export default function EtiquetadoPackingPage() {
   const [statusFilter, setStatusFilter] = useState<"todos" | "pendiente" | "hecho" | "cancelado">("todos");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState("");
+  const [editCode, setEditCode] = useState("");
+  const [editQuantity, setEditQuantity] = useState("1");
+  const [editActionType, setEditActionType] = useState<"etiquetar" | "armar">("etiquetar");
+  const [editPersonId, setEditPersonId] = useState("");
 
   const selectedStoreName = useMemo(
     () => stores.find(store => store.id === storeId)?.name || "Sin tienda",
@@ -187,6 +192,7 @@ export default function EtiquetadoPackingPage() {
       const rows = (data || []) as PackingPerson[];
       setPersonnel(rows);
       setSelectedPersonId(current => rows.some(person => person.id === current) ? current : "");
+      setEditPersonId(current => rows.some(person => person.id === current) ? current : "");
     } catch (error: unknown) {
       setPersonnel([]);
       setSelectedPersonId("");
@@ -204,7 +210,8 @@ export default function EtiquetadoPackingPage() {
         .order("created_at", { ascending: false })
         .limit(500);
       if (nextStoreId) queryBuilder = queryBuilder.eq("store_id", nextStoreId);
-      if (statusFilter !== "todos") queryBuilder = queryBuilder.eq("status", statusFilter);
+      if (statusFilter === "todos") queryBuilder = queryBuilder.neq("status", "cancelado");
+      else queryBuilder = queryBuilder.eq("status", statusFilter);
       const { data, error } = await queryBuilder;
       if (error) throw error;
       setTasks((data || []) as PackingTask[]);
@@ -214,6 +221,40 @@ export default function EtiquetadoPackingPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function findProductByCode(code: string) {
+    const clean = fullProductCode(code);
+    if (!clean) return null;
+
+    const { data: directRows, error: directError } = await supabase
+      .from("cyclic_products")
+      .select("id,sku,description,unit")
+      .eq("is_active", true)
+      .eq("sku", clean)
+      .limit(1);
+    if (directError) throw directError;
+    const directProduct = ((directRows || []) as Product[])[0];
+    if (directProduct) return directProduct;
+
+    const { data: barcodeRows, error: barcodeError } = await supabase
+      .from("codigos_barra")
+      .select("codsap,upc,alu")
+      .or(`upc.eq.${clean},alu.eq.${clean}`)
+      .limit(1);
+    if (barcodeError) throw barcodeError;
+
+    const mappedCode = fullProductCode(((barcodeRows || []) as BarcodeRow[])[0]?.codsap);
+    if (!mappedCode) return null;
+
+    const { data: mappedRows, error: mappedError } = await supabase
+      .from("cyclic_products")
+      .select("id,sku,description,unit")
+      .eq("is_active", true)
+      .eq("sku", mappedCode)
+      .limit(1);
+    if (mappedError) throw mappedError;
+    return ((mappedRows || []) as Product[])[0] || null;
   }
 
 async function searchProducts() {
@@ -361,6 +402,76 @@ async function searchProducts() {
       await loadTasks(storeId);
     } catch (error: unknown) {
       setMessage("No se pudo actualizar estado: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startEdit(row: PackingTask) {
+    setEditingTaskId(row.id);
+    setEditCode(row.product_code);
+    setEditQuantity(String(Number(row.quantity || 1)));
+    setEditActionType(row.action_type);
+    const rowPerson = personnel.find(person => person.full_name === row.created_by_name);
+    setEditPersonId(rowPerson?.id || "");
+    setMessage("");
+  }
+
+  function cancelEdit() {
+    setEditingTaskId("");
+    setEditCode("");
+    setEditQuantity("1");
+    setEditActionType("etiquetar");
+    setEditPersonId("");
+  }
+
+  async function saveEdit(row: PackingTask) {
+    const cleanCode = fullProductCode(editCode);
+    const numericQty = Number(editQuantity || 1);
+    const person = personnel.find(item => item.id === editPersonId);
+    if (!cleanCode) {
+      setMessage("Ingresa un codigo valido para editar.");
+      return;
+    }
+    if (!Number.isFinite(numericQty) || numericQty <= 0) {
+      setMessage("Ingresa una cantidad valida para editar.");
+      return;
+    }
+    if (!person) {
+      setMessage("Selecciona el usuario para editar.");
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+    try {
+      const changedCode = cleanCode !== fullProductCode(row.product_code);
+      const product = changedCode ? await findProductByCode(cleanCode) : null;
+      if (changedCode && !product) {
+        setMessage("No se encontro el codigo ingresado en el catalogo.");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("packing_label_tasks")
+        .update({
+          product_id: product ? product.id : row.product_id,
+          product_code: product ? product.sku : cleanCode,
+          description: product ? product.description : row.description,
+          unit: product ? product.unit : row.unit,
+          action_type: editActionType,
+          quantity: numericQty,
+          created_by_name: person.full_name,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id);
+      if (error) throw error;
+
+      cancelEdit();
+      setMessage("Registro actualizado.");
+      await loadTasks(storeId);
+    } catch (error: unknown) {
+      setMessage("No se pudo editar el registro: " + errorText(error));
     } finally {
       setLoading(false);
     }
@@ -549,28 +660,87 @@ async function searchProducts() {
                   </tr>
                 </thead>
                 <tbody>
-                  {tasks.map(row => (
+                  {tasks.map(row => {
+                    const isEditing = editingTaskId === row.id;
+                    return (
                     <tr key={row.id} className="border-b hover:bg-slate-50">
-                      <td className="p-2 font-black">{row.product_code}</td>
+                      <td className="p-2 font-black">
+                        {isEditing ? (
+                          <input
+                            className="w-32 rounded-lg border px-2 py-1 text-xs font-black"
+                            value={editCode}
+                            onChange={event => setEditCode(event.target.value)}
+                          />
+                        ) : row.product_code}
+                      </td>
                       <td className="p-2 text-slate-600">{row.description || ""}</td>
-                      <td className="p-2 text-center font-black">{row.action_type === "etiquetar" ? "Etiquetar" : "Armar"}</td>
-                      <td className="p-2 text-center font-black">{Number(row.quantity || 0).toLocaleString("es-PE")}</td>
+                      <td className="p-2 text-center font-black">
+                        {isEditing ? (
+                          <select
+                            className="rounded-lg border px-2 py-1 text-xs font-bold"
+                            value={editActionType}
+                            onChange={event => setEditActionType(event.target.value as typeof editActionType)}
+                          >
+                            <option value="etiquetar">Etiquetar</option>
+                            <option value="armar">Armar</option>
+                          </select>
+                        ) : row.action_type === "etiquetar" ? "Etiquetar" : "Armar"}
+                      </td>
+                      <td className="p-2 text-center font-black">
+                        {isEditing ? (
+                          <input
+                            className="w-24 rounded-lg border px-2 py-1 text-center text-xs font-black"
+                            type="number"
+                            min="1"
+                            value={editQuantity}
+                            onChange={event => setEditQuantity(event.target.value)}
+                          />
+                        ) : Number(row.quantity || 0).toLocaleString("es-PE")}
+                      </td>
                       <td className="p-2 text-center">
                         <span className={`rounded-full px-2 py-1 text-xs font-black ${row.status === "hecho" ? "bg-green-100 text-green-700" : row.status === "cancelado" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{row.status}</span>
                       </td>
-                      <td className="p-2 text-xs font-semibold text-slate-500">{row.created_by_name || ""}</td>
+                      <td className="p-2 text-xs font-semibold text-slate-500">
+                        {isEditing ? (
+                          <select
+                            className="max-w-44 rounded-lg border px-2 py-1 text-xs font-bold"
+                            value={editPersonId}
+                            onChange={event => setEditPersonId(event.target.value)}
+                          >
+                            <option value="">Usuario</option>
+                            {personnel.map(person => <option key={person.id} value={person.id}>{person.full_name}</option>)}
+                          </select>
+                        ) : row.created_by_name || ""}
+                      </td>
                       <td className="p-2 text-center text-xs">{new Date(row.created_at).toLocaleString("es-PE")}</td>
                       <td className="p-2 text-center text-xs">{row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "-"}</td>
                       <td className="p-2 text-center">
                         <div className="flex justify-center gap-1">
-                          <button onClick={() => updateStatus(row, "hecho")} disabled={row.status === "cancelado"} className="rounded-lg border px-2 py-1 text-xs font-bold text-green-700 disabled:opacity-40">Hecho</button>
-                          <button onClick={() => updateStatus(row, "cancelado")} disabled={row.status === "cancelado"} className="rounded-lg border px-2 py-1 text-xs font-bold text-red-600 disabled:opacity-40">
-                            {row.status === "cancelado" ? "Cancelado" : "Cancelar registro"}
-                          </button>
+                          {isEditing ? (
+                            <>
+                              <button onClick={() => saveEdit(row)} disabled={loading} className="rounded-lg border px-2 py-1 text-green-700 disabled:opacity-40" title="Guardar edicion">
+                                <Check size={14} />
+                              </button>
+                              <button onClick={cancelEdit} disabled={loading} className="rounded-lg border px-2 py-1 text-slate-600 disabled:opacity-40" title="Cancelar edicion">
+                                <X size={14} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button onClick={() => startEdit(row)} disabled={loading} className="rounded-lg border px-2 py-1 text-slate-700 disabled:opacity-40" title="Editar registro">
+                                <Edit2 size={14} />
+                              </button>
+                              <button onClick={() => updateStatus(row, "hecho")} disabled={loading || row.status === "cancelado"} className="rounded-lg border px-2 py-1 text-xs font-bold text-green-700 disabled:opacity-40">Hecho</button>
+                              <button onClick={() => updateStatus(row, "cancelado")} disabled={loading || row.status === "cancelado"} className="rounded-lg border px-2 py-1 text-xs font-bold text-red-600 disabled:opacity-40">
+                                {row.status === "cancelado" ? "Cancelado" : "Cancelar registro"}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                   {tasks.length === 0 && (
                     <tr><td colSpan={9} className="p-8 text-center text-sm font-semibold text-slate-400">Sin registros guardados.</td></tr>
                   )}
