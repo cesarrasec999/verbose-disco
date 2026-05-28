@@ -175,6 +175,10 @@ function requesterStoreLabel(request: PickingRequest | null | undefined) {
   return request?.destination_store_name || request?.destination_store_code || "-";
 }
 
+function requesterStoreKey(request: PickingRequest | null | undefined) {
+  return normalize(request?.destination_store_code || request?.destination_store_name);
+}
+
 function DonutCard({ title, done, total, detail }: { title: string; done: number; total: number; detail: string }) {
   const progress = pct(done, total);
   return (
@@ -218,6 +222,7 @@ export default function PickingPage() {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
+  const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
   const [locationSort, setLocationSort] = useState<LocationSort>("asc");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -292,8 +297,25 @@ export default function PickingPage() {
     return assignments.filter(assignment => assignment.picker_id === user.id || normalize(assignment.picker_name) === normalize(user.full_name));
   }, [assignments, user]);
 
+  const requesterStoreOptions = useMemo(() => {
+    const myRequestIds = new Set(myAssignments.map(assignment => assignment.request_id));
+    const grouped = new Map<string, string>();
+    for (const request of requests) {
+      if (!myRequestIds.has(request.id)) continue;
+      const key = requesterStoreKey(request);
+      if (!key) continue;
+      grouped.set(key, requesterStoreLabel(request));
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [myAssignments, requests]);
+
+  const filteredMyAssignments = useMemo(() => {
+    if (selectedRequesterStore === "all") return myAssignments;
+    return myAssignments.filter(assignment => requesterStoreKey(requests.find(request => request.id === assignment.request_id)) === selectedRequesterStore);
+  }, [myAssignments, requests, selectedRequesterStore]);
+
   const sortedMyAssignments = useMemo(() => {
-    return [...myAssignments].sort((a, b) => {
+    return [...filteredMyAssignments].sort((a, b) => {
       const aLoc = (locationsByLine[a.line_id] || [])[0] || "ZZZ";
       const bLoc = (locationsByLine[b.line_id] || [])[0] || "ZZZ";
       const cmp = aLoc.localeCompare(bLoc, "es");
@@ -302,7 +324,7 @@ export default function PickingPage() {
       const bLine = lines.find(line => line.id === b.line_id);
       return String(aLine?.product_code || "").localeCompare(String(bLine?.product_code || ""), "es");
     });
-  }, [lines, locationsByLine, myAssignments]);
+  }, [filteredMyAssignments, lines, locationsByLine]);
 
   const activeAssignment = useMemo(
     () => {
@@ -428,10 +450,10 @@ export default function PickingPage() {
   }, [lines, requests, scans]);
 
   const operatorTotals = useMemo(() => {
-    const assigned = myAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
-    const picked = myAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
+    const assigned = filteredMyAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
+    const picked = filteredMyAssignments.reduce((sum, item) => sum + num(item.picked_qty), 0);
     return { assigned, picked, progress: pct(picked, assigned) };
-  }, [myAssignments]);
+  }, [filteredMyAssignments]);
 
   const openOperatorAssignments = useMemo(
     () => sortedMyAssignments.filter(item => num(item.picked_qty) < num(item.assigned_qty)),
@@ -439,8 +461,12 @@ export default function PickingPage() {
   );
 
   const operatorScanRows = useMemo(
-    () => scanRows.filter(row => row.scan.picker_id === user?.id || normalize(row.scan.picker_name) === normalize(user?.full_name)),
-    [scanRows, user]
+    () => scanRows.filter(row => {
+      const isMine = row.scan.picker_id === user?.id || normalize(row.scan.picker_name) === normalize(user?.full_name);
+      if (!isMine) return false;
+      return selectedRequesterStore === "all" || requesterStoreKey(row.request) === selectedRequesterStore;
+    }),
+    [scanRows, selectedRequesterStore, user]
   );
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
@@ -542,6 +568,13 @@ export default function PickingPage() {
     const timer = window.setTimeout(() => setSelectedRequestId(selectedRequest.id), 0);
     return () => window.clearTimeout(timer);
   }, [selectedRequest, selectedRequestId]);
+
+  useEffect(() => {
+    if (selectedRequesterStore === "all") return;
+    if (requesterStoreOptions.some(option => option.key === selectedRequesterStore)) return;
+    const timer = window.setTimeout(() => setSelectedRequesterStore("all"), 0);
+    return () => window.clearTimeout(timer);
+  }, [requesterStoreOptions, selectedRequesterStore]);
 
   useEffect(() => {
     async function loadStock() {
@@ -1182,7 +1215,7 @@ export default function PickingPage() {
 
   async function downloadReport(scope: "global" | "mine") {
     const XLSX = await import("xlsx");
-    const rows = (scope === "mine" ? myAssignments : assignments).map(assignment => {
+    const rows = (scope === "mine" ? filteredMyAssignments : assignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
       const request = requests.find(item => item.id === assignment.request_id);
       return {
@@ -1918,12 +1951,28 @@ export default function PickingPage() {
         ) : (
           <div className="mt-4 space-y-4">
             <section className="rounded-2xl border bg-white p-3 shadow-sm">
-              <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-black uppercase text-slate-500">Mi avance</p>
                   <p className="text-xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
                 </div>
-                <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-black text-violet-700">{operatorTotals.progress}%</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-black uppercase text-slate-500">Tienda solicitante</label>
+                  <select
+                    value={selectedRequesterStore}
+                    onChange={event => {
+                      setSelectedRequesterStore(event.target.value);
+                      setActiveAssignmentId("");
+                    }}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  >
+                    <option value="all">Todas las tiendas</option>
+                    {requesterStoreOptions.map(option => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                  <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-black text-violet-700">{operatorTotals.progress}%</span>
+                </div>
               </div>
               <div className="h-2 rounded-full bg-slate-100">
                 <div className="h-2 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
@@ -1955,7 +2004,8 @@ export default function PickingPage() {
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <p className="font-black leading-tight">{line?.product_code || "Codigo"}</p>
-                            <p className="truncate text-xs font-bold text-slate-500">{request?.source_store_name || request?.source_store_code}</p>
+                            <p className="truncate text-xs font-black text-violet-700">Solicita: {requesterStoreLabel(request)}</p>
+                            <p className="truncate text-xs font-bold text-slate-500">Entrega: {request?.source_store_name || request?.source_store_code}</p>
                           </div>
                           <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{line?.unit || "-"}</span>
                         </div>
@@ -1993,6 +2043,7 @@ export default function PickingPage() {
                             <div className="min-w-0">
                               <p className="text-xs font-black uppercase text-slate-500">{activeRequest?.doc_number || activeRequest?.inv_request_no}</p>
                               <h2 className="text-lg font-black leading-tight">{activeLine.product_code}</h2>
+                              <p className="text-xs font-black text-violet-700">Solicita: {requesterStoreLabel(activeRequest)}</p>
                               <p className="text-xs font-semibold text-slate-500">{activeLine.description}</p>
                               <p className="text-xs font-black text-slate-700">Unidad solicitada: {activeLine.unit || "-"}</p>
                               <p className="text-xs font-bold text-slate-400">Ubicaciones: {(locationsByLine[activeLine.id] || []).map(cleanLocationLabel).join(", ") || "sin ubicacion registrada"}</p>
@@ -2055,7 +2106,7 @@ export default function PickingPage() {
                     </div>
                   );
                 })}
-                {openOperatorAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">No tienes codigos pendientes.</p>}
+                {openOperatorAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">{selectedRequesterStore === "all" ? "No tienes codigos pendientes." : "No tienes codigos pendientes para esta tienda."}</p>}
               </div>
             </section>
 
