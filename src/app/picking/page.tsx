@@ -243,6 +243,8 @@ export default function PickingPage() {
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
   const [selectedPickerId, setSelectedPickerId] = useState("");
+  const [pickerMenuOpen, setPickerMenuOpen] = useState(false);
+  const [selectedAssignedPicker, setSelectedAssignedPicker] = useState("all");
   const [activeAssignmentId, setActiveAssignmentId] = useState("");
   const [scanProduct, setScanProduct] = useState("");
   const [scanEntries, setScanEntries] = useState<ScanEntry[]>([{ location: "", qty: "1" }]);
@@ -330,9 +332,30 @@ export default function PickingPage() {
   }, [pickerNameById]);
 
   const selectedLineAssignments = useMemo(
-    () => assignments.filter(assignment => selectedLineIds.has(assignment.line_id)),
-    [assignments, selectedLineIds]
+    () => assignments.filter(assignment => {
+      if (!selectedLineIds.has(assignment.line_id)) return false;
+      if (selectedAssignedPicker === "all") return true;
+      return normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker;
+    }),
+    [assignments, selectedAssignedPicker, selectedLineIds]
   );
+
+  const selectedPicker = useMemo(
+    () => pickers.find(picker => picker.id === selectedPickerId) || null,
+    [pickers, selectedPickerId]
+  );
+
+  const assignedPickerOptions = useMemo(() => {
+    const visibleLineIds = new Set(visibleLines.map(line => line.id));
+    const grouped = new Map<string, string>();
+    for (const assignment of assignments) {
+      if (!visibleLineIds.has(assignment.line_id)) continue;
+      const key = normalize(assignment.picker_id || assignment.picker_name);
+      if (!key) continue;
+      grouped.set(key, assignmentPickerName(assignment));
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [assignmentPickerName, assignments, visibleLines]);
 
   const sortedVisibleLines = useMemo(() => {
     return [...visibleLines].sort((a, b) => {
@@ -349,6 +372,13 @@ export default function PickingPage() {
       return a.product_code.localeCompare(b.product_code, "es");
     });
   }, [assignmentsByLine, locationSort, locationsByLine, visibleLines]);
+
+  const assignmentFilteredLines = useMemo(() => {
+    if (selectedAssignedPicker === "all") return sortedVisibleLines;
+    return sortedVisibleLines.filter(line => (assignmentsByLine.get(line.id) || []).some(assignment => (
+      normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker
+    )));
+  }, [assignmentsByLine, selectedAssignedPicker, sortedVisibleLines]);
 
   const myAssignments = useMemo(() => {
     if (!user) return [];
@@ -721,6 +751,13 @@ export default function PickingPage() {
     const timer = window.setTimeout(() => setSelectedRequesterStore("all"), 0);
     return () => window.clearTimeout(timer);
   }, [requesterStoreOptions, selectedRequesterStore]);
+
+  useEffect(() => {
+    if (selectedAssignedPicker === "all") return;
+    if (assignedPickerOptions.some(option => option.key === selectedAssignedPicker)) return;
+    const timer = window.setTimeout(() => setSelectedAssignedPicker("all"), 0);
+    return () => window.clearTimeout(timer);
+  }, [assignedPickerOptions, selectedAssignedPicker]);
 
   useEffect(() => {
     if (selectedReportPicker === "all") return;
@@ -1152,13 +1189,17 @@ export default function PickingPage() {
 
   function selectFirstPending(quantity: number) {
     const next = new Set<string>();
-    for (const line of sortedVisibleLines) {
+    for (const line of assignmentFilteredLines) {
       const assigned = assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
       if (num(line.qty_requested) - assigned <= 0) continue;
       next.add(line.id);
       if (next.size >= quantity) break;
     }
     setSelectedLineIds(next);
+  }
+
+  function selectAllAssignmentFilteredLines() {
+    setSelectedLineIds(new Set(assignmentFilteredLines.map(line => line.id)));
   }
 
   function updateScanEntry(index: number, field: keyof ScanEntry, value: string) {
@@ -1824,15 +1865,39 @@ export default function PickingPage() {
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <button onClick={() => selectFirstPending(30)} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Primeros 30</button>
-                        <button onClick={() => setSelectedLineIds(new Set(sortedVisibleLines.map(line => line.id)))} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Todos</button>
+                        <button onClick={selectAllAssignmentFilteredLines} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Todos</button>
                         <button onClick={() => setSelectedLineIds(new Set())} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Limpiar</button>
                       </div>
                     </div>
                     <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto_auto]">
-                      <select value={selectedPickerId} onChange={event => setSelectedPickerId(event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold">
-                        <option value="">Picador</option>
-                        {pickers.map(picker => <option key={picker.id} value={picker.id}>{picker.full_name}</option>)}
-                      </select>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setPickerMenuOpen(open => !open)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-left text-sm font-bold hover:bg-slate-50"
+                        >
+                          <span className="truncate">{selectedPicker?.full_name || "Picador"}</span>
+                          <span className="text-slate-400">v</span>
+                        </button>
+                        {pickerMenuOpen && (
+                          <div className="absolute left-0 right-0 z-30 mt-2 max-h-72 overflow-auto rounded-xl border bg-white p-1 shadow-xl">
+                            {pickers.map(picker => (
+                              <button
+                                key={picker.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedPickerId(picker.id);
+                                  setPickerMenuOpen(false);
+                                }}
+                                className={`block w-full rounded-lg px-3 py-2 text-left text-sm font-bold hover:bg-violet-50 ${selectedPickerId === picker.id ? "bg-violet-100 text-violet-800" : "text-slate-700"}`}
+                              >
+                                {picker.full_name}
+                              </button>
+                            ))}
+                            {pickers.length === 0 && <p className="px-3 py-2 text-xs font-bold text-slate-400">No hay picadores activos.</p>}
+                          </div>
+                        )}
+                      </div>
                       <button onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
                         Reasignar seleccionados ({selectedLineAssignments.length})
                       </button>
@@ -1876,13 +1941,31 @@ export default function PickingPage() {
 
                   <div className="mt-4 overflow-hidden rounded-2xl border">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-white p-3">
-                      <p className="text-xs font-black uppercase text-slate-500">{selectedLineIds.size} seleccionados</p>
-                      <button
-                        onClick={() => setLocationSort(locationSort === "asc" ? "desc" : "asc")}
-                        className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50"
-                      >
-                        Ubicaciones {locationSort === "asc" ? "A-Z" : "Z-A"}
-                      </button>
+                      <p className="text-xs font-black uppercase text-slate-500">{selectedLineIds.size} seleccionados - {assignmentFilteredLines.length} visibles</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={selectedAssignedPicker}
+                          onChange={event => {
+                            setSelectedAssignedPicker(event.target.value);
+                            setSelectedLineIds(new Set());
+                          }}
+                          className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
+                        >
+                          <option value="all">Todos los picadores asignados</option>
+                          {assignedPickerOptions.map(option => (
+                            <option key={option.key} value={option.key}>{option.label}</option>
+                          ))}
+                        </select>
+                        <button onClick={selectAllAssignmentFilteredLines} className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50">
+                          Seleccionar visibles
+                        </button>
+                        <button
+                          onClick={() => setLocationSort(locationSort === "asc" ? "desc" : "asc")}
+                          className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50"
+                        >
+                          Ubicaciones {locationSort === "asc" ? "A-Z" : "Z-A"}
+                        </button>
+                      </div>
                     </div>
                     <table className="w-full text-sm">
                       <thead className="bg-slate-100 text-xs uppercase text-slate-500">
@@ -1890,9 +1973,9 @@ export default function PickingPage() {
                           <th className="w-10 p-3 text-left">
                             <input
                               type="checkbox"
-                              checked={sortedVisibleLines.length > 0 && sortedVisibleLines.every(line => selectedLineIds.has(line.id))}
+                              checked={assignmentFilteredLines.length > 0 && assignmentFilteredLines.every(line => selectedLineIds.has(line.id))}
                               onChange={event => {
-                                if (event.target.checked) setSelectedLineIds(new Set(sortedVisibleLines.map(line => line.id)));
+                                if (event.target.checked) setSelectedLineIds(new Set(assignmentFilteredLines.map(line => line.id)));
                                 else setSelectedLineIds(new Set());
                               }}
                             />
@@ -1907,7 +1990,7 @@ export default function PickingPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedVisibleLines.map(line => {
+                        {assignmentFilteredLines.map(line => {
                           const lineAssignments = assignmentsByLine.get(line.id) || [];
                           return (
                             <tr key={line.id} className="border-t align-top">
