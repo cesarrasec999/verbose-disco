@@ -106,6 +106,7 @@ type LocationRow = {
 type PickingPanel = "asignacion" | "reportes" | "registros" | "productividad";
 type LocationSort = "asc" | "desc";
 type ScannerTarget = "location" | "product" | null;
+type AssignmentProgressFilter = "todos" | "pendiente";
 
 type ScanEntry = {
   location: string;
@@ -245,6 +246,7 @@ export default function PickingPage() {
   const [selectedPickerId, setSelectedPickerId] = useState("");
   const [pickerMenuOpen, setPickerMenuOpen] = useState(false);
   const [selectedAssignedPicker, setSelectedAssignedPicker] = useState("all");
+  const [assignmentProgressFilter, setAssignmentProgressFilter] = useState<AssignmentProgressFilter>("todos");
   const [activeAssignmentId, setActiveAssignmentId] = useState("");
   const [scanProduct, setScanProduct] = useState("");
   const [scanEntries, setScanEntries] = useState<ScanEntry[]>([{ location: "", qty: "1" }]);
@@ -335,9 +337,10 @@ export default function PickingPage() {
     () => assignments.filter(assignment => {
       if (!selectedLineIds.has(assignment.line_id)) return false;
       if (selectedAssignedPicker === "all") return true;
-      return normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker;
+      if (normalize(assignment.picker_id || assignment.picker_name) !== selectedAssignedPicker) return false;
+      return assignmentProgressFilter === "todos" || num(assignment.picked_qty) <= 0;
     }),
-    [assignments, selectedAssignedPicker, selectedLineIds]
+    [assignmentProgressFilter, assignments, selectedAssignedPicker, selectedLineIds]
   );
 
   const selectedPicker = useMemo(
@@ -374,11 +377,16 @@ export default function PickingPage() {
   }, [assignmentsByLine, locationSort, locationsByLine, visibleLines]);
 
   const assignmentFilteredLines = useMemo(() => {
-    if (selectedAssignedPicker === "all") return sortedVisibleLines;
-    return sortedVisibleLines.filter(line => (assignmentsByLine.get(line.id) || []).some(assignment => (
-      normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker
-    )));
-  }, [assignmentsByLine, selectedAssignedPicker, sortedVisibleLines]);
+    return sortedVisibleLines.filter(line => {
+      const lineAssignments = assignmentsByLine.get(line.id) || [];
+      if (selectedAssignedPicker === "all" && assignmentProgressFilter === "todos") return true;
+      return lineAssignments.some(assignment => {
+        const matchesPicker = selectedAssignedPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker;
+        const matchesProgress = assignmentProgressFilter === "todos" || num(assignment.picked_qty) <= 0;
+        return matchesPicker && matchesProgress;
+      });
+    });
+  }, [assignmentProgressFilter, assignmentsByLine, selectedAssignedPicker, sortedVisibleLines]);
 
   const myAssignments = useMemo(() => {
     if (!user) return [];
@@ -1955,6 +1963,17 @@ export default function PickingPage() {
                           {assignedPickerOptions.map(option => (
                             <option key={option.key} value={option.key}>{option.label}</option>
                           ))}
+                        </select>
+                        <select
+                          value={assignmentProgressFilter}
+                          onChange={event => {
+                            setAssignmentProgressFilter(event.target.value as AssignmentProgressFilter);
+                            setSelectedLineIds(new Set());
+                          }}
+                          className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700"
+                        >
+                          <option value="todos">Todas las asignaciones</option>
+                          <option value="pendiente">Solo pendientes por picar</option>
                         </select>
                         <button onClick={selectAllAssignmentFilteredLines} className="rounded-xl border px-3 py-2 text-xs font-black hover:bg-slate-50">
                           Seleccionar visibles

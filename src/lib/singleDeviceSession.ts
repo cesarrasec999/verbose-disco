@@ -5,6 +5,8 @@ import { getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 
 const USER_KEY = "cyclic_user";
 const SESSION_EVENT = "cyclic-session-expired";
+const SESSION_REASON_KEY = "cyclic_session_expired_reason";
+const OTHER_DEVICE_REASON = "Tu usuario se conecto en otro dispositivo.";
 
 type SessionUser = {
   id: string;
@@ -44,14 +46,30 @@ export function writeStoredUser<T extends SessionUser>(user: T) {
   localStorage.setItem(USER_KEY, JSON.stringify(nextUser));
 }
 
-export function clearStoredUser() {
-  localStorage.removeItem(USER_KEY);
-  window.dispatchEvent(new CustomEvent(SESSION_EVENT));
+export function readSessionExpiredReason() {
+  if (typeof window === "undefined") return "";
+  return sessionStorage.getItem(SESSION_REASON_KEY) || "";
 }
 
-export function onStoredSessionExpired(handler: () => void) {
-  window.addEventListener(SESSION_EVENT, handler);
-  return () => window.removeEventListener(SESSION_EVENT, handler);
+export function consumeSessionExpiredReason() {
+  const reason = readSessionExpiredReason();
+  if (typeof window !== "undefined") sessionStorage.removeItem(SESSION_REASON_KEY);
+  return reason;
+}
+
+export function clearStoredUser(reason = "") {
+  if (reason) sessionStorage.setItem(SESSION_REASON_KEY, reason);
+  localStorage.removeItem(USER_KEY);
+  window.dispatchEvent(new CustomEvent(SESSION_EVENT, { detail: { reason } }));
+}
+
+export function onStoredSessionExpired(handler: (reason: string) => void) {
+  const listener = (event: Event) => {
+    const reason = event instanceof CustomEvent ? String(event.detail?.reason || "") : "";
+    handler(reason || readSessionExpiredReason());
+  };
+  window.addEventListener(SESSION_EVENT, listener);
+  return () => window.removeEventListener(SESSION_EVENT, listener);
 }
 
 export async function startSingleDeviceSession<T extends SessionUser>(user: T): Promise<T> {
@@ -80,7 +98,7 @@ export async function startSingleDeviceSession<T extends SessionUser>(user: T): 
 
 export async function touchSingleDeviceSession(user = readStoredUser()) {
   if (!user?.id) return true;
-  if (!user.cyclic_session_token) return false;
+  if (!user.cyclic_session_token) return true;
   const { data, error } = await supabase
     .from("cyclic_user_sessions")
     .select("session_token,device_id")
@@ -111,3 +129,5 @@ export async function endSingleDeviceSession(user = readStoredUser()) {
   }
   clearStoredUser();
 }
+
+export { OTHER_DEVICE_REASON };
