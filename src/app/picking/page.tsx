@@ -65,6 +65,7 @@ type PickingAssignment = {
   assigned_qty: number;
   picked_qty: number;
   status: string;
+  picking_date?: string | null;
   created_at: string;
 };
 
@@ -103,7 +104,7 @@ type LocationRow = {
   stored_quantity?: number | string | null;
 };
 
-type PickingPanel = "asignacion" | "reportes" | "registros" | "productividad";
+type PickingPanel = "asignacion" | "resumen" | "reportes" | "registros" | "productividad";
 type LocationSort = "asc" | "desc";
 type ScannerTarget = "location" | "product" | null;
 type AssignmentProgressFilter = "todos" | "pendiente";
@@ -266,6 +267,7 @@ export default function PickingPage() {
   const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
   const [selectedRegistryRequesterStore, setSelectedRegistryRequesterStore] = useState("all");
   const [assignmentDate, setAssignmentDate] = useState("");
+  const [pickingDate, setPickingDate] = useState("");
   const [reportDate, setReportDate] = useState("");
   const [registryDate, setRegistryDate] = useState("");
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
@@ -500,33 +502,53 @@ export default function PickingPage() {
 
   const reportAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const firstScanDateByRequest = new Map<string, string>();
+    for (const scan of scans) {
+      if (!requestIds.has(scan.request_id)) continue;
+      const scanDate = String(scan.created_at || "").slice(0, 10);
+      if (!scanDate) continue;
+      const current = firstScanDateByRequest.get(scan.request_id);
+      if (!current || scanDate < current) firstScanDateByRequest.set(scan.request_id, scanDate);
+    }
     return assignments.filter(assignment => {
-      if (!requestIds.has(assignment.request_id) || !sameDate(assignment.created_at, reportDate)) return false;
+      if (!requestIds.has(assignment.request_id)) return false;
+      const effectiveDate = assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
+      if (!sameDate(effectiveDate, reportDate)) return false;
       return selectedReportPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedReportPicker;
     });
-  }, [assignments, reportDate, selectedReportPicker, sourceFilteredRequests]);
+  }, [assignments, reportDate, scans, selectedReportPicker, sourceFilteredRequests]);
 
   const reportPickerOptions = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const firstScanDateByRequest = new Map<string, string>();
+    for (const scan of scans) {
+      if (!requestIds.has(scan.request_id)) continue;
+      const scanDate = String(scan.created_at || "").slice(0, 10);
+      if (!scanDate) continue;
+      const current = firstScanDateByRequest.get(scan.request_id);
+      if (!current || scanDate < current) firstScanDateByRequest.set(scan.request_id, scanDate);
+    }
     const grouped = new Map<string, string>();
     for (const assignment of assignments) {
-      if (!requestIds.has(assignment.request_id) || !sameDate(assignment.created_at, reportDate)) continue;
+      if (!requestIds.has(assignment.request_id)) continue;
+      const effectiveDate = assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
+      if (!sameDate(effectiveDate, reportDate)) continue;
       const key = normalize(assignment.picker_id || assignment.picker_name);
       if (!key) continue;
       grouped.set(key, assignmentPickerName(assignment));
     }
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
-  }, [assignmentPickerName, assignments, reportDate, sourceFilteredRequests]);
+  }, [assignmentPickerName, assignments, reportDate, scans, sourceFilteredRequests]);
 
   const reportScansByAssignment = useMemo(() => {
     const assignmentIds = new Set(reportAssignments.map(assignment => assignment.id));
     const grouped = new Map<string, number>();
     for (const scan of scans) {
-      if (!assignmentIds.has(scan.assignment_id) || !sameDate(scan.created_at, reportDate)) continue;
+      if (!assignmentIds.has(scan.assignment_id)) continue;
       grouped.set(scan.assignment_id, (grouped.get(scan.assignment_id) || 0) + num(scan.qty));
     }
     return grouped;
-  }, [reportAssignments, reportDate, scans]);
+  }, [reportAssignments, scans]);
 
   const reportRows = useMemo(() => {
     const lineIds = new Set(reportAssignments.map(assignment => assignment.line_id));
@@ -1113,6 +1135,11 @@ export default function PickingPage() {
       setMessage("Selecciona picador y codigos.");
       return;
     }
+    if (!pickingDate) {
+      window.alert("Selecciona una fecha de picking antes de asignar picadores.");
+      setMessage("Selecciona una fecha de picking antes de asignar picadores.");
+      return;
+    }
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
       setMessage("Selecciona un picador valido.");
@@ -1139,6 +1166,7 @@ export default function PickingPage() {
       picker_name: picker.full_name,
       assigned_qty: pending,
       status: "pendiente",
+      picking_date: pickingDate,
       created_by: user.id,
       created_by_name: user.full_name,
     })));
@@ -1504,11 +1532,12 @@ export default function PickingPage() {
         "ZONA": (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", "),
         "ESTADO": assignment.status,
         "ESTADO ASIGNACION": "ASIGNADO",
+        "FECHA PICKING": assignment.picking_date || "",
         "FECHA ASIGNACION": assignment.created_at ? new Date(assignment.created_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : "",
       };
     });
 
-    if (scope === "global" && panel === "asignacion") {
+    if (scope === "global" && (panel === "asignacion" || panel === "resumen")) {
       const assignedLineIds = new Set(scopedGlobalAssignments.map(assignment => assignment.line_id));
       const pendingRows = lines
         .filter(line => assignmentRequestIds.has(line.request_id) && !assignedLineIds.has(line.id))
@@ -1531,6 +1560,7 @@ export default function PickingPage() {
             "ZONA": (locationsByLine[line.id] || []).map(cleanLocationLabel).join(", "),
             "ESTADO": "pendiente",
             "ESTADO ASIGNACION": "PENDIENTE POR ASIGNAR",
+            "FECHA PICKING": "",
             "FECHA ASIGNACION": "",
           };
         });
@@ -1557,6 +1587,7 @@ export default function PickingPage() {
       { wch: 20 }, // ZONA
       { wch: 14 }, // ESTADO
       { wch: 24 }, // ESTADO ASIGNACION
+      { wch: 14 }, // FECHA PICKING
       { wch: 18 }, // FECHA
     ];
     ws["!cols"] = colWidths;
@@ -1823,22 +1854,22 @@ export default function PickingPage() {
                 ))}
               </select>
               <label className="text-xs font-black uppercase text-slate-500">
-                {panel === "asignacion" ? "Creacion" : panel === "reportes" ? "Asignacion" : "Registro"}
+                {panel === "asignacion" || panel === "resumen" ? "Creacion" : panel === "reportes" ? "Fecha picking" : "Registro"}
               </label>
               <input
                 type="date"
-                value={panel === "asignacion" ? assignmentDate : panel === "reportes" ? reportDate : registryDate}
+                value={panel === "asignacion" || panel === "resumen" ? assignmentDate : panel === "reportes" ? reportDate : registryDate}
                 onChange={event => {
-                  if (panel === "asignacion") setAssignmentDate(event.target.value);
+                  if (panel === "asignacion" || panel === "resumen") setAssignmentDate(event.target.value);
                   else if (panel === "reportes") setReportDate(event.target.value);
                   else setRegistryDate(event.target.value);
                 }}
                 className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
               />
-              {(panel === "asignacion" ? assignmentDate : panel === "reportes" ? reportDate : registryDate) && (
+              {(panel === "asignacion" || panel === "resumen" ? assignmentDate : panel === "reportes" ? reportDate : registryDate) && (
                 <button
                   onClick={() => {
-                    if (panel === "asignacion") setAssignmentDate("");
+                    if (panel === "asignacion" || panel === "resumen") setAssignmentDate("");
                     else if (panel === "reportes") setReportDate("");
                     else setRegistryDate("");
                   }}
@@ -1853,6 +1884,12 @@ export default function PickingPage() {
                   className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "asignacion" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
                 >
                   Asignacion
+                </button>
+                <button
+                  onClick={() => setPanel("resumen")}
+                  className={`rounded-xl px-4 py-2 text-sm font-black ${panel === "resumen" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"}`}
+                >
+                  Resumen
                 </button>
                 <button
                   onClick={() => setPanel("reportes")}
@@ -1892,58 +1929,60 @@ export default function PickingPage() {
           ))}
         </div>}
 
-        {manager && panel === "asignacion" && (
-          <section className="mt-4 overflow-hidden rounded-2xl border bg-white shadow-sm">
-            <div className="border-b p-4">
-              <h2 className="font-black">Resumen tienda solicitante x picador</h2>
-              <p className="text-xs font-bold text-slate-500">Codigos asignados por picador sobre codigos requeridos de cada tienda.</p>
-            </div>
-            <div className="overflow-auto">
-              <table className="w-full min-w-[720px] text-sm">
-                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="sticky left-0 z-10 bg-slate-100 p-3 text-left">Tienda solicitante</th>
-                    {assignmentMatrix.columns.map(column => (
-                      <th key={column.key} className="p-3 text-right">{column.label}</th>
-                    ))}
-                    <th className="p-3 text-right">Total codigos asignados / requeridos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assignmentMatrix.rows.map(row => (
-                    <tr key={row.key} className="border-t">
-                      <td className="sticky left-0 z-10 bg-white p-3 font-black">{row.label}</td>
-                      {assignmentMatrix.columns.map(column => (
-                        <td key={column.key} className="p-3 text-right font-black text-slate-700">
-                          {row.byPicker[column.key] || 0}/{row.required}
-                        </td>
-                      ))}
-                      <td className="p-3 text-right font-black text-violet-700">{row.assigned}/{row.required}</td>
-                    </tr>
-                  ))}
-                  {assignmentMatrix.rows.length === 0 && (
-                    <tr>
-                      <td colSpan={assignmentMatrix.columns.length + 2} className="p-8 text-center text-sm font-bold text-slate-400">
-                        Sin codigos para resumir.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
         {loading ? (
           <div className="mt-6 rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-500">Cargando picking...</div>
+        ) : manager && panel === "resumen" ? (
+          <section className="mt-4 space-y-4">
+            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
+                <div>
+                  <h2 className="font-black">Resumen tienda solicitante x picador</h2>
+                  <p className="text-xs font-bold text-slate-500">Codigos asignados por picador sobre codigos requeridos de cada tienda.</p>
+                </div>
+                <button onClick={() => downloadReport("global")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                  <Download size={16} />
+                </button>
+              </div>
+              <div className="overflow-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="sticky left-0 z-10 bg-slate-100 p-3 text-left">Tienda solicitante</th>
+                      {assignmentMatrix.columns.map(column => (
+                        <th key={column.key} className="p-3 text-right">{column.label}</th>
+                      ))}
+                      <th className="p-3 text-right">Total codigos asignados / requeridos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {assignmentMatrix.rows.map(row => (
+                      <tr key={row.key} className="border-t">
+                        <td className="sticky left-0 z-10 bg-white p-3 font-black">{row.label}</td>
+                        {assignmentMatrix.columns.map(column => (
+                          <td key={column.key} className="p-3 text-right font-black text-slate-700">
+                            {row.byPicker[column.key] || 0}/{row.required}
+                          </td>
+                        ))}
+                        <td className="p-3 text-right font-black text-violet-700">{row.assigned}/{row.required}</td>
+                      </tr>
+                    ))}
+                    {assignmentMatrix.rows.length === 0 && (
+                      <tr>
+                        <td colSpan={assignmentMatrix.columns.length + 2} className="p-8 text-center text-sm font-bold text-slate-400">
+                          Sin codigos para resumir.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         ) : manager && panel === "asignacion" ? (
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="font-black">Requerimientos activos</h2>
-                <button onClick={() => downloadReport("global")} className="rounded-xl border px-3 py-2 text-sm font-bold hover:bg-slate-50">
-                  <Download size={16} />
-                </button>
               </div>
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
                 {filteredRequests.map(request => {
@@ -2008,7 +2047,7 @@ export default function PickingPage() {
                         <button onClick={() => setSelectedLineIds(new Set())} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Limpiar</button>
                       </div>
                     </div>
-                    <div className="grid gap-2 lg:grid-cols-[1fr_auto_auto_auto]">
+                    <div className="grid gap-2 xl:grid-cols-[1fr_180px_auto_auto_auto]">
                       <div className="relative">
                         <button
                           type="button"
@@ -2036,6 +2075,15 @@ export default function PickingPage() {
                             {pickers.length === 0 && <p className="px-3 py-2 text-xs font-bold text-slate-400">No hay picadores activos.</p>}
                           </div>
                         )}
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-black uppercase text-slate-500">Fecha de picking</label>
+                        <input
+                          type="date"
+                          value={pickingDate}
+                          onChange={event => setPickingDate(event.target.value)}
+                          className="w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                        />
                       </div>
                       <button onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
                         Reasignar seleccionados ({selectedLineAssignments.length})

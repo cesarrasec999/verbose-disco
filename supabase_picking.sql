@@ -67,6 +67,9 @@ create table if not exists public.picking_assignments (
   updated_at timestamptz not null default now()
 );
 
+alter table public.picking_assignments
+  add column if not exists picking_date date;
+
 create table if not exists public.picking_scans (
   id uuid primary key default gen_random_uuid(),
   assignment_id uuid not null references public.picking_assignments(id) on delete cascade,
@@ -99,6 +102,9 @@ create index if not exists idx_picking_assignments_picker
 
 create index if not exists idx_picking_assignments_request
   on public.picking_assignments (request_id, line_id);
+
+create index if not exists idx_picking_assignments_picking_date
+  on public.picking_assignments (picking_date, request_id);
 
 create index if not exists idx_picking_scans_assignment
   on public.picking_scans (assignment_id, created_at desc);
