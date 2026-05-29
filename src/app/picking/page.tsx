@@ -461,24 +461,51 @@ export default function PickingPage() {
     return { requiredCodes, assignedCodes, pendingCodes: Math.max(0, requiredCodes - assignedCodes), assignedRequests };
   }, [assignments, filteredRequests, lines]);
 
+  const firstScanDateByRequest = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const grouped = new Map<string, string>();
+    for (const scan of scans) {
+      if (!requestIds.has(scan.request_id)) continue;
+      const scanDate = String(scan.created_at || "").slice(0, 10);
+      if (!scanDate) continue;
+      const current = grouped.get(scan.request_id);
+      if (!current || scanDate < current) grouped.set(scan.request_id, scanDate);
+    }
+    return grouped;
+  }, [scans, sourceFilteredRequests]);
+
+  const assignmentEffectiveDate = useCallback((assignment: PickingAssignment) => {
+    return assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
+  }, [firstScanDateByRequest]);
+
+  const summaryAssignments = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    return assignments.filter(assignment => requestIds.has(assignment.request_id) && sameDate(assignmentEffectiveDate(assignment), reportDate));
+  }, [assignmentEffectiveDate, assignments, reportDate, sourceFilteredRequests]);
+
+  const summaryRequests = useMemo(() => {
+    const requestIds = new Set(summaryAssignments.map(assignment => assignment.request_id));
+    return sourceFilteredRequests.filter(request => requestIds.has(request.id));
+  }, [sourceFilteredRequests, summaryAssignments]);
+
   const assignmentMatrix = useMemo(() => {
-    const requestIds = new Set(filteredRequests.map(request => request.id));
+    const requestIds = new Set(summaryRequests.map(request => request.id));
     const requiredByStore = new Map<string, { label: string; required: number }>();
     const assignedByStorePicker = new Map<string, number>();
     const pickerColumns = new Map<string, string>();
 
     for (const line of lines) {
       if (!requestIds.has(line.request_id)) continue;
-      const request = filteredRequests.find(item => item.id === line.request_id);
+      const request = summaryRequests.find(item => item.id === line.request_id);
       const storeKey = requesterStoreKey(request) || "SIN_TIENDA";
       const current = requiredByStore.get(storeKey) || { label: requesterStoreLabel(request), required: 0 };
       current.required += 1;
       requiredByStore.set(storeKey, current);
     }
 
-    for (const assignment of assignments) {
+    for (const assignment of summaryAssignments) {
       if (!requestIds.has(assignment.request_id)) continue;
-      const request = filteredRequests.find(item => item.id === assignment.request_id);
+      const request = summaryRequests.find(item => item.id === assignment.request_id);
       const storeKey = requesterStoreKey(request) || "SIN_TIENDA";
       const pickerKey = normalize(assignment.picker_id || assignment.picker_name) || "SIN_PICADOR";
       pickerColumns.set(pickerKey, assignmentPickerName(assignment));
@@ -498,47 +525,29 @@ export default function PickingPage() {
     }).sort((a, b) => a.label.localeCompare(b.label, "es"));
 
     return { columns, rows };
-  }, [assignmentPickerName, assignments, filteredRequests, lines]);
+  }, [assignmentPickerName, lines, summaryAssignments, summaryRequests]);
 
   const reportAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
-    const firstScanDateByRequest = new Map<string, string>();
-    for (const scan of scans) {
-      if (!requestIds.has(scan.request_id)) continue;
-      const scanDate = String(scan.created_at || "").slice(0, 10);
-      if (!scanDate) continue;
-      const current = firstScanDateByRequest.get(scan.request_id);
-      if (!current || scanDate < current) firstScanDateByRequest.set(scan.request_id, scanDate);
-    }
     return assignments.filter(assignment => {
       if (!requestIds.has(assignment.request_id)) return false;
-      const effectiveDate = assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
-      if (!sameDate(effectiveDate, reportDate)) return false;
+      if (!sameDate(assignmentEffectiveDate(assignment), reportDate)) return false;
       return selectedReportPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedReportPicker;
     });
-  }, [assignments, reportDate, scans, selectedReportPicker, sourceFilteredRequests]);
+  }, [assignmentEffectiveDate, assignments, reportDate, selectedReportPicker, sourceFilteredRequests]);
 
   const reportPickerOptions = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
-    const firstScanDateByRequest = new Map<string, string>();
-    for (const scan of scans) {
-      if (!requestIds.has(scan.request_id)) continue;
-      const scanDate = String(scan.created_at || "").slice(0, 10);
-      if (!scanDate) continue;
-      const current = firstScanDateByRequest.get(scan.request_id);
-      if (!current || scanDate < current) firstScanDateByRequest.set(scan.request_id, scanDate);
-    }
     const grouped = new Map<string, string>();
     for (const assignment of assignments) {
       if (!requestIds.has(assignment.request_id)) continue;
-      const effectiveDate = assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
-      if (!sameDate(effectiveDate, reportDate)) continue;
+      if (!sameDate(assignmentEffectiveDate(assignment), reportDate)) continue;
       const key = normalize(assignment.picker_id || assignment.picker_name);
       if (!key) continue;
       grouped.set(key, assignmentPickerName(assignment));
     }
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
-  }, [assignmentPickerName, assignments, reportDate, scans, sourceFilteredRequests]);
+  }, [assignmentEffectiveDate, assignmentPickerName, assignments, reportDate, sourceFilteredRequests]);
 
   const reportScansByAssignment = useMemo(() => {
     const assignmentIds = new Set(reportAssignments.map(assignment => assignment.id));
@@ -1505,9 +1514,11 @@ export default function PickingPage() {
 
   async function downloadReport(scope: "global" | "mine") {
     const XLSX = await import("xlsx");
-    const assignmentRequestIds = new Set(filteredRequests.map(request => request.id));
+    const assignmentRequestIds = new Set((panel === "resumen" ? summaryRequests : filteredRequests).map(request => request.id));
     const scopedGlobalAssignments = panel === "reportes"
       ? reportAssignments
+      : panel === "resumen"
+      ? summaryAssignments
       : assignments.filter(assignment => assignmentRequestIds.has(assignment.request_id));
     const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
@@ -1854,23 +1865,23 @@ export default function PickingPage() {
                 ))}
               </select>
               <label className="text-xs font-black uppercase text-slate-500">
-                {panel === "asignacion" || panel === "resumen" ? "Creacion" : panel === "reportes" ? "Fecha picking" : "Registro"}
+                {panel === "asignacion" ? "Creacion" : panel === "resumen" || panel === "reportes" ? "Fecha picking" : "Registro"}
               </label>
               <input
                 type="date"
-                value={panel === "asignacion" || panel === "resumen" ? assignmentDate : panel === "reportes" ? reportDate : registryDate}
+                value={panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate}
                 onChange={event => {
-                  if (panel === "asignacion" || panel === "resumen") setAssignmentDate(event.target.value);
-                  else if (panel === "reportes") setReportDate(event.target.value);
+                  if (panel === "asignacion") setAssignmentDate(event.target.value);
+                  else if (panel === "resumen" || panel === "reportes") setReportDate(event.target.value);
                   else setRegistryDate(event.target.value);
                 }}
                 className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
               />
-              {(panel === "asignacion" || panel === "resumen" ? assignmentDate : panel === "reportes" ? reportDate : registryDate) && (
+              {(panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate) && (
                 <button
                   onClick={() => {
-                    if (panel === "asignacion" || panel === "resumen") setAssignmentDate("");
-                    else if (panel === "reportes") setReportDate("");
+                    if (panel === "asignacion") setAssignmentDate("");
+                    else if (panel === "resumen" || panel === "reportes") setReportDate("");
                     else setRegistryDate("");
                   }}
                   className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
