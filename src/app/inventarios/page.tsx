@@ -1401,12 +1401,12 @@ export default function InventariosPage() {
   }
 
   async function loadPreparationData(sessionId: string) {
-    const [locRes, countRows] = await Promise.all([
-      supabase.from("general_inventory_locations").select("*").eq("session_id", sessionId).eq("is_active", true).order("location_code"),
+    const [locationRows, countRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_locations", "*", sessionId, "location_code"),
       loadPagedSessionRows("general_inventory_counts", "location_code", sessionId, "location_code"),
     ]);
 
-    setLocations(((locRes.data || []) as InventoryLocation[]).map(row => ({
+    setLocations((locationRows as InventoryLocation[]).filter(row => row.is_active !== false).map(row => ({
       ...row,
       location_code: normalizeLocationCode(row.location_code),
       ticket: row.ticket ? normalizeLocationCode(row.ticket) : row.ticket,
