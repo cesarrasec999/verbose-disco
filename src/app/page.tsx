@@ -128,7 +128,7 @@ export default function LoginPage() {
     return MODULES.filter(module => canEnterDestination(authenticatedUser, module.destination));
   }, [authenticatedUser]);
   const SelectedIcon = selectedModule?.icon || Boxes;
-  const loginPlaceholder = inventoryMode === "register" ? "Celular" : "ID / usuario";
+  const loginPlaceholder = selectedModule?.destination === "/inventarios" || inventoryMode === "register" ? "Celular" : "ID / usuario";
 
   function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
     const moduleKey = DESTINATION_MODULE[targetDestination];
@@ -171,7 +171,7 @@ export default function LoginPage() {
     localStorage.removeItem("cyclic_user");
     localStorage.setItem("general_inventory_operator", JSON.stringify(operator));
     localStorage.setItem(GENERAL_INVENTORY_SESSION_KEY, sessionId);
-    window.location.href = "/inventarios";
+    window.location.assign("/inventarios");
   }
 
   async function loadInventorySessions() {
@@ -207,6 +207,25 @@ export default function LoginPage() {
     const rows = ((data || []) as OperatorSessionRow[]).filter(row => ["open", "frozen"].includes(row.general_inventory_sessions?.status || ""));
     const preferred = rows.find(row => row.session_id === preferredSessionId);
     return preferred?.session_id || rows[0]?.session_id || "";
+  }
+
+  async function tryEnterInventoryOperator(phone: string, pass: string) {
+    const { data, error: dbError } = await supabase
+      .from("general_inventory_operators")
+      .select("id,full_name,phone")
+      .eq("phone", phone)
+      .eq("password", pass)
+      .maybeSingle();
+
+    if (dbError || !data) return false;
+
+    const sessionId = await findOperatorInventorySession((data as InventoryOperator).id);
+    if (!sessionId) {
+      setError("No tienes un inventario activo asociado. Pide al validador que te registre.");
+      return true;
+    }
+    enterInventory(data as InventoryOperator, sessionId);
+    return true;
   }
 
   async function handleInventoryAuth() {
@@ -302,6 +321,7 @@ export default function LoginPage() {
   async function handleLogin() {
     setLoading(true);
     setError("");
+    const phone = normalizePhone(username);
     const { data, error: dbError } = await supabase
       .from("cyclic_users")
       .select("*")
@@ -311,7 +331,11 @@ export default function LoginPage() {
       .maybeSingle();
 
     if (dbError || !data) {
-      setError("Usuario o clave incorrectos.");
+      if (phone.length >= 8 && await tryEnterInventoryOperator(phone, password.trim())) {
+        setLoading(false);
+        return;
+      }
+      setError("Usuario/celular o clave incorrectos.");
       setLoading(false);
       return;
     }
@@ -566,7 +590,11 @@ export default function LoginPage() {
                 </div>
                 <div>
                   <h2 className="text-xl font-black">{inventoryMode === "register" ? "Auto registro inventario" : "Iniciar sesion"}</h2>
-                  <p className="text-xs font-semibold text-slate-500">{inventoryMode === "register" ? "Entraras solo a la sesion de Inventarios Generales" : "Ingresa tu ID y clave para ver tus modulos"}</p>
+                  <p className="text-xs font-semibold text-slate-500">
+                    {selectedModule?.destination === "/inventarios"
+                      ? inventoryMode === "register" ? "Entraras solo a la sesion de Inventarios Generales" : "Ingresa tu celular y clave para volver a tu inventario"
+                      : "Ingresa tu ID y clave para ver tus modulos"}
+                  </p>
                 </div>
               </div>
 
@@ -601,7 +629,10 @@ export default function LoginPage() {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={event => setPassword(event.target.value)}
-                  onKeyDown={event => { if (event.key === "Enter") void (inventoryMode === "register" ? handleInventoryAuth() : handleLogin()); }}
+                  onKeyDown={event => {
+                    if (event.key !== "Enter") return;
+                    void (inventoryMode === "register" ? handleInventoryAuth() : handleLogin());
+                  }}
                 />
                 <button type="button" onClick={() => setShowPassword(prev => !prev)} className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-slate-500">
                   {showPassword ? "Ocultar" : "Ver"}
@@ -621,7 +652,7 @@ export default function LoginPage() {
                 </select>
               )}
 
-              {inventoryMode === "login" && <button
+              {inventoryMode === "login" && selectedModule?.destination !== "/inventarios" && <button
                 type="button"
                 className="text-xs font-bold text-slate-500 underline"
                 onClick={() => {
