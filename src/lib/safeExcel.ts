@@ -31,6 +31,20 @@ function validateExcelFile(file: File, options: SafeExcelOptions) {
   }
 }
 
+function validateExcelBuffer(fileName: string, byteLength: number, options: SafeExcelOptions) {
+  const extension = extensionFor(fileName);
+  if (!ALLOWED_EXTENSIONS.has(extension)) {
+    throw new Error("Archivo no permitido. Usa .xlsx, .xls o .csv.");
+  }
+  if (byteLength <= 0) {
+    throw new Error("El archivo esta vacio.");
+  }
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  if (byteLength > maxBytes) {
+    throw new Error(`El archivo pesa demasiado. Maximo permitido: ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+  }
+}
+
 function workbookFirstSheet(workbook: XLSX.WorkBook) {
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error("El archivo no tiene hojas.");
@@ -81,8 +95,32 @@ async function readFirstSafeSheet(file: File, options: SafeExcelOptions = {}) {
   return sheet;
 }
 
+async function readFirstSafeSheetFromBuffer(buffer: ArrayBuffer, fileName: string, options: SafeExcelOptions = {}) {
+  validateExcelBuffer(fileName, buffer.byteLength, options);
+  const workbook = XLSX.read(buffer, {
+    type: "array",
+    cellFormula: true,
+    cellHTML: false,
+    cellNF: false,
+    cellStyles: false,
+    WTF: false,
+  });
+  const sheet = workbookFirstSheet(workbook);
+  assertSafeSheet(sheet, options);
+  return sheet;
+}
+
 export async function readSafeSheetMatrix(file: File, options: SafeExcelOptions = {}) {
   const sheet = await readFirstSafeSheet(file, options);
+  return XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    defval: "",
+    raw: options.raw ?? false,
+    header: 1,
+  });
+}
+
+export async function readSafeSheetMatrixFromBuffer(buffer: ArrayBuffer, fileName: string, options: SafeExcelOptions = {}) {
+  const sheet = await readFirstSafeSheetFromBuffer(buffer, fileName, options);
   return XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     defval: "",
     raw: options.raw ?? false,

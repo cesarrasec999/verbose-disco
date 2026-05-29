@@ -1,4 +1,4 @@
-import { readSafeSheetObjects } from "@/lib/safeExcel";
+import { readSafeSheetMatrixFromBuffer, readSafeSheetObjects } from "@/lib/safeExcel";
 import type {
   CountRow,
   InventoryLocation,
@@ -246,6 +246,10 @@ export function canOperatorEnter(status: SessionStatus) {
 
 export async function readWorkbookRows(file: File): Promise<Record<string, string>[]> {
   return readSafeSheetObjects<Record<string, string>>(file, { maxRows: 12000, maxCols: 60, raw: false });
+}
+
+export async function readWorkbookMatrixFromBuffer(buffer: ArrayBuffer, fileName: string) {
+  return readSafeSheetMatrixFromBuffer(buffer, fileName, { maxRows: 12000, maxCols: 60, raw: false });
 }
 
 export function pickColumn(row: Record<string, string>, names: string[]) {

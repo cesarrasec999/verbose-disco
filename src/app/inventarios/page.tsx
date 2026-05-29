@@ -69,7 +69,6 @@ import {
   dateOnly,
   escapeHtml,
   findInventoryLocation,
-  firstColumnValue,
   isIosDevice,
   locationZoneKey,
   money,
@@ -79,10 +78,7 @@ import {
   number2,
   OPERATOR_RECORDS_PAGE_SIZE,
   operatorRecountItemMatchesQuery,
-  pickColumn,
-  pickFirstMatchingColumn,
-  pickLastMatchingColumn,
-  readWorkbookRows,
+  readWorkbookMatrixFromBuffer,
   recordMatchesQuery,
   recountCandidateMatchesQuery,
   recountKey,
@@ -129,6 +125,7 @@ export default function InventariosPage() {
   const [newName, setNewName] = useState("");
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
   const [locationsFile, setLocationsFile] = useState<File | null>(null);
+  const [locationsFileBuffer, setLocationsFileBuffer] = useState<ArrayBuffer | null>(null);
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
   const [importingLocations, setImportingLocations] = useState(false);
   const [pendingLocationSortDirection, setPendingLocationSortDirection] = useState<SortDirection>("asc");
@@ -2982,17 +2979,32 @@ export default function InventariosPage() {
     setMessage("Inventario general creado y abierto.");
   }
 
+  async function handleLocationsFileChange(file: File | null) {
+    setLocationsFile(file);
+    setLocationsFileBuffer(null);
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      setLocationsFileBuffer(buffer);
+      setMessage(`Excel listo para subir: ${file.name}.`);
+    } catch (error) {
+      setLocationsFile(null);
+      if (locationsFileRef.current) locationsFileRef.current.value = "";
+      setMessage("No pude leer el archivo seleccionado. Cierra el Excel si esta abierto y vuelve a seleccionarlo: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
   async function importLocations() {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
-    if (!selectedSessionId || !locationsFile) {
+    if (!selectedSessionId || !locationsFile || !locationsFileBuffer) {
       setMessage("Selecciona el Excel de ubicaciones.");
       return;
     }
     setImportingLocations(true);
     setMessage("Cargando ubicaciones desde Excel...");
     try {
-      const excelRows = await readWorkbookRows(locationsFile);
+      const excelRows = await readWorkbookMatrixFromBuffer(locationsFileBuffer, locationsFile.name);
       const uniqueRows = new Map<string, {
         session_id: string;
         location_code: string;
@@ -3004,27 +3016,28 @@ export default function InventariosPage() {
         full_location: string | null;
         description: string | null;
       }>();
-      for (const row of excelRows) {
-        const ticket = firstColumnValue(row);
+      for (const [index, row] of excelRows.entries()) {
+        const ticket = String(row[0] ?? "").trim();
+        const firstCell = normalizeCode(ticket).toUpperCase();
+        const secondCell = normalizeCode(String(row[1] ?? "")).toUpperCase();
+        if (index === 0 && (["TICKET", "UBICACION", "UBICACIÓN", "CODIGO", "CÓDIGO"].includes(firstCell) || secondCell === "ZONA")) continue;
         const locationCode = normalizeLocationCode(ticket);
         if (!locationCode) continue;
-        const concatenatedDescription = String(Object.values(row)[6] ?? "").trim();
-        const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
-        const zona = pickColumn(row, ["ZONA"]);
-        const zonaRef = pickColumn(row, ["ZONA REF"]) || zona;
-        const lineal = pickColumn(row, ["LINEAL"]);
-        const referencia = pickColumn(row, ["REFERENCIA"]);
-        const fullLocation = concatenatedDescription || pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
+        const zona = String(row[1] ?? "").trim();
+        const lineal = String(row[2] ?? "").trim();
+        const metro = String(row[3] ?? "").trim();
+        const nivel = String(row[4] ?? "").trim();
+        const fullLocation = String(row[5] ?? "").trim();
         uniqueRows.set(locationCode, {
           session_id: selectedSessionId,
           location_code: locationCode,
           ticket: locationCode,
-          zone: bloqueUbicacion || null,
-          zone_ref: zonaRef || null,
+          zone: zona || null,
+          zone_ref: metro || null,
           lineal: lineal || null,
-          reference: referencia || null,
+          reference: nivel || null,
           full_location: fullLocation || null,
-          description: fullLocation || [bloqueUbicacion, zona, lineal, referencia].filter(Boolean).join(" - ") || null,
+          description: fullLocation || [zona, lineal, metro, nivel].filter(Boolean).join(" - ") || null,
         });
       }
       const rows = [...uniqueRows.values()];
@@ -3038,6 +3051,7 @@ export default function InventariosPage() {
         return;
       }
       setLocationsFile(null);
+      setLocationsFileBuffer(null);
       if (locationsFileRef.current) locationsFileRef.current.value = "";
       setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
       await loadPreparationData(selectedSessionId);
@@ -5824,13 +5838,13 @@ export default function InventariosPage() {
                   type="file"
                   accept=".xlsx,.xls"
                   className="hidden"
-                  onChange={event => setLocationsFile(event.target.files?.[0] || null)}
+                  onChange={event => void handleLocationsFileChange(event.target.files?.[0] || null)}
                 />
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
                     <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                   </button>
-                  <button onClick={importLocations} disabled={!locationsFile || importingLocations || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                   </button>
                 </div>
@@ -5996,13 +6010,13 @@ export default function InventariosPage() {
                       type="file"
                       accept=".xlsx,.xls"
                       className="hidden"
-                      onChange={event => setLocationsFile(event.target.files?.[0] || null)}
+                      onChange={event => void handleLocationsFileChange(event.target.files?.[0] || null)}
                     />
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                       <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
                         <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                       </button>
-                      <button onClick={importLocations} disabled={!locationsFile || importingLocations || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                      <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                         {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                       </button>
                     </div>
