@@ -166,6 +166,12 @@ function formatQty(value: number) {
   return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 2 }).format(value);
 }
 
+function isAssignmentComplete(assignment: PickingAssignment, pickedOverride?: number) {
+  const assigned = num(assignment.assigned_qty);
+  const picked = pickedOverride ?? num(assignment.picked_qty);
+  return assigned > 0 && picked >= assigned;
+}
+
 function cleanLocationLabel(value: string) {
   return String(value || "").replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
@@ -453,6 +459,45 @@ export default function PickingPage() {
     return { requiredCodes, assignedCodes, pendingCodes: Math.max(0, requiredCodes - assignedCodes), assignedRequests };
   }, [assignments, filteredRequests, lines]);
 
+  const assignmentMatrix = useMemo(() => {
+    const requestIds = new Set(filteredRequests.map(request => request.id));
+    const requiredByStore = new Map<string, { label: string; required: number }>();
+    const assignedByStorePicker = new Map<string, number>();
+    const pickerColumns = new Map<string, string>();
+
+    for (const line of lines) {
+      if (!requestIds.has(line.request_id)) continue;
+      const request = filteredRequests.find(item => item.id === line.request_id);
+      const storeKey = requesterStoreKey(request) || "SIN_TIENDA";
+      const current = requiredByStore.get(storeKey) || { label: requesterStoreLabel(request), required: 0 };
+      current.required += 1;
+      requiredByStore.set(storeKey, current);
+    }
+
+    for (const assignment of assignments) {
+      if (!requestIds.has(assignment.request_id)) continue;
+      const request = filteredRequests.find(item => item.id === assignment.request_id);
+      const storeKey = requesterStoreKey(request) || "SIN_TIENDA";
+      const pickerKey = normalize(assignment.picker_id || assignment.picker_name) || "SIN_PICADOR";
+      pickerColumns.set(pickerKey, assignmentPickerName(assignment));
+      assignedByStorePicker.set(`${storeKey}__${pickerKey}`, (assignedByStorePicker.get(`${storeKey}__${pickerKey}`) || 0) + 1);
+    }
+
+    const columns = [...pickerColumns.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+    const rows = [...requiredByStore.entries()].map(([key, value]) => {
+      const assigned = columns.reduce((sum, column) => sum + (assignedByStorePicker.get(`${key}__${column.key}`) || 0), 0);
+      return {
+        key,
+        label: value.label,
+        required: value.required,
+        assigned,
+        byPicker: Object.fromEntries(columns.map(column => [column.key, assignedByStorePicker.get(`${key}__${column.key}`) || 0])) as Record<string, number>,
+      };
+    }).sort((a, b) => a.label.localeCompare(b.label, "es"));
+
+    return { columns, rows };
+  }, [assignmentPickerName, assignments, filteredRequests, lines]);
+
   const reportAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
     return assignments.filter(assignment => {
@@ -503,25 +548,38 @@ export default function PickingPage() {
     });
   }, [assignmentPickerName, lines, reportAssignments, reportScansByAssignment, requests, stockByLine]);
 
+  const reportCodeRows = useMemo(() => {
+    return reportAssignments.map(assignment => {
+      const request = requests.find(item => item.id === assignment.request_id);
+      const picked = reportScansByAssignment.get(assignment.id) || 0;
+      return {
+        assignment,
+        request,
+        total: 1,
+        done: isAssignmentComplete(assignment, picked) ? 1 : 0,
+      };
+    });
+  }, [reportAssignments, reportScansByAssignment, requests]);
+
   const reportByStore = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
-    for (const row of reportRows) {
+    for (const row of reportCodeRows) {
       const label = requesterStoreLabel(row.request);
       const current = grouped.get(label) || { label, total: 0, done: 0 };
-      current.total += row.assigned;
-      current.done += row.picked;
+      current.total += row.total;
+      current.done += row.done;
       grouped.set(label, current);
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
-  }, [reportRows]);
+  }, [reportCodeRows]);
 
   const reportRequests = useMemo(() => {
     return sourceFilteredRequests
       .map(request => {
-        const rows = reportRows.filter(row => row.request?.id === request.id);
-        const total = rows.reduce((sum, row) => sum + row.assigned, 0);
-        const done = rows.reduce((sum, row) => sum + row.picked, 0);
-        const assigned = reportAssignments.filter(item => item.request_id === request.id).reduce((sum, item) => sum + num(item.assigned_qty), 0);
+        const rows = reportCodeRows.filter(row => row.request?.id === request.id);
+        const total = rows.reduce((sum, row) => sum + row.total, 0);
+        const done = rows.reduce((sum, row) => sum + row.done, 0);
+        const assigned = total;
         const status = done >= total && total > 0 ? "Completado" : assigned > 0 ? "En proceso" : "Pendiente";
         return { request, total, done, assigned, status };
       })
@@ -531,25 +589,25 @@ export default function PickingPage() {
         if (a.status !== "En proceso" && b.status === "En proceso") return 1;
         return (b.request.creation_date || "").localeCompare(a.request.creation_date || "");
       });
-  }, [reportAssignments, reportRows, sourceFilteredRequests]);
+  }, [reportCodeRows, sourceFilteredRequests]);
 
     const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
     for (const assignment of reportAssignments) {
       const label = assignmentPickerName(assignment);
       const current = grouped.get(label) || { label, total: 0, done: 0 };
-      current.total += num(assignment.assigned_qty);
-      current.done += reportScansByAssignment.get(assignment.id) || 0;
+      current.total += 1;
+      current.done += isAssignmentComplete(assignment, reportScansByAssignment.get(assignment.id) || 0) ? 1 : 0;
       grouped.set(label, current);
     }
     return [...grouped.values()].sort((a, b) => b.total - a.total);
   }, [assignmentPickerName, reportAssignments, reportScansByAssignment]);
 
   const reportTotals = useMemo(() => {
-    const required = reportRows.reduce((sum, row) => sum + row.assigned, 0);
-    const picked = reportRows.reduce((sum, row) => sum + row.picked, 0);
+    const required = reportCodeRows.reduce((sum, row) => sum + row.total, 0);
+    const picked = reportCodeRows.reduce((sum, row) => sum + row.done, 0);
     return { required, picked, progress: pct(picked, required) };
-  }, [reportRows]);
+  }, [reportCodeRows]);
 
   const selectedReportRequest = useMemo(
     () => reportRequests.find(row => row.request.id === selectedRequestId)?.request || reportRequests[0]?.request || null,
@@ -558,12 +616,12 @@ export default function PickingPage() {
 
   const selectedRequestReport = useMemo(() => {
     if (!selectedReportRequest) return { total: 0, done: 0 };
-    const rows = reportRows.filter(row => row.request?.id === selectedReportRequest.id);
+    const rows = reportCodeRows.filter(row => row.request?.id === selectedReportRequest.id);
     return {
-      total: rows.reduce((sum, row) => sum + row.assigned, 0),
-      done: rows.reduce((sum, row) => sum + row.picked, 0),
+      total: rows.reduce((sum, row) => sum + row.total, 0),
+      done: rows.reduce((sum, row) => sum + row.done, 0),
     };
-  }, [reportRows, selectedReportRequest]);
+  }, [reportCodeRows, selectedReportRequest]);
 
   const allScanRows = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
@@ -1423,7 +1481,7 @@ export default function PickingPage() {
     const scopedGlobalAssignments = panel === "reportes"
       ? reportAssignments
       : assignments.filter(assignment => assignmentRequestIds.has(assignment.request_id));
-      const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
+    const rows = (scope === "mine" ? filteredMyAssignments : scopedGlobalAssignments).map(assignment => {
       const line = lines.find(item => item.id === assignment.line_id);
       const request = requests.find(item => item.id === assignment.request_id);
       const pickedForScope = scope === "global" && panel === "reportes"
@@ -1445,9 +1503,39 @@ export default function PickingPage() {
         "STOCK": num(stockByLine[assignment.line_id] ?? 0),
         "ZONA": (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", "),
         "ESTADO": assignment.status,
+        "ESTADO ASIGNACION": "ASIGNADO",
         "FECHA ASIGNACION": assignment.created_at ? new Date(assignment.created_at).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : "",
       };
     });
+
+    if (scope === "global" && panel === "asignacion") {
+      const assignedLineIds = new Set(scopedGlobalAssignments.map(assignment => assignment.line_id));
+      const pendingRows = lines
+        .filter(line => assignmentRequestIds.has(line.request_id) && !assignedLineIds.has(line.id))
+        .map(line => {
+          const request = requests.find(item => item.id === line.request_id);
+          return {
+            "REQUERIMIENTO": request?.doc_number || request?.inv_request_no || "",
+            "TIENDA ENTREGA": request?.source_store_name || request?.source_store_code || "",
+            "TIENDA REQUIERE": request?.destination_store_name || request?.destination_store_code || "",
+            "PICADOR": "PENDIENTE POR ASIGNAR",
+            "N": line.line_id ?? "",
+            "ID (CODIGO)": line.product_code || "",
+            "BARRA": line.barcode || "",
+            "DESCRIPCION": line.description || "",
+            "PRES (UM)": line.unit || "",
+            "RQ (ASIGNADO)": 0,
+            "PICADO": 0,
+            "PENDIENTE": num(line.qty_requested),
+            "STOCK": num(stockByLine[line.id] ?? 0),
+            "ZONA": (locationsByLine[line.id] || []).map(cleanLocationLabel).join(", "),
+            "ESTADO": "pendiente",
+            "ESTADO ASIGNACION": "PENDIENTE POR ASIGNAR",
+            "FECHA ASIGNACION": "",
+          };
+        });
+      rows.push(...pendingRows);
+    }
 
     const ws = XLSX.utils.json_to_sheet(rows);
 
@@ -1468,6 +1556,7 @@ export default function PickingPage() {
       { wch: 10 }, // STOCK
       { wch: 20 }, // ZONA
       { wch: 14 }, // ESTADO
+      { wch: 24 }, // ESTADO ASIGNACION
       { wch: 18 }, // FECHA
     ];
     ws["!cols"] = colWidths;
@@ -1803,6 +1892,48 @@ export default function PickingPage() {
           ))}
         </div>}
 
+        {manager && panel === "asignacion" && (
+          <section className="mt-4 overflow-hidden rounded-2xl border bg-white shadow-sm">
+            <div className="border-b p-4">
+              <h2 className="font-black">Resumen tienda solicitante x picador</h2>
+              <p className="text-xs font-bold text-slate-500">Codigos asignados por picador sobre codigos requeridos de cada tienda.</p>
+            </div>
+            <div className="overflow-auto">
+              <table className="w-full min-w-[720px] text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="sticky left-0 z-10 bg-slate-100 p-3 text-left">Tienda solicitante</th>
+                    {assignmentMatrix.columns.map(column => (
+                      <th key={column.key} className="p-3 text-right">{column.label}</th>
+                    ))}
+                    <th className="p-3 text-right">Total codigos asignados / requeridos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignmentMatrix.rows.map(row => (
+                    <tr key={row.key} className="border-t">
+                      <td className="sticky left-0 z-10 bg-white p-3 font-black">{row.label}</td>
+                      {assignmentMatrix.columns.map(column => (
+                        <td key={column.key} className="p-3 text-right font-black text-slate-700">
+                          {row.byPicker[column.key] || 0}/{row.required}
+                        </td>
+                      ))}
+                      <td className="p-3 text-right font-black text-violet-700">{row.assigned}/{row.required}</td>
+                    </tr>
+                  ))}
+                  {assignmentMatrix.rows.length === 0 && (
+                    <tr>
+                      <td colSpan={assignmentMatrix.columns.length + 2} className="p-8 text-center text-sm font-bold text-slate-400">
+                        Sin codigos para resumir.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {loading ? (
           <div className="mt-6 rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-500">Cargando picking...</div>
         ) : manager && panel === "asignacion" ? (
@@ -2052,7 +2183,7 @@ export default function PickingPage() {
         ) : manager && panel === "reportes" ? (
           <section className="mt-4 space-y-4">
             <div className="grid gap-3 md:grid-cols-2">
-              <DonutCard title="Global" done={reportTotals.picked} total={reportTotals.required} detail="Picado vs asignado en el filtro" />
+              <DonutCard title="Global" done={reportTotals.picked} total={reportTotals.required} detail="Codigos completados vs asignados" />
               <DonutCard
                 title="Requerimiento seleccionado"
                 done={selectedRequestReport.done}
@@ -2120,7 +2251,7 @@ export default function PickingPage() {
                       <span className={`rounded-full px-2 py-1 text-xs font-black ${row.status === "Completado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{row.status}</span>
                     </div>
                     <div className="mt-3 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${pct(row.done, row.total)}%` }} /></div>
-                    <p className="mt-1 text-xs font-black text-slate-500">{formatQty(row.done)} / {formatQty(row.total)} picado</p>
+                    <p className="mt-1 text-xs font-black text-slate-500">{formatQty(row.done)} / {formatQty(row.total)} codigos completados</p>
                   </button>
                 ))}
                 {reportRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">Aun no hay requerimientos asignados.</p>}
