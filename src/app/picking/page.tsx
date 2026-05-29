@@ -154,6 +154,14 @@ function sameDate(value: string | null | undefined, date: string) {
   return String(value).slice(0, 10) === date;
 }
 
+function inDateRange(value: string | null | undefined, from: string, to: string) {
+  if (!value) return false;
+  const date = String(value).slice(0, 10);
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
 function normalize(value: string | null | undefined) {
   return String(value || "").trim().toUpperCase();
 }
@@ -270,6 +278,8 @@ export default function PickingPage() {
   const [pickingDate, setPickingDate] = useState("");
   const [reportDate, setReportDate] = useState("");
   const [registryDate, setRegistryDate] = useState("");
+  const [productivityDateFrom, setProductivityDateFrom] = useState("");
+  const [productivityDateTo, setProductivityDateTo] = useState("");
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
   const [locationSort, setLocationSort] = useState<LocationSort>("asc");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -527,6 +537,12 @@ export default function PickingPage() {
     return { columns, rows };
   }, [assignmentPickerName, lines, summaryAssignments, summaryRequests]);
 
+  const summaryCodeTotals = useMemo(() => {
+    const required = assignmentMatrix.rows.reduce((sum, row) => sum + row.required, 0);
+    const assigned = assignmentMatrix.rows.reduce((sum, row) => sum + row.assigned, 0);
+    return { required, assigned, pending: Math.max(0, required - assigned) };
+  }, [assignmentMatrix.rows]);
+
   const reportAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
     return assignments.filter(assignment => {
@@ -693,9 +709,20 @@ export default function PickingPage() {
     });
   }, [allScanRows, selectedRegistryPicker, selectedRegistryRequesterStore]);
 
+  const productivityScanRows = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    return scans
+      .filter(scan => requestIds.has(scan.request_id) && inDateRange(scan.created_at, productivityDateFrom, productivityDateTo))
+      .map(scan => {
+        const line = lines.find(item => item.id === scan.line_id);
+        const request = requests.find(item => item.id === scan.request_id);
+        return { scan, line, request };
+      });
+  }, [lines, productivityDateFrom, productivityDateTo, requests, scans, sourceFilteredRequests]);
+
   const productivityRows = useMemo(() => {
     const grouped = new Map<string, { label: string; codes: Set<string>; units: number; locations: Set<string> }>();
-    for (const row of allScanRows) {
+    for (const row of productivityScanRows) {
       const key = normalize(row.scan.picker_id || row.scan.picker_name) || scanPickerName(row.scan);
       const current = grouped.get(key) || { label: scanPickerName(row.scan), codes: new Set<string>(), units: 0, locations: new Set<string>() };
       if (row.scan.line_id) current.codes.add(row.scan.line_id);
@@ -705,7 +732,7 @@ export default function PickingPage() {
       grouped.set(key, current);
     }
     return [...grouped.values()].sort((a, b) => b.units - a.units);
-  }, [allScanRows, scanPickerName]);
+  }, [productivityScanRows, scanPickerName]);
 
   const productivityByCodes = useMemo(
     () => productivityRows.map(row => ({ label: row.label, value: row.codes.size })).sort((a, b) => b.value - a.value),
@@ -721,6 +748,25 @@ export default function PickingPage() {
     () => productivityRows.map(row => ({ label: row.label, value: row.locations.size })).sort((a, b) => b.value - a.value),
     [productivityRows]
   );
+
+  const productivityHourlyComparison = useMemo(() => {
+    const pickerColumns = new Map<string, string>();
+    const hourRows = new Map<string, { hour: string; total: number; byPicker: Record<string, number> }>();
+
+    for (const row of productivityScanRows) {
+      const pickerKey = normalize(row.scan.picker_id || row.scan.picker_name) || scanPickerName(row.scan);
+      pickerColumns.set(pickerKey, scanPickerName(row.scan));
+      const hour = new Date(row.scan.created_at).toLocaleTimeString("es-PE", { hour: "2-digit", hour12: false }) + ":00";
+      const current = hourRows.get(hour) || { hour, total: 0, byPicker: {} };
+      current.byPicker[pickerKey] = (current.byPicker[pickerKey] || 0) + 1;
+      current.total += 1;
+      hourRows.set(hour, current);
+    }
+
+    const columns = [...pickerColumns.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
+    const rows = [...hourRows.values()].sort((a, b) => a.hour.localeCompare(b.hour));
+    return { columns, rows };
+  }, [productivityScanRows, scanPickerName]);
 
   const operatorTotals = useMemo(() => {
     const assigned = filteredMyAssignments.reduce((sum, item) => sum + num(item.assigned_qty), 0);
@@ -1864,30 +1910,62 @@ export default function PickingPage() {
                   <option key={option.key} value={option.key}>{option.label}</option>
                 ))}
               </select>
-              <label className="text-xs font-black uppercase text-slate-500">
-                {panel === "asignacion" ? "Creacion" : panel === "resumen" || panel === "reportes" ? "Fecha picking" : "Registro"}
-              </label>
-              <input
-                type="date"
-                value={panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate}
-                onChange={event => {
-                  if (panel === "asignacion") setAssignmentDate(event.target.value);
-                  else if (panel === "resumen" || panel === "reportes") setReportDate(event.target.value);
-                  else setRegistryDate(event.target.value);
-                }}
-                className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
-              />
-              {(panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate) && (
-                <button
-                  onClick={() => {
-                    if (panel === "asignacion") setAssignmentDate("");
-                    else if (panel === "resumen" || panel === "reportes") setReportDate("");
-                    else setRegistryDate("");
-                  }}
-                  className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
-                >
-                  Limpiar fecha
-                </button>
+              {panel === "productividad" ? (
+                <>
+                  <label className="text-xs font-black uppercase text-slate-500">Desde</label>
+                  <input
+                    type="date"
+                    value={productivityDateFrom}
+                    onChange={event => setProductivityDateFrom(event.target.value)}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  />
+                  <label className="text-xs font-black uppercase text-slate-500">Hasta</label>
+                  <input
+                    type="date"
+                    value={productivityDateTo}
+                    onChange={event => setProductivityDateTo(event.target.value)}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  />
+                  {(productivityDateFrom || productivityDateTo) && (
+                    <button
+                      onClick={() => {
+                        setProductivityDateFrom("");
+                        setProductivityDateTo("");
+                      }}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                    >
+                      Limpiar rango
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <label className="text-xs font-black uppercase text-slate-500">
+                    {panel === "asignacion" ? "Creacion" : panel === "resumen" || panel === "reportes" ? "Fecha picking" : "Registro"}
+                  </label>
+                  <input
+                    type="date"
+                    value={panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate}
+                    onChange={event => {
+                      if (panel === "asignacion") setAssignmentDate(event.target.value);
+                      else if (panel === "resumen" || panel === "reportes") setReportDate(event.target.value);
+                      else setRegistryDate(event.target.value);
+                    }}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  />
+                  {(panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate) && (
+                    <button
+                      onClick={() => {
+                        if (panel === "asignacion") setAssignmentDate("");
+                        else if (panel === "resumen" || panel === "reportes") setReportDate("");
+                        else setRegistryDate("");
+                      }}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                    >
+                      Limpiar fecha
+                    </button>
+                  )}
+                </>
               )}
               <div className="flex rounded-2xl border bg-slate-100 p-1">
                 <button
@@ -1944,6 +2022,18 @@ export default function PickingPage() {
           <div className="mt-6 rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-500">Cargando picking...</div>
         ) : manager && panel === "resumen" ? (
           <section className="mt-4 space-y-4">
+            <div className="grid gap-3 md:grid-cols-3">
+              {[
+                ["Codigos requeridos", summaryCodeTotals.required],
+                ["Codigos asignados", summaryCodeTotals.assigned],
+                ["Codigos pendientes", summaryCodeTotals.pending],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <p className="text-xs font-black uppercase text-slate-500">{label}</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">{value}</p>
+                </div>
+              ))}
+            </div>
             <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
                 <div>
@@ -2456,12 +2546,51 @@ export default function PickingPage() {
           <section className="mt-4 space-y-4">
             <div className="rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Productividad</h2>
-              <p className="text-xs font-bold text-slate-500">Resumen por picador segun los registros del filtro de tienda entrega y fecha.</p>
+              <p className="text-xs font-bold text-slate-500">Resumen por picador segun los registros del filtro de tienda entrega y rango de fechas.</p>
             </div>
             <div className="grid gap-4 lg:grid-cols-3">
               <BarListCard title="Codigos registrados" rows={productivityByCodes} colorClass="bg-violet-600" />
               <BarListCard title="Unidades registradas" rows={productivityByUnits} colorClass="bg-emerald-600" />
               <BarListCard title="Ubicaciones registradas" rows={productivityByLocations} colorClass="bg-cyan-600" />
+            </div>
+            <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+              <div className="border-b p-4">
+                <h2 className="font-black">Registros por hora entre picadores</h2>
+                <p className="text-xs font-bold text-slate-500">Cantidad de registros guardados por cada picador en cada hora del rango.</p>
+              </div>
+              <div className="overflow-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                    <tr>
+                      <th className="sticky left-0 z-10 bg-slate-100 p-3 text-left">Hora</th>
+                      {productivityHourlyComparison.columns.map(column => (
+                        <th key={column.key} className="p-3 text-right">{column.label}</th>
+                      ))}
+                      <th className="p-3 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productivityHourlyComparison.rows.map(row => (
+                      <tr key={row.hour} className="border-t">
+                        <td className="sticky left-0 z-10 bg-white p-3 font-black">{row.hour}</td>
+                        {productivityHourlyComparison.columns.map(column => (
+                          <td key={column.key} className="p-3 text-right font-black text-slate-700">
+                            {row.byPicker[column.key] || 0}
+                          </td>
+                        ))}
+                        <td className="p-3 text-right font-black text-violet-700">{row.total}</td>
+                      </tr>
+                    ))}
+                    {productivityHourlyComparison.rows.length === 0 && (
+                      <tr>
+                        <td colSpan={productivityHourlyComparison.columns.length + 2} className="p-8 text-center text-sm font-bold text-slate-400">
+                          Sin registros en el rango seleccionado.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         ) : (
