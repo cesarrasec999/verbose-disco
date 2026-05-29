@@ -81,6 +81,11 @@ type LocationEntryDraftRecord = {
     quantity: string;
     product: Product;
 };
+
+type MultiLocationSearchResult = {
+    query: string;
+    rows: ProductLocation[];
+};
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
 // ══════════════════════════════════════════════════════════
@@ -224,6 +229,9 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     const [countingStatus, setCountingStatus] = useState<"idle"|"counting"|"finished"|"recounting"|"recount_done">("idle");
 
     const [locationSearch, setLocationSearch] = useState("");
+    const [locationSearchMode, setLocationSearchMode] = useState<"single" | "multi">("single");
+    const [multiLocationSearch, setMultiLocationSearch] = useState("");
+    const [multiLocationResults, setMultiLocationResults] = useState<MultiLocationSearchResult[]>([]);
     const [locationStoreId, setLocationStoreId] = useState("");
     const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
     const [locationBusy, setLocationBusy] = useState(false);
@@ -4228,74 +4236,102 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         loadStores();
     }
 
+    async function buildLocationSearchResults(queryText: string): Promise<ProductLocation[]> {
+        const term = queryText.trim();
+        if (!term) return [];
+        const normalizedTerm = term.toLowerCase();
+        const safeLikeTerm = term.replace(/[,%()]/g, " ").trim();
+        const productMatches = products.filter(product => {
+            const haystack = `${product.sku} ${product.barcode || ""} ${product.description}`.toLowerCase();
+            const cleanTerm = cleanCode(term);
+            return haystack.includes(normalizedTerm) ||
+                visibleProductCode(product.sku).includes(cleanTerm) ||
+                codeCandidates(product.barcode).some(candidate => candidate.toLowerCase().includes(normalizedTerm) || cleanCode(candidate).includes(cleanTerm));
+        }).slice(0, 80);
+        const productMap = new Map<string, Product>();
+        productMatches.forEach(product => productMap.set(product.id, product));
+
+        if (safeLikeTerm) {
+            const full = fullProductCode(safeLikeTerm);
+            const barcodeLike = safeLikeTerm.replace(/\s+/g, "%");
+            const { data: dbProducts } = await supabase
+                .from("cyclic_products")
+                .select("id,sku,barcode,description,unit,cost,is_active")
+                .eq("is_active", true)
+                .or(`sku.ilike.%${full}%,barcode.ilike.%${barcodeLike}%,description.ilike.%${safeLikeTerm}%`)
+                .limit(80);
+            (dbProducts || []).forEach(product => productMap.set(product.id, product as Product));
+        }
+
+        const mappedProduct = await findProductForLocationEntry(term);
+        if (mappedProduct) productMap.set(mappedProduct.id, mappedProduct);
+
+        const productIds = [...productMap.keys()];
+        const byId = new Map<string, ProductLocation>();
+        if (productIds.length > 0) {
+            const cleanIds = [...new Set(productIds)].filter(Boolean);
+            const { data, error } = await supabase
+                .from("product_locations")
+                .select("*, cyclic_products(sku,description,unit,cost)")
+                .in("product_id", cleanIds)
+                .eq("is_active", true)
+                .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
+                .order("updated_at", { ascending: false });
+            if (error) throw error;
+            for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
+        }
+
+        const locationTerm = term.toUpperCase();
+        const { data: locationRows, error: locationError } = await supabase
+            .from("product_locations")
+            .select("*, cyclic_products(sku,description,unit,cost)")
+            .eq("is_active", true)
+            .ilike("location", `%${locationTerm}%`)
+            .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
+            .order("updated_at", { ascending: false })
+            .limit(200);
+        if (locationError) throw locationError;
+        for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
+
+        const hydratedRows = await hydrateLocationQuantities([...byId.values()]);
+        return hydratedRows.sort((a, b) => {
+            const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
+            const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
+            if (timeA !== timeB) return timeB - timeA;
+            return a.location.localeCompare(b.location);
+        });
+    }
+
     async function searchLocations(queryText = locationSearch) {
         const term = queryText.trim();
         if (!term) { setLocationResults([]); return; }
         setLocationBusy(true);
         try {
-            const normalizedTerm = term.toLowerCase();
-            const safeLikeTerm = term.replace(/[,%()]/g, " ").trim();
-            const productMatches = products.filter(product => {
-                const haystack = `${product.sku} ${product.barcode || ""} ${product.description}`.toLowerCase();
-                const cleanTerm = cleanCode(term);
-                return haystack.includes(normalizedTerm) ||
-                    visibleProductCode(product.sku).includes(cleanTerm) ||
-                    codeCandidates(product.barcode).some(candidate => candidate.toLowerCase().includes(normalizedTerm) || cleanCode(candidate).includes(cleanTerm));
-            }).slice(0, 80);
-            const productMap = new Map<string, Product>();
-            productMatches.forEach(product => productMap.set(product.id, product));
-
-            if (safeLikeTerm) {
-                const full = fullProductCode(safeLikeTerm);
-                const barcodeLike = safeLikeTerm.replace(/\s+/g, "%");
-                const { data: dbProducts } = await supabase
-                    .from("cyclic_products")
-                    .select("id,sku,barcode,description,unit,cost,is_active")
-                    .eq("is_active", true)
-                    .or(`sku.ilike.%${full}%,barcode.ilike.%${barcodeLike}%,description.ilike.%${safeLikeTerm}%`)
-                    .limit(80);
-                (dbProducts || []).forEach(product => productMap.set(product.id, product as Product));
-            }
-
-            const mappedProduct = await findProductForLocationEntry(term);
-            if (mappedProduct) productMap.set(mappedProduct.id, mappedProduct);
-
-            const productIds = [...productMap.keys()];
-            const byId = new Map<string, ProductLocation>();
-            if (productIds.length > 0) {
-                const cleanIds = [...new Set(productIds)].filter(Boolean);
-                const { data, error } = await supabase
-                    .from("product_locations")
-                    .select("*, cyclic_products(sku,description,unit,cost)")
-                    .in("product_id", cleanIds)
-                    .eq("is_active", true)
-                    .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
-                    .order("updated_at", { ascending: false });
-                if (error) throw error;
-                for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
-            }
-
-            const locationTerm = term.toUpperCase();
-            const { data: locationRows, error: locationError } = await supabase
-                .from("product_locations")
-                .select("*, cyclic_products(sku,description,unit,cost)")
-                .eq("is_active", true)
-                .ilike("location", `%${locationTerm}%`)
-                .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
-                .order("updated_at", { ascending: false })
-                .limit(200);
-            if (locationError) throw locationError;
-            for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
-
-            const hydratedRows = await hydrateLocationQuantities([...byId.values()]);
-            setLocationResults(hydratedRows.sort((a, b) => {
-                const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
-                const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
-                if (timeA !== timeB) return timeB - timeA;
-                return a.location.localeCompare(b.location);
-            }));
+            setLocationResults(await buildLocationSearchResults(term));
         } catch (error: any) {
             showMessage("Error consultando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function searchMultipleLocations() {
+        const terms = multiLocationSearch
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean)
+            .slice(0, 60);
+        if (terms.length === 0) { setMultiLocationResults([]); return; }
+        setLocationBusy(true);
+        try {
+            const uniqueTerms = [...new Set(terms)];
+            const results = await Promise.all(uniqueTerms.map(async query => ({
+                query,
+                rows: await buildLocationSearchResults(query),
+            })));
+            setMultiLocationResults(results);
+        } catch (error: any) {
+            showMessage("Error consultando multibusqueda: " + (error?.message || error), "error");
         } finally {
             setLocationBusy(false);
         }
@@ -8004,7 +8040,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                     <select
                                         className="border rounded-xl px-3 py-2 text-sm text-slate-900 bg-white"
                                         value={locationStoreId}
-                                        onChange={e => { setLocationStoreId(e.target.value); setLocationResults([]); }}
+                                        onChange={e => { setLocationStoreId(e.target.value); setLocationResults([]); setMultiLocationResults([]); }}
                                     >
                                         <option value="">Selecciona tienda</option>
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -8039,32 +8075,76 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                             )}
 
                             <div className="rounded-2xl border p-4 space-y-3">
-                                <p className="text-sm font-semibold text-slate-700">Buscar ubicaciones</p>
-                                <div className="flex gap-3 flex-wrap">
-                                    <input
-                                        className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[220px]"
-                                        placeholder="Codigo, barra, descripcion o ubicacion"
-                                        value={locationSearch}
-                                        onChange={e => setLocationSearch(e.target.value)}
-                                        onKeyDown={e => { if (e.key === "Enter") searchLocations(); }}
-                                    />
-                                    <button className="px-4 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={() => openScanner("location_lookup")} title="Escanear codigo">
-                                        <QrCode size={16} className="inline mr-1" /> Escanear
-                                    </button>
-                                    <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
-                                        {locationBusy ? "Consultando..." : "Consultar"}
-                                    </button>
-                                    {canRegisterLocations && <button
-                                        className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
-                                        disabled={locationBusy || !locationStoreId}
-                                        onClick={openLocationEntryCard}
-                                    >
-                                        Agregar ubicacion
-                                    </button>}
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-sm font-semibold text-slate-700">Buscar ubicaciones</p>
+                                    <div className="grid grid-cols-2 rounded-xl border bg-slate-50 p-1 text-xs font-black">
+                                        <button
+                                            type="button"
+                                            onClick={() => setLocationSearchMode("single")}
+                                            className={`rounded-lg px-3 py-2 ${locationSearchMode === "single" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                                        >
+                                            Busqueda
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setLocationSearchMode("multi")}
+                                            className={`rounded-lg px-3 py-2 ${locationSearchMode === "multi" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                                        >
+                                            Multibusqueda
+                                        </button>
+                                    </div>
                                 </div>
+                                {locationSearchMode === "single" ? (
+                                    <div className="flex gap-3 flex-wrap">
+                                        <input
+                                            className="flex-1 border rounded-2xl p-3 text-sm bg-white text-slate-900 min-w-[220px]"
+                                            placeholder="Codigo, barra, descripcion o ubicacion"
+                                            value={locationSearch}
+                                            onChange={e => setLocationSearch(e.target.value)}
+                                            onKeyDown={e => { if (e.key === "Enter") searchLocations(); }}
+                                        />
+                                        <button className="px-4 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={() => openScanner("location_lookup")} title="Escanear codigo">
+                                            <QrCode size={16} className="inline mr-1" /> Escanear
+                                        </button>
+                                        <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={() => searchLocations()}>
+                                            {locationBusy ? "Consultando..." : "Consultar"}
+                                        </button>
+                                        {canRegisterLocations && <button
+                                            className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
+                                            disabled={locationBusy || !locationStoreId}
+                                            onClick={openLocationEntryCard}
+                                        >
+                                            Agregar ubicacion
+                                        </button>}
+                                    </div>
+                                ) : (
+                                    <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                                        <textarea
+                                            className="min-h-36 w-full rounded-2xl border bg-white p-3 text-sm text-slate-900 outline-none focus:border-slate-900"
+                                            placeholder={"Un codigo por linea\nEj:\n123456\n789012\nABC-001"}
+                                            value={multiLocationSearch}
+                                            onChange={e => setMultiLocationSearch(e.target.value)}
+                                        />
+                                        <div className="flex flex-col gap-2">
+                                            <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={searchMultipleLocations}>
+                                                {locationBusy ? "Consultando..." : "Consultar lista"}
+                                            </button>
+                                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => { setMultiLocationSearch(""); setMultiLocationResults([]); }}>
+                                                Limpiar
+                                            </button>
+                                            {canRegisterLocations && <button
+                                                className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700 disabled:opacity-40"
+                                                disabled={locationBusy || !locationStoreId}
+                                                onClick={openLocationEntryCard}
+                                            >
+                                                Agregar ubicacion
+                                            </button>}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
-                            <div className="border rounded-2xl overflow-hidden">
+                            {locationSearchMode === "single" ? <div className="border rounded-2xl overflow-hidden">
                                 <div className="max-h-[460px] overflow-auto">
                                     <table className="w-full text-sm">
                                         <thead className="bg-slate-100 sticky top-0">
@@ -8092,7 +8172,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                                         <td className="p-2 border text-slate-600">{productDescription}</td>
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                         <td className="p-2 border font-bold text-slate-900">{row.location}</td>
-                                                        <td className="p-2 border text-center font-black">{row.stored_quantity ?? "-"}</td>
+                                                        <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
                                                         <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
                                                         <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</td>
                                                         {!isMobileAccess && (
@@ -8115,7 +8195,55 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                         </tbody>
                                     </table>
                                 </div>
-                            </div>
+                            </div> : (
+                                <div className="space-y-3">
+                                    {multiLocationResults.map(group => (
+                                        <div key={group.query} className="overflow-hidden rounded-2xl border">
+                                            <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-slate-50 px-4 py-3">
+                                                <div className="font-black text-slate-900">{group.query}</div>
+                                                <div className="text-xs font-bold text-slate-500">{group.rows.length} resultado{group.rows.length !== 1 ? "s" : ""}</div>
+                                            </div>
+                                            <div className="max-h-72 overflow-auto">
+                                                <table className="w-full text-sm">
+                                                    <thead className="bg-slate-100 sticky top-0">
+                                                        <tr>
+                                                            <th className="p-2 border text-left">Codigo</th>
+                                                            <th className="p-2 border text-left">Descripcion</th>
+                                                            <th className="p-2 border">Tienda</th>
+                                                            <th className="p-2 border text-left">Ubicacion</th>
+                                                            <th className="p-2 border">Cantidad</th>
+                                                            <th className="p-2 border">Ultimo cambio</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {group.rows.map(row => {
+                                                            const product = products.find(p => p.id === row.product_id);
+                                                            const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
+                                                            const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                                            const changedAt = row.last_seen_at || row.updated_at;
+                                                            const store = allStores.find(s => s.id === row.store_id);
+                                                            return (
+                                                                <tr key={`${group.query}__${row.id}`}>
+                                                                    <td className="p-2 border font-mono text-xs">{productSku}</td>
+                                                                    <td className="p-2 border text-slate-600">{productDescription}</td>
+                                                                    <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
+                                                                    <td className="p-2 border font-bold text-slate-900">{row.location}</td>
+                                                                    <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
+                                                                    <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                        {group.rows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">Sin ubicaciones para este codigo.</td></tr>}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {multiLocationResults.length === 0 && (
+                                        <div className="rounded-2xl border p-6 text-center text-sm text-slate-400">Ingresa varios codigos, uno por linea, para consultar sus ubicaciones.</div>
+                                    )}
+                                </div>
+                            )}
                         </section>
                     )}
 
