@@ -230,7 +230,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
     const [locationSearch, setLocationSearch] = useState("");
     const [locationSearchMode, setLocationSearchMode] = useState<"single" | "multi">("single");
-    const [multiLocationSearch, setMultiLocationSearch] = useState("");
+    const [multiLocationSearchRows, setMultiLocationSearchRows] = useState<string[]>(["", "", ""]);
     const [multiLocationResults, setMultiLocationResults] = useState<MultiLocationSearchResult[]>([]);
     const [locationStoreId, setLocationStoreId] = useState("");
     const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
@@ -4266,6 +4266,24 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         const mappedProduct = await findProductForLocationEntry(term);
         if (mappedProduct) productMap.set(mappedProduct.id, mappedProduct);
 
+        if (safeLikeTerm) {
+            const barcodeLike = safeLikeTerm.replace(/\s+/g, "%");
+            const { data: barcodeRows } = await supabase
+                .from("codigos_barra")
+                .select("codsap,upc,alu")
+                .or(`upc.ilike.%${barcodeLike}%,alu.ilike.%${barcodeLike}%`)
+                .limit(80);
+            const mappedCodes = [...new Set((barcodeRows || []).flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)))];
+            for (let i = 0; i < mappedCodes.length; i += 500) {
+                const { data: mappedProducts } = await supabase
+                    .from("cyclic_products")
+                    .select("id,sku,barcode,description,unit,cost,is_active")
+                    .eq("is_active", true)
+                    .in("sku", mappedCodes.slice(i, i + 500));
+                (mappedProducts || []).forEach(product => productMap.set(product.id, product as Product));
+            }
+        }
+
         const productIds = [...productMap.keys()];
         const byId = new Map<string, ProductLocation>();
         if (productIds.length > 0) {
@@ -4316,8 +4334,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     }
 
     async function searchMultipleLocations() {
-        const terms = multiLocationSearch
-            .split(/\r?\n/)
+        const terms = multiLocationSearchRows
             .map(line => line.trim())
             .filter(Boolean)
             .slice(0, 60);
@@ -4335,6 +4352,23 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         } finally {
             setLocationBusy(false);
         }
+    }
+
+    function updateMultiLocationSearchRow(index: number, value: string) {
+        setMultiLocationSearchRows(prev => prev.map((row, rowIndex) => rowIndex === index ? value : row));
+    }
+
+    function addMultiLocationSearchRow() {
+        setMultiLocationSearchRows(prev => [...prev, ""]);
+    }
+
+    function removeMultiLocationSearchRow(index: number) {
+        setMultiLocationSearchRows(prev => prev.length <= 1 ? prev : prev.filter((_, rowIndex) => rowIndex !== index));
+    }
+
+    function clearMultiLocationSearchRows() {
+        setMultiLocationSearchRows(["", "", ""]);
+        setMultiLocationResults([]);
     }
 
     async function findProductForLocationEntry(codeValue: string): Promise<Product | null> {
@@ -8118,18 +8152,39 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                         </button>}
                                     </div>
                                 ) : (
-                                    <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                                        <textarea
-                                            className="min-h-36 w-full rounded-2xl border bg-white p-3 text-sm text-slate-900 outline-none focus:border-slate-900"
-                                            placeholder={"Un codigo por linea\nEj:\n123456\n789012\nABC-001"}
-                                            value={multiLocationSearch}
-                                            onChange={e => setMultiLocationSearch(e.target.value)}
-                                        />
-                                        <div className="flex flex-col gap-2">
-                                            <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={searchMultipleLocations}>
-                                                {locationBusy ? "Consultando..." : "Consultar lista"}
+                                    <div className="space-y-3">
+                                        <div className="grid gap-2">
+                                            {multiLocationSearchRows.map((row, index) => (
+                                                <div key={index} className="grid gap-2 sm:grid-cols-[44px_1fr_auto]">
+                                                    <div className="flex h-12 items-center justify-center rounded-xl bg-slate-100 text-xs font-black text-slate-500">
+                                                        {index + 1}
+                                                    </div>
+                                                    <input
+                                                        className="min-w-0 rounded-2xl border bg-white p-3 text-sm text-slate-900 outline-none focus:border-slate-900"
+                                                        placeholder="Codigo, barra, descripcion o ubicacion"
+                                                        value={row}
+                                                        onChange={e => updateMultiLocationSearchRow(index, e.target.value)}
+                                                        onKeyDown={e => { if (e.key === "Enter") searchMultipleLocations(); }}
+                                                    />
+                                                    <button
+                                                        className="rounded-2xl border px-4 py-3 text-sm font-black text-slate-600 disabled:opacity-40"
+                                                        disabled={multiLocationSearchRows.length <= 1}
+                                                        onClick={() => removeMultiLocationSearchRow(index)}
+                                                        type="button"
+                                                    >
+                                                        Quitar
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={addMultiLocationSearchRow} type="button">
+                                                + Otra busqueda
                                             </button>
-                                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={() => { setMultiLocationSearch(""); setMultiLocationResults([]); }}>
+                                            <button className="px-5 py-3 rounded-2xl bg-blue-700 text-white font-semibold text-sm disabled:opacity-40" disabled={locationBusy} onClick={searchMultipleLocations}>
+                                                {locationBusy ? "Consultando..." : "Consultar busquedas"}
+                                            </button>
+                                            <button className="px-5 py-3 rounded-2xl border font-semibold text-sm text-slate-700" onClick={clearMultiLocationSearchRows} type="button">
                                                 Limpiar
                                             </button>
                                             {canRegisterLocations && <button
