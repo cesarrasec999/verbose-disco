@@ -130,6 +130,8 @@ export default function InventariosPage() {
   const [newDate, setNewDate] = useState(new Date().toISOString().slice(0, 10));
   const [locationsFile, setLocationsFile] = useState<File | null>(null);
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
+  const [importingLocations, setImportingLocations] = useState(false);
+  const [pendingLocationSortDirection, setPendingLocationSortDirection] = useState<SortDirection>("asc");
   const [manualLocationDraft, setManualLocationDraft] = useState<ManualLocationDraft>({
     location_code: "",
     zone: "",
@@ -729,8 +731,10 @@ export default function InventariosPage() {
 
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
-    return locations.filter(location => !location.is_empty && !counted.has(normalizeLocationCode(location.location_code)));
-  }, [locations, countedLocationCodes]);
+    return locations
+      .filter(location => !location.is_empty && !counted.has(normalizeLocationCode(location.location_code)))
+      .sort((a, b) => compareLocationByZone(a.location_code, b.location_code, pendingLocationSortDirection));
+  }, [locations, countedLocationCodes, pendingLocationSortDirection]);
 
   const emptyLocations = useMemo(
     () => locations.filter(location => location.is_empty),
@@ -2985,54 +2989,63 @@ export default function InventariosPage() {
       setMessage("Selecciona el Excel de ubicaciones.");
       return;
     }
-    const excelRows = await readWorkbookRows(locationsFile);
-    const uniqueRows = new Map<string, {
-      session_id: string;
-      location_code: string;
-      ticket: string;
-      zone: string | null;
-      zone_ref: string | null;
-      lineal: string | null;
-      reference: string | null;
-      full_location: string | null;
-      description: string | null;
-    }>();
-    for (const row of excelRows) {
-      const ticket = firstColumnValue(row);
-      const locationCode = normalizeLocationCode(ticket);
-      if (!locationCode) continue;
-      const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
-      const zona = pickColumn(row, ["ZONA"]);
-      const zonaRef = pickColumn(row, ["ZONA REF"]) || zona;
-      const lineal = pickColumn(row, ["LINEAL"]);
-      const referencia = pickColumn(row, ["REFERENCIA"]);
-      const fullLocation = pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
-      uniqueRows.set(locationCode, {
-        session_id: selectedSessionId,
-        location_code: locationCode,
-        ticket: locationCode,
-        zone: bloqueUbicacion || null,
-        zone_ref: zonaRef || null,
-        lineal: lineal || null,
-        reference: referencia || null,
-        full_location: fullLocation || null,
-        description: fullLocation || [bloqueUbicacion, zona, lineal, referencia].filter(Boolean).join(" - ") || null,
-      });
+    setImportingLocations(true);
+    setMessage("Cargando ubicaciones desde Excel...");
+    try {
+      const excelRows = await readWorkbookRows(locationsFile);
+      const uniqueRows = new Map<string, {
+        session_id: string;
+        location_code: string;
+        ticket: string;
+        zone: string | null;
+        zone_ref: string | null;
+        lineal: string | null;
+        reference: string | null;
+        full_location: string | null;
+        description: string | null;
+      }>();
+      for (const row of excelRows) {
+        const ticket = firstColumnValue(row);
+        const locationCode = normalizeLocationCode(ticket);
+        if (!locationCode) continue;
+        const concatenatedDescription = String(Object.values(row)[6] ?? "").trim();
+        const bloqueUbicacion = pickFirstMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
+        const zona = pickColumn(row, ["ZONA"]);
+        const zonaRef = pickColumn(row, ["ZONA REF"]) || zona;
+        const lineal = pickColumn(row, ["LINEAL"]);
+        const referencia = pickColumn(row, ["REFERENCIA"]);
+        const fullLocation = concatenatedDescription || pickColumn(row, ["UBICACIÓN CONCATENADA", "UBICACION CONCATENADA"]) || pickLastMatchingColumn(row, ["UBICACIÓN", "UBICACION"]);
+        uniqueRows.set(locationCode, {
+          session_id: selectedSessionId,
+          location_code: locationCode,
+          ticket: locationCode,
+          zone: bloqueUbicacion || null,
+          zone_ref: zonaRef || null,
+          lineal: lineal || null,
+          reference: referencia || null,
+          full_location: fullLocation || null,
+          description: fullLocation || [bloqueUbicacion, zona, lineal, referencia].filter(Boolean).join(" - ") || null,
+        });
+      }
+      const rows = [...uniqueRows.values()];
+      if (rows.length === 0) {
+        setMessage("No encontre ubicaciones en el Excel. Revisa que la primera columna tenga las ubicaciones.");
+        return;
+      }
+      const { error } = await supabase.from("general_inventory_locations").upsert(rows, { onConflict: "session_id,location_code" });
+      if (error) {
+        setMessage("Error cargando ubicaciones: " + error.message);
+        return;
+      }
+      setLocationsFile(null);
+      if (locationsFileRef.current) locationsFileRef.current.value = "";
+      setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
+      await loadPreparationData(selectedSessionId);
+    } catch (error) {
+      setMessage("Error leyendo el Excel: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setImportingLocations(false);
     }
-    const rows = [...uniqueRows.values()];
-    if (rows.length === 0) {
-      setMessage("No encontre ubicaciones en el Excel.");
-      return;
-    }
-    const { error } = await supabase.from("general_inventory_locations").upsert(rows, { onConflict: "session_id,location_code" });
-    if (error) {
-      setMessage("Error cargando ubicaciones: " + error.message);
-      return;
-    }
-    setLocationsFile(null);
-    if (locationsFileRef.current) locationsFileRef.current.value = "";
-    setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
-    await loadPreparationData(selectedSessionId);
   }
 
   function updateManualLocationDraft(field: keyof ManualLocationDraft, value: string) {
@@ -5817,8 +5830,8 @@ export default function InventariosPage() {
                   <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
                     <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                   </button>
-                  <button onClick={importLocations} disabled={!locationsFile || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                    Subir ubicaciones
+                  <button onClick={importLocations} disabled={!locationsFile || importingLocations || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                   </button>
                 </div>
                 <button
@@ -5835,7 +5848,18 @@ export default function InventariosPage() {
               </div>
               <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
                 <div className="font-black text-slate-900">Ubicaciones</div>
-                <div>Total: {locations.length} | Pendientes: {pendingLocations.length}</div>
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                  <div>Total: {locations.length} | Pendientes: {pendingLocations.length}</div>
+                  <select
+                    value={pendingLocationSortDirection}
+                    onChange={event => setPendingLocationSortDirection(event.target.value as SortDirection)}
+                    className="rounded-lg border bg-white px-2 py-1 text-xs font-black text-slate-700"
+                    aria-label="Ordenar ubicaciones pendientes"
+                  >
+                    <option value="asc">Menor a mayor</option>
+                    <option value="desc">Mayor a menor</option>
+                  </select>
+                </div>
                 {pendingLocations.length > 0 && (
                   <div className="mt-2 max-h-32 overflow-auto rounded-lg border bg-white p-2">
                     {pendingLocations.slice(0, 80).map(location => (
@@ -5978,8 +6002,8 @@ export default function InventariosPage() {
                       <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
                         <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                       </button>
-                      <button onClick={importLocations} disabled={!locationsFile || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                        Subir ubicaciones
+                      <button onClick={importLocations} disabled={!locationsFile || importingLocations || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                        {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                       </button>
                     </div>
                     <button
@@ -6007,7 +6031,18 @@ export default function InventariosPage() {
                       <div className="font-black text-slate-900">Ubicaciones pendientes</div>
                       <div className="text-xs text-slate-500">Ubicaciones cargadas que todavía no tienen registros.</div>
                     </div>
-                    <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes | {emptyLocations.length} vacias</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="text-xs font-black text-slate-600">{pendingLocations.length} pendientes | {emptyLocations.length} vacias</div>
+                      <select
+                        value={pendingLocationSortDirection}
+                        onChange={event => setPendingLocationSortDirection(event.target.value as SortDirection)}
+                        className="rounded-lg border bg-white px-2 py-1 text-xs font-black text-slate-700"
+                        aria-label="Ordenar ubicaciones pendientes"
+                      >
+                        <option value="asc">Menor a mayor</option>
+                        <option value="desc">Mayor a menor</option>
+                      </select>
+                    </div>
                   </div>
                   <div className="max-h-[420px] overflow-auto rounded-xl border bg-white">
                     {pendingLocations.length > 0 ? pendingLocations.map(location => (
