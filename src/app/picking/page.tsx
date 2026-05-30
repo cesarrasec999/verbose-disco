@@ -2608,7 +2608,7 @@ export default function PickingPage() {
                 <div className="flex items-center gap-3 rounded-2xl border p-4">
                   <Trophy className="text-amber-500" size={40} />
                   <div>
-                    <p className="text-xs font-black uppercase text-slate-500">Total codigos del filtro</p>
+                    <p className="text-xs font-black uppercase text-slate-500">Total codigos</p>
                     <p className="mt-1 text-3xl font-black text-amber-600">{formatWhole(productivityHourlyComparison.grandTotal)}</p>
                   </div>
                 </div>
@@ -2621,8 +2621,8 @@ export default function PickingPage() {
                   const chart = {
                     left: 70,
                     top: 40,
-                    width: Math.max(720, productivityHourlyComparison.rows.length * 160),
-                    height: 360,
+                    width: Math.max(900, productivityHourlyComparison.rows.length * 190),
+                    height: 500,
                     bottom: 58,
                     legend: 180,
                   };
@@ -2695,36 +2695,6 @@ export default function PickingPage() {
                   );
                 })() : (
                   <p className="p-8 text-center text-sm font-bold text-slate-400">Sin registros en el rango seleccionado.</p>
-                )}
-                {productivityHourlyComparison.rows.length > 0 && (
-                  <div className="overflow-x-auto border-t">
-                    <table className="w-full min-w-[760px] text-sm">
-                      <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                        <tr>
-                          <th className="p-3 text-left">Picador</th>
-                          {productivityHourlyComparison.rows.map(row => <th key={row.hour} className="p-3 text-right">{row.hour}</th>)}
-                          <th className="p-3 text-right">Total del filtro</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {productivityHourlyComparison.totalsByPicker.map(column => (
-                          <tr key={column.key} className="border-t">
-                            <td className="p-3 font-black">
-                              <span className="mr-2 inline-block h-3 w-3 rounded-full" style={{ backgroundColor: column.color }} />
-                              {column.label}
-                            </td>
-                            {productivityHourlyComparison.rows.map(row => <td key={row.hour} className="p-3 text-right font-black">{row.byPicker[column.key] || 0}</td>)}
-                            <td className="p-3 text-right font-black text-violet-700">{column.total}</td>
-                          </tr>
-                        ))}
-                        <tr className="border-t bg-slate-50">
-                          <td className="p-3 font-black text-blue-800">Total por hora</td>
-                          {productivityHourlyComparison.rows.map(row => <td key={row.hour} className="p-3 text-right font-black text-blue-800">{row.total}</td>)}
-                          <td className="p-3 text-right font-black text-blue-800">{productivityHourlyComparison.grandTotal}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
                 )}
               </div>
             </div>

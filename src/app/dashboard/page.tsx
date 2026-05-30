@@ -8219,12 +8219,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                                 const product = products.find(p => p.id === row.product_id);
                                                 const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
                                                 const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                                const productUnit = product?.unit || row.cyclic_products?.unit || "-";
                                                 const changedAt = row.last_seen_at || row.updated_at;
                                                 const store = allStores.find(s => s.id === row.store_id);
                                                 return (
                                                     <tr key={row.id}>
                                                         <td className="p-2 border font-mono text-xs">{productSku}</td>
-                                                        <td className="p-2 border text-slate-600">{productDescription}</td>
+                                                        <td className="p-2 border text-slate-600">
+                                                            <div>{productDescription}</div>
+                                                            <div className="mt-1 text-xs font-black text-slate-900">UM: {productUnit}</div>
+                                                        </td>
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                         <td className="p-2 border font-bold text-slate-900">{row.location}</td>
                                                         <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
@@ -8275,12 +8279,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                                             const product = products.find(p => p.id === row.product_id);
                                                             const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
                                                             const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                                            const productUnit = product?.unit || row.cyclic_products?.unit || "-";
                                                             const changedAt = row.last_seen_at || row.updated_at;
                                                             const store = allStores.find(s => s.id === row.store_id);
                                                             return (
                                                                 <tr key={`${group.query}__${row.id}`}>
                                                                     <td className="p-2 border font-mono text-xs">{productSku}</td>
-                                                                    <td className="p-2 border text-slate-600">{productDescription}</td>
+                                                                    <td className="p-2 border text-slate-600">
+                                                                        <div>{productDescription}</div>
+                                                                        <div className="mt-1 text-xs font-black text-slate-900">UM: {productUnit}</div>
+                                                                    </td>
                                                                     <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
                                                                     <td className="p-2 border font-bold text-slate-900">{row.location}</td>
                                                                     <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
