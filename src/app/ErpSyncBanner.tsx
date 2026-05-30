@@ -6,6 +6,11 @@ import { supabase } from "@/lib/supabase/client";
 const STALE_MINUTES = 15;
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
+// Solo estas fuentes corren de forma continua y deben monitorearse en tiempo real.
+// Las ventas (erp_store_sales_daily, erp_product_sales_daily) son scripts manuales
+// y no deben disparar la alerta.
+const REALTIME_SOURCES = ["picking_requests", "stock_general"];
+
 type SyncStatusRow = { id: string; synced_at: string };
 
 export default function ErpSyncBanner() {
@@ -15,7 +20,8 @@ export default function ErpSyncBanner() {
     async function check() {
       const { data, error } = await supabase
         .from("erp_sync_status")
-        .select("id, synced_at");
+        .select("id, synced_at")
+        .in("id", REALTIME_SOURCES);
 
       if (error || !data?.length) return;
 
