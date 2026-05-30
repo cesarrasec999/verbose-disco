@@ -175,6 +175,7 @@ export default function RecepcionPage() {
       let query = supabase
         .from("reception_requests")
         .select("*")
+        .eq("status_code", "T")
         .order("creation_date", { ascending: false })
         .limit(300);
 
