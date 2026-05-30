@@ -200,6 +200,7 @@ export default function RecepcionPage() {
   const [requests, setRequests] = useState<ReceptionRequest[]>([]);
   const [lines, setLines]       = useState<ReceptionLine[]>([]);
   const [scans, setScans]       = useState<ReceptionScan[]>([]);
+  const [summaryScans, setSummaryScans] = useState<ReceptionScan[]>([]);
   const [selected, setSelected] = useState<ReceptionRequestGroup | null>(null);
   const [view, setView]         = useState<"list" | "detail">("list");
   const [listPanel, setListPanel] = useState<"recepcion" | "resumen">("recepcion");
@@ -274,6 +275,17 @@ export default function RecepcionPage() {
     });
   }, [requestScopeKey]);
 
+  async function loadSummaryScans(requestIds: string[]) {
+    if (requestIds.length === 0) { setSummaryScans([]); return; }
+    const chunks: string[][] = [];
+    for (let i = 0; i < requestIds.length; i += 200) chunks.push(requestIds.slice(i, i + 200));
+    const results = await Promise.all(
+      chunks.map(ids => supabase.from("reception_scans").select("*").in("request_id", ids))
+    );
+    const rows = results.flatMap(({ data }) => (data || []) as ReceptionScan[]);
+    setSummaryScans(rows);
+  }
+
   const scheduleEmptyRetry = useCallback(() => {
     if (emptyRetryTimer.current !== null) return;
     emptyRetryTimer.current = window.setTimeout(() => {
@@ -343,7 +355,10 @@ export default function RecepcionPage() {
       if (nextRows.length === 0) {
         scheduleEmptyRetry();
         if (requests.length > 0) return;
-        if (fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
+        if (fallbackCachedRows.length > 0) {
+          setRequests(fallbackCachedRows);
+          await loadSummaryScans(fallbackCachedRows.map(req => req.id));
+        }
         return;
       }
       if (emptyRetryTimer.current !== null) {
@@ -351,6 +366,7 @@ export default function RecepcionPage() {
         emptyRetryTimer.current = null;
       }
       applyRequests(nextRows);
+      await loadSummaryScans(nextRows.map(req => req.id));
     } catch (e: any) {
       if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
     }
@@ -517,6 +533,7 @@ export default function RecepcionPage() {
       setScanProduct("");
       setActiveLine(null);
       await reloadScans(selected.request_ids);
+      await loadSummaryScans(requests.map(req => req.id));
       showMsg("Recepción registrada.");
     } catch (e: any) { showMsg("Error guardando: " + e.message); }
     finally { setSaving(false); }
@@ -548,6 +565,7 @@ export default function RecepcionPage() {
     const { error } = await supabase.from("reception_scans").delete().eq("id", scan.id);
     if (error) { showMsg("Error eliminando: " + error.message); return; }
     if (selected) await reloadScans(selected.request_ids);
+    setSummaryScans(prev => prev.filter(item => item.id !== scan.id));
     showMsg("Registro eliminado.");
   }
 
@@ -701,12 +719,19 @@ export default function RecepcionPage() {
     [requests]
   );
 
-  const filteredRequests = useMemo(() => requestGroups.filter(r => {
+  const scopedRequestGroups = useMemo(() => {
+    if (!canViewAllStores || storeFilter === "all") return requestGroups;
+    const allowed = new Set(selectedStoreCodes(storeFilter).map(normalize));
+    if (allowed.size === 0) return requestGroups;
+    return requestGroups.filter(req => req.child_requests.some(item => allowed.has(normalize(item.destination_store_code))));
+  }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
+
+  const filteredRequests = useMemo(() => scopedRequestGroups.filter(r => {
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
     if (!search.trim()) return true;
     return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
       .join(" ").toLowerCase().includes(search.toLowerCase());
-  }), [requestGroups, filterStatus, search]);
+  }), [scopedRequestGroups, filterStatus, search]);
 
   const destStoreOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -718,26 +743,25 @@ export default function RecepcionPage() {
   }, [stores]);
 
   const summaryRows = useMemo(() => {
+    const scannedRequestIds = new Set(summaryScans.map(scan => scan.request_id));
     const grouped = new Map<string, {
       key: string;
       name: string;
       total: number;
-      completed: number;
-      inProgress: number;
+      advanced: number;
       pending: number;
       lines: number;
       units: number;
     }>();
 
-    for (const req of requestGroups) {
+    for (const req of scopedRequestGroups) {
       const key = req.destination_store_code || req.destination_store_name || "SIN_TIENDA";
       if (!grouped.has(key)) {
         grouped.set(key, {
           key,
           name: req.destination_store_name || req.destination_store_code || "Sin tienda",
           total: 0,
-          completed: 0,
-          inProgress: 0,
+          advanced: 0,
           pending: 0,
           lines: 0,
           units: 0,
@@ -747,20 +771,19 @@ export default function RecepcionPage() {
       row.total += 1;
       row.lines += num(req.line_count);
       row.units += num(req.qty_requested_total);
-      if (req.reception_status === "completed") row.completed += 1;
-      else if (req.reception_status === "in_progress") row.inProgress += 1;
+      const hasExistingScan = req.request_ids.some(id => scannedRequestIds.has(id));
+      if (req.reception_status === "completed" || hasExistingScan) row.advanced += 1;
       else row.pending += 1;
     }
 
     return [...grouped.values()]
       .map(row => ({
         ...row,
-        pct: row.total > 0 ? Math.round((row.completed / row.total) * 100) : 0,
-        inProgressPct: row.total > 0 ? Math.round((row.inProgress / row.total) * 100) : 0,
+        pct: row.total > 0 ? Math.round((row.advanced / row.total) * 100) : 0,
         pendingPct: row.total > 0 ? Math.round((row.pending / row.total) * 100) : 0,
       }))
       .sort((a, b) => b.pct - a.pct || b.total - a.total || a.name.localeCompare(b.name, "es"));
-  }, [requestGroups]);
+  }, [scopedRequestGroups, summaryScans]);
 
   // Totales por línea desde los scans cargados
   const scanTotalByLine = useMemo(() => {
@@ -885,8 +908,7 @@ export default function RecepcionPage() {
                   <h2 className="text-xl font-black text-slate-950">Recepción de abastecimiento</h2>
                 </div>
                 <div className="flex flex-wrap gap-2 text-[11px] font-black">
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">Completado</span>
-                  <span className="rounded-full bg-teal-100 px-2.5 py-1 text-teal-700">En proceso</span>
+                  <span className="rounded-full bg-teal-100 px-2.5 py-1 text-teal-700">Con avance</span>
                   <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-500">Pendiente</span>
                 </div>
               </div>
@@ -901,8 +923,7 @@ export default function RecepcionPage() {
                       <span className="shrink-0 text-lg font-black text-slate-950">{row.pct}%</span>
                     </div>
                     <div className="flex h-5 overflow-hidden rounded-full bg-slate-100">
-                      <div className="bg-emerald-500" style={{ width: `${row.pct}%` }} title={`${row.completed} completados`} />
-                      <div className="bg-teal-500" style={{ width: `${row.inProgressPct}%` }} title={`${row.inProgress} en proceso`} />
+                      <div className="bg-teal-500" style={{ width: `${row.pct}%` }} title={`${row.advanced} con avance`} />
                       <div className="bg-slate-300" style={{ width: `${row.pendingPct}%` }} title={`${row.pending} pendientes`} />
                     </div>
                   </div>
