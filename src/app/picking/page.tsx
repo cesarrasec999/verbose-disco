@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, ClipboardList, Download, Home, Printer, QrCode, RefreshCw, ScanLine, UserPlus, X } from "lucide-react";
+import { BarChart3, ClipboardList, Clock, Download, Home, Printer, QrCode, RefreshCw, ScanLine, Trophy, TrendingUp, UserCircle, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
@@ -173,6 +173,10 @@ function formatSync(value: string | null) {
 
 function formatQty(value: number) {
   return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatWhole(value: number) {
+  return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 0 }).format(value);
 }
 
 function isAssignmentComplete(assignment: PickingAssignment, pickedOverride?: number) {
@@ -750,23 +754,42 @@ export default function PickingPage() {
   );
 
   const productivityHourlyComparison = useMemo(() => {
+    const palette = ["#2563eb", "#16a34a", "#eab308", "#dc2626", "#7c3aed", "#0891b2", "#f97316", "#475569"];
     const pickerColumns = new Map<string, string>();
-    const hourRows = new Map<string, { hour: string; total: number; byPicker: Record<string, number> }>();
+    const hourRows = new Map<string, { hour: string; total: number; byPicker: Record<string, number>; codeSets: Record<string, Set<string>> }>();
 
     for (const row of productivityScanRows) {
       const pickerKey = normalize(row.scan.picker_id || row.scan.picker_name) || scanPickerName(row.scan);
       pickerColumns.set(pickerKey, scanPickerName(row.scan));
       const hour = new Date(row.scan.created_at).toLocaleTimeString("es-PE", { hour: "2-digit", hour12: false }) + ":00";
-      const current = hourRows.get(hour) || { hour, total: 0, byPicker: {} };
-      current.byPicker[pickerKey] = (current.byPicker[pickerKey] || 0) + 1;
-      current.total += 1;
+      const current = hourRows.get(hour) || { hour, total: 0, byPicker: {}, codeSets: {} };
+      if (!current.codeSets[pickerKey]) current.codeSets[pickerKey] = new Set<string>();
+      current.codeSets[pickerKey].add(row.scan.line_id || row.scan.assignment_id || row.scan.id);
       hourRows.set(hour, current);
     }
 
-    const columns = [...pickerColumns.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
-    const rows = [...hourRows.values()].sort((a, b) => a.hour.localeCompare(b.hour));
+    const columns = [...pickerColumns.entries()]
+      .map(([key, label], index) => ({ key, label, color: palette[index % palette.length] }))
+      .sort((a, b) => a.label.localeCompare(b.label, "es"));
+    const rows = [...hourRows.values()].sort((a, b) => a.hour.localeCompare(b.hour)).map(row => {
+      const byPicker = Object.fromEntries(columns.map(column => [column.key, row.codeSets[column.key]?.size || 0])) as Record<string, number>;
+      const total = columns.reduce((sum, column) => sum + byPicker[column.key], 0);
+      return { hour: row.hour, total, byPicker };
+    });
     const maxValue = rows.reduce((max, row) => Math.max(max, ...columns.map(column => row.byPicker[column.key] || 0)), 0);
-    return { columns, rows, maxValue };
+    const maxTotal = rows.reduce((max, row) => Math.max(max, row.total), 0);
+    const bestHour = rows.reduce<{ hour: string; total: number } | null>((best, row) => !best || row.total > best.total ? { hour: row.hour, total: row.total } : best, null);
+    const bestPicker = bestHour
+      ? columns
+          .map(column => ({ label: column.label, color: column.color, value: rows.find(row => row.hour === bestHour.hour)?.byPicker[column.key] || 0 }))
+          .sort((a, b) => b.value - a.value)[0] || null
+      : null;
+    const totalsByPicker = columns.map(column => ({
+      ...column,
+      total: rows.reduce((sum, row) => sum + (row.byPicker[column.key] || 0), 0),
+    }));
+    const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
+    return { columns, rows, maxValue, maxTotal, bestHour, bestPicker, totalsByPicker, grandTotal };
   }, [productivityScanRows, scanPickerName]);
 
   const operatorTotals = useMemo(() => {
@@ -2555,53 +2578,153 @@ export default function PickingPage() {
               <BarListCard title="Ubicaciones registradas" rows={productivityByLocations} colorClass="bg-cyan-600" />
             </div>
             <div className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="border-b p-4">
-                <h2 className="font-black">Quien registra mas por hora</h2>
-                <p className="text-xs font-bold text-slate-500">Barras por picador segun la cantidad de registros guardados en cada hora del rango.</p>
+              <div>
+                <h2 className="text-2xl font-black">Productividad picking por hora</h2>
+                <p className="text-sm font-bold text-slate-500">Cantidad de codigos pickeados por picador.</p>
               </div>
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                {productivityHourlyComparison.rows.map(row => {
-                  const leader = productivityHourlyComparison.columns
-                    .map(column => ({ ...column, value: row.byPicker[column.key] || 0 }))
-                    .sort((a, b) => b.value - a.value)[0];
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="flex items-center gap-3 rounded-2xl border p-4">
+                  <Clock className="text-blue-700" size={40} />
+                  <div>
+                    <p className="text-xs font-black uppercase text-slate-500">Hora mas productiva</p>
+                    <p className="mt-1 text-3xl font-black text-blue-700">{productivityHourlyComparison.bestHour?.hour || "-"}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-2xl border p-4">
+                  <TrendingUp className="text-emerald-700" size={40} />
+                  <div>
+                    <p className="text-xs font-black uppercase text-slate-500">Codigos en mejor hora</p>
+                    <p className="mt-1 text-3xl font-black text-emerald-700">{formatWhole(productivityHourlyComparison.bestHour?.total || 0)}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-2xl border p-4">
+                  <UserCircle className="text-violet-700" size={40} />
+                  <div className="min-w-0">
+                    <p className="text-xs font-black uppercase text-slate-500">Mejor picador en esa hora</p>
+                    <p className="mt-1 truncate text-xl font-black text-violet-700">{productivityHourlyComparison.bestPicker?.label || "-"}</p>
+                    <p className="text-xs font-black text-slate-600">{formatWhole(productivityHourlyComparison.bestPicker?.value || 0)} codigos</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-2xl border p-4">
+                  <Trophy className="text-amber-500" size={40} />
+                  <div>
+                    <p className="text-xs font-black uppercase text-slate-500">Total codigos del filtro</p>
+                    <p className="mt-1 text-3xl font-black text-amber-600">{formatWhole(productivityHourlyComparison.grandTotal)}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 overflow-hidden rounded-2xl border">
+                <div className="border-b p-4 text-center">
+                  <h3 className="text-lg font-black">Codigos pickeados por hora y picador</h3>
+                </div>
+                {productivityHourlyComparison.rows.length > 0 ? (() => {
+                  const chart = {
+                    left: 70,
+                    top: 40,
+                    width: Math.max(720, productivityHourlyComparison.rows.length * 160),
+                    height: 360,
+                    bottom: 58,
+                    legend: 180,
+                  };
+                  const graphWidth = chart.width - chart.left - chart.legend - 30;
+                  const graphHeight = chart.height - chart.top - chart.bottom;
+                  const yMax = Math.max(1, Math.ceil(Math.max(productivityHourlyComparison.maxTotal, productivityHourlyComparison.maxValue) / 10) * 10);
+                  const groupWidth = graphWidth / productivityHourlyComparison.rows.length;
+                  const barWidth = Math.max(10, Math.min(28, (groupWidth - 42) / Math.max(productivityHourlyComparison.columns.length, 1)));
+                  const linePoints = productivityHourlyComparison.rows.map((row, index) => {
+                    const x = chart.left + groupWidth * index + groupWidth / 2;
+                    const y = chart.top + graphHeight - (row.total / yMax) * graphHeight;
+                    return { x, y, total: row.total, hour: row.hour };
+                  });
+                  const linePath = linePoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
                   return (
-                    <div key={row.hour} className="rounded-2xl border bg-slate-50 p-4">
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-black uppercase text-slate-500">{row.hour}</p>
-                          <p className="text-lg font-black text-slate-950">{row.total} registros</p>
-                        </div>
-                        {leader && leader.value > 0 && (
-                          <div className="rounded-xl bg-violet-100 px-3 py-2 text-right text-xs font-black text-violet-800">
-                            <p className="max-w-[180px] truncate">{leader.label}</p>
-                            <p>{leader.value}</p>
-                          </div>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {productivityHourlyComparison.columns.map(column => {
-                          const value = row.byPicker[column.key] || 0;
-                          const width = productivityHourlyComparison.maxValue > 0 ? Math.max(3, Math.round((value / productivityHourlyComparison.maxValue) * 100)) : 0;
+                    <div className="overflow-x-auto">
+                      <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="min-w-[900px]">
+                        {[0, 0.25, 0.5, 0.75, 1].map(step => {
+                          const value = Math.round(yMax * (1 - step));
+                          const y = chart.top + graphHeight * step;
                           return (
-                            <div key={column.key}>
-                              <div className="mb-1 flex justify-between gap-3 text-xs font-black text-slate-500">
-                                <span className="truncate">{column.label}</span>
-                                <span>{value}</span>
-                              </div>
-                              <div className="h-3 overflow-hidden rounded-full bg-white">
-                                <div className="h-3 rounded-full bg-violet-600" style={{ width: `${width}%` }} />
-                              </div>
-                            </div>
+                            <g key={step}>
+                              <line x1={chart.left} x2={chart.left + graphWidth} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" />
+                              <text x={chart.left - 14} y={y + 4} textAnchor="end" className="fill-slate-600 text-[12px] font-bold">{value}</text>
+                            </g>
                           );
                         })}
-                      </div>
+                        <text x={chart.left - 48} y={chart.top - 18} className="fill-blue-700 text-[12px] font-black">Codigos</text>
+                        {productivityHourlyComparison.rows.map((row, rowIndex) => {
+                          const groupStart = chart.left + groupWidth * rowIndex;
+                          return (
+                            <g key={row.hour}>
+                              {productivityHourlyComparison.columns.map((column, columnIndex) => {
+                                const value = row.byPicker[column.key] || 0;
+                                const height = (value / yMax) * graphHeight;
+                                const x = groupStart + (groupWidth - (barWidth * productivityHourlyComparison.columns.length)) / 2 + columnIndex * barWidth;
+                                const y = chart.top + graphHeight - height;
+                                return (
+                                  <g key={column.key}>
+                                    <rect x={x} y={y} width={barWidth - 4} height={height} rx={4} fill={column.color} />
+                                    {value > 0 && <text x={x + (barWidth - 4) / 2} y={y - 6} textAnchor="middle" className="fill-slate-950 text-[12px] font-black">{value}</text>}
+                                  </g>
+                                );
+                              })}
+                              <text x={groupStart + groupWidth / 2} y={chart.top + graphHeight + 28} textAnchor="middle" className="fill-slate-950 text-[13px] font-black">{row.hour}</text>
+                            </g>
+                          );
+                        })}
+                        <path d={linePath} fill="none" stroke="#0f52ba" strokeWidth={3} />
+                        {linePoints.map(point => (
+                          <g key={point.hour}>
+                            <circle cx={point.x} cy={point.y} r={5} fill="#0f52ba" />
+                            <text x={point.x} y={point.y - 14} textAnchor="middle" className="fill-blue-800 text-[14px] font-black">{point.total}</text>
+                          </g>
+                        ))}
+                        <text x={chart.left + graphWidth / 2} y={chart.height - 12} textAnchor="middle" className="fill-slate-950 text-[13px] font-black">Hora</text>
+                        {productivityHourlyComparison.columns.map((column, index) => (
+                          <g key={column.key} transform={`translate(${chart.left + graphWidth + 34}, ${chart.top + 28 + index * 28})`}>
+                            <rect width={12} height={12} rx={3} fill={column.color} />
+                            <text x={22} y={11} className="fill-slate-950 text-[13px] font-bold">{column.label}</text>
+                          </g>
+                        ))}
+                        <g transform={`translate(${chart.left + graphWidth + 34}, ${chart.top + 28 + productivityHourlyComparison.columns.length * 28})`}>
+                          <line x1={0} x2={18} y1={6} y2={6} stroke="#0f52ba" strokeWidth={3} />
+                          <circle cx={9} cy={6} r={4} fill="#0f52ba" />
+                          <text x={28} y={11} className="fill-slate-950 text-[13px] font-bold">Total por hora</text>
+                        </g>
+                      </svg>
                     </div>
                   );
-                })}
-                {productivityHourlyComparison.rows.length === 0 && (
-                  <p className="rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-400 lg:col-span-2">
-                    Sin registros en el rango seleccionado.
-                  </p>
+                })() : (
+                  <p className="p-8 text-center text-sm font-bold text-slate-400">Sin registros en el rango seleccionado.</p>
+                )}
+                {productivityHourlyComparison.rows.length > 0 && (
+                  <div className="overflow-x-auto border-t">
+                    <table className="w-full min-w-[760px] text-sm">
+                      <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                        <tr>
+                          <th className="p-3 text-left">Picador</th>
+                          {productivityHourlyComparison.rows.map(row => <th key={row.hour} className="p-3 text-right">{row.hour}</th>)}
+                          <th className="p-3 text-right">Total del filtro</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productivityHourlyComparison.totalsByPicker.map(column => (
+                          <tr key={column.key} className="border-t">
+                            <td className="p-3 font-black">
+                              <span className="mr-2 inline-block h-3 w-3 rounded-full" style={{ backgroundColor: column.color }} />
+                              {column.label}
+                            </td>
+                            {productivityHourlyComparison.rows.map(row => <td key={row.hour} className="p-3 text-right font-black">{row.byPicker[column.key] || 0}</td>)}
+                            <td className="p-3 text-right font-black text-violet-700">{column.total}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-t bg-slate-50">
+                          <td className="p-3 font-black text-blue-800">Total por hora</td>
+                          {productivityHourlyComparison.rows.map(row => <td key={row.hour} className="p-3 text-right font-black text-blue-800">{row.total}</td>)}
+                          <td className="p-3 text-right font-black text-blue-800">{productivityHourlyComparison.grandTotal}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </div>
             </div>
