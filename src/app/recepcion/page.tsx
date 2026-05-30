@@ -5,11 +5,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2, ChevronLeft, Home, LogOut, Package,
-  Printer, QrCode, RefreshCw, Search, ScanLine, X,
+  Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -46,112 +47,127 @@ type ReceptionLine = {
   unit: string | null;
   qty_requested: number;
   qty_pending: number;
-  qty_received?: number;
-  notes?: string;
 };
 
-type ReceptionRecord = {
+type ReceptionScan = {
   id: string;
+  request_id: string;
   line_id: string;
+  operator_id: string | null;
+  operator_name: string | null;
   product_code: string;
-  description: string | null;
-  unit: string | null;
-  qty_requested: number;
-  qty_received: number;
-  difference: number;
+  scanned_code: string | null;
+  qty: number;
   notes: string | null;
+  created_at: string;
+};
+
+type Html5QrLike = {
+  start: (cam: { facingMode: string }, cfg: { fps: number; qrbox: { width: number; height: number } }, onSuccess: (text: string) => void, onError?: () => void) => Promise<unknown>;
+  stop: () => Promise<unknown>;
+  clear: () => void | Promise<unknown>;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmt(n: number) {
-  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+function num(v: unknown) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
+function fmt(n: number) { return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ""); }
+function normalize(v: string | null | undefined) { return String(v || "").trim().toUpperCase(); }
+function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
+function timeShort(v: string | null) {
+  if (!v) return "-";
+  return new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
 }
 
-function normalize(v: string | null | undefined) {
-  return String(v || "").trim().toUpperCase();
+function diffClass(d: number) {
+  if (d === 0) return "text-emerald-700 font-black";
+  if (d > 0)  return "text-blue-700 font-black";
+  return "text-red-600 font-black";
+}
+function diffLabel(d: number) {
+  if (d === 0) return "OK";
+  return (d > 0 ? "+" : "") + fmt(d);
 }
 
-function diffLabel(diff: number) {
-  if (diff === 0) return "OK";
-  if (diff > 0)  return `+${fmt(diff)}`;
-  return fmt(diff);
-}
-
-function diffClass(diff: number) {
-  if (diff === 0) return "text-green-700 font-bold";
-  if (diff > 0)  return "text-blue-700 font-bold";
-  return "text-red-600 font-bold";
+function ReasonBadge({ reason }: { reason: string | null }) {
+  const isUrgente = /urgente/i.test(reason || "");
+  return (
+    <span className={`text-[10px] font-black uppercase tracking-widest ${isUrgente ? "text-amber-600" : "text-violet-600"}`}>
+      {reason || "ABASTECIMIENTO"}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: ReceptionRequest["reception_status"] }) {
   if (status === "completed")
-    return <span className="rounded-full bg-green-100 text-green-700 text-xs font-bold px-2.5 py-0.5">Completado</span>;
+    return <span className="rounded-full bg-emerald-100 text-emerald-700 text-xs font-black px-2.5 py-0.5">Completado</span>;
   if (status === "in_progress")
-    return <span className="rounded-full bg-amber-100 text-amber-700 text-xs font-bold px-2.5 py-0.5">En proceso</span>;
-  return <span className="rounded-full bg-slate-100 text-slate-600 text-xs font-bold px-2.5 py-0.5">Pendiente</span>;
+    return <span className="rounded-full bg-violet-100 text-violet-700 text-xs font-black px-2.5 py-0.5">En proceso</span>;
+  return <span className="rounded-full bg-slate-100 text-slate-500 text-xs font-black px-2.5 py-0.5">Pendiente</span>;
 }
 
-// ─── Componente principal ─────────────────────────────────────────────────────
+// ─── Página ───────────────────────────────────────────────────────────────────
 
 export default function RecepcionPage() {
   const [user, setUser]         = useState<CyclicUser | null>(null);
   const [stores, setStores]     = useState<Store[]>([]);
   const [requests, setRequests] = useState<ReceptionRequest[]>([]);
-  const [selected, setSelected] = useState<ReceptionRequest | null>(null);
   const [lines, setLines]       = useState<ReceptionLine[]>([]);
-  const [records, setRecords]   = useState<ReceptionRecord[]>([]);
-  const [view, setView]         = useState<"list" | "detail" | "report">("list");
+  const [scans, setScans]       = useState<ReceptionScan[]>([]);
+  const [selected, setSelected] = useState<ReceptionRequest | null>(null);
+  const [view, setView]         = useState<"list" | "detail">("list");
+  const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
-  const [ready, setReady]       = useState(false);
-  const [message, setMessage]   = useState<{ text: string; type: "info" | "success" | "error" } | null>(null);
+  const [message, setMessage]   = useState("");
 
   // Filtros lista
-  const [search, setSearch]           = useState("");
+  const [storeFilter, setStoreFilter]   = useState("all");
+  const [search, setSearch]             = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
-  const [storeFilter, setStoreFilter] = useState("all"); // solo para admin/all-stores
 
-  // Detalle — escáner y búsqueda de código
-  const [scanCode, setScanCode]         = useState("");
-  const [highlightLine, setHighlightLine] = useState<string | null>(null);
-  const [scannerOpen, setScannerOpen]   = useState(false);
-  const scannerRef = useRef<any>(null);
+  // Escaneo
+  const [scanProduct, setScanProduct]   = useState("");
+  const [activeLine, setActiveLine]     = useState<ReceptionLine | null>(null);
+  const [editQty, setEditQty]           = useState(1);
+  const [editNotes, setEditNotes]       = useState("");
+
+  // Edición de scan
+  const [editingScanId, setEditingScanId]   = useState("");
+  const [editScanQty, setEditScanQty]       = useState("");
+  const [editScanNotes, setEditScanNotes]   = useState("");
+
+  // Escáner
+  const [scannerTarget, setScannerTarget]   = useState<"product" | null>(null);
+  const [scannerRunning, setScannerRunning] = useState(false);
+  const scannerRef    = useRef<Html5QrLike | null>(null);
+  const scanHandled   = useRef(false);
   const scannerContainerId = "recepcion-scanner";
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({});
-
-  const showMsg = useCallback((text: string, type: "info" | "success" | "error" = "info") => {
-    setMessage({ text, type });
-    setTimeout(() => setMessage(null), 4000);
-  }, []);
 
   const canAdmin = useMemo(() =>
     user?.role === "Administrador" || user?.role === "Supervisor" || user?.can_access_all_stores,
   [user]);
 
-  // ─── Init ────────────────────────────────────────────────────────────────────
+  const showMsg = useCallback((text: string) => {
+    setMessage(text);
+    setTimeout(() => setMessage(""), 4000);
+  }, []);
+
+  // ─── Init ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const stored = readStoredUser<CyclicUser>();
-    if (!stored || !canAccessModule(stored, "reception")) {
-      window.location.replace("/");
-      return;
-    }
+    if (!stored || !canAccessModule(stored, "reception")) { window.location.replace("/"); return; }
     setUser(stored);
-    supabase.from("stores").select("id, code, name, erp_sede, is_active").eq("is_active", true).order("name")
-      .then(({ data }) => {
-        setStores((data || []) as Store[]);
-        setReady(true);
-      });
+    supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
+      .then(({ data }) => { setStores((data || []) as Store[]); setReady(true); });
   }, []);
 
-  useEffect(() => {
-    if (!ready || !user) return;
-    void loadRequests();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, user]);
+  useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Cargar requerimientos ───────────────────────────────────────────────────
+  // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
   async function loadRequests() {
     setLoading(true);
@@ -162,267 +178,314 @@ export default function RecepcionPage() {
         .order("creation_date", { ascending: false })
         .limit(300);
 
-      // Admin/supervisor con filtro de tienda seleccionado
       if (canAdmin && storeFilter !== "all") {
         query = query.eq("destination_store_code", storeFilter);
-      }
-      // Operario: solo ve su tienda
-      if (!canAdmin && user?.store_id) {
-        const store = stores.find(s => s.id === user.store_id);
-        if (store) {
-          query = query.or(
-            `destination_store_code.eq.${store.code},destination_store_code.eq.${store.erp_sede ?? store.code}`
-          );
-        }
+      } else if (!canAdmin && user?.store_id) {
+        const store = stores.find(s => s.id === user!.store_id);
+        if (store) query = query.or(`destination_store_code.eq.${store.code},destination_store_code.eq.${store.erp_sede ?? store.code}`);
       }
 
       const { data, error } = await query;
       if (error) throw error;
       setRequests((data || []) as ReceptionRequest[]);
-    } catch (e: any) {
-      showMsg("Error cargando requerimientos: " + e.message, "error");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { showMsg("Error cargando requerimientos: " + e.message); }
+    finally { setLoading(false); }
   }
 
-  // Recargar cuando cambia el filtro de tienda
-  useEffect(() => {
-    if (!ready || !user) return;
-    void loadRequests();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeFilter, ready]);
-
-  // ─── Abrir detalle ───────────────────────────────────────────────────────────
+  // ─── Abrir requerimiento ───────────────────────────────────────────────────
 
   async function openRequest(req: ReceptionRequest) {
     setSelected(req);
     setView("detail");
+    setActiveLine(null);
+    setScanProduct("");
     setLoading(true);
-    setScanCode("");
-    setHighlightLine(null);
     try {
-      const [{ data: lineData }, { data: recordData }] = await Promise.all([
+      const [{ data: lineData, error: lineErr }, { data: scanData }] = await Promise.all([
         supabase.from("reception_request_lines").select("*").eq("request_id", req.id).order("line_id"),
-        supabase.from("reception_records").select("*").eq("request_id", req.id),
+        supabase.from("reception_scans").select("*").eq("request_id", req.id).order("created_at"),
       ]);
-      const existingRecords = (recordData || []) as ReceptionRecord[];
-      const loadedLines = ((lineData || []) as ReceptionLine[]).map(line => {
-        const existing = existingRecords.find(r => r.line_id === line.id);
-        return { ...line, qty_received: existing?.qty_received ?? line.qty_pending, notes: existing?.notes ?? "" };
-      });
-      setLines(loadedLines);
-      setRecords(existingRecords);
-    } catch (e: any) {
-      showMsg("Error cargando líneas: " + e.message, "error");
-    } finally {
-      setLoading(false);
-    }
+      if (lineErr) throw lineErr;
+      setLines((lineData || []) as ReceptionLine[]);
+      setScans((scanData || []) as ReceptionScan[]);
+    } catch (e: any) { showMsg("Error cargando líneas: " + e.message); }
+    finally { setLoading(false); }
   }
 
-  // ─── Buscar código (scan o digitado) ─────────────────────────────────────────
-
-  function searchCode(code: string) {
-    const c = code.trim();
-    if (!c) return;
-    const idx = lines.findIndex(l =>
-      normalize(l.product_code) === normalize(c) ||
-      normalize(l.barcode)      === normalize(c) ||
-      normalize(l.sku)          === normalize(c)
-    );
-    if (idx >= 0) {
-      const lineId = lines[idx].id;
-      setHighlightLine(lineId);
-      setTimeout(() => {
-        lineRefs.current[lineId]?.scrollIntoView({ behavior: "smooth", block: "center" });
-        const input = document.getElementById(`qty-${lineId}`) as HTMLInputElement | null;
-        input?.focus();
-        input?.select();
-      }, 50);
-    } else {
-      showMsg(`Código "${c}" no encontrado en este requerimiento.`, "error");
-    }
-    setScanCode("");
+  async function reloadScans(requestId: string) {
+    const { data } = await supabase.from("reception_scans").select("*").eq("request_id", requestId).order("created_at");
+    setScans((data || []) as ReceptionScan[]);
   }
 
-  // ─── Escáner QR ──────────────────────────────────────────────────────────────
+  // ─── Escáner ───────────────────────────────────────────────────────────────
 
-  async function openScanner() {
-    setScannerOpen(true);
-    setTimeout(async () => {
+  const closeScanner = useCallback(async () => {
+    try { await scannerRef.current?.stop(); await scannerRef.current?.clear(); } catch {}
+    scannerRef.current = null;
+    scanHandled.current = false;
+    setScannerRunning(false);
+    setScannerTarget(null);
+  }, []);
+
+  useEffect(() => {
+    if (!scannerTarget) return;
+    let cancelled = false;
+    async function start() {
       try {
-        const { Html5Qrcode } = await import("html5-qrcode");
-        const scanner = new Html5Qrcode(scannerContainerId);
-        scannerRef.current = scanner;
-        const devices = await Html5Qrcode.getCameras();
-        const cameraId = devices.find(d => /back|rear|environment/i.test(d.label))?.id || devices[0]?.id;
-        if (!cameraId) { showMsg("No se encontró cámara.", "error"); setScannerOpen(false); return; }
-        await scanner.start(cameraId, { fps: 10, qrbox: 260 }, (decoded) => {
-          void scanner.stop();
-          scannerRef.current = null;
-          setScannerOpen(false);
-          searchCode(decoded);
-        }, () => {});
-      } catch (e: any) {
-        showMsg("Error escáner: " + e.message, "error");
-        setScannerOpen(false);
+        scanHandled.current = false;
+        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+        const qr = new Html5Qrcode(scannerContainerId, {
+          verbose: false,
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.CODE_93,  Html5QrcodeSupportedFormats.CODABAR,
+            Html5QrcodeSupportedFormats.EAN_13,   Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.ITF,      Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,    Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+        }) as Html5QrLike;
+        scannerRef.current = qr;
+        await qr.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 260, height: 180 } },
+          (decoded) => {
+            if (scanHandled.current) return;
+            scanHandled.current = true;
+            setScanProduct(decoded.trim());
+            void closeScanner();
+            void handleScan(decoded.trim());
+          },
+          undefined
+        );
+        if (!cancelled) setScannerRunning(true);
+      } catch (err) {
+        showMsg("No se pudo abrir la cámara: " + (err instanceof Error ? err.message : String(err)));
+        void closeScanner();
       }
-    }, 100);
+    }
+    void start();
+    return () => { cancelled = true; void closeScanner(); };
+  }, [scannerTarget, closeScanner]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Buscar línea por código ───────────────────────────────────────────────
+
+  async function findLine(code: string): Promise<ReceptionLine | null> {
+    const raw = code.trim();
+    if (!raw) return null;
+
+    const candidates = [...new Set([
+      raw, cleanCode(raw), fullProductCode(raw),
+    ].filter(Boolean).map(v => v.trim().toUpperCase()))];
+
+    // Búsqueda directa en product_code / sku / barcode de las líneas cargadas
+    const direct = lines.find(l =>
+      candidates.some(c =>
+        c === normalize(l.product_code) ||
+        c === normalize(l.sku) ||
+        c === normalize(l.barcode)
+      )
+    );
+    if (direct) return direct;
+
+    // Lookup en codigos_barra (UPC / ALU)
+    try {
+      const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).limit(20),
+      ]);
+      const mapped = new Set(
+        [...(byUpc || []), ...(byAlu || [])]
+          .flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>))
+          .map(v => v.trim().toUpperCase())
+      );
+      return lines.find(l =>
+        mapped.has(normalize(l.product_code)) || mapped.has(normalize(l.sku))
+      ) || null;
+    } catch { return null; }
   }
 
-  function closeScanner() {
-    if (scannerRef.current) { void scannerRef.current.stop(); scannerRef.current = null; }
-    setScannerOpen(false);
+  async function handleScan(code: string) {
+    if (!code.trim()) return;
+    const found = await findLine(code);
+    if (found) {
+      setActiveLine(found);
+      setEditQty(1);
+      setEditNotes("");
+      setTimeout(() => {
+        lineRefs.current[found.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+    } else {
+      showMsg(`Código "${code}" no encontrado en este requerimiento.`);
+    }
   }
 
-  // ─── Guardar recepción ───────────────────────────────────────────────────────
+  // ─── Guardar scan ──────────────────────────────────────────────────────────
 
-  async function saveReception(markComplete: boolean) {
-    if (!selected || !user) return;
+  async function saveScan() {
+    if (!activeLine || !selected || !user) return;
+    if (editQty <= 0) { showMsg("La cantidad debe ser mayor a 0."); return; }
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      const recordRows = lines.map(line => ({
+      const { error } = await supabase.from("reception_scans").insert({
         request_id:    selected.id,
-        line_id:       line.id,
+        line_id:       activeLine.id,
         operator_id:   user.id,
         operator_name: user.full_name,
-        product_code:  line.product_code,
-        description:   line.description,
-        unit:          line.unit,
-        qty_requested: line.qty_requested,
-        qty_received:  Number(line.qty_received ?? line.qty_pending),
-        notes:         line.notes || null,
-        updated_at:    now,
-      }));
+        product_code:  activeLine.product_code,
+        scanned_code:  scanProduct.trim() || null,
+        qty:           editQty,
+        notes:         editNotes.trim() || null,
+      });
+      if (error) throw error;
 
-      await supabase.from("reception_records").delete().eq("request_id", selected.id);
-      if (recordRows.length) {
-        const { error } = await supabase.from("reception_records").insert(recordRows);
-        if (error) throw error;
-      }
+      // Pasar a in_progress si estaba pendiente
+      await supabase.from("reception_requests").update({
+        reception_status: "in_progress",
+        updated_at: new Date().toISOString(),
+      }).eq("id", selected.id).eq("reception_status", "pending");
 
-      const newStatus = markComplete ? "completed" : "in_progress";
-      const { error: reqErr } = await supabase.from("reception_requests").update({
-        reception_status:  newStatus,
-        completed_at:      markComplete ? now : null,
-        completed_by_id:   markComplete ? user.id : null,
-        completed_by_name: markComplete ? user.full_name : null,
-        updated_at:        now,
-      }).eq("id", selected.id);
-      if (reqErr) throw reqErr;
+      setSelected(prev => prev ? { ...prev, reception_status: prev.reception_status === "pending" ? "in_progress" : prev.reception_status } : null);
+      setRequests(prev => prev.map(r => r.id === selected.id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
 
-      setSelected(prev => prev ? { ...prev, reception_status: newStatus } : null);
-      setRequests(prev => prev.map(r => r.id === selected.id ? { ...r, reception_status: newStatus } : r));
-      showMsg(markComplete ? "Recepción completada." : "Guardado.", "success");
-      if (markComplete) setView("report");
-    } catch (e: any) {
-      showMsg("Error guardando: " + e.message, "error");
-    } finally {
-      setSaving(false);
-    }
+      setScanProduct("");
+      setActiveLine(null);
+      await reloadScans(selected.id);
+      showMsg("Recepción registrada.");
+    } catch (e: any) { showMsg("Error guardando: " + e.message); }
+    finally { setSaving(false); }
   }
 
-  // ─── Filtros lista ────────────────────────────────────────────────────────────
+  // ─── Editar scan ───────────────────────────────────────────────────────────
 
-  const filteredRequests = useMemo(() => requests.filter(r => {
-    if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name]
-      .join(" ").toLowerCase().includes(q);
-  }), [requests, filterStatus, search]);
+  async function saveEditScan() {
+    if (!editingScanId || !user) return;
+    const qty = num(editScanQty);
+    if (qty <= 0) { showMsg("La cantidad debe ser mayor a 0."); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("reception_scans")
+        .update({ qty, notes: editScanNotes.trim() || null, updated_at: new Date().toISOString() })
+        .eq("id", editingScanId);
+      if (error) throw error;
+      setEditingScanId(""); setEditScanQty(""); setEditScanNotes("");
+      if (selected) await reloadScans(selected.id);
+      showMsg("Registro actualizado.");
+    } catch (e: any) { showMsg("Error editando: " + e.message); }
+    finally { setSaving(false); }
+  }
 
-  // Tiendas destino disponibles en los requests cargados (para filtro admin)
-  const destStoreOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of requests) {
-      if (r.destination_store_code)
-        map.set(r.destination_store_code, r.destination_store_name || r.destination_store_code);
-    }
-    return [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [requests]);
+  // ─── Eliminar scan ─────────────────────────────────────────────────────────
 
-  // ─── Reporte imprimible ───────────────────────────────────────────────────────
+  async function deleteScan(scan: ReceptionScan) {
+    if (!window.confirm(`¿Eliminar este registro de ${fmt(num(scan.qty))} unidades?`)) return;
+    const { error } = await supabase.from("reception_scans").delete().eq("id", scan.id);
+    if (error) { showMsg("Error eliminando: " + error.message); return; }
+    if (selected) await reloadScans(selected.id);
+    showMsg("Registro eliminado.");
+  }
+
+  // ─── Marcar completado ─────────────────────────────────────────────────────
+
+  async function markComplete() {
+    if (!selected || !user) return;
+    if (!window.confirm("¿Marcar este requerimiento como completado?")) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("reception_requests").update({
+        reception_status:  "completed",
+        completed_at:      new Date().toISOString(),
+        completed_by_id:   user.id,
+        completed_by_name: user.full_name,
+        updated_at:        new Date().toISOString(),
+      }).eq("id", selected.id);
+      if (error) throw error;
+      setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
+      setRequests(prev => prev.map(r => r.id === selected.id ? { ...r, reception_status: "completed" } : r));
+      showMsg("Requerimiento completado.");
+    } catch (e: any) { showMsg("Error: " + e.message); }
+    finally { setSaving(false); }
+  }
+
+  // ─── Reporte imprimible ────────────────────────────────────────────────────
 
   function printReport() {
     if (!selected) return;
-    const rows = lines.map(line => {
-      const rec = records.find(r => r.line_id === line.id);
-      const received = rec?.qty_received ?? Number(line.qty_received ?? line.qty_pending);
-      const diff = received - line.qty_requested;
-      return { line, received, diff };
+    const lineRows = lines.map(line => {
+      const lineScans = scans.filter(s => s.line_id === line.id);
+      const received = lineScans.reduce((sum, s) => sum + num(s.qty), 0);
+      const diff = received - num(line.qty_requested);
+      return { line, received, diff, lineScans };
     });
-    const totalReq = rows.reduce((s, r) => s + r.line.qty_requested, 0);
-    const totalRec = rows.reduce((s, r) => s + r.received, 0);
+    const totalReq = lineRows.reduce((s, r) => s + num(r.line.qty_requested), 0);
+    const totalRec = lineRows.reduce((s, r) => s + r.received, 0);
     const totalDiff = totalRec - totalReq;
-    const sobrantes = rows.filter(r => r.diff > 0).length;
-    const faltantes = rows.filter(r => r.diff < 0).length;
+    const ok = lineRows.filter(r => r.diff === 0).length;
+    const sobrantes = lineRows.filter(r => r.diff > 0).length;
+    const faltantes = lineRows.filter(r => r.diff < 0).length;
 
     const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
     <title>Recepción ${selected.doc_number || selected.inv_request_no}</title>
     <style>
       body{font-family:Arial,sans-serif;font-size:11px;margin:20px;color:#111}
       h2{font-size:14px;margin:0 0 4px}
-      .info{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;border:1px solid #ccc;padding:8px;border-radius:6px}
-      .info-item label{font-weight:bold;display:block;color:#555;font-size:10px}
-      .stats{display:flex;gap:12px;margin-bottom:10px}
-      .stat{background:#f1f5f9;border-radius:6px;padding:6px 10px;font-size:10px;font-weight:bold}
-      .stat span{display:block;font-size:14px;font-weight:900}
-      .stat.ok span{color:#15803d} .stat.over span{color:#1d4ed8} .stat.under span{color:#dc2626}
-      table{width:100%;border-collapse:collapse;margin-top:4px}
+      .info{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;border:1px solid #ccc;padding:8px;border-radius:6px}
+      .info-item label{font-weight:bold;display:block;color:#555;font-size:9px;text-transform:uppercase}
+      .stats{display:flex;gap:10px;margin-bottom:10px}
+      .stat{background:#f1f5f9;border-radius:6px;padding:5px 10px;font-size:10px;font-weight:bold;text-align:center}
+      .stat span{display:block;font-size:16px;font-weight:900}
+      .stat.ok span{color:#047857}.stat.over span{color:#1d4ed8}.stat.under span{color:#dc2626}
+      table{width:100%;border-collapse:collapse}
       th{background:#1e293b;color:white;padding:5px 4px;text-align:left;font-size:10px}
-      td{padding:4px;border-bottom:1px solid #e2e8f0;font-size:10px}
+      td{padding:4px;border-bottom:1px solid #e2e8f0;font-size:10px;vertical-align:top}
       tr:nth-child(even) td{background:#f8fafc}
-      .ok{color:#15803d;font-weight:bold} .over{color:#1d4ed8;font-weight:bold} .under{color:#dc2626;font-weight:bold}
+      .ok{color:#047857;font-weight:bold}.over{color:#1d4ed8;font-weight:bold}.under{color:#dc2626;font-weight:bold}
       .totals td{font-weight:bold;border-top:2px solid #1e293b}
-      .obs{color:#6b7280}
-      .signatures{margin-top:32px;display:flex;justify-content:space-around;gap:40px}
-      .sign{text-align:center;width:200px}
-      .sign-line{border-top:1px solid #000;padding-top:4px;margin-top:48px;font-size:10px;font-weight:bold}
+      .signatures{margin-top:32px;display:flex;justify-content:space-around}
+      .sign{text-align:center}
+      .sign-line{border-top:1px solid #000;margin-top:48px;padding-top:4px;font-size:10px;font-weight:bold;width:180px}
       .sign-sub{font-size:9px;color:#555;margin-top:2px}
       @media print{body{margin:10px}}
     </style></head><body>
     <h2>Reporte de Recepción</h2>
-    <p style="color:#555;font-size:10px;margin:0 0 8px">Generado: ${new Date().toLocaleString("es-PE")} &nbsp;|&nbsp; Registrado por: ${selected.completed_by_name || user?.full_name || "-"}</p>
+    <p style="color:#555;font-size:10px;margin:0 0 8px">Generado: ${new Date().toLocaleString("es-PE")} | Por: ${selected.completed_by_name || user?.full_name || "-"}</p>
     <div class="info">
-      <div class="info-item"><label>DOCUMENTO</label>${selected.doc_number || selected.inv_request_no || "-"}</div>
-      <div class="info-item"><label>MOTIVO</label>${selected.reason || "Salida por transferencia"}</div>
-      <div class="info-item"><label>ORIGEN (CD)</label>${selected.source_store_name || selected.source_store_code}</div>
-      <div class="info-item"><label>TIENDA DESTINO</label>${selected.destination_store_name || selected.destination_store_code}</div>
-      <div class="info-item"><label>FECHA DOCUMENTO</label>${selected.request_date ? new Date(selected.request_date).toLocaleDateString("es-PE") : "-"}</div>
-      <div class="info-item"><label>ESTADO</label>${selected.reception_status === "completed" ? "Completado" : "En proceso"}</div>
+      <div class="info-item"><label>Motivo</label>${selected.reason || "Abastecimiento"}</div>
+      <div class="info-item"><label>Documento</label>${selected.doc_number || selected.inv_request_no || "-"}</div>
+      <div class="info-item"><label>Origen (CD)</label>${selected.source_store_name || selected.source_store_code}</div>
+      <div class="info-item"><label>Tienda destino</label>${selected.destination_store_name || selected.destination_store_code}</div>
+      <div class="info-item"><label>Fecha requerimiento</label>${dateShort(selected.creation_date)}</div>
+      <div class="info-item"><label>Fecha en tránsito</label>${dateShort(selected.request_date)}</div>
     </div>
     <div class="stats">
-      <div class="stat"><label>CÓDIGOS</label><span>${rows.length}</span></div>
-      <div class="stat ok"><label>OK</label><span>${rows.filter(r => r.diff === 0).length}</span></div>
-      <div class="stat over"><label>SOBRANTES</label><span>${sobrantes}</span></div>
-      <div class="stat under"><label>FALTANTES</label><span>${faltantes}</span></div>
+      <div class="stat"><label>Códigos</label><span>${lineRows.length}</span></div>
+      <div class="stat ok"><label>OK</label><span>${ok}</span></div>
+      <div class="stat over"><label>Sobrantes</label><span>${sobrantes}</span></div>
+      <div class="stat under"><label>Faltantes</label><span>${faltantes}</span></div>
     </div>
     <table>
       <thead><tr>
-        <th>#</th><th>Código</th><th>Descripción</th><th>UM</th>
+        <th>#</th><th>Código</th><th>Descripción</th><th style="font-weight:900">UM</th>
         <th style="text-align:right">Enviado</th>
         <th style="text-align:right">Recibido</th>
-        <th style="text-align:right">Diferencia</th>
+        <th style="text-align:right">Dif.</th>
         <th>Estado</th>
         <th>Observación</th>
       </tr></thead>
       <tbody>
-        ${rows.map((r, i) => {
+        ${lineRows.map((r, i) => {
           const cls = r.diff === 0 ? "ok" : r.diff > 0 ? "over" : "under";
           const st  = r.diff === 0 ? "OK" : r.diff > 0 ? "SOBRANTE" : "FALTANTE";
-          const rec = records.find(rec => rec.line_id === r.line.id);
+          const obs = r.lineScans.filter(s => s.notes).map(s => s.notes).join("; ");
           return `<tr>
             <td>${i + 1}</td>
-            <td style="font-weight:bold">${r.line.product_code}</td>
+            <td style="font-weight:900">${r.line.product_code}</td>
             <td>${r.line.description || "-"}</td>
-            <td>${r.line.unit || "-"}</td>
-            <td style="text-align:right">${fmt(r.line.qty_requested)}</td>
-            <td style="text-align:right;font-weight:bold">${fmt(r.received)}</td>
+            <td style="font-weight:900">${r.line.unit || "-"}</td>
+            <td style="text-align:right">${fmt(num(r.line.qty_requested))}</td>
+            <td style="text-align:right;font-weight:900">${fmt(r.received)}</td>
             <td style="text-align:right" class="${cls}">${diffLabel(r.diff)}</td>
             <td class="${cls}">${st}</td>
-            <td class="obs">${rec?.notes || ""}</td>
+            <td style="color:#6b7280">${obs}</td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -435,140 +498,117 @@ export default function RecepcionPage() {
       </tr></tfoot>
     </table>
     <div class="signatures">
-      <div class="sign">
-        <div class="sign-line">Jefe de Tienda</div>
-        <div class="sign-sub">${selected.destination_store_name || selected.destination_store_code}</div>
-      </div>
-      <div class="sign">
-        <div class="sign-line">Asesor de Almacén</div>
-        <div class="sign-sub">CD-GPC</div>
-      </div>
+      <div class="sign"><div class="sign-line">Jefe de Tienda</div><div class="sign-sub">${selected.destination_store_name || selected.destination_store_code}</div></div>
+      <div class="sign"><div class="sign-line">Asesor de Almacén</div><div class="sign-sub">CD-GPC</div></div>
     </div>
     </body></html>`;
 
     const win = window.open("", "_blank");
-    if (!win) { showMsg("Permite ventanas emergentes para imprimir.", "error"); return; }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
+    if (!win) { showMsg("Permite ventanas emergentes para imprimir."); return; }
+    win.document.write(html); win.document.close(); win.focus();
     setTimeout(() => win.print(), 400);
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────────────
+  // ─── Filtros ───────────────────────────────────────────────────────────────
+
+  const filteredRequests = useMemo(() => requests.filter(r => {
+    if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
+    if (!search.trim()) return true;
+    return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason]
+      .join(" ").toLowerCase().includes(search.toLowerCase());
+  }), [requests, filterStatus, search]);
+
+  const destStoreOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of requests) {
+      if (r.destination_store_code) map.set(r.destination_store_code, r.destination_store_name || r.destination_store_code);
+    }
+    return [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [requests]);
+
+  // Totales por línea desde los scans cargados
+  const scanTotalByLine = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of scans) m.set(s.line_id, (m.get(s.line_id) || 0) + num(s.qty));
+    return m;
+  }, [scans]);
+
+  const scansByLine = useMemo(() => {
+    const m = new Map<string, ReceptionScan[]>();
+    for (const s of scans) {
+      if (!m.has(s.line_id)) m.set(s.line_id, []);
+      m.get(s.line_id)!.push(s);
+    }
+    return m;
+  }, [scans]);
+
+  const linesScanned = useMemo(() => lines.filter(l => (scanTotalByLine.get(l.id) || 0) > 0).length, [lines, scanTotalByLine]);
+
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   if (!ready) {
-    return (
-      <main className="min-h-screen bg-slate-100 flex items-center justify-center">
-        <p className="text-slate-500 font-bold">Cargando...</p>
-      </main>
-    );
+    return <main className="min-h-screen bg-slate-100 flex items-center justify-center"><p className="text-slate-500 font-black">Cargando...</p></main>;
   }
 
   return (
     <main className="min-h-screen bg-slate-100 flex flex-col">
 
-      {/* ── Header ── */}
-      <header className="sticky top-0 z-40 bg-white border-b shadow-sm px-4 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Menú">
-            <Home size={18} />
-          </button>
-          {view !== "list" && (
-            <button
-              onClick={() => { setView("list"); setSelected(null); setLines([]); setRecords([]); }}
-              className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
-            >
-              <ChevronLeft size={18} />
-            </button>
-          )}
-          <div>
-            <h1 className="font-black text-slate-900 text-base leading-tight">
-              {view === "list" ? "Recepción"
-                : view === "report" ? "Reporte"
-                : selected?.doc_number || selected?.inv_request_no || "Detalle"}
-            </h1>
-            <p className="text-xs text-slate-400">{user?.full_name}</p>
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 bg-white border-b shadow-sm">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><Home size={18} /></button>
+            {view === "detail" && (
+              <button onClick={() => { setView("list"); setSelected(null); setLines([]); setScans([]); setActiveLine(null); }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><ChevronLeft size={18} /></button>
+            )}
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white">
+                <ScanLine size={18} />
+              </div>
+              <div>
+                <h1 className="font-black text-slate-900 text-sm leading-tight">
+                  {view === "list" ? "Recepción" : selected?.doc_number || selected?.inv_request_no || "Detalle"}
+                </h1>
+                <p className="text-[11px] text-slate-400 leading-none">{user?.full_name}</p>
+              </div>
+            </div>
           </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {view === "detail" && selected?.reception_status !== "completed" && (
-            <button
-              onClick={() => saveReception(false)}
-              disabled={saving}
-              className="hidden sm:flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              {saving ? "Guardando..." : "Guardar borrador"}
+          <div className="flex items-center gap-2">
+            {view === "detail" && (
+              <button onClick={printReport} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Imprimir reporte"><Printer size={16} /></button>
+            )}
+            <button onClick={() => view === "list" ? loadRequests() : (selected ? openRequest(selected) : void 0)} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><RefreshCw size={16} /></button>
+            <button onClick={() => { if (user) void endSingleDeviceSession(user); localStorage.removeItem("cyclic_user"); window.location.replace("/"); }}
+              className="flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-black text-slate-600 hover:bg-slate-50">
+              <LogOut size={15} /> Salir
             </button>
-          )}
-          {view === "detail" && (
-            <button onClick={() => setView("report")} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Reporte">
-              <Printer size={16} />
-            </button>
-          )}
-          {view === "report" && (
-            <button onClick={printReport} className="flex items-center gap-1.5 rounded-xl bg-slate-900 text-white px-3 py-2 text-sm font-bold">
-              <Printer size={15} /> Imprimir
-            </button>
-          )}
-          <button onClick={() => { void loadRequests(); showMsg("Actualizado.", "info"); }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50">
-            <RefreshCw size={16} />
-          </button>
-          <button
-            onClick={() => { if (user) void endSingleDeviceSession(user); localStorage.removeItem("cyclic_user"); window.location.replace("/"); }}
-            className="flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50"
-          >
-            <LogOut size={15} /> Salir
-          </button>
+          </div>
         </div>
       </header>
 
-      {/* ── Mensaje ── */}
+      {/* ── Mensaje ──────────────────────────────────────────────────────────── */}
       {message && (
-        <div className={`mx-4 mt-3 rounded-2xl px-4 py-3 text-sm font-bold ${
-          message.type === "success" ? "bg-green-50 text-green-700 border border-green-200"
-          : message.type === "error" ? "bg-red-50 text-red-700 border border-red-200"
-          : "bg-blue-50 text-blue-700 border border-blue-200"
-        }`}>
-          {message.text}
-        </div>
+        <div className="mx-4 mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>
       )}
 
-      {/* ══════════════ LISTA ══════════════ */}
+      {/* ══════════════ LISTA ════════════════════════════════════════════════ */}
       {view === "list" && (
-        <div className="flex-1 p-4 space-y-3 max-w-3xl w-full mx-auto">
+        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
 
           {/* Filtros */}
           <div className="flex flex-wrap gap-2">
-            {/* Filtro de tienda: solo admin/supervisor/all-stores */}
             {canAdmin && (
-              <select
-                value={storeFilter}
-                onChange={e => setStoreFilter(e.target.value)}
-                className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-semibold min-w-[160px]"
-              >
+              <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+                className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black min-w-[160px]">
                 <option value="all">Todas las tiendas</option>
-                {destStoreOptions.map(s => (
-                  <option key={s.code} value={s.code}>{s.name}</option>
-                ))}
+                {destStoreOptions.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
               </select>
             )}
-
-            <div className="relative flex-1 min-w-[160px]">
-              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                className="w-full border rounded-2xl pl-9 pr-3 py-2.5 text-sm bg-white text-slate-900"
-                placeholder="Buscar documento, tienda..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
-            </div>
-
-            <select
-              value={filterStatus}
-              onChange={e => setFilterStatus(e.target.value as any)}
-              className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900"
-            >
+            <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
+              placeholder="Buscar documento, tienda..."
+              value={search} onChange={e => setSearch(e.target.value)} />
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
+              className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
               <option value="all">Todos</option>
               <option value="pending">Pendiente</option>
               <option value="in_progress">En proceso</option>
@@ -576,348 +616,269 @@ export default function RecepcionPage() {
             </select>
           </div>
 
-          {/* Contador */}
-          <p className="text-xs text-slate-400 font-semibold px-1">
-            {filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}
-          </p>
+          <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>
 
-          {loading && <p className="text-slate-400 text-sm text-center py-12">Cargando...</p>}
-
+          {loading && <p className="text-center py-12 text-slate-400 font-bold">Cargando...</p>}
           {!loading && filteredRequests.length === 0 && (
             <div className="text-center py-16 text-slate-400">
               <Package size={40} className="mx-auto mb-3 opacity-30" />
-              <p className="font-bold">No hay requerimientos{filterStatus !== "all" ? " en este estado" : ""}</p>
+              <p className="font-black">Sin requerimientos{filterStatus !== "all" ? " en este estado" : ""}</p>
               <p className="text-xs mt-1">Los slips en tránsito aparecerán aquí automáticamente.</p>
             </div>
           )}
 
           {filteredRequests.map(req => (
-            <button
-              key={req.id}
-              onClick={() => openRequest(req)}
-              className="w-full text-left bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md hover:border-teal-400 transition-all"
-            >
-              <div className="flex items-start justify-between gap-3">
+            <button key={req.id} onClick={() => openRequest(req)}
+              className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-violet-400 ${req.reception_status === "in_progress" ? "border-violet-200 bg-white" : "bg-white"}`}>
+              <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-black text-slate-900">{req.doc_number || req.inv_request_no || req.erp_inv_request_id}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}
-                  </p>
+                  <ReasonBadge reason={req.reason} />
+                  <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{req.doc_number || req.inv_request_no || req.erp_inv_request_id}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
                 </div>
                 <StatusBadge status={req.reception_status} />
               </div>
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
-                <span><b className="text-slate-700">{req.line_count}</b> líneas</span>
-                <span><b className="text-slate-700">{fmt(req.qty_requested_total)}</b> uds.</span>
-              </div>
-              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
-                {req.creation_date && (
-                  <span>Requerido: <b className="text-slate-600">{new Date(req.creation_date).toLocaleDateString("es-PE")}</b></span>
-                )}
-                {req.request_date && (
-                  <span>En tránsito: <b className="text-teal-600">{new Date(req.request_date).toLocaleDateString("es-PE")}</b></span>
-                )}
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
+                {req.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(req.creation_date)}</b></span>}
+                {req.request_date  && <span>En tránsito: <b className="text-violet-600">{dateShort(req.request_date)}</b></span>}
+                <span><b className="text-slate-600">{req.line_count}</b> líneas · <b className="text-slate-600">{fmt(req.qty_requested_total)}</b> uds.</span>
               </div>
               {req.reception_status === "completed" && req.completed_by_name && (
-                <p className="mt-1.5 text-xs text-green-600 font-semibold">✓ {req.completed_by_name}</p>
+                <p className="mt-1.5 text-xs text-emerald-600 font-black">✓ {req.completed_by_name}</p>
               )}
             </button>
           ))}
         </div>
       )}
 
-      {/* ══════════════ DETALLE ══════════════ */}
+      {/* ══════════════ DETALLE ══════════════════════════════════════════════ */}
       {view === "detail" && selected && (
         <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
 
           {/* Info cabecera */}
-          <div className="bg-white rounded-2xl border p-4">
+          <div className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="font-black text-slate-900 text-lg">{selected.doc_number || selected.inv_request_no}</p>
+                <ReasonBadge reason={selected.reason} />
+                <h2 className="font-black text-slate-900 text-2xl leading-tight">{selected.doc_number || selected.inv_request_no}</h2>
                 <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
               </div>
               <StatusBadge status={selected.reception_status} />
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
-              <span><b className="text-slate-700">{selected.line_count}</b> líneas</span>
-              <span><b className="text-slate-700">{fmt(selected.qty_requested_total)}</b> uds. enviadas</span>
-              {selected.creation_date && (
-                <span>Requerido: <b>{new Date(selected.creation_date).toLocaleDateString("es-PE")}</b></span>
-              )}
-              {selected.request_date && (
-                <span>Tránsito: <b className="text-teal-600">{new Date(selected.request_date).toLocaleDateString("es-PE")}</b></span>
-              )}
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
+              {selected.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(selected.creation_date)}</b></span>}
+              {selected.request_date  && <span>Tránsito: <b className="text-violet-600">{dateShort(selected.request_date)}</b></span>}
             </div>
+            {lines.length > 0 && (
+              <div className="mt-3">
+                <div className="flex justify-between text-xs font-black text-slate-500 mb-1">
+                  <span>{linesScanned} / {lines.length} líneas recepcionadas</span>
+                  <span>{Math.round((linesScanned / lines.length) * 100)}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-slate-100">
+                  <div className="h-2 rounded-full bg-violet-600 transition-all" style={{ width: `${Math.round((linesScanned / lines.length) * 100)}%` }} />
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Barra de búsqueda / escaneo */}
+          {/* Barra de escaneo / digitación */}
           {selected.reception_status !== "completed" && (
-            <div className="bg-white rounded-2xl border p-3 flex gap-2">
-              <div className="relative flex-1">
-                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <div className="rounded-2xl border bg-white p-3 shadow-sm">
+              <p className="text-xs font-black uppercase text-slate-500 mb-2">Escanear o digitar código de producto</p>
+              <div className="flex gap-2">
                 <input
-                  className="w-full border rounded-xl pl-9 pr-3 py-2.5 text-sm bg-white text-slate-900"
-                  placeholder="Digitar código de producto..."
-                  value={scanCode}
-                  onChange={e => setScanCode(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") searchCode(scanCode); }}
+                  className="flex-1 min-w-0 rounded-xl border bg-white px-3 py-2.5 text-sm font-bold text-slate-900"
+                  placeholder="Código de producto, UPC o ALU..."
+                  value={scanProduct}
+                  onChange={e => setScanProduct(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && scanProduct.trim()) void handleScan(scanProduct); }}
                 />
+                <button onClick={() => { if (scanProduct.trim()) void handleScan(scanProduct); }}
+                  className="rounded-xl bg-violet-600 text-white px-4 py-2 font-black text-sm">
+                  Buscar
+                </button>
+                <button onClick={() => setScannerTarget("product")}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escáner">
+                  <QrCode size={18} />
+                </button>
               </div>
-              <button
-                onClick={() => searchCode(scanCode)}
-                className="rounded-xl bg-teal-600 text-white px-4 py-2 text-sm font-bold"
-              >
-                <ScanLine size={16} />
-              </button>
-              <button
-                onClick={openScanner}
-                className="rounded-xl border px-3 py-2 text-slate-700 hover:bg-slate-50"
-                title="Escanear código"
-              >
-                <QrCode size={16} />
-              </button>
             </div>
           )}
 
           {/* Escáner modal */}
-          {scannerOpen && (
-            <div className="fixed inset-0 bg-black/75 z-50 flex flex-col items-center justify-center gap-4 p-4">
-              <p className="text-white font-bold text-sm">Apunta al código del producto</p>
+          {scannerTarget && (
+            <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center gap-4 p-4">
+              <p className="text-white font-black">Apunta al código del producto</p>
+              {!scannerRunning && <p className="text-white/60 text-sm">Iniciando cámara...</p>}
               <div id={scannerContainerId} className="rounded-2xl overflow-hidden w-full max-w-xs" />
-              <button onClick={closeScanner} className="rounded-2xl bg-white px-6 py-3 font-black text-slate-900">
-                <X size={16} className="inline mr-2" />Cancelar
+              <button onClick={closeScanner} className="rounded-2xl bg-white px-6 py-3 font-black text-slate-900 flex items-center gap-2">
+                <X size={16} /> Cancelar
               </button>
             </div>
           )}
 
           {/* Líneas */}
           {loading ? (
-            <p className="text-slate-400 text-sm text-center py-10">Cargando líneas...</p>
+            <p className="text-center py-10 text-slate-400 font-bold">Cargando líneas...</p>
           ) : (
             <div className="space-y-2">
-              {lines.map((line) => {
-                const received = Number(line.qty_received ?? line.qty_pending);
-                const diff = received - line.qty_requested;
-                const isHighlighted = highlightLine === line.id;
+              {lines.map(line => {
+                const received = scanTotalByLine.get(line.id) || 0;
+                const diff = received - num(line.qty_requested);
+                const isActive = activeLine?.id === line.id;
+                const lineScans = scansByLine.get(line.id) || [];
+
                 return (
-                  <div
-                    key={line.id}
-                    ref={el => { lineRefs.current[line.id] = el; }}
-                    className={`bg-white rounded-2xl border p-3 transition-all ${isHighlighted ? "border-teal-500 ring-2 ring-teal-300 shadow-md" : "border-slate-200"}`}
-                  >
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div className="min-w-0">
-                        <p className="font-black text-slate-900 text-sm">{line.product_code}</p>
-                        <p className="text-xs text-slate-500 truncate">{line.description}</p>
-                        {line.barcode && <p className="text-xs text-slate-400 font-mono">{line.barcode}</p>}
+                  <div key={line.id} ref={el => { lineRefs.current[line.id] = el; }}>
+                    {/* ── Card de línea ── */}
+                    <button
+                      onClick={() => {
+                        if (isActive) { setActiveLine(null); return; }
+                        setActiveLine(line);
+                        setEditQty(1);
+                        setEditNotes("");
+                        setScanProduct("");
+                      }}
+                      className={`w-full text-left rounded-2xl border p-3 transition-all ${isActive ? "border-violet-500 bg-violet-50 shadow-md" : received > 0 ? "border-emerald-200 bg-white" : "border-slate-200 bg-white"}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-black text-slate-900 text-sm">{line.product_code}</p>
+                          <p className="text-xs text-slate-500 truncate">{line.description}</p>
+                          {/* Unidad de medida en negrita */}
+                          {line.unit && (
+                            <p className="text-xs font-black text-slate-700 mt-0.5">
+                              UM: <span className="text-violet-700">{line.unit}</span>
+                            </p>
+                          )}
+                        </div>
+                        <div className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-black border ${diff === 0 && received > 0 ? "bg-emerald-100 text-emerald-700 border-emerald-200" : diff > 0 ? "bg-blue-100 text-blue-700 border-blue-200" : received > 0 ? "bg-red-100 text-red-600 border-red-200" : "bg-slate-100 text-slate-500 border-slate-200"}`}>
+                          {received > 0 ? diffLabel(diff) : "—"}
+                        </div>
                       </div>
-                      <span className={`shrink-0 text-xs font-black rounded-full px-2 py-0.5 ${
-                        diff === 0 ? "bg-green-100 text-green-700"
-                        : diff > 0 ? "bg-blue-100 text-blue-700"
-                        : "bg-red-100 text-red-600"
-                      }`}>
-                        {diffLabel(diff)}
-                      </span>
-                    </div>
+                      <div className="mt-2 grid grid-cols-3 text-center text-[11px] font-black overflow-hidden rounded-xl border bg-slate-50">
+                        <div className="border-r p-1.5">
+                          <p className="text-slate-400 font-semibold">Enviado</p>
+                          <p>{fmt(num(line.qty_requested))}</p>
+                        </div>
+                        <div className="border-r p-1.5 bg-violet-50">
+                          <p className="text-violet-500 font-semibold">Recibido</p>
+                          <p className="text-violet-700">{fmt(received)}</p>
+                        </div>
+                        <div className="p-1.5">
+                          <p className="text-slate-400 font-semibold">Diferencia</p>
+                          <p className={received > 0 ? diffClass(diff) : "text-slate-400"}>{received > 0 ? diffLabel(diff) : "—"}</p>
+                        </div>
+                      </div>
+                    </button>
 
-                    <div className="grid grid-cols-3 gap-2 text-xs text-center">
-                      <div className="rounded-xl bg-slate-50 border p-2">
-                        <p className="text-slate-500 font-semibold">Enviado</p>
-                        <p className="font-black text-slate-900">{fmt(line.qty_requested)} <span className="font-normal text-slate-400 text-[10px]">{line.unit}</span></p>
+                    {/* ── Formulario de scan (activa) ── */}
+                    {isActive && selected.reception_status !== "completed" && (
+                      <div className="mx-2 rounded-b-2xl border border-t-0 border-violet-200 bg-violet-50/60 p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1">
+                            <label className="text-[10px] font-black uppercase text-violet-600">Cantidad recibida</label>
+                            <input
+                              type="number" min="0" step="1"
+                              value={editQty}
+                              onChange={e => setEditQty(Number(e.target.value))}
+                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-900 focus:border-violet-500 focus:ring-1 focus:ring-violet-300"
+                              autoFocus
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <label className="text-[10px] font-black uppercase text-slate-500">Observación (opcional)</label>
+                            <input
+                              type="text"
+                              value={editNotes}
+                              onChange={e => setEditNotes(e.target.value)}
+                              placeholder="Ej: embalaje dañado"
+                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={saveScan} disabled={saving || editQty <= 0}
+                            className="flex-1 rounded-xl bg-violet-600 text-white py-2.5 text-sm font-black disabled:opacity-50 flex items-center justify-center gap-1.5">
+                            <CheckCircle2 size={15} /> {saving ? "Guardando..." : "Guardar"}
+                          </button>
+                          <button onClick={() => setActiveLine(null)} className="rounded-xl border px-4 py-2.5 text-sm font-black text-slate-600 hover:bg-slate-50">
+                            Cancelar
+                          </button>
+                        </div>
                       </div>
-                      <div className="rounded-xl bg-teal-50 border border-teal-200 p-2">
-                        <p className="text-teal-600 font-semibold">Recibido</p>
-                        <input
-                          id={`qty-${line.id}`}
-                          type="number"
-                          min="0"
-                          step="1"
-                          className="w-full text-center font-black text-teal-700 bg-transparent focus:outline-none text-sm"
-                          value={line.qty_received ?? line.qty_pending}
-                          onChange={e => setLines(prev => prev.map(l => l.id === line.id ? { ...l, qty_received: Number(e.target.value) } : l))}
-                          disabled={selected.reception_status === "completed"}
-                        />
-                      </div>
-                      <div className="rounded-xl bg-slate-50 border p-2">
-                        <p className="text-slate-500 font-semibold">Diferencia</p>
-                        <p className={`font-black text-sm ${diffClass(diff)}`}>{diffLabel(diff)}</p>
-                      </div>
-                    </div>
+                    )}
 
-                    <input
-                      className="mt-2 w-full border rounded-xl px-3 py-2 text-xs text-slate-900 bg-white placeholder:text-slate-400"
-                      placeholder="Observación (opcional)"
-                      value={line.notes ?? ""}
-                      onChange={e => setLines(prev => prev.map(l => l.id === line.id ? { ...l, notes: e.target.value } : l))}
-                      disabled={selected.reception_status === "completed"}
-                    />
+                    {/* ── Registros de scan para esta línea ── */}
+                    {lineScans.length > 0 && (
+                      <div className="mx-2 mt-1 space-y-1">
+                        {lineScans.map(scan => (
+                          <div key={scan.id} className="rounded-xl border bg-white px-3 py-2">
+                            {editingScanId === scan.id ? (
+                              <div className="flex items-center gap-2">
+                                <input type="number" min="0" step="1" value={editScanQty}
+                                  onChange={e => setEditScanQty(e.target.value)}
+                                  className="w-20 rounded-xl border px-2 py-1.5 text-sm font-black" autoFocus />
+                                <input type="text" value={editScanNotes}
+                                  onChange={e => setEditScanNotes(e.target.value)}
+                                  placeholder="Observación"
+                                  className="flex-1 rounded-xl border px-2 py-1.5 text-sm" />
+                                <button onClick={saveEditScan} disabled={saving}
+                                  className="rounded-xl bg-violet-600 text-white px-3 py-1.5 text-xs font-black disabled:opacity-50">OK</button>
+                                <button onClick={() => setEditingScanId("")}
+                                  className="rounded-xl border px-3 py-1.5 text-xs font-black text-slate-600">Cancelar</button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <span className="font-black text-slate-900 text-sm">{fmt(num(scan.qty))}</span>
+                                  {line.unit && <span className="text-xs font-black text-violet-600 ml-1">{line.unit}</span>}
+                                  {scan.notes && <span className="text-xs text-slate-400 ml-2">· {scan.notes}</span>}
+                                  <p className="text-[10px] text-slate-400">{scan.operator_name} · {timeShort(scan.created_at)}</p>
+                                </div>
+                                {selected.reception_status !== "completed" && (
+                                  <div className="flex gap-1 shrink-0">
+                                    <button onClick={() => { setEditingScanId(scan.id); setEditScanQty(String(num(scan.qty))); setEditScanNotes(scan.notes || ""); }}
+                                      className="grid h-7 w-7 place-items-center rounded-lg border text-slate-500 hover:bg-slate-50">
+                                      <Pencil size={13} />
+                                    </button>
+                                    <button onClick={() => void deleteScan(scan)}
+                                      className="grid h-7 w-7 place-items-center rounded-lg border border-red-100 text-red-500 hover:bg-red-50">
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* Botones de acción */}
-          {selected.reception_status !== "completed" && (
-            <div className="sticky bottom-4 flex gap-3">
-              <button
-                onClick={() => saveReception(false)}
-                disabled={saving}
-                className="flex-1 rounded-2xl border bg-white py-3.5 font-black text-slate-700 text-sm disabled:opacity-50"
-              >
-                {saving ? "Guardando..." : "Guardar borrador"}
+          {/* Botón completar */}
+          {selected.reception_status !== "completed" && !loading && (
+            <div className="sticky bottom-4 pt-2">
+              <button onClick={markComplete} disabled={saving || scans.length === 0}
+                className="w-full rounded-2xl bg-slate-900 text-white py-4 font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40">
+                <CheckCircle2 size={18} /> {saving ? "Guardando..." : "Marcar requerimiento completado"}
               </button>
-              <button
-                onClick={() => saveReception(true)}
-                disabled={saving}
-                className="flex-1 rounded-2xl bg-teal-600 text-white py-3.5 font-black text-sm disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                <CheckCircle2 size={16} />
-                {saving ? "Guardando..." : "Marcar completado"}
-              </button>
+              {scans.length === 0 && <p className="text-center text-xs text-slate-400 mt-1">Registra al menos un ítem para completar</p>}
             </div>
           )}
 
           {selected.reception_status === "completed" && (
             <div className="sticky bottom-4">
-              <button onClick={() => setView("report")} className="w-full rounded-2xl bg-slate-900 text-white py-3.5 font-black text-sm flex items-center justify-center gap-2">
-                <Printer size={16} /> Ver / Imprimir reporte
+              <button onClick={printReport} className="w-full rounded-2xl bg-violet-600 text-white py-4 font-black text-sm flex items-center justify-center gap-2">
+                <Printer size={18} /> Imprimir reporte
               </button>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ══════════════ REPORTE ══════════════ */}
-      {view === "report" && selected && (
-        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-4">
-          <div className="bg-white rounded-2xl border p-4 space-y-4">
-
-            {/* Cabecera reporte */}
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="font-black text-slate-900 text-lg">{selected.doc_number || selected.inv_request_no}</h2>
-                <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
-                {selected.completed_by_name && (
-                  <p className="text-xs text-green-600 font-bold mt-0.5">✓ Registrado por {selected.completed_by_name}</p>
-                )}
-              </div>
-              <StatusBadge status={selected.reception_status} />
-            </div>
-
-            {/* Resumen diferencias */}
-            {(() => {
-              const rows = lines.map(l => {
-                const rec = records.find(r => r.line_id === l.id);
-                const received = rec?.qty_received ?? Number(l.qty_received ?? l.qty_pending);
-                return { ...l, received, diff: received - l.qty_requested };
-              });
-              const ok        = rows.filter(r => r.diff === 0).length;
-              const sobrantes = rows.filter(r => r.diff > 0).length;
-              const faltantes = rows.filter(r => r.diff < 0).length;
-              return (
-                <div className="grid grid-cols-4 gap-2 text-xs text-center">
-                  {[
-                    { label: "Códigos", val: rows.length, cls: "bg-slate-100 text-slate-700" },
-                    { label: "OK",       val: ok,        cls: "bg-green-100 text-green-700" },
-                    { label: "Sobrantes", val: sobrantes, cls: "bg-blue-100 text-blue-700" },
-                    { label: "Faltantes", val: faltantes, cls: "bg-red-100 text-red-600" },
-                  ].map(({ label, val, cls }) => (
-                    <div key={label} className={`rounded-xl p-2 font-bold ${cls}`}>
-                      <p className="text-[10px] font-semibold mb-0.5">{label}</p>
-                      <p className="text-xl font-black">{val}</p>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* Tabla detalle */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-900 text-white text-xs">
-                    <th className="p-2 text-left rounded-tl-xl">#</th>
-                    <th className="p-2 text-left">Código</th>
-                    <th className="p-2 text-left">Descripción</th>
-                    <th className="p-2 text-right">Enviado</th>
-                    <th className="p-2 text-right">Recibido</th>
-                    <th className="p-2 text-right">Dif.</th>
-                    <th className="p-2 text-center rounded-tr-xl">Estado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((line, idx) => {
-                    const rec = records.find(r => r.line_id === line.id);
-                    const received = rec?.qty_received ?? Number(line.qty_received ?? line.qty_pending);
-                    const diff = received - line.qty_requested;
-                    return (
-                      <tr key={line.id} className={idx % 2 === 0 ? "bg-slate-50" : ""}>
-                        <td className="p-2 text-slate-400 text-xs">{idx + 1}</td>
-                        <td className="p-2 font-black text-slate-900 text-xs">{line.product_code}</td>
-                        <td className="p-2 text-slate-600 text-xs">{line.description || "-"}</td>
-                        <td className="p-2 text-right text-xs">{fmt(line.qty_requested)}</td>
-                        <td className="p-2 text-right font-black text-xs">{fmt(received)}</td>
-                        <td className={`p-2 text-right text-xs ${diffClass(diff)}`}>{diffLabel(diff)}</td>
-                        <td className={`p-2 text-center text-xs font-black ${diffClass(diff)}`}>
-                          {diff === 0 ? "OK" : diff > 0 ? "SOBRE" : "FALTA"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-slate-900 font-black">
-                    <td className="p-2 text-xs" colSpan={3}>TOTAL</td>
-                    <td className="p-2 text-right text-xs">{fmt(lines.reduce((s, l) => s + l.qty_requested, 0))}</td>
-                    <td className="p-2 text-right text-xs">{fmt(lines.reduce((s, l) => {
-                      const r = records.find(rc => rc.line_id === l.id);
-                      return s + (r?.qty_received ?? Number(l.qty_received ?? l.qty_pending));
-                    }, 0))}</td>
-                    <td className="p-2 text-right text-xs" colSpan={2}></td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-
-            {/* Observaciones con diferencias */}
-            {records.some(r => r.notes) && (
-              <div className="border-t pt-3">
-                <p className="text-xs font-black text-slate-700 mb-2">Observaciones</p>
-                {records.filter(r => r.notes).map(r => {
-                  const line = lines.find(l => l.id === r.line_id);
-                  return (
-                    <p key={r.id} className="text-xs text-slate-600">
-                      <b>{line?.product_code}:</b> {r.notes}
-                    </p>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Firmas */}
-            <div className="border-t pt-4 mt-2">
-              <div className="flex justify-around gap-8">
-                {["Jefe de Tienda", "Asesor de Almacén"].map(role => (
-                  <div key={role} className="flex-1 text-center">
-                    <div className="border-t-2 border-slate-400 pt-2 mt-12 mx-4">
-                      <p className="text-xs font-black text-slate-700">{role}</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">
-                        {role === "Jefe de Tienda"
-                          ? selected.destination_store_name || selected.destination_store_code
-                          : "CD-GPC"}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <button onClick={printReport} className="w-full rounded-2xl bg-slate-900 text-white py-3.5 font-black text-sm flex items-center justify-center gap-2">
-              <Printer size={16} /> Imprimir reporte
-            </button>
-          </div>
         </div>
       )}
     </main>
