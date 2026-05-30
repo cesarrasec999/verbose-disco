@@ -37,8 +37,15 @@ type ReceptionRequest = {
   completed_by_name: string | null;
 };
 
+type ReceptionRequestGroup = ReceptionRequest & {
+  request_ids: string[];
+  transfer_count: number;
+  child_requests: ReceptionRequest[];
+};
+
 type ReceptionLine = {
   id: string;
+  request_id: string;
   line_id: number;
   sku: string | null;
   product_code: string;
@@ -73,6 +80,56 @@ type Html5QrLike = {
 function num(v: unknown) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(n: number) { return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ""); }
 function normalize(v: string | null | undefined) { return String(v || "").trim().toUpperCase(); }
+const SUPPLY_REASON_VALUES = [
+  "ABASTECIMIENTO",
+  "ABASTECIMIENTO URGENTE",
+  "Abastecimiento",
+  "Abastecimiento Urgente",
+  "Abastecimiento urgente",
+  "abastecimiento",
+  "abastecimiento urgente",
+];
+const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
+function normalizeReason(v: string | null | undefined) { return normalize(v).replace(/\s+/g, " "); }
+function isSupplyReason(v: string | null | undefined) { return SUPPLY_REASONS.has(normalizeReason(v)); }
+function rqKey(req: ReceptionRequest) { return req.doc_number || req.inv_request_no || req.erp_inv_request_id; }
+function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_status"] {
+  if (items.length > 0 && items.every(item => item.reception_status === "completed")) return "completed";
+  if (items.some(item => item.reception_status === "in_progress" || item.reception_status === "completed")) return "in_progress";
+  return "pending";
+}
+function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] {
+  const grouped = new Map<string, ReceptionRequest[]>();
+  for (const item of items) {
+    const key = normalize(rqKey(item));
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(item);
+  }
+
+  return [...grouped.values()].map(group => {
+    const sorted = [...group].sort((a, b) =>
+      String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))
+    );
+    const base = sorted[0];
+    return {
+      ...base,
+      id: sorted.map(item => item.id).join("|"),
+      erp_inv_request_id: sorted.map(item => item.erp_inv_request_id).join(", "),
+      line_count: sorted.reduce((sum, item) => sum + num(item.line_count), 0),
+      qty_requested_total: sorted.reduce((sum, item) => sum + num(item.qty_requested_total), 0),
+      qty_pending_total: sorted.reduce((sum, item) => sum + num(item.qty_pending_total), 0),
+      reception_status: groupedStatus(sorted),
+      completed_by_name: sorted.every(item => item.reception_status === "completed")
+        ? sorted.find(item => item.completed_by_name)?.completed_by_name || null
+        : null,
+      request_ids: sorted.map(item => item.id),
+      transfer_count: sorted.length,
+      child_requests: sorted,
+    };
+  }).sort((a, b) =>
+    String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))
+  );
+}
 function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
 function timeShort(v: string | null) {
   if (!v) return "-";
@@ -114,7 +171,7 @@ export default function RecepcionPage() {
   const [requests, setRequests] = useState<ReceptionRequest[]>([]);
   const [lines, setLines]       = useState<ReceptionLine[]>([]);
   const [scans, setScans]       = useState<ReceptionScan[]>([]);
-  const [selected, setSelected] = useState<ReceptionRequest | null>(null);
+  const [selected, setSelected] = useState<ReceptionRequestGroup | null>(null);
   const [view, setView]         = useState<"list" | "detail">("list");
   const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
@@ -157,11 +214,17 @@ export default function RecepcionPage() {
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    let cancelled = false;
     const stored = readStoredUser<CyclicUser>();
     if (!stored || !canAccessModule(stored, "reception")) { window.location.replace("/"); return; }
-    setUser(stored);
+    Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
     supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
-      .then(({ data }) => { setStores((data || []) as Store[]); setReady(true); });
+      .then(({ data }) => {
+        if (cancelled) return;
+        setStores((data || []) as Store[]);
+        setReady(true);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -176,8 +239,9 @@ export default function RecepcionPage() {
         .from("reception_requests")
         .select("*")
         .eq("status_code", "T")
+        .in("reason", SUPPLY_REASON_VALUES)
         .order("creation_date", { ascending: false })
-        .limit(300);
+        .limit(1000);
 
       if (canAdmin && storeFilter !== "all") {
         query = query.eq("destination_store_code", storeFilter);
@@ -188,14 +252,14 @@ export default function RecepcionPage() {
 
       const { data, error } = await query;
       if (error) throw error;
-      setRequests((data || []) as ReceptionRequest[]);
+      setRequests(((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason)));
     } catch (e: any) { showMsg("Error cargando requerimientos: " + e.message); }
     finally { setLoading(false); }
   }
 
   // ─── Abrir requerimiento ───────────────────────────────────────────────────
 
-  async function openRequest(req: ReceptionRequest) {
+  async function openRequest(req: ReceptionRequestGroup) {
     setSelected(req);
     setView("detail");
     setActiveLine(null);
@@ -203,8 +267,8 @@ export default function RecepcionPage() {
     setLoading(true);
     try {
       const [{ data: lineData, error: lineErr }, { data: scanData }] = await Promise.all([
-        supabase.from("reception_request_lines").select("*").eq("request_id", req.id).order("line_id"),
-        supabase.from("reception_scans").select("*").eq("request_id", req.id).order("created_at"),
+        supabase.from("reception_request_lines").select("*").in("request_id", req.request_ids).order("line_id"),
+        supabase.from("reception_scans").select("*").in("request_id", req.request_ids).order("created_at"),
       ]);
       if (lineErr) throw lineErr;
       setLines((lineData || []) as ReceptionLine[]);
@@ -213,8 +277,8 @@ export default function RecepcionPage() {
     finally { setLoading(false); }
   }
 
-  async function reloadScans(requestId: string) {
-    const { data } = await supabase.from("reception_scans").select("*").eq("request_id", requestId).order("created_at");
+  async function reloadScans(requestIds: string[]) {
+    const { data } = await supabase.from("reception_scans").select("*").in("request_id", requestIds).order("created_at");
     setScans((data || []) as ReceptionScan[]);
   }
 
@@ -328,7 +392,7 @@ export default function RecepcionPage() {
     setSaving(true);
     try {
       const { error } = await supabase.from("reception_scans").insert({
-        request_id:    selected.id,
+        request_id:    activeLine.request_id,
         line_id:       activeLine.id,
         operator_id:   user.id,
         operator_name: user.full_name,
@@ -343,14 +407,14 @@ export default function RecepcionPage() {
       await supabase.from("reception_requests").update({
         reception_status: "in_progress",
         updated_at: new Date().toISOString(),
-      }).eq("id", selected.id).eq("reception_status", "pending");
+      }).eq("id", activeLine.request_id).eq("reception_status", "pending");
 
       setSelected(prev => prev ? { ...prev, reception_status: prev.reception_status === "pending" ? "in_progress" : prev.reception_status } : null);
-      setRequests(prev => prev.map(r => r.id === selected.id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
+      setRequests(prev => prev.map(r => r.id === activeLine.request_id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
 
       setScanProduct("");
       setActiveLine(null);
-      await reloadScans(selected.id);
+      await reloadScans(selected.request_ids);
       showMsg("Recepción registrada.");
     } catch (e: any) { showMsg("Error guardando: " + e.message); }
     finally { setSaving(false); }
@@ -369,7 +433,7 @@ export default function RecepcionPage() {
         .eq("id", editingScanId);
       if (error) throw error;
       setEditingScanId(""); setEditScanQty(""); setEditScanNotes("");
-      if (selected) await reloadScans(selected.id);
+      if (selected) await reloadScans(selected.request_ids);
       showMsg("Registro actualizado.");
     } catch (e: any) { showMsg("Error editando: " + e.message); }
     finally { setSaving(false); }
@@ -381,7 +445,7 @@ export default function RecepcionPage() {
     if (!window.confirm(`¿Eliminar este registro de ${fmt(num(scan.qty))} unidades?`)) return;
     const { error } = await supabase.from("reception_scans").delete().eq("id", scan.id);
     if (error) { showMsg("Error eliminando: " + error.message); return; }
-    if (selected) await reloadScans(selected.id);
+    if (selected) await reloadScans(selected.request_ids);
     showMsg("Registro eliminado.");
   }
 
@@ -398,10 +462,10 @@ export default function RecepcionPage() {
         completed_by_id:   user.id,
         completed_by_name: user.full_name,
         updated_at:        new Date().toISOString(),
-      }).eq("id", selected.id);
+      }).in("id", selected.request_ids);
       if (error) throw error;
       setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
-      setRequests(prev => prev.map(r => r.id === selected.id ? { ...r, reception_status: "completed" } : r));
+      setRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
       showMsg("Requerimiento completado.");
     } catch (e: any) { showMsg("Error: " + e.message); }
     finally { setSaving(false); }
@@ -512,12 +576,17 @@ export default function RecepcionPage() {
 
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
-  const filteredRequests = useMemo(() => requests.filter(r => {
+  const requestGroups = useMemo(
+    () => buildRequestGroups(requests.filter(r => isSupplyReason(r.reason))),
+    [requests]
+  );
+
+  const filteredRequests = useMemo(() => requestGroups.filter(r => {
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
     if (!search.trim()) return true;
-    return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason]
+    return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
       .join(" ").toLowerCase().includes(search.toLowerCase());
-  }), [requests, filterStatus, search]);
+  }), [requestGroups, filterStatus, search]);
 
   const destStoreOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -643,6 +712,7 @@ export default function RecepcionPage() {
                 {req.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(req.creation_date)}</b></span>}
                 {req.request_date  && <span>En tránsito: <b className="text-violet-600">{dateShort(req.request_date)}</b></span>}
                 <span><b className="text-slate-600">{req.line_count}</b> líneas · <b className="text-slate-600">{fmt(req.qty_requested_total)}</b> uds.</span>
+                {req.transfer_count > 1 && <span><b className="text-slate-600">{req.transfer_count}</b> transferencias agrupadas</span>}
               </div>
               {req.reception_status === "completed" && req.completed_by_name && (
                 <p className="mt-1.5 text-xs text-emerald-600 font-black">✓ {req.completed_by_name}</p>
@@ -669,6 +739,7 @@ export default function RecepcionPage() {
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
               {selected.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(selected.creation_date)}</b></span>}
               {selected.request_date  && <span>Tránsito: <b className="text-violet-600">{dateShort(selected.request_date)}</b></span>}
+              {selected.transfer_count > 1 && <span><b className="text-slate-600">{selected.transfer_count}</b> transferencias agrupadas</span>}
             </div>
             {lines.length > 0 && (
               <div className="mt-3">
