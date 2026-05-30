@@ -111,7 +111,10 @@ async function sheetsFetch<T>(accessToken: string, path: string, init?: RequestI
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = payload?.error?.message || payload?.error_description || "Error de Google Sheets.";
+    const rawMessage = payload?.error?.message || payload?.error_description || "Error de Google Sheets.";
+    const message = String(rawMessage).includes("must not be an Office file")
+      ? "El archivo del Drive aun es Excel/Office. Conviertelo a una Hoja de calculo de Google y actualiza RECEPTION_DIFFERENCES_SPREADSHEET_ID con el nuevo ID."
+      : rawMessage;
     throw new Error(message);
   }
   return payload as T;

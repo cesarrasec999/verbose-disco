@@ -3751,16 +3751,31 @@ export default function InventariosPage() {
 
     let loc = findInventoryLocation(locations, cleanLocation);
     if (!loc && navigator.onLine) {
-      const freshLocationsRes = await supabase
+      const numericKey = cleanLocation.replace(/^0+(?=\d)/, "");
+      const lookupValues = [...new Set([cleanLocation, numericKey].filter(Boolean))];
+      const directLocationRes = await supabase
         .from("general_inventory_locations")
         .select("*")
         .eq("session_id", selectedSessionId)
         .eq("is_active", true)
-        .order("location_code");
-      if (!freshLocationsRes.error) {
-        const freshLocations = (freshLocationsRes.data || []) as InventoryLocation[];
-        setLocations(freshLocations);
-        loc = findInventoryLocation(freshLocations, cleanLocation);
+        .or(`location_code.in.(${lookupValues.join(",")}),ticket.in.(${lookupValues.join(",")})`)
+        .limit(5);
+      if (!directLocationRes.error) {
+        const directLocations = (directLocationRes.data || []) as InventoryLocation[];
+        loc = findInventoryLocation(directLocations, cleanLocation);
+        if (loc) {
+          const foundLocation: InventoryLocation = {
+            ...loc,
+            location_code: normalizeLocationCode(loc.location_code),
+            ticket: loc.ticket ? normalizeLocationCode(loc.ticket) : loc.ticket,
+          };
+          setLocations(prev => {
+            const exists = prev.some(item => item.id === foundLocation.id);
+            return exists
+              ? prev.map(item => item.id === foundLocation.id ? foundLocation : item)
+              : [...prev, foundLocation];
+          });
+        }
       }
     }
 

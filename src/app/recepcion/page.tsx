@@ -610,7 +610,20 @@ export default function RecepcionPage() {
         lineRefs.current[found.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 80);
     } else {
-      showMsg(`Código "${code}" no encontrado en este requerimiento.`);
+      try {
+        const extraLine = await createExtraLine(code);
+        if (!extraLine) return;
+        setActiveLine(extraLine);
+        setEditQty(1);
+        setEditNotes("Sobrante no enviado");
+        setScanProduct(code.trim());
+        setTimeout(() => {
+          lineRefs.current[extraLine.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 80);
+        showMsg(`Codigo "${code}" agregado como sobrante con enviado 0.`);
+      } catch (e: any) {
+        showMsg("No se pudo agregar el sobrante: " + e.message);
+      }
     }
   }
 
