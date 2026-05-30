@@ -83,6 +83,8 @@ function normalize(v: string | null | undefined) { return String(v || "").trim()
 const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
 const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
 const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
+const REQUEST_PAGE_SIZE = 1000;
+const REQUEST_MAX_ROWS = 5000;
 
 type RequestCachePayload = {
   savedAt: number;
@@ -254,13 +256,12 @@ export default function RecepcionPage() {
   const requestScopeKey = useCallback(() => {
     if (!user) return "anonymous";
     if (canViewAllStores) {
-      const codes = storeFilter === "all" ? ["all"] : selectedStoreCodes(storeFilter);
-      return `${user.id}:admin:${codes.sort().join("+")}`;
+      return `${user.id}:admin:all`;
     }
     const store = stores.find(item => item.id === user.store_id);
     const codes = storeCodes(store);
     return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}`;
-  }, [canViewAllStores, selectedStoreCodes, storeCodes, storeFilter, stores, user]);
+  }, [canViewAllStores, storeCodes, stores, user]);
 
   const applyRequests = useCallback((rows: ReceptionRequest[]) => {
     setRequests(rows);
@@ -319,7 +320,7 @@ export default function RecepcionPage() {
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (ready && user && !canViewAllStores) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
@@ -332,26 +333,30 @@ export default function RecepcionPage() {
     else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
-      let query = supabase
-        .from("reception_requests")
-        .select("*")
-        .eq("status_code", "T")
-        .order("creation_date", { ascending: false })
-        .limit(1000);
+      const rows: ReceptionRequest[] = [];
+      const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
+      const codes = store ? storeCodes(store) : [];
 
-      if (canViewAllStores && storeFilter !== "all") {
-        const codes = selectedStoreCodes(storeFilter);
-        if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
-      } else if (!canViewAllStores && user?.store_id) {
-        const store = stores.find(s => s.id === user!.store_id);
-        const codes = storeCodes(store);
-        if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+      for (let offset = 0; offset < REQUEST_MAX_ROWS; offset += REQUEST_PAGE_SIZE) {
+        let query = supabase
+          .from("reception_requests")
+          .select("*")
+          .eq("status_code", "T")
+          .order("creation_date", { ascending: false })
+          .range(offset, offset + REQUEST_PAGE_SIZE - 1);
+
+        if (codes.length > 0) {
+          query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        rows.push(...((data || []) as ReceptionRequest[]));
+        if (!data || data.length < REQUEST_PAGE_SIZE) break;
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
       if (seq !== loadSeq.current) return;
-      const nextRows = ((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason));
+      const nextRows = rows.filter(req => isSupplyReason(req.reason));
       if (nextRows.length === 0) {
         scheduleEmptyRetry();
         if (requests.length > 0) return;
@@ -619,6 +624,10 @@ export default function RecepcionPage() {
       const diff = received - num(line.qty_requested);
       return { line, received, diff, lineScans };
     });
+    const reportRows = [...lineRows].sort((a, b) => {
+      const rank = (diff: number) => diff < 0 ? 0 : diff > 0 ? 1 : 2;
+      return rank(a.diff) - rank(b.diff) || String(a.line.product_code).localeCompare(String(b.line.product_code), "es");
+    });
     const totalReq = lineRows.reduce((s, r) => s + num(r.line.qty_requested), 0);
     const totalRec = lineRows.reduce((s, r) => s + r.received, 0);
     const totalDiff = totalRec - totalReq;
@@ -675,7 +684,7 @@ export default function RecepcionPage() {
         <th>Observación</th>
       </tr></thead>
       <tbody>
-        ${lineRows.map((r, i) => {
+        ${reportRows.map((r, i) => {
           const cls = r.diff === 0 ? "ok" : r.diff > 0 ? "over" : "under";
           const st  = r.diff === 0 ? "OK" : r.diff > 0 ? "SOBRANTE" : "FALTANTE";
           const obs = r.lineScans.filter(s => s.notes).map(s => s.notes).join("; ");
