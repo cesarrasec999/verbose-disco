@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { LogOut } from "lucide-react";
+import { Home, LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
@@ -50,9 +50,14 @@ export default function UsuariosPage() {
     <main className="min-h-screen bg-slate-100">
       {/* Header */}
       <header className="sticky top-0 z-40 bg-white border-b shadow-sm px-4 py-3 flex items-center justify-between gap-4">
-        <div>
-          <h1 className="font-bold text-slate-900 text-base">Gestión de Usuarios</h1>
-          <p className="text-xs text-slate-400">{user?.full_name}</p>
+        <div className="flex items-center gap-3">
+          <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Menú principal">
+            <Home size={18} />
+          </button>
+          <div>
+            <h1 className="font-bold text-slate-900 text-base">Gestión de Usuarios</h1>
+            <p className="text-xs text-slate-400">{user?.full_name}</p>
+          </div>
         </div>
         <button
           onClick={handleLogout}
