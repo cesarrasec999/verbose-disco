@@ -80,15 +80,6 @@ type Html5QrLike = {
 function num(v: unknown) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function fmt(n: number) { return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ""); }
 function normalize(v: string | null | undefined) { return String(v || "").trim().toUpperCase(); }
-const SUPPLY_REASON_VALUES = [
-  "ABASTECIMIENTO",
-  "ABASTECIMIENTO URGENTE",
-  "Abastecimiento",
-  "Abastecimiento Urgente",
-  "Abastecimiento urgente",
-  "abastecimiento",
-  "abastecimiento urgente",
-];
 const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
 const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
 const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -110,6 +101,21 @@ function readRequestCache(key: string): ReceptionRequest[] {
   } catch {
     return [];
   }
+}
+function readAnyRequestCache(userId: string | undefined): ReceptionRequest[] {
+  if (typeof window === "undefined" || !userId) return [];
+  let best: RequestCachePayload | null = null;
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i) || "";
+    if (!key.startsWith(REQUEST_CACHE_PREFIX + userId + ":")) continue;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "") as RequestCachePayload;
+      if (!parsed?.savedAt || !Array.isArray(parsed.rows) || parsed.rows.length === 0) continue;
+      if (Date.now() - parsed.savedAt > REQUEST_CACHE_TTL_MS) continue;
+      if (!best || parsed.savedAt > best.savedAt) best = parsed;
+    } catch {}
+  }
+  return best?.rows || [];
 }
 function writeRequestCache(key: string, rows: ReceptionRequest[]) {
   if (typeof window === "undefined") return;
@@ -224,6 +230,7 @@ export default function RecepcionPage() {
   const scannerRef    = useRef<Html5QrLike | null>(null);
   const scanHandled   = useRef(false);
   const loadSeq       = useRef(0);
+  const emptyRetryTimer = useRef<number | null>(null);
   const scannerContainerId = "recepcion-scanner";
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -267,6 +274,14 @@ export default function RecepcionPage() {
     });
   }, [requestScopeKey]);
 
+  const scheduleEmptyRetry = useCallback(() => {
+    if (emptyRetryTimer.current !== null) return;
+    emptyRetryTimer.current = window.setTimeout(() => {
+      emptyRetryTimer.current = null;
+      void loadRequests();
+    }, 4000);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const showMsg = useCallback((text: string) => {
     setMessage(text);
     setTimeout(() => setMessage(""), 4000);
@@ -285,7 +300,10 @@ export default function RecepcionPage() {
         setStores((data || []) as Store[]);
         setReady(true);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (emptyRetryTimer.current !== null) window.clearTimeout(emptyRetryTimer.current);
+    };
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -297,14 +315,15 @@ export default function RecepcionPage() {
     const seq = ++loadSeq.current;
     const scopeKey = requestScopeKey();
     const cachedRows = readRequestCache(scopeKey);
+    const fallbackCachedRows = cachedRows.length > 0 ? cachedRows : readAnyRequestCache(user?.id);
     if (requests.length === 0 && cachedRows.length > 0) setRequests(cachedRows);
+    else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
       let query = supabase
         .from("reception_requests")
         .select("*")
         .eq("status_code", "T")
-        .in("reason", SUPPLY_REASON_VALUES)
         .order("creation_date", { ascending: false })
         .limit(1000);
 
@@ -321,9 +340,15 @@ export default function RecepcionPage() {
       if (error) throw error;
       if (seq !== loadSeq.current) return;
       const nextRows = ((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason));
-      if (nextRows.length === 0 && cachedRows.length > 0) {
-        setRequests(cachedRows);
+      if (nextRows.length === 0) {
+        scheduleEmptyRetry();
+        if (requests.length > 0) return;
+        if (fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
         return;
+      }
+      if (emptyRetryTimer.current !== null) {
+        window.clearTimeout(emptyRetryTimer.current);
+        emptyRetryTimer.current = null;
       }
       applyRequests(nextRows);
     } catch (e: any) {
