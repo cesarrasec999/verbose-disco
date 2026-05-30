@@ -5682,43 +5682,23 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         });
     }, [counts, valSearchText, valStatusFilter]);
 
-    const resumenPorCodigo = useMemo((): ResumenRow[] => {
-        const map = new Map<string, ResumenRow>();
-        for (const asg of assignments) {
-            if (!map.has(asg.product_id)) {
-                map.set(asg.product_id, {
-                    product_id: asg.product_id,
-                    sku: asg.sku || "",
-                    description: asg.description || "",
-                    unit: asg.unit || "",
-                    cost: asg.cost || 0,
-                    system_stock: asg.system_stock,
-                    total_counted: 0,
-                    difference: 0,
-                    dif_valorizada: 0,
-                });
-            } else {
-                // Si hay múltiples asignaciones del mismo producto, usar el costo más reciente (no 0)
-                const existing = map.get(asg.product_id)!;
-                if ((asg.cost || 0) > 0 && existing.cost === 0) existing.cost = asg.cost || 0;
-            }
+    // Resumen calculado en la BD via RPC — evita traer todas las filas de assignments+counts al cliente
+    const [resumenPorCodigo, setResumenPorCodigo] = useState<ResumenRow[]>([]);
+    const [resumenDbLoading, setResumenDbLoading] = useState(false);
+
+    useEffect(() => {
+        if (!valStoreId || valStoreId === ALL_STORES_VALUE || !valDate) {
+            setResumenPorCodigo([]);
+            return;
         }
-        for (const c of counts) {
-            const asg = assignments.find(a => a.id === c.assignment_id);
-            const entry = map.get(c.product_id);
-            if (entry) {
-                entry.total_counted += Number(c.counted_quantity);
-                // Usar el costo del conteo si está disponible y es mayor a 0
-                if ((c.cost || 0) > 0) entry.cost = c.cost || 0;
-                else if ((asg?.cost || 0) > 0) entry.cost = asg!.cost || 0;
-            }
-        }
-        for (const entry of map.values()) {
-            entry.difference = r2(entry.total_counted - entry.system_stock);
-            entry.dif_valorizada = r2(entry.difference * entry.cost);
-        }
-        return Array.from(map.values()).sort((a, b) => a.sku.localeCompare(b.sku));
-    }, [assignments, counts]);
+        setResumenDbLoading(true);
+        supabase
+            .rpc("get_cyclic_day_summary", { p_store_id: valStoreId, p_date: valDate })
+            .then(({ data, error }) => {
+                setResumenDbLoading(false);
+                if (!error && data) setResumenPorCodigo(data as ResumenRow[]);
+            });
+    }, [valStoreId, valDate]);
 
     // Resumen con overrides aplicados para el modo análisis
     const resumenConOverrides = useMemo((): ResumenRow[] => {
@@ -7504,6 +7484,12 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
                     {valTab === "resumen" && canViewSummaryByCode && (
                         <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            {/* Indicador de carga del resumen */}
+                            {resumenDbLoading && (
+                                <div className="text-center py-8 text-slate-400 font-semibold text-sm animate-pulse">
+                                    Calculando resumen...
+                                </div>
+                            )}
                             {/* Breadcrumb desde dashboard */}
                             {dashDrillSource && (
                                 <div className="flex items-center gap-2 text-sm">
