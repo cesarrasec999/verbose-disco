@@ -199,12 +199,23 @@ export default function RecepcionPage() {
   const [scannerRunning, setScannerRunning] = useState(false);
   const scannerRef    = useRef<Html5QrLike | null>(null);
   const scanHandled   = useRef(false);
+  const loadSeq       = useRef(0);
   const scannerContainerId = "recepcion-scanner";
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const canAdmin = useMemo(() =>
     user?.role === "Administrador" || user?.role === "Supervisor" || user?.can_access_all_stores,
   [user]);
+
+  const storeCodes = useCallback((store: Store | null | undefined) => {
+    return [...new Set([store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim()))];
+  }, []);
+
+  const selectedStoreCodes = useCallback((value: string) => {
+    if (!value || value === "all") return [];
+    const store = stores.find(item => storeCodes(item).includes(value));
+    return storeCodes(store).length > 0 ? storeCodes(store) : [value];
+  }, [storeCodes, stores]);
 
   const showMsg = useCallback((text: string) => {
     setMessage(text);
@@ -233,6 +244,7 @@ export default function RecepcionPage() {
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
   async function loadRequests() {
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       let query = supabase
@@ -244,17 +256,24 @@ export default function RecepcionPage() {
         .limit(1000);
 
       if (canAdmin && storeFilter !== "all") {
-        query = query.eq("destination_store_code", storeFilter);
+        const codes = selectedStoreCodes(storeFilter);
+        if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
       } else if (!canAdmin && user?.store_id) {
         const store = stores.find(s => s.id === user!.store_id);
-        if (store) query = query.or(`destination_store_code.eq.${store.code},destination_store_code.eq.${store.erp_sede ?? store.code}`);
+        const codes = storeCodes(store);
+        if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
       }
 
       const { data, error } = await query;
       if (error) throw error;
+      if (seq !== loadSeq.current) return;
       setRequests(((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason)));
-    } catch (e: any) { showMsg("Error cargando requerimientos: " + e.message); }
-    finally { setLoading(false); }
+    } catch (e: any) {
+      if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
+    }
+    finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
   }
 
   // ─── Abrir requerimiento ───────────────────────────────────────────────────
