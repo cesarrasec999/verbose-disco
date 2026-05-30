@@ -149,7 +149,7 @@ function diffLabel(d: number) {
 function ReasonBadge({ reason }: { reason: string | null }) {
   const isUrgente = /urgente/i.test(reason || "");
   return (
-    <span className={`text-[10px] font-black uppercase tracking-widest ${isUrgente ? "text-amber-600" : "text-violet-600"}`}>
+    <span className={`text-[10px] font-black uppercase tracking-widest ${isUrgente ? "text-amber-600" : "text-teal-600"}`}>
       {reason || "ABASTECIMIENTO"}
     </span>
   );
@@ -159,7 +159,7 @@ function StatusBadge({ status }: { status: ReceptionRequest["reception_status"] 
   if (status === "completed")
     return <span className="rounded-full bg-emerald-100 text-emerald-700 text-xs font-black px-2.5 py-0.5">Completado</span>;
   if (status === "in_progress")
-    return <span className="rounded-full bg-violet-100 text-violet-700 text-xs font-black px-2.5 py-0.5">En proceso</span>;
+    return <span className="rounded-full bg-teal-100 text-teal-700 text-xs font-black px-2.5 py-0.5">En proceso</span>;
   return <span className="rounded-full bg-slate-100 text-slate-500 text-xs font-black px-2.5 py-0.5">Pendiente</span>;
 }
 
@@ -590,11 +590,12 @@ export default function RecepcionPage() {
 
   const destStoreOptions = useMemo(() => {
     const map = new Map<string, string>();
-    for (const r of requests) {
-      if (r.destination_store_code) map.set(r.destination_store_code, r.destination_store_name || r.destination_store_code);
+    for (const store of stores) {
+      const code = store.erp_sede || store.code;
+      if (code) map.set(code, store.name || code);
     }
     return [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [requests]);
+  }, [stores]);
 
   // Totales por línea desde los scans cargados
   const scanTotalByLine = useMemo(() => {
@@ -632,7 +633,7 @@ export default function RecepcionPage() {
               <button onClick={() => { setView("list"); setSelected(null); setLines([]); setScans([]); setActiveLine(null); }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><ChevronLeft size={18} /></button>
             )}
             <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-violet-600 text-white">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-teal-600 text-white">
                 <ScanLine size={18} />
               </div>
               <div>
@@ -699,7 +700,7 @@ export default function RecepcionPage() {
 
           {filteredRequests.map(req => (
             <button key={req.id} onClick={() => openRequest(req)}
-              className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-violet-400 ${req.reception_status === "in_progress" ? "border-violet-200 bg-white" : "bg-white"}`}>
+              className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-teal-400 ${req.reception_status === "in_progress" ? "border-teal-200 bg-white" : "bg-white"}`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <ReasonBadge reason={req.reason} />
@@ -710,7 +711,7 @@ export default function RecepcionPage() {
               </div>
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
                 {req.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(req.creation_date)}</b></span>}
-                {req.request_date  && <span>En tránsito: <b className="text-violet-600">{dateShort(req.request_date)}</b></span>}
+                {req.request_date  && <span>En tránsito: <b className="text-teal-600">{dateShort(req.request_date)}</b></span>}
                 <span><b className="text-slate-600">{req.line_count}</b> líneas · <b className="text-slate-600">{fmt(req.qty_requested_total)}</b> uds.</span>
                 {req.transfer_count > 1 && <span><b className="text-slate-600">{req.transfer_count}</b> transferencias agrupadas</span>}
               </div>
@@ -738,7 +739,7 @@ export default function RecepcionPage() {
             </div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
               {selected.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(selected.creation_date)}</b></span>}
-              {selected.request_date  && <span>Tránsito: <b className="text-violet-600">{dateShort(selected.request_date)}</b></span>}
+              {selected.request_date  && <span>Tránsito: <b className="text-teal-600">{dateShort(selected.request_date)}</b></span>}
               {selected.transfer_count > 1 && <span><b className="text-slate-600">{selected.transfer_count}</b> transferencias agrupadas</span>}
             </div>
             {lines.length > 0 && (
@@ -748,7 +749,7 @@ export default function RecepcionPage() {
                   <span>{Math.round((linesScanned / lines.length) * 100)}%</span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100">
-                  <div className="h-2 rounded-full bg-violet-600 transition-all" style={{ width: `${Math.round((linesScanned / lines.length) * 100)}%` }} />
+                  <div className="h-2 rounded-full bg-teal-600 transition-all" style={{ width: `${Math.round((linesScanned / lines.length) * 100)}%` }} />
                 </div>
               </div>
             )}
@@ -767,7 +768,7 @@ export default function RecepcionPage() {
                   onKeyDown={e => { if (e.key === "Enter" && scanProduct.trim()) void handleScan(scanProduct); }}
                 />
                 <button onClick={() => { if (scanProduct.trim()) void handleScan(scanProduct); }}
-                  className="rounded-xl bg-violet-600 text-white px-4 py-2 font-black text-sm">
+                  className="rounded-xl bg-teal-600 text-white px-4 py-2 font-black text-sm">
                   Buscar
                 </button>
                 <button onClick={() => setScannerTarget("product")}
@@ -812,7 +813,7 @@ export default function RecepcionPage() {
                         setEditNotes("");
                         setScanProduct("");
                       }}
-                      className={`w-full text-left rounded-2xl border p-3 transition-all ${isActive ? "border-violet-500 bg-violet-50 shadow-md" : received > 0 ? "border-emerald-200 bg-white" : "border-slate-200 bg-white"}`}
+                      className={`w-full text-left rounded-2xl border p-3 transition-all ${isActive ? "border-teal-500 bg-teal-50 shadow-md" : received > 0 ? "border-emerald-200 bg-white" : "border-slate-200 bg-white"}`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
@@ -821,7 +822,7 @@ export default function RecepcionPage() {
                           {/* Unidad de medida en negrita */}
                           {line.unit && (
                             <p className="text-xs font-black text-slate-700 mt-0.5">
-                              UM: <span className="text-violet-700">{line.unit}</span>
+                              UM: <span className="text-teal-700">{line.unit}</span>
                             </p>
                           )}
                         </div>
@@ -834,9 +835,9 @@ export default function RecepcionPage() {
                           <p className="text-slate-400 font-semibold">Enviado</p>
                           <p>{fmt(num(line.qty_requested))}</p>
                         </div>
-                        <div className="border-r p-1.5 bg-violet-50">
-                          <p className="text-violet-500 font-semibold">Recibido</p>
-                          <p className="text-violet-700">{fmt(received)}</p>
+                        <div className="border-r p-1.5 bg-teal-50">
+                          <p className="text-teal-500 font-semibold">Recibido</p>
+                          <p className="text-teal-700">{fmt(received)}</p>
                         </div>
                         <div className="p-1.5">
                           <p className="text-slate-400 font-semibold">Diferencia</p>
@@ -847,15 +848,15 @@ export default function RecepcionPage() {
 
                     {/* ── Formulario de scan (activa) ── */}
                     {isActive && selected.reception_status !== "completed" && (
-                      <div className="mx-2 rounded-b-2xl border border-t-0 border-violet-200 bg-violet-50/60 p-3 space-y-2">
+                      <div className="mx-2 rounded-b-2xl border border-t-0 border-teal-200 bg-teal-50/60 p-3 space-y-2">
                         <div className="flex items-center gap-2">
                           <div className="flex-1">
-                            <label className="text-[10px] font-black uppercase text-violet-600">Cantidad recibida</label>
+                            <label className="text-[10px] font-black uppercase text-teal-600">Cantidad recibida</label>
                             <input
                               type="number" min="0" step="1"
                               value={editQty}
                               onChange={e => setEditQty(Number(e.target.value))}
-                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-900 focus:border-violet-500 focus:ring-1 focus:ring-violet-300"
+                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-900 focus:border-teal-500 focus:ring-1 focus:ring-teal-300"
                               autoFocus
                             />
                           </div>
@@ -872,7 +873,7 @@ export default function RecepcionPage() {
                         </div>
                         <div className="flex gap-2">
                           <button onClick={saveScan} disabled={saving || editQty <= 0}
-                            className="flex-1 rounded-xl bg-violet-600 text-white py-2.5 text-sm font-black disabled:opacity-50 flex items-center justify-center gap-1.5">
+                            className="flex-1 rounded-xl bg-teal-600 text-white py-2.5 text-sm font-black disabled:opacity-50 flex items-center justify-center gap-1.5">
                             <CheckCircle2 size={15} /> {saving ? "Guardando..." : "Guardar"}
                           </button>
                           <button onClick={() => setActiveLine(null)} className="rounded-xl border px-4 py-2.5 text-sm font-black text-slate-600 hover:bg-slate-50">
@@ -897,7 +898,7 @@ export default function RecepcionPage() {
                                   placeholder="Observación"
                                   className="flex-1 rounded-xl border px-2 py-1.5 text-sm" />
                                 <button onClick={saveEditScan} disabled={saving}
-                                  className="rounded-xl bg-violet-600 text-white px-3 py-1.5 text-xs font-black disabled:opacity-50">OK</button>
+                                  className="rounded-xl bg-teal-600 text-white px-3 py-1.5 text-xs font-black disabled:opacity-50">OK</button>
                                 <button onClick={() => setEditingScanId("")}
                                   className="rounded-xl border px-3 py-1.5 text-xs font-black text-slate-600">Cancelar</button>
                               </div>
@@ -905,7 +906,7 @@ export default function RecepcionPage() {
                               <div className="flex items-center justify-between gap-2">
                                 <div className="min-w-0">
                                   <span className="font-black text-slate-900 text-sm">{fmt(num(scan.qty))}</span>
-                                  {line.unit && <span className="text-xs font-black text-violet-600 ml-1">{line.unit}</span>}
+                                  {line.unit && <span className="text-xs font-black text-teal-600 ml-1">{line.unit}</span>}
                                   {scan.notes && <span className="text-xs text-slate-400 ml-2">· {scan.notes}</span>}
                                   <p className="text-[10px] text-slate-400">{scan.operator_name} · {timeShort(scan.created_at)}</p>
                                 </div>
@@ -946,7 +947,7 @@ export default function RecepcionPage() {
 
           {selected.reception_status === "completed" && (
             <div className="sticky bottom-4">
-              <button onClick={printReport} className="w-full rounded-2xl bg-violet-600 text-white py-4 font-black text-sm flex items-center justify-center gap-2">
+              <button onClick={printReport} className="w-full rounded-2xl bg-teal-600 text-white py-4 font-black text-sm flex items-center justify-center gap-2">
                 <Printer size={18} /> Imprimir reporte
               </button>
             </div>
