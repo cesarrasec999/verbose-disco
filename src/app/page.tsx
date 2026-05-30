@@ -323,11 +323,10 @@ export default function LoginPage() {
     setError("");
     const phone = normalizePhone(username);
     const { data, error: dbError } = await supabase
-      .from("cyclic_users")
-      .select("id, username, full_name, role, store_id, can_access_all_stores, can_access_audit, module_access, is_active, whatsapp")
-      .eq("username", username.trim().toLowerCase())
-      .eq("password", password)
-      .eq("is_active", true)
+      .rpc("verify_cyclic_user", {
+        p_username: username.trim().toLowerCase(),
+        p_password: password
+      })
       .maybeSingle();
 
     if (dbError || !data) {
@@ -408,16 +407,23 @@ export default function LoginPage() {
       return;
     }
     const wsp = normalizePhone(newWspInput);
-    const updateData: Record<string, string> = { password: newPass };
-    if (wsp) updateData.whatsapp = wsp;
     setModalLoading(true);
-    const { error: upErr } = await supabase.from("cyclic_users").update(updateData).eq("id", pendingUser.id);
-    setModalLoading(false);
-    if (upErr) {
-      setModalError("Error al actualizar. Intenta de nuevo.");
+    const { data: changed, error: pwErr } = await supabase
+      .rpc("change_cyclic_user_password", {
+        p_username: pendingUser.username,
+        p_old_password: password,
+        p_new_password: newPass
+      });
+    if (pwErr || !changed) {
+      setModalLoading(false);
+      setModalError("Error al cambiar la clave. Intenta de nuevo.");
       return;
     }
-    const updatedUser = { ...pendingUser, password: newPass, whatsapp: wsp || pendingUser.whatsapp };
+    if (wsp) {
+      await supabase.from("cyclic_users").update({ whatsapp: wsp }).eq("id", pendingUser.id);
+    }
+    setModalLoading(false);
+    const updatedUser = { ...pendingUser, whatsapp: wsp || pendingUser.whatsapp };
     try {
       const sessionUser = await startSingleDeviceSession(updatedUser);
       setAuthenticatedUser(sessionUser);
@@ -663,11 +669,10 @@ export default function LoginPage() {
                   setLoading(true);
                   setError("");
                   supabase
-                    .from("cyclic_users")
-                    .select("id, username, full_name, role, store_id, can_access_all_stores, can_access_audit, module_access, is_active, whatsapp")
-                    .eq("username", username.trim().toLowerCase())
-                    .eq("password", password)
-                    .eq("is_active", true)
+                    .rpc("verify_cyclic_user", {
+                      p_username: username.trim().toLowerCase(),
+                      p_password: password
+                    })
                     .maybeSingle()
                     .then(({ data, error: dbError }) => {
                       setLoading(false);
