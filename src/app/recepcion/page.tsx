@@ -166,6 +166,10 @@ function timeShort(v: string | null) {
   if (!v) return "-";
   return new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
 }
+function formatSync(value: string | null) {
+  if (!value) return "Sin sincronizacion registrada";
+  return new Date(value).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" });
+}
 
 function diffClass(d: number) {
   if (d === 0) return "text-emerald-700 font-black";
@@ -210,6 +214,7 @@ export default function RecepcionPage() {
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [message, setMessage]   = useState("");
+  const [lastErpSync, setLastErpSync] = useState<string | null>(null);
 
   // Filtros lista
   const [storeFilter, setStoreFilter]   = useState("all");
@@ -333,6 +338,11 @@ export default function RecepcionPage() {
     else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
+      const syncStatusPromise = supabase
+        .from("erp_sync_status")
+        .select("synced_at,updated_at")
+        .eq("id", "reception_requests")
+        .maybeSingle();
       const rows: ReceptionRequest[] = [];
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : [];
@@ -357,6 +367,10 @@ export default function RecepcionPage() {
 
       if (seq !== loadSeq.current) return;
       const nextRows = rows.filter(req => isSupplyReason(req.reason));
+      const syncStatus = await syncStatusPromise;
+      if (seq === loadSeq.current) {
+        setLastErpSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || nextRows[0]?.request_date || null);
+      }
       if (nextRows.length === 0) {
         scheduleEmptyRetry();
         if (requests.length > 0) return;
@@ -879,6 +893,11 @@ export default function RecepcionPage() {
               </button>
             </div>
           )}
+
+          <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
+            <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Recepcion</p>
+            <p className="text-sm font-black text-slate-900">{formatSync(lastErpSync)}</p>
+          </div>
 
           {/* Filtros */}
           <div className="flex flex-wrap gap-2">
