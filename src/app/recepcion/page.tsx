@@ -90,8 +90,31 @@ const SUPPLY_REASON_VALUES = [
   "abastecimiento urgente",
 ];
 const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
+const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
+const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
+
+type RequestCachePayload = {
+  savedAt: number;
+  rows: ReceptionRequest[];
+};
+
 function normalizeReason(v: string | null | undefined) { return normalize(v).replace(/\s+/g, " "); }
 function isSupplyReason(v: string | null | undefined) { return SUPPLY_REASONS.has(normalizeReason(v)); }
+function readRequestCache(key: string): ReceptionRequest[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(REQUEST_CACHE_PREFIX + key) || "") as RequestCachePayload;
+    if (!parsed?.savedAt || !Array.isArray(parsed.rows)) return [];
+    if (Date.now() - parsed.savedAt > REQUEST_CACHE_TTL_MS) return [];
+    return parsed.rows;
+  } catch {
+    return [];
+  }
+}
+function writeRequestCache(key: string, rows: ReceptionRequest[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(REQUEST_CACHE_PREFIX + key, JSON.stringify({ savedAt: Date.now(), rows } satisfies RequestCachePayload));
+}
 function rqKey(req: ReceptionRequest) { return req.doc_number || req.inv_request_no || req.erp_inv_request_id; }
 function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_status"] {
   if (items.length > 0 && items.every(item => item.reception_status === "completed")) return "completed";
@@ -173,6 +196,7 @@ export default function RecepcionPage() {
   const [scans, setScans]       = useState<ReceptionScan[]>([]);
   const [selected, setSelected] = useState<ReceptionRequestGroup | null>(null);
   const [view, setView]         = useState<"list" | "detail">("list");
+  const [listPanel, setListPanel] = useState<"recepcion" | "resumen">("recepcion");
   const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -203,9 +227,11 @@ export default function RecepcionPage() {
   const scannerContainerId = "recepcion-scanner";
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const canAdmin = useMemo(() =>
-    user?.role === "Administrador" || user?.role === "Supervisor" || user?.can_access_all_stores,
+  const canViewAllStores = useMemo(() =>
+    user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador" || user?.can_access_all_stores,
   [user]);
+  const canViewSummary = canViewAllStores;
+  const canDeleteRequests = user?.role === "Administrador";
 
   const storeCodes = useCallback((store: Store | null | undefined) => {
     return [...new Set([store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim()))];
@@ -216,6 +242,30 @@ export default function RecepcionPage() {
     const store = stores.find(item => storeCodes(item).includes(value));
     return storeCodes(store).length > 0 ? storeCodes(store) : [value];
   }, [storeCodes, stores]);
+
+  const requestScopeKey = useCallback(() => {
+    if (!user) return "anonymous";
+    if (canViewAllStores) {
+      const codes = storeFilter === "all" ? ["all"] : selectedStoreCodes(storeFilter);
+      return `${user.id}:admin:${codes.sort().join("+")}`;
+    }
+    const store = stores.find(item => item.id === user.store_id);
+    const codes = storeCodes(store);
+    return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}`;
+  }, [canViewAllStores, selectedStoreCodes, storeCodes, storeFilter, stores, user]);
+
+  const applyRequests = useCallback((rows: ReceptionRequest[]) => {
+    setRequests(rows);
+    writeRequestCache(requestScopeKey(), rows);
+  }, [requestScopeKey]);
+
+  const updateRequests = useCallback((updater: (prev: ReceptionRequest[]) => ReceptionRequest[]) => {
+    setRequests(prev => {
+      const next = updater(prev);
+      writeRequestCache(requestScopeKey(), next);
+      return next;
+    });
+  }, [requestScopeKey]);
 
   const showMsg = useCallback((text: string) => {
     setMessage(text);
@@ -245,6 +295,9 @@ export default function RecepcionPage() {
 
   async function loadRequests() {
     const seq = ++loadSeq.current;
+    const scopeKey = requestScopeKey();
+    const cachedRows = readRequestCache(scopeKey);
+    if (requests.length === 0 && cachedRows.length > 0) setRequests(cachedRows);
     setLoading(true);
     try {
       let query = supabase
@@ -255,10 +308,10 @@ export default function RecepcionPage() {
         .order("creation_date", { ascending: false })
         .limit(1000);
 
-      if (canAdmin && storeFilter !== "all") {
+      if (canViewAllStores && storeFilter !== "all") {
         const codes = selectedStoreCodes(storeFilter);
         if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
-      } else if (!canAdmin && user?.store_id) {
+      } else if (!canViewAllStores && user?.store_id) {
         const store = stores.find(s => s.id === user!.store_id);
         const codes = storeCodes(store);
         if (codes.length > 0) query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
@@ -267,7 +320,12 @@ export default function RecepcionPage() {
       const { data, error } = await query;
       if (error) throw error;
       if (seq !== loadSeq.current) return;
-      setRequests(((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason)));
+      const nextRows = ((data || []) as ReceptionRequest[]).filter(req => isSupplyReason(req.reason));
+      if (nextRows.length === 0 && cachedRows.length > 0) {
+        setRequests(cachedRows);
+        return;
+      }
+      applyRequests(nextRows);
     } catch (e: any) {
       if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
     }
@@ -429,7 +487,7 @@ export default function RecepcionPage() {
       }).eq("id", activeLine.request_id).eq("reception_status", "pending");
 
       setSelected(prev => prev ? { ...prev, reception_status: prev.reception_status === "pending" ? "in_progress" : prev.reception_status } : null);
-      setRequests(prev => prev.map(r => r.id === activeLine.request_id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
+      updateRequests(prev => prev.map(r => r.id === activeLine.request_id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
 
       setScanProduct("");
       setActiveLine(null);
@@ -484,10 +542,28 @@ export default function RecepcionPage() {
       }).in("id", selected.request_ids);
       if (error) throw error;
       setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
-      setRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
+      updateRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
       showMsg("Requerimiento completado.");
     } catch (e: any) { showMsg("Error: " + e.message); }
     finally { setSaving(false); }
+  }
+
+  async function deleteRequestGroup(req: ReceptionRequestGroup) {
+    if (!canDeleteRequests) return;
+    const label = req.doc_number || req.inv_request_no || req.erp_inv_request_id;
+    const confirmed = window.confirm(`¿Eliminar el requerimiento ${label}? Se eliminarán ${req.transfer_count} transferencia${req.transfer_count !== 1 ? "s" : ""} agrupada${req.transfer_count !== 1 ? "s" : ""} y sus líneas.`);
+    if (!confirmed) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("reception_requests").delete().in("id", req.request_ids);
+      if (error) throw error;
+      updateRequests(prev => prev.filter(item => !req.request_ids.includes(item.id)));
+      showMsg("Requerimiento eliminado.");
+    } catch (e: any) {
+      showMsg("Error eliminando requerimiento: " + e.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   // ─── Reporte imprimible ────────────────────────────────────────────────────
@@ -616,6 +692,51 @@ export default function RecepcionPage() {
     return [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [stores]);
 
+  const summaryRows = useMemo(() => {
+    const grouped = new Map<string, {
+      key: string;
+      name: string;
+      total: number;
+      completed: number;
+      inProgress: number;
+      pending: number;
+      lines: number;
+      units: number;
+    }>();
+
+    for (const req of requestGroups) {
+      const key = req.destination_store_code || req.destination_store_name || "SIN_TIENDA";
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          key,
+          name: req.destination_store_name || req.destination_store_code || "Sin tienda",
+          total: 0,
+          completed: 0,
+          inProgress: 0,
+          pending: 0,
+          lines: 0,
+          units: 0,
+        });
+      }
+      const row = grouped.get(key)!;
+      row.total += 1;
+      row.lines += num(req.line_count);
+      row.units += num(req.qty_requested_total);
+      if (req.reception_status === "completed") row.completed += 1;
+      else if (req.reception_status === "in_progress") row.inProgress += 1;
+      else row.pending += 1;
+    }
+
+    return [...grouped.values()]
+      .map(row => ({
+        ...row,
+        pct: row.total > 0 ? Math.round((row.completed / row.total) * 100) : 0,
+        inProgressPct: row.total > 0 ? Math.round((row.inProgress / row.total) * 100) : 0,
+        pendingPct: row.total > 0 ? Math.round((row.pending / row.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.pct - a.pct || b.total - a.total || a.name.localeCompare(b.name, "es"));
+  }, [requestGroups]);
+
   // Totales por línea desde los scans cargados
   const scanTotalByLine = useMemo(() => {
     const m = new Map<string, number>();
@@ -685,31 +806,88 @@ export default function RecepcionPage() {
       {view === "list" && (
         <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
 
+          {canViewSummary && (
+            <div className="grid grid-cols-2 gap-2 rounded-2xl border bg-white p-1 shadow-sm">
+              <button
+                onClick={() => setListPanel("recepcion")}
+                className={`rounded-xl px-3 py-2 text-sm font-black ${listPanel === "recepcion" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                Recepción
+              </button>
+              <button
+                onClick={() => setListPanel("resumen")}
+                className={`rounded-xl px-3 py-2 text-sm font-black ${listPanel === "resumen" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                Resumen
+              </button>
+            </div>
+          )}
+
           {/* Filtros */}
           <div className="flex flex-wrap gap-2">
-            {canAdmin && (
+            {canViewAllStores && (
               <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
                 className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black min-w-[160px]">
                 <option value="all">Todas las tiendas</option>
                 {destStoreOptions.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
               </select>
             )}
-            <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
-              placeholder="Buscar documento, tienda..."
-              value={search} onChange={e => setSearch(e.target.value)} />
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
-              className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
-              <option value="all">Todos</option>
-              <option value="pending">Pendiente</option>
-              <option value="in_progress">En proceso</option>
-              <option value="completed">Completados</option>
-            </select>
+            {listPanel === "recepcion" && (
+              <>
+                <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
+                  placeholder="Buscar documento, tienda..."
+                  value={search} onChange={e => setSearch(e.target.value)} />
+                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Todos</option>
+                  <option value="pending">Pendiente</option>
+                  <option value="in_progress">En proceso</option>
+                  <option value="completed">Completados</option>
+                </select>
+              </>
+            )}
           </div>
 
-          <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>
+          {listPanel === "recepcion" && <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>}
+          {listPanel === "resumen" && <p className="text-xs text-slate-400 font-black px-1">{summaryRows.length} tienda{summaryRows.length !== 1 ? "s" : ""}</p>}
 
           {loading && <p className="text-center py-12 text-slate-400 font-bold">Cargando...</p>}
-          {!loading && filteredRequests.length === 0 && (
+          {!loading && listPanel === "resumen" && (
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase text-slate-500">Avance por tienda</p>
+                  <h2 className="text-xl font-black text-slate-950">Recepción de abastecimiento</h2>
+                </div>
+                <div className="flex flex-wrap gap-2 text-[11px] font-black">
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">Completado</span>
+                  <span className="rounded-full bg-teal-100 px-2.5 py-1 text-teal-700">En proceso</span>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-slate-500">Pendiente</span>
+                </div>
+              </div>
+              <div className="space-y-4">
+                {summaryRows.map(row => (
+                  <div key={row.key}>
+                    <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                      <div className="min-w-0">
+                        <p className="truncate font-black text-slate-800">{row.name}</p>
+                        <p className="font-bold text-slate-400">{row.total} RQ · {row.lines} líneas · {fmt(row.units)} uds.</p>
+                      </div>
+                      <span className="shrink-0 text-lg font-black text-slate-950">{row.pct}%</span>
+                    </div>
+                    <div className="flex h-5 overflow-hidden rounded-full bg-slate-100">
+                      <div className="bg-emerald-500" style={{ width: `${row.pct}%` }} title={`${row.completed} completados`} />
+                      <div className="bg-teal-500" style={{ width: `${row.inProgressPct}%` }} title={`${row.inProgress} en proceso`} />
+                      <div className="bg-slate-300" style={{ width: `${row.pendingPct}%` }} title={`${row.pending} pendientes`} />
+                    </div>
+                  </div>
+                ))}
+                {summaryRows.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-400">Sin datos para mostrar.</p>}
+              </div>
+            </div>
+          )}
+
+          {!loading && listPanel === "recepcion" && filteredRequests.length === 0 && (
             <div className="text-center py-16 text-slate-400">
               <Package size={40} className="mx-auto mb-3 opacity-30" />
               <p className="font-black">Sin requerimientos{filterStatus !== "all" ? " en este estado" : ""}</p>
@@ -717,7 +895,7 @@ export default function RecepcionPage() {
             </div>
           )}
 
-          {filteredRequests.map(req => (
+          {listPanel === "recepcion" && filteredRequests.map(req => (
             <button key={req.id} onClick={() => openRequest(req)}
               className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-teal-400 ${req.reception_status === "in_progress" ? "border-teal-200 bg-white" : "bg-white"}`}>
               <div className="flex items-start justify-between gap-2">
@@ -726,7 +904,26 @@ export default function RecepcionPage() {
                   <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{req.doc_number || req.inv_request_no || req.erp_inv_request_id}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
                 </div>
-                <StatusBadge status={req.reception_status} />
+                <div className="flex shrink-0 items-center gap-2">
+                  <StatusBadge status={req.reception_status} />
+                  {canDeleteRequests && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={event => { event.stopPropagation(); void deleteRequestGroup(req); }}
+                      onKeyDown={event => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void deleteRequestGroup(req);
+                      }}
+                      className="grid h-8 w-8 place-items-center rounded-xl border border-red-100 text-red-500 hover:bg-red-50"
+                      title="Eliminar requerimiento"
+                    >
+                      <Trash2 size={14} />
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-400">
                 {req.creation_date && <span>Requerido: <b className="text-slate-600">{dateShort(req.creation_date)}</b></span>}
