@@ -74,9 +74,12 @@ export function UsersModule({ stores, showMessage }: Props) {
 
     const wsp = newUserWhatsapp.trim().replace(/\D/g, "");
     const moduleAccess = [...new Set(newUserModuleAccess)];
+    // Hashear contraseña antes de guardar (bcrypt via función SQL)
+    const { data: hashedPwd, error: hashErr } = await supabase.rpc("hash_password", { p_password: newPassword.trim() });
+    if (hashErr || !hashedPwd) { showMessage("Error al procesar contraseña.", "error"); return; }
     const { error } = await supabase.from("cyclic_users").insert({
       username: newUsername.trim().toLowerCase(),
-      password: newPassword.trim(),
+      password: hashedPwd as string,
       full_name: newFullName.trim(),
       role: newRole,
       store_id: newUserAllStores ? null : (newUserStoreId || null),
@@ -159,7 +162,12 @@ export function UsersModule({ stores, showMessage }: Props) {
       is_active: editUserActive,
       whatsapp: wsp || null,
     };
-    if (editUserPassword.trim()) updates.password = editUserPassword.trim();
+    if (editUserPassword.trim()) {
+      // Hashear nueva contraseña antes de guardar
+      const { data: hashedPwd, error: hashErr } = await supabase.rpc("hash_password", { p_password: editUserPassword.trim() });
+      if (hashErr || !hashedPwd) { showMessage("Error al procesar contraseña.", "error"); return; }
+      updates.password = hashedPwd as string;
+    }
 
     const { error } = await supabase.from("cyclic_users").update(updates).eq("id", editingUser.id);
     if (error) {
