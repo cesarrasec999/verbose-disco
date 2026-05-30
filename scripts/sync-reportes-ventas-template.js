@@ -190,7 +190,20 @@ async function syncSales() {
   console.log(`Ventas sincronizadas: ${rows.length} tiendas/dia y ${productRows.length} codigos/dia (${start} a ${end})`);
 }
 
-syncSales().catch(error => {
+async function withRetry(fn, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt === retries) throw error;
+      const delay = 5000 * Math.pow(2, attempt - 1);
+      console.log(`Intento ${attempt}/${retries} fallido. Reintentando en ${delay / 1000}s... (${error.message || error})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+withRetry(() => syncSales()).catch(error => {
   console.error("Error sincronizando ventas:", error);
   process.exitCode = 1;
 });

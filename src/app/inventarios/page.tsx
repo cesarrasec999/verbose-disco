@@ -836,21 +836,26 @@ export default function InventariosPage() {
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
 
+    let timer: number | null = null;
     const channel = supabase
       .channel(`gi-session-${selectedSessionId}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "general_inventory_sessions", filter: `id=eq.${selectedSessionId}` },
         () => {
-          void (async () => {
-            await loadInitial(selectedSessionId);
-            if (!isValidator && operator?.id) await loadOperatorRecountItems(selectedSessionId, operator.id);
-          })();
+          if (timer) window.clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            void (async () => {
+              await loadInitial(selectedSessionId);
+              if (!isValidator && operator?.id) await loadOperatorRecountItems(selectedSessionId, operator.id);
+            })();
+          }, 1500);
         }
       )
       .subscribe();
 
     return () => {
+      if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
   }, [selectedSessionId, isValidator, operator?.id]);

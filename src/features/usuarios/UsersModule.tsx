@@ -39,7 +39,7 @@ export function UsersModule({ stores, showMessage }: Props) {
   const [editUserModuleAccess, setEditUserModuleAccess] = useState<ModuleAccessKey[]>(["cyclic_count_take"]);
 
   async function loadUsers() {
-    const { data } = await supabase.from("cyclic_users").select("*").order("full_name");
+    const { data } = await supabase.from("cyclic_users").select("id, username, full_name, role, store_id, can_access_all_stores, can_access_audit, module_access, is_active, whatsapp").order("full_name");
     setUsers((data || []) as CyclicUser[]);
   }
 

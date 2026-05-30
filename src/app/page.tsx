@@ -324,7 +324,7 @@ export default function LoginPage() {
     const phone = normalizePhone(username);
     const { data, error: dbError } = await supabase
       .from("cyclic_users")
-      .select("*")
+      .select("id, username, full_name, role, store_id, can_access_all_stores, can_access_audit, module_access, is_active, whatsapp")
       .eq("username", username.trim().toLowerCase())
       .eq("password", password)
       .eq("is_active", true)
@@ -664,7 +664,7 @@ export default function LoginPage() {
                   setError("");
                   supabase
                     .from("cyclic_users")
-                    .select("*")
+                    .select("id, username, full_name, role, store_id, can_access_all_stores, can_access_audit, module_access, is_active, whatsapp")
                     .eq("username", username.trim().toLowerCase())
                     .eq("password", password)
                     .eq("is_active", true)

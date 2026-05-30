@@ -78,7 +78,7 @@ export async function fetchCyclicDayData(
   const assignmentIds = assignments.map(row => row.id);
   const { data: countRows, error: countsError } = await supabase
     .from("cyclic_counts")
-    .select("*")
+    .select("id, assignment_id, store_id, product_id, counted_quantity, location, user_id, user_name, validator_id, validator_name, status, note, stock_snapshot, counted_at, updated_at")
     .in("assignment_id", assignmentIds);
   if (countsError) throw countsError;
 

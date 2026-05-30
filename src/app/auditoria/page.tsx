@@ -367,16 +367,23 @@ export default function AuditoriaPage() {
 
   useEffect(() => {
     if (!user) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
-      if (session?.id) void loadSavedSession(session.id);
-      void loadSessions();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (session?.id) void loadSavedSession(session.id);
+        void loadSessions();
+      }, 1500);
     };
     const channel = supabase.channel(`audit-live-${user.id}-${session?.id || "none"}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "audit_counts" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "audit_session_items" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "audit_sessions" }, refresh)
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
   }, [user, session?.id]);
 
 

@@ -216,6 +216,19 @@ function mapRequests(rows) {
   return [...grouped.values()].filter(row => row.destination_store_code && row.source_store_code)
 }
 
+async function withRetry(fn, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (attempt === retries) throw error
+      const delay = 5000 * Math.pow(2, attempt - 1)
+      writeStatus(`Intento ${attempt}/${retries} fallido. Reintentando en ${delay / 1000}s... (${error.message || error})`)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+}
+
 async function syncOnce({ since, until }) {
   let pool
   writeStatus(`Revisando requerimientos nuevos desde ${localDateTime(since)} hasta ${localDateTime(until)} hora local`)
@@ -272,7 +285,7 @@ async function main() {
 
   const since = args.since ? new Date(String(args.since)) : new Date(state.lastSyncAt || state.startedAt)
   const until = args.until ? new Date(String(args.until)) : addMinutes(now, 2)
-  await syncOnce({ since, until })
+  await withRetry(() => syncOnce({ since, until }))
   state.lastSyncAt = until.toISOString()
   writeState(state)
 }
