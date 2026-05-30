@@ -788,8 +788,9 @@ export default function PickingPage() {
       ...column,
       total: rows.reduce((sum, row) => sum + (row.byPicker[column.key] || 0), 0),
     }));
+    const bestJourneyPicker = [...totalsByPicker].sort((a, b) => b.total - a.total)[0] || null;
     const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
-    return { columns, rows, maxValue, maxTotal, bestHour, bestPicker, totalsByPicker, grandTotal };
+    return { columns, rows, maxValue, maxTotal, bestHour, bestPicker, bestJourneyPicker, totalsByPicker, grandTotal };
   }, [productivityScanRows, scanPickerName]);
 
   const operatorTotals = useMemo(() => {
@@ -2582,7 +2583,7 @@ export default function PickingPage() {
                 <h2 className="text-2xl font-black">Productividad picking por hora</h2>
                 <p className="text-sm font-bold text-slate-500">Cantidad de codigos pickeados por picador.</p>
               </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="flex items-center gap-3 rounded-2xl border p-4">
                   <Clock className="text-blue-700" size={40} />
                   <div>
@@ -2610,6 +2611,14 @@ export default function PickingPage() {
                   <div>
                     <p className="text-xs font-black uppercase text-slate-500">Total codigos</p>
                     <p className="mt-1 text-3xl font-black text-amber-600">{formatWhole(productivityHourlyComparison.grandTotal)}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 rounded-2xl border p-4">
+                  <Trophy className="text-slate-900" size={40} />
+                  <div className="min-w-0">
+                    <p className="text-xs font-black uppercase text-slate-500">Mejor picador por jornada</p>
+                    <p className="mt-1 truncate text-xl font-black text-slate-950">{productivityHourlyComparison.bestJourneyPicker?.label || "-"}</p>
+                    <p className="text-xs font-black text-slate-600">{formatWhole(productivityHourlyComparison.bestJourneyPicker?.total || 0)} codigos</p>
                   </div>
                 </div>
               </div>
