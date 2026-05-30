@@ -69,6 +69,13 @@ type ReceptionScan = {
   created_at: string;
 };
 
+type ProductLookup = {
+  sku: string;
+  barcode: string | null;
+  description: string | null;
+  unit: string | null;
+};
+
 type Html5QrLike = {
   start: (cam: { facingMode: string }, cfg: { fps: number; qrbox: { width: number; height: number } }, onSuccess: (text: string) => void, onError?: () => void) => Promise<unknown>;
   stop: () => Promise<unknown>;
@@ -506,6 +513,92 @@ export default function RecepcionPage() {
     } catch { return null; }
   }
 
+  async function lookupProduct(code: string): Promise<ProductLookup | null> {
+    const raw = code.trim();
+    if (!raw) return null;
+    const candidates = [...new Set([
+      raw, cleanCode(raw), fullProductCode(raw),
+    ].filter(Boolean).map(v => v.trim().toUpperCase()))];
+
+    try {
+      const [{ data: bySku }, { data: byBarcode }] = await Promise.all([
+        supabase.from("cyclic_products").select("sku,barcode,description,unit").in("sku", candidates).eq("is_active", true).limit(1),
+        supabase.from("cyclic_products").select("sku,barcode,description,unit").in("barcode", candidates).eq("is_active", true).limit(1),
+      ]);
+      const direct = ((bySku || [])[0] || (byBarcode || [])[0]) as ProductLookup | undefined;
+      if (direct) return direct;
+
+      const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).not("codsap", "is", null).limit(20),
+      ]);
+      const mapped = [...new Set(
+        [...(byUpc || []), ...(byAlu || [])]
+          .flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>))
+          .map(v => v.trim().toUpperCase())
+      )];
+      if (mapped.length === 0) return null;
+      const { data } = await supabase
+        .from("cyclic_products")
+        .select("sku,barcode,description,unit")
+        .in("sku", mapped)
+        .eq("is_active", true)
+        .limit(1);
+      return ((data || [])[0] as ProductLookup | undefined) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function createExtraLine(code: string): Promise<ReceptionLine | null> {
+    if (!selected) return null;
+    const raw = code.trim();
+    const normalizedCode = normalize(fullProductCode(raw) || raw);
+    const existing = lines.find(line => line.qty_requested === 0 && normalize(line.product_code) === normalizedCode);
+    if (existing) return existing;
+
+    const baseRequest = selected.child_requests.find(req => selected.request_ids.includes(req.id)) || selected.child_requests[0] || selected;
+    const requestId = baseRequest.id;
+    const erpRequestId = String(baseRequest.erp_inv_request_id || selected.erp_inv_request_id).split(",")[0].trim();
+    const product = await lookupProduct(raw);
+    const productCode = product?.sku || normalizedCode || raw;
+    const extraId = `${requestId}|EXTRA|${normalize(productCode)}`;
+    const existingById = lines.find(line => line.id === extraId);
+    if (existingById) return existingById;
+
+    const nextLineId = Math.max(0, ...lines.filter(line => line.request_id === requestId).map(line => num(line.line_id))) + 1;
+    const newLine: ReceptionLine = {
+      id: extraId,
+      request_id: requestId,
+      line_id: nextLineId,
+      sku: product?.sku || productCode,
+      product_code: productCode,
+      barcode: product?.barcode || raw,
+      description: product?.description || "Producto no incluido en el requerimiento",
+      unit: product?.unit || null,
+      qty_requested: 0,
+      qty_pending: 0,
+    };
+
+    const { error } = await supabase.from("reception_request_lines").upsert({
+      id: newLine.id,
+      request_id: newLine.request_id,
+      erp_inv_request_id: erpRequestId,
+      line_id: newLine.line_id,
+      sku: newLine.sku,
+      product_code: newLine.product_code,
+      barcode: newLine.barcode,
+      description: newLine.description,
+      unit: newLine.unit,
+      qty_requested: 0,
+      qty_pending: 0,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "id" });
+    if (error) throw error;
+    setLines(prev => prev.some(line => line.id === newLine.id) ? prev : [...prev, newLine]);
+    return newLine;
+  }
+
   async function handleScan(code: string) {
     if (!code.trim()) return;
     const found = await findLine(code);
@@ -590,14 +683,55 @@ export default function RecepcionPage() {
 
   // ─── Marcar completado ─────────────────────────────────────────────────────
 
+  async function syncReceptionDifferences(completedAt: string) {
+    if (!selected || !user) return null;
+    const rows = lines.map(line => {
+      const lineScans = scans.filter(scan => scan.line_id === line.id);
+      const receivedQty = lineScans.reduce((sum, scan) => sum + num(scan.qty), 0);
+      const requestedQty = num(line.qty_requested);
+      const notes = [...new Set(lineScans.map(scan => scan.notes?.trim()).filter(Boolean))].join(" | ");
+      return {
+        lineId: line.id,
+        productCode: line.product_code,
+        description: line.description,
+        unit: line.unit,
+        requestedQty,
+        receivedQty,
+        difference: receivedQty - requestedQty,
+        notes,
+      };
+    });
+
+    const response = await fetch("/api/recepcion/google-sheets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestIds: selected.request_ids,
+        document: selected.doc_number || selected.inv_request_no || selected.erp_inv_request_id,
+        destinationStoreCode: selected.destination_store_code,
+        destinationStoreName: selected.destination_store_name,
+        sourceStoreCode: selected.source_store_code,
+        sourceStoreName: selected.source_store_name,
+        completedAt,
+        completedByName: user.full_name,
+        stores: stores.map(store => ({ code: store.code, erp_sede: store.erp_sede, name: store.name })),
+        rows,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo sincronizar con Google Sheets.");
+    return result as { appended?: number; sheetTitle?: string };
+  }
+
   async function markComplete() {
     if (!selected || !user) return;
     if (!window.confirm("¿Marcar este requerimiento como completado?")) return;
     setSaving(true);
     try {
+      const completedAt = new Date().toISOString();
       const { error } = await supabase.from("reception_requests").update({
         reception_status:  "completed",
-        completed_at:      new Date().toISOString(),
+        completed_at:      completedAt,
         completed_by_id:   user.id,
         completed_by_name: user.full_name,
         updated_at:        new Date().toISOString(),
@@ -605,7 +739,16 @@ export default function RecepcionPage() {
       if (error) throw error;
       setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
       updateRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
-      showMsg("Requerimiento completado.");
+      try {
+        const syncResult = await syncReceptionDifferences(completedAt);
+        if (syncResult?.appended && syncResult.appended > 0) {
+          showMsg(`Requerimiento completado. ${syncResult.appended} diferencia(s) enviada(s) a ${syncResult.sheetTitle}.`);
+        } else {
+          showMsg("Requerimiento completado. Sin diferencias nuevas para enviar al Drive.");
+        }
+      } catch (syncError: any) {
+        showMsg("Requerimiento completado, pero no se sincronizo el Drive: " + syncError.message);
+      }
     } catch (e: any) { showMsg("Error: " + e.message); }
     finally { setSaving(false); }
   }
