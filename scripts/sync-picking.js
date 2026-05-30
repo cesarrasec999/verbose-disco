@@ -14,6 +14,8 @@ const supabase = createClient(
 
 const BATCH_SIZE = Number(process.env.PICKING_BATCH_SIZE || 500)
 const INTERVAL_MS = Number(process.env.PICKING_SYNC_INTERVAL_MS || 5 * 60 * 1000)
+const RETRY_ATTEMPTS = Number(process.env.PICKING_RETRY_ATTEMPTS || process.env.RETRY_ATTEMPTS || 3)
+const LOOKBACK_MINUTES = Number(process.env.PICKING_LOOKBACK_MINUTES || 15)
 const STATUS_FILE = path.join(__dirname, 'picking-sync-status.txt')
 const LOG_FILE = path.join(__dirname, 'picking-sync.log')
 const STATE_FILE = path.join(__dirname, 'picking-sync-state.json')
@@ -109,11 +111,36 @@ function addMinutes(date, minutes) {
   return new Date(date.getTime() + minutes * 60 * 1000)
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function withRetry(label, fn) {
+  let lastError = null
+
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await fn()
+      if (result?.error) throw result.error
+      return result
+    } catch (error) {
+      lastError = error
+    }
+
+    if (attempt < RETRY_ATTEMPTS) {
+      const delay = 1000 * attempt
+      writeStatus(`${label}: reintento ${attempt}/${RETRY_ATTEMPTS} en ${delay}ms`)
+      await sleep(delay)
+    }
+  }
+
+  throw lastError
+}
+
 async function upsert(table, rows, conflict) {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE)
-    const { error } = await supabase.from(table).upsert(batch, { onConflict: conflict })
-    if (error) throw error
+    await withRetry(`${table}: upsert lote`, () => supabase.from(table).upsert(batch, { onConflict: conflict }))
     process.stdout.write(`\r${table}: ${Math.min(i + batch.length, rows.length)}/${rows.length}`)
   }
   if (rows.length) process.stdout.write('\n')
@@ -216,28 +243,15 @@ function mapRequests(rows) {
   return [...grouped.values()].filter(row => row.destination_store_code && row.source_store_code)
 }
 
-async function withRetry(fn, retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      return await fn()
-    } catch (error) {
-      if (attempt === retries) throw error
-      const delay = 5000 * Math.pow(2, attempt - 1)
-      writeStatus(`Intento ${attempt}/${retries} fallido. Reintentando en ${delay / 1000}s... (${error.message || error})`)
-      await new Promise(resolve => setTimeout(resolve, delay))
-    }
-  }
-}
-
 async function syncOnce({ since, until }) {
   let pool
   writeStatus(`Revisando requerimientos nuevos desde ${localDateTime(since)} hasta ${localDateTime(until)} hora local`)
   try {
-    pool = await new sql.ConnectionPool(sqlConfig).connect()
-    const result = await pool.request()
+    pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
+    const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()
       .input('since', sql.VarChar, sqlLocalDateTime(since))
       .input('until', sql.VarChar, sqlLocalDateTime(until))
-      .query(requestLinesQuery())
+      .query(requestLinesQuery()))
 
     const requests = mapRequests(result.recordset)
     const lines = mapLines(result.recordset)
@@ -246,11 +260,10 @@ async function syncOnce({ since, until }) {
     await upsert('picking_requests', requests, 'erp_inv_request_id')
 
     if (lines.length) {
-      const { data: requestRows, error } = await supabase
+      const { data: requestRows } = await withRetry('Supabase: leer picking_requests', () => supabase
         .from('picking_requests')
         .select('id,erp_inv_request_id')
-        .in('erp_inv_request_id', [...new Set(lines.map(row => row.erp_inv_request_id))])
-      if (error) throw error
+        .in('erp_inv_request_id', [...new Set(lines.map(row => row.erp_inv_request_id))]))
       const requestIdByErp = new Map((requestRows || []).map(row => [row.erp_inv_request_id, row.id]))
       const linesWithRequest = lines
         .map(row => ({ ...row, request_id: requestIdByErp.get(row.erp_inv_request_id) || null }))
@@ -258,12 +271,12 @@ async function syncOnce({ since, until }) {
       await upsert('picking_request_lines', linesWithRequest, 'id')
     }
 
-    await supabase.from('erp_sync_status').upsert({
+    await withRetry('Supabase: actualizar estado picking', () => supabase.from('erp_sync_status').upsert({
       id: 'picking_requests',
       source_path: __dirname,
       synced_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }, { onConflict: 'id' })
+    }, { onConflict: 'id' }))
 
     writeStatus(`Sincronizacion picking terminada: requerimientos=${requests.length}, lineas=${lines.length}`)
   } finally {
@@ -283,9 +296,9 @@ async function main() {
     writeStatus(`Estado inicial creado. No se importo historial anterior a ${localDateTime(state.startedAt)} hora local`)
   }
 
-  const since = args.since ? new Date(String(args.since)) : new Date(state.lastSyncAt || state.startedAt)
-  const until = args.until ? new Date(String(args.until)) : addMinutes(now, 2)
-  await withRetry(() => syncOnce({ since, until }))
+  const since = args.since ? new Date(String(args.since)) : addMinutes(new Date(state.lastSyncAt || state.startedAt), -LOOKBACK_MINUTES)
+  const until = args.until ? new Date(String(args.until)) : now
+  await syncOnce({ since, until })
   state.lastSyncAt = until.toISOString()
   writeState(state)
 }
