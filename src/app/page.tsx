@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, PackageX, ScanLine, Search, ShieldCheck, Tags, UserCog, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -57,7 +57,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -79,6 +79,7 @@ const MODULES: Array<{
   { label: "Reportes", description: "Stock, rotaciones, ventas y presupuesto", destination: "/reportes", icon: FileText, accent: "bg-slate-900" },
   { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
+  { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
@@ -92,6 +93,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/reportes": "reports",
   "/no-inventariables": "reports_non_inventory",
   "/usuarios": "users",
+  "/recepcion": "reception",
 };
 
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
@@ -137,7 +139,7 @@ export default function LoginPage() {
   function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
     const moduleKey = DESTINATION_MODULE[targetDestination];
     // Módulos con acceso directo por clave — sin lógica de roles adicional
-    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios") {
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion") {
       return userModuleAccess(user).includes(moduleKey);
     }
     if (targetDestination === "/dashboard") {

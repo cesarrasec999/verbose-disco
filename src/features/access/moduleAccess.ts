@@ -17,7 +17,8 @@ export type ModuleAccessKey =
   | "consulta"
   | "users"
   | "picking"
-  | "packing";
+  | "packing"
+  | "reception";
 
 export const CYCLIC_SUBMODULE_KEYS: ModuleAccessKey[] = [
   "cyclic_count_take",
@@ -50,6 +51,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "users", label: "Usuarios", group: "Administracion" },
   { key: "picking", label: "Picking", group: "Modulos" },
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
+  { key: "reception", label: "Recepción", group: "Modulos" },
 ];
 
 type AccessUser = {
