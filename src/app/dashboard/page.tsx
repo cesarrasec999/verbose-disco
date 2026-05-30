@@ -15,7 +15,6 @@ import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
 import {
     canAccessModule,
 } from "@/features/access/moduleAccess";
-import { NoInventariablesModule } from "@/features/no-inventariables/NoInventariablesModule";
 import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
 import { AdminTab } from "./components/AdminTab";
 import type {
@@ -7137,17 +7136,14 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                         </section>
                     )}
 
-                    {/* ── SUB-TAB: ASIGNAR ─────────────────────────────── */}
+                    {/* ── SUB-TAB: NO INVENTARIABLES → ruta dedicada /no-inventariables */}
                     {canViewNonInventoryReports && valTab === "no_inventariables" && (
-                        <NoInventariablesModule
-                            user={user}
-                            products={nonInventoryProducts}
-                            assignResults={assignResults}
-                            onProductsChange={setNonInventoryProducts}
-                            onAssignResultsChange={setAssignResults}
-                            onAssignSelectedIdsChange={setAssignSelectedIds}
-                            showMessage={showMessage}
-                        />
+                        <section className="bg-white rounded-3xl p-5 shadow">
+                            <p className="text-slate-500 font-semibold text-sm">
+                                No Inventariables fue movido a su propio módulo.{" "}
+                                <a href="/no-inventariables" className="text-orange-600 underline font-bold">Ir a No Inventariables →</a>
+                            </p>
+                        </section>
                     )}
 
                     {canAssignProducts && valTab === "asignar" && (

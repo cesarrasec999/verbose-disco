@@ -5,7 +5,6 @@
 import { useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
-import { UsersModule } from "@/features/usuarios/UsersModule";
 import type { CyclicUser, Product, Store } from "@/features/ciclicos/types";
 import { formatMoney, fullProductCode, normalizeText, parseCost } from "@/features/ciclicos/utils";
 
@@ -333,9 +332,14 @@ export function AdminTab({
         </section>
       )}
 
-      {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
+      {/* ── ADMIN: USUARIOS → ruta dedicada /usuarios ─────── */}
       {adminTab === "usuarios" && (
-        <UsersModule stores={allStores} showMessage={showMessage} />
+        <section className="bg-white rounded-3xl p-5 shadow">
+          <p className="text-slate-500 font-semibold text-sm">
+            La gestión de usuarios fue movida a su propio módulo.{" "}
+            <a href="/usuarios" className="text-purple-600 underline font-bold">Ir a Usuarios →</a>
+          </p>
+        </section>
       )}
 
       {/* ── MODAL: EDITAR PRODUCTO ────────────────────────── */}

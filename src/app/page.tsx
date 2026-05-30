@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, ScanLine, Search, ShieldCheck, Tags, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, PackageX, ScanLine, Search, ShieldCheck, Tags, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -57,7 +57,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -77,6 +77,8 @@ const MODULES: Array<{
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
   { label: "Reportes", description: "Stock, rotaciones, ventas y presupuesto", destination: "/reportes", icon: FileText, accent: "bg-slate-900" },
+  { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
+  { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
@@ -88,6 +90,8 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/etiquetado-packing": "packing",
   "/consulta-stock": "consulta",
   "/reportes": "reports",
+  "/no-inventariables": "reports_non_inventory",
+  "/usuarios": "users",
 };
 
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
@@ -132,6 +136,10 @@ export default function LoginPage() {
 
   function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
     const moduleKey = DESTINATION_MODULE[targetDestination];
+    // Módulos con acceso directo por clave — sin lógica de roles adicional
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios") {
+      return userModuleAccess(user).includes(moduleKey);
+    }
     if (targetDestination === "/dashboard") {
       const access = userModuleAccess(user);
       const cyclicModules = [
