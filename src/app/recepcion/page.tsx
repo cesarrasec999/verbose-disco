@@ -69,6 +69,22 @@ type ReceptionScan = {
   created_at: string;
 };
 
+type ReceptionDifferenceRow = {
+  key: string;
+  document: string;
+  destinationStore: string;
+  sourceStore: string;
+  completedAt: string | null;
+  completedByName: string | null;
+  productCode: string;
+  description: string | null;
+  unit: string | null;
+  requestedQty: number;
+  receivedQty: number;
+  difference: number;
+  notes: string;
+};
+
 type ProductLookup = {
   sku: string;
   barcode: string | null;
@@ -216,12 +232,14 @@ export default function RecepcionPage() {
   const [summaryScans, setSummaryScans] = useState<ReceptionScan[]>([]);
   const [selected, setSelected] = useState<ReceptionRequestGroup | null>(null);
   const [view, setView]         = useState<"list" | "detail">("list");
-  const [listPanel, setListPanel] = useState<"recepcion" | "resumen">("recepcion");
+  const [listPanel, setListPanel] = useState<"recepcion" | "resumen" | "diferencias">("recepcion");
   const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [message, setMessage]   = useState("");
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
+  const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
+  const [loadingDifferences, setLoadingDifferences] = useState(false);
 
   // Filtros lista
   const [storeFilter, setStoreFilter]   = useState("all");
@@ -696,46 +714,6 @@ export default function RecepcionPage() {
 
   // ─── Marcar completado ─────────────────────────────────────────────────────
 
-  async function syncReceptionDifferences(completedAt: string) {
-    if (!selected || !user) return null;
-    const rows = lines.map(line => {
-      const lineScans = scans.filter(scan => scan.line_id === line.id);
-      const receivedQty = lineScans.reduce((sum, scan) => sum + num(scan.qty), 0);
-      const requestedQty = num(line.qty_requested);
-      const notes = [...new Set(lineScans.map(scan => scan.notes?.trim()).filter(Boolean))].join(" | ");
-      return {
-        lineId: line.id,
-        productCode: line.product_code,
-        description: line.description,
-        unit: line.unit,
-        requestedQty,
-        receivedQty,
-        difference: receivedQty - requestedQty,
-        notes,
-      };
-    });
-
-    const response = await fetch("/api/recepcion/google-sheets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requestIds: selected.request_ids,
-        document: selected.doc_number || selected.inv_request_no || selected.erp_inv_request_id,
-        destinationStoreCode: selected.destination_store_code,
-        destinationStoreName: selected.destination_store_name,
-        sourceStoreCode: selected.source_store_code,
-        sourceStoreName: selected.source_store_name,
-        completedAt,
-        completedByName: user.full_name,
-        stores: stores.map(store => ({ code: store.code, erp_sede: store.erp_sede, name: store.name })),
-        rows,
-      }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || "No se pudo sincronizar con Google Sheets.");
-    return result as { appended?: number; sheetTitle?: string };
-  }
-
   async function markComplete() {
     if (!selected || !user) return;
     if (!window.confirm("¿Marcar este requerimiento como completado?")) return;
@@ -752,16 +730,8 @@ export default function RecepcionPage() {
       if (error) throw error;
       setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
       updateRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
-      try {
-        const syncResult = await syncReceptionDifferences(completedAt);
-        if (syncResult?.appended && syncResult.appended > 0) {
-          showMsg(`Requerimiento completado. ${syncResult.appended} diferencia(s) enviada(s) a ${syncResult.sheetTitle}.`);
-        } else {
-          showMsg("Requerimiento completado. Sin diferencias nuevas para enviar al Drive.");
-        }
-      } catch (syncError: any) {
-        showMsg("Requerimiento completado, pero no se sincronizo el Drive: " + syncError.message);
-      }
+      showMsg("Requerimiento completado. Las diferencias quedan disponibles en el reporte de validadores.");
+      if (listPanel === "diferencias") void loadDifferencesReport();
     } catch (e: any) { showMsg("Error: " + e.message); }
     finally { setSaving(false); }
   }
@@ -891,6 +861,84 @@ export default function RecepcionPage() {
     setTimeout(() => win.print(), 400);
   }
 
+  async function loadDifferencesReport() {
+    if (!canViewSummary) return;
+    const completedGroups = scopedRequestGroups.filter(req => req.reception_status === "completed");
+    const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
+    if (requestIds.length === 0) {
+      setDifferenceRows([]);
+      return;
+    }
+
+    setLoadingDifferences(true);
+    try {
+      const chunks: string[][] = [];
+      for (let i = 0; i < requestIds.length; i += 200) chunks.push(requestIds.slice(i, i + 200));
+
+      const [lineResults, scanResults] = await Promise.all([
+        Promise.all(chunks.map(ids =>
+          supabase.from("reception_request_lines").select("*").in("request_id", ids).order("line_id")
+        )),
+        Promise.all(chunks.map(ids =>
+          supabase.from("reception_scans").select("*").in("request_id", ids).order("created_at")
+        )),
+      ]);
+
+      const lineError = lineResults.find(result => result.error)?.error;
+      const scanError = scanResults.find(result => result.error)?.error;
+      if (lineError) throw lineError;
+      if (scanError) throw scanError;
+
+      const reportRequests = new Map<string, ReceptionRequest>();
+      for (const group of completedGroups) {
+        for (const child of group.child_requests) reportRequests.set(child.id, child);
+      }
+
+      const scansByLineReport = new Map<string, ReceptionScan[]>();
+      for (const scan of scanResults.flatMap(result => (result.data || []) as ReceptionScan[])) {
+        if (!scansByLineReport.has(scan.line_id)) scansByLineReport.set(scan.line_id, []);
+        scansByLineReport.get(scan.line_id)!.push(scan);
+      }
+
+      const rows: ReceptionDifferenceRow[] = [];
+      for (const line of lineResults.flatMap(result => (result.data || []) as ReceptionLine[])) {
+        const lineScans = scansByLineReport.get(line.id) || [];
+        const receivedQty = lineScans.reduce((sum, scan) => sum + num(scan.qty), 0);
+        const requestedQty = num(line.qty_requested);
+        const difference = receivedQty - requestedQty;
+        if (difference === 0) continue;
+
+        const req = reportRequests.get(line.request_id);
+        if (!req) continue;
+        rows.push({
+          key: `${line.id}:${difference}`,
+          document: req.doc_number || req.inv_request_no || req.erp_inv_request_id,
+          destinationStore: req.destination_store_name || req.destination_store_code,
+          sourceStore: req.source_store_name || req.source_store_code,
+          completedAt: req.completed_at,
+          completedByName: req.completed_by_name,
+          productCode: line.product_code,
+          description: line.description,
+          unit: line.unit,
+          requestedQty,
+          receivedQty,
+          difference,
+          notes: [...new Set(lineScans.map(scan => scan.notes?.trim()).filter(Boolean))].join(" | "),
+        });
+      }
+
+      setDifferenceRows(rows.sort((a, b) =>
+        String(b.completedAt || "").localeCompare(String(a.completedAt || "")) ||
+        a.destinationStore.localeCompare(b.destinationStore, "es") ||
+        a.document.localeCompare(b.document, "es")
+      ));
+    } catch (e: any) {
+      showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
+    } finally {
+      setLoadingDifferences(false);
+    }
+  }
+
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
   const requestGroups = useMemo(
@@ -964,6 +1012,14 @@ export default function RecepcionPage() {
       .sort((a, b) => b.pct - a.pct || b.total - a.total || a.name.localeCompare(b.name, "es"));
   }, [scopedRequestGroups, summaryScans]);
 
+  const differenceStats = useMemo(() => {
+    const faltantes = differenceRows.filter(row => row.difference < 0).length;
+    const sobrantes = differenceRows.filter(row => row.difference > 0).length;
+    const netUnits = differenceRows.reduce((sum, row) => sum + row.difference, 0);
+    const stores = new Set(differenceRows.map(row => row.destinationStore)).size;
+    return { faltantes, sobrantes, netUnits, stores };
+  }, [differenceRows]);
+
   // Totales por línea desde los scans cargados
   const scanTotalByLine = useMemo(() => {
     const m = new Map<string, number>();
@@ -1034,7 +1090,7 @@ export default function RecepcionPage() {
         <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
 
           {canViewSummary && (
-            <div className="grid grid-cols-2 gap-2 rounded-2xl border bg-white p-1 shadow-sm">
+            <div className="grid grid-cols-3 gap-2 rounded-2xl border bg-white p-1 shadow-sm">
               <button
                 onClick={() => setListPanel("recepcion")}
                 className={`rounded-xl px-3 py-2 text-sm font-black ${listPanel === "recepcion" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
@@ -1046,6 +1102,12 @@ export default function RecepcionPage() {
                 className={`rounded-xl px-3 py-2 text-sm font-black ${listPanel === "resumen" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
               >
                 Resumen
+              </button>
+              <button
+                onClick={() => { setListPanel("diferencias"); void loadDifferencesReport(); }}
+                className={`rounded-xl px-3 py-2 text-sm font-black ${listPanel === "diferencias" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                Diferencias
               </button>
             </div>
           )}
@@ -1082,6 +1144,7 @@ export default function RecepcionPage() {
 
           {listPanel === "recepcion" && <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>}
           {listPanel === "resumen" && <p className="text-xs text-slate-400 font-black px-1">{summaryRows.length} tienda{summaryRows.length !== 1 ? "s" : ""}</p>}
+          {listPanel === "diferencias" && <p className="text-xs text-slate-400 font-black px-1">{differenceRows.length} diferencia{differenceRows.length !== 1 ? "s" : ""}</p>}
 
           {loading && <p className="text-center py-12 text-slate-400 font-bold">Cargando...</p>}
           {!loading && listPanel === "resumen" && (
@@ -1114,6 +1177,77 @@ export default function RecepcionPage() {
                 ))}
                 {summaryRows.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-400">Sin datos para mostrar.</p>}
               </div>
+            </div>
+          )}
+
+          {!loading && listPanel === "diferencias" && (
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase text-slate-500">Reporte validador</p>
+                  <h2 className="text-xl font-black text-slate-950">Diferencias de recepcion</h2>
+                </div>
+                <button
+                  onClick={() => void loadDifferencesReport()}
+                  disabled={loadingDifferences}
+                  className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  {loadingDifferences ? "Cargando..." : "Actualizar"}
+                </button>
+              </div>
+
+              <div className="mb-4 grid grid-cols-2 gap-2 text-center text-xs font-black sm:grid-cols-4">
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-slate-400">Tiendas</p>
+                  <p className="text-lg text-slate-950">{differenceStats.stores}</p>
+                </div>
+                <div className="rounded-xl bg-red-50 p-3">
+                  <p className="text-red-400">Faltantes</p>
+                  <p className="text-lg text-red-700">{differenceStats.faltantes}</p>
+                </div>
+                <div className="rounded-xl bg-blue-50 p-3">
+                  <p className="text-blue-400">Sobrantes</p>
+                  <p className="text-lg text-blue-700">{differenceStats.sobrantes}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-slate-400">Neto uds.</p>
+                  <p className="text-lg text-slate-950">{fmt(differenceStats.netUnits)}</p>
+                </div>
+              </div>
+
+              {loadingDifferences && <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando diferencias...</p>}
+              {!loadingDifferences && differenceRows.length === 0 && (
+                <p className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias en recepciones completadas.</p>
+              )}
+              {!loadingDifferences && differenceRows.length > 0 && (
+                <div className="space-y-2">
+                  {differenceRows.map(row => (
+                    <div key={row.key} className="rounded-xl border bg-slate-50 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-black uppercase text-slate-400">{row.destinationStore} · {row.document}</p>
+                          <p className="truncate text-sm font-black text-slate-950">{row.productCode}</p>
+                          <p className="text-xs font-semibold text-slate-600">{row.description || "Sin descripcion"}</p>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-black ${row.difference > 0 ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>
+                          {diffLabel(row.difference)}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border bg-white text-center text-[11px] font-black">
+                        <div className="border-r p-1.5"><p className="text-slate-400">Enviado</p><p>{fmt(row.requestedQty)}</p></div>
+                        <div className="border-r p-1.5"><p className="text-slate-400">Recibido</p><p>{fmt(row.receivedQty)}</p></div>
+                        <div className="p-1.5"><p className="text-slate-400">UM</p><p>{row.unit || "-"}</p></div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-bold text-slate-400">
+                        <span>Origen: <b className="text-slate-600">{row.sourceStore}</b></span>
+                        <span>Cierre: <b className="text-slate-600">{timeShort(row.completedAt)}</b></span>
+                        {row.completedByName && <span>Por: <b className="text-slate-600">{row.completedByName}</b></span>}
+                      </div>
+                      {row.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs: {row.notes}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
