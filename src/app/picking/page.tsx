@@ -2619,18 +2619,18 @@ export default function PickingPage() {
                 </div>
                 {productivityHourlyComparison.rows.length > 0 ? (() => {
                   const chart = {
-                    left: 70,
-                    top: 40,
-                    width: Math.max(900, productivityHourlyComparison.rows.length * 190),
-                    height: 500,
-                    bottom: 58,
-                    legend: 180,
+                    left: 110,
+                    top: 70,
+                    width: Math.max(1500, productivityHourlyComparison.rows.length * 260),
+                    height: 760,
+                    bottom: 95,
+                    legend: 280,
                   };
                   const graphWidth = chart.width - chart.left - chart.legend - 30;
                   const graphHeight = chart.height - chart.top - chart.bottom;
                   const yMax = Math.max(1, Math.ceil(Math.max(productivityHourlyComparison.maxTotal, productivityHourlyComparison.maxValue) / 10) * 10);
                   const groupWidth = graphWidth / productivityHourlyComparison.rows.length;
-                  const barWidth = Math.max(10, Math.min(28, (groupWidth - 42) / Math.max(productivityHourlyComparison.columns.length, 1)));
+                  const barWidth = Math.max(18, Math.min(44, (groupWidth - 56) / Math.max(productivityHourlyComparison.columns.length, 1)));
                   const linePoints = productivityHourlyComparison.rows.map((row, index) => {
                     const x = chart.left + groupWidth * index + groupWidth / 2;
                     const y = chart.top + graphHeight - (row.total / yMax) * graphHeight;
@@ -2639,18 +2639,18 @@ export default function PickingPage() {
                   const linePath = linePoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
                   return (
                     <div className="overflow-x-auto">
-                      <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="min-w-[900px]">
+                      <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="min-w-[1500px]">
                         {[0, 0.25, 0.5, 0.75, 1].map(step => {
                           const value = Math.round(yMax * (1 - step));
                           const y = chart.top + graphHeight * step;
                           return (
                             <g key={step}>
                               <line x1={chart.left} x2={chart.left + graphWidth} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" />
-                              <text x={chart.left - 14} y={y + 4} textAnchor="end" className="fill-slate-600 text-[12px] font-bold">{value}</text>
+                              <text x={chart.left - 18} y={y + 6} textAnchor="end" className="fill-slate-600 text-[18px] font-bold">{value}</text>
                             </g>
                           );
                         })}
-                        <text x={chart.left - 48} y={chart.top - 18} className="fill-blue-700 text-[12px] font-black">Codigos</text>
+                        <text x={chart.left - 70} y={chart.top - 28} className="fill-blue-700 text-[18px] font-black">Codigos</text>
                         {productivityHourlyComparison.rows.map((row, rowIndex) => {
                           const groupStart = chart.left + groupWidth * rowIndex;
                           return (
@@ -2663,32 +2663,32 @@ export default function PickingPage() {
                                 return (
                                   <g key={column.key}>
                                     <rect x={x} y={y} width={barWidth - 4} height={height} rx={4} fill={column.color} />
-                                    {value > 0 && <text x={x + (barWidth - 4) / 2} y={y - 6} textAnchor="middle" className="fill-slate-950 text-[12px] font-black">{value}</text>}
+                                    {value > 0 && <text x={x + (barWidth - 4) / 2} y={y - 10} textAnchor="middle" className="fill-slate-950 text-[18px] font-black">{value}</text>}
                                   </g>
                                 );
                               })}
-                              <text x={groupStart + groupWidth / 2} y={chart.top + graphHeight + 28} textAnchor="middle" className="fill-slate-950 text-[13px] font-black">{row.hour}</text>
+                              <text x={groupStart + groupWidth / 2} y={chart.top + graphHeight + 44} textAnchor="middle" className="fill-slate-950 text-[20px] font-black">{row.hour}</text>
                             </g>
                           );
                         })}
-                        <path d={linePath} fill="none" stroke="#0f52ba" strokeWidth={3} />
+                        <path d={linePath} fill="none" stroke="#0f52ba" strokeWidth={5} />
                         {linePoints.map(point => (
                           <g key={point.hour}>
-                            <circle cx={point.x} cy={point.y} r={5} fill="#0f52ba" />
-                            <text x={point.x} y={point.y - 14} textAnchor="middle" className="fill-blue-800 text-[14px] font-black">{point.total}</text>
+                            <circle cx={point.x} cy={point.y} r={8} fill="#0f52ba" />
+                            <text x={point.x} y={point.y - 22} textAnchor="middle" className="fill-blue-800 text-[20px] font-black">{point.total}</text>
                           </g>
                         ))}
-                        <text x={chart.left + graphWidth / 2} y={chart.height - 12} textAnchor="middle" className="fill-slate-950 text-[13px] font-black">Hora</text>
+                        <text x={chart.left + graphWidth / 2} y={chart.height - 24} textAnchor="middle" className="fill-slate-950 text-[20px] font-black">Hora</text>
                         {productivityHourlyComparison.columns.map((column, index) => (
-                          <g key={column.key} transform={`translate(${chart.left + graphWidth + 34}, ${chart.top + 28 + index * 28})`}>
-                            <rect width={12} height={12} rx={3} fill={column.color} />
-                            <text x={22} y={11} className="fill-slate-950 text-[13px] font-bold">{column.label}</text>
+                          <g key={column.key} transform={`translate(${chart.left + graphWidth + 42}, ${chart.top + 34 + index * 38})`}>
+                            <rect width={18} height={18} rx={4} fill={column.color} />
+                            <text x={30} y={16} className="fill-slate-950 text-[18px] font-bold">{column.label}</text>
                           </g>
                         ))}
-                        <g transform={`translate(${chart.left + graphWidth + 34}, ${chart.top + 28 + productivityHourlyComparison.columns.length * 28})`}>
-                          <line x1={0} x2={18} y1={6} y2={6} stroke="#0f52ba" strokeWidth={3} />
-                          <circle cx={9} cy={6} r={4} fill="#0f52ba" />
-                          <text x={28} y={11} className="fill-slate-950 text-[13px] font-bold">Total por hora</text>
+                        <g transform={`translate(${chart.left + graphWidth + 42}, ${chart.top + 34 + productivityHourlyComparison.columns.length * 38})`}>
+                          <line x1={0} x2={28} y1={9} y2={9} stroke="#0f52ba" strokeWidth={5} />
+                          <circle cx={14} cy={9} r={7} fill="#0f52ba" />
+                          <text x={42} y={16} className="fill-slate-950 text-[18px] font-bold">Total por hora</text>
                         </g>
                       </svg>
                     </div>
