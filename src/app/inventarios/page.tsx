@@ -163,6 +163,8 @@ export default function InventariosPage() {
   const savingCountRef = useRef(false);
   const productLookupRequestRef = useRef(0);
   const productLookupModeRef = useRef<ProductLookupMode>("typed");
+  const pendingStockSkusRef = useRef<Set<string>>(new Set());
+  const summaryRef = useRef<SummaryRow[]>([]);
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
   const loadedSessionTabsRef = useRef<Set<string>>(new Set());
@@ -805,6 +807,10 @@ export default function InventariosPage() {
   }, []);
 
   useEffect(() => {
+    summaryRef.current = summary;
+  }, [summary]);
+
+  useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
     if (isSessionTabFresh(selectedSessionId, validatorTab)) return;
@@ -877,13 +883,13 @@ export default function InventariosPage() {
           markSessionTabStale(selectedSessionId, "registros");
           markSessionTabStale(selectedSessionId, "productividad");
         }
-        if (validatorTab === "resumen") setSummaryHasPendingChanges(true);
+        if (validatorTab === "resumen") void loadSummary(selectedSessionId, true);
         else markSessionTabStale(selectedSessionId, "resumen");
         if (validatorTab === "reconteo") void loadRecountData(selectedSessionId, false);
         else markSessionTabStale(selectedSessionId, "reconteo");
         if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
         else markSessionTabStale(selectedSessionId, "validacion");
-      }, 3000);
+      }, 800);
     };
 
     const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
@@ -939,12 +945,42 @@ export default function InventariosPage() {
   }, [selectedSessionId, isValidator, validatorTab, operator?.id]);
 
   useEffect(() => {
-    if (!selectedSessionId || !isValidator || validatorTab !== "resumen" || !summaryHasPendingChanges || summaryLoading) return;
-    const timer = window.setTimeout(() => {
-      void loadSummary(selectedSessionId, true);
-    }, 20000);
-    return () => window.clearTimeout(timer);
-  }, [selectedSessionId, isValidator, validatorTab, summaryHasPendingChanges, summaryLoading]);
+    if (!selectedSessionId || !isValidator || validatorTab !== "resumen") return;
+    const sede = sessionSede(selectedSessionId);
+    if (!sede) return;
+
+    let timer: number | null = null;
+    const flushStockChanges = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const skus = [...pendingStockSkusRef.current];
+        pendingStockSkusRef.current.clear();
+        if (skus.length === 0) return;
+        void refreshUnlockedSnapshotsForSkus(selectedSessionId, skus)
+          .then(() => loadSummary(selectedSessionId, true))
+          .catch(error => setMessage("No se pudo actualizar stock en tiempo real: " + (error instanceof Error ? error.message : String(error))));
+      }, 1000);
+    };
+
+    const channel = supabase
+      .channel(`gi-live-stock-${selectedSessionId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "stock_general", filter: `sede=eq.${sede}` },
+        payload => {
+          const sku = normalizeCode((payload.new as any)?.codsap || (payload.old as any)?.codsap).toUpperCase();
+          if (!sku) return;
+          pendingStockSkusRef.current.add(sku);
+          flushStockChanges();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [selectedSessionId, isValidator, validatorTab, summaryLoadedSessionId, sessions, stores]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -2346,6 +2382,61 @@ export default function InventariosPage() {
     return fetchSummaryRowsFromRpc(supabase, { sessionId, session: summarySession, stores });
   }
 
+  function sessionSede(sessionId: string) {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const store = stores.find(row => row.id === session?.store_id);
+    return store?.erp_sede || store?.name || session?.store_name || "";
+  }
+
+  function isSummaryRowStockProtected(row: SummaryRow | undefined) {
+    return Boolean(row && row.counted > 0 && row.diff === 0);
+  }
+
+  async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]) {
+    const sede = sessionSede(sessionId);
+    if (!sede) return;
+
+    const skus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+    const unlockedSkus = skus.filter(sku => {
+      const row = summaryRef.current.find(item => normalizeCode(item.sku).toUpperCase() === sku);
+      return !isSummaryRowStockProtected(row);
+    });
+    if (unlockedSkus.length === 0) return;
+
+    const [stockRes, productsRes, nonInventoryRows] = await Promise.all([
+      supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", unlockedSkus),
+      supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", unlockedSkus),
+      loadInventoryNonInventoryRows(sessionId),
+    ]);
+    if (stockRes.error) throw stockRes.error;
+    if (productsRes.error) throw productsRes.error;
+
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
+    const stockBySku = new Map((stockRes.data || []).map(row => [normalizeCode(row.codsap).toUpperCase(), row]));
+    const now = new Date().toISOString();
+    const rows = ((productsRes.data || []) as Product[])
+      .filter(product => !nonInventorySkus.has(normalizeCode(product.sku).toUpperCase()))
+      .map(product => {
+        const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
+        return {
+          session_id: sessionId,
+          product_id: product.id,
+          sku: product.sku,
+          description: product.description,
+          unit: product.unit,
+          system_stock: Number(stock?.stock || 0),
+          cost: Number(stock?.costo ?? product.cost ?? 0),
+          frozen_at: now,
+        };
+      });
+
+    if (rows.length === 0) return;
+    const { error } = await supabase
+      .from("general_inventory_stock_snapshot")
+      .upsert(rows, { onConflict: "session_id,product_id" });
+    if (error) throw error;
+  }
+
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     setSummaryLoading(true);
@@ -3143,18 +3234,6 @@ export default function InventariosPage() {
       return;
     }
     await saveStockSnapshot("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.", "Stock congelado");
-  }
-
-  async function updateStockSnapshot() {
-    if (user?.role !== "Administrador") {
-      setMessage("Solo el administrador puede reemplazar la foto de stock de una sesion.");
-      return;
-    }
-    if (selectedSession?.stock_frozen_at) {
-      const typed = window.prompt("Esto actualiza la foto de stock solo para codigos no OK de esta sesion. Los codigos OK quedan protegidos. Escribe ACTUALIZAR STOCK para continuar.");
-      if (typed !== "ACTUALIZAR STOCK") return;
-    }
-    await saveStockSnapshot("Actualizando stock actual y congelando nueva foto.", "Stock actualizado y congelado");
   }
 
   async function saveStockSnapshot(progressMessage: string, successLabel: string) {
@@ -7147,19 +7226,10 @@ export default function InventariosPage() {
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="font-black">Dashboard de inventario</h2>
-                  {summaryHasPendingChanges && (
-                    <div className="mt-1 text-xs font-black text-amber-600">Hay nuevos registros. Actualiza KPIs cuando necesites refrescar el resumen.</div>
-                  )}
+                  <div className="mt-1 text-xs font-black text-emerald-600">KPIs y stock no protegido se actualizan en tiempo real.</div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => loadSummary(selectedSessionId, true)} disabled={summaryLoading} className={`inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-black disabled:opacity-40 ${summaryHasPendingChanges ? "bg-amber-500 text-white" : "border"}`}>
-                    {summaryLoading ? "Actualizando..." : summaryHasPendingChanges ? "Actualizar cambios" : "Actualizar KPIs"}
-                  </button>
-                  {user?.role === "Administrador" && (
-                    <button onClick={updateStockSnapshot} disabled={loading || summaryLoading || isSelectedSessionFinished} className="inline-flex items-center gap-1 rounded-xl bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
-                      <RefreshCw size={14} /> Actualizar stock
-                    </button>
-                  )}
+                  {summaryLoading && <span className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black text-slate-500"><RefreshCw size={14} /> Actualizando...</span>}
                   <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
                   <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte IG</button>
                   <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>

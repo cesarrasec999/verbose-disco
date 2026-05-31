@@ -92,5 +92,14 @@ begin
   ) then
     alter publication supabase_realtime add table public.general_inventory_validation_counts;
   end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'stock_general'
+  ) then
+    alter publication supabase_realtime add table public.stock_general;
+  end if;
 end;
 $$;
