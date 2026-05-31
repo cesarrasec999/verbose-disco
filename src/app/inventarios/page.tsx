@@ -97,6 +97,7 @@ import {
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
+const SUMMARY_PAGE_SIZE = 120;
 
 type SummaryCacheEntry = {
   rows: SummaryRow[];
@@ -186,6 +187,7 @@ export default function InventariosPage() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryHasPendingChanges, setSummaryHasPendingChanges] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
+  const [summaryPage, setSummaryPage] = useState(1);
   const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
@@ -405,12 +407,18 @@ export default function InventariosPage() {
       row.description.toLowerCase().includes(q) ||
       String(row.observation || "").toLowerCase().includes(q)
     );
-    return rows.sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const left = summarySort.key === "observation" ? String(a.observation || "") : a[summarySort.key] ?? "";
       const right = summarySort.key === "observation" ? String(b.observation || "") : b[summarySort.key] ?? "";
       return compareValues(left, right, summarySort.direction);
     });
   }, [summary, summaryQuery, summarySort]);
+  const summaryTotalPages = Math.max(1, Math.ceil(filteredSummary.length / SUMMARY_PAGE_SIZE));
+  const pagedSummary = useMemo(() => {
+    const page = Math.min(summaryPage, summaryTotalPages);
+    const start = (page - 1) * SUMMARY_PAGE_SIZE;
+    return filteredSummary.slice(start, start + SUMMARY_PAGE_SIZE);
+  }, [filteredSummary, summaryPage, summaryTotalPages]);
   const showValidationSummary = Boolean(selectedSession?.validation_enabled);
 
   const recountCandidates = useMemo(() => {
@@ -757,6 +765,19 @@ export default function InventariosPage() {
     setRecountManagerTab("pendientes");
   }
 
+  function barcodeVariants(value: string) {
+    const raw = normalizeCode(value).toUpperCase();
+    const variants = new Set<string>([raw]);
+    if (/^\d+$/.test(raw)) {
+      const noLeadingZeros = raw.replace(/^0+/, "");
+      if (noLeadingZeros) variants.add(noLeadingZeros);
+      if (raw.length === 12) variants.add(`0${raw}`);
+      if (raw.length === 13 && raw.startsWith("0")) variants.add(raw.slice(1));
+      if (raw.length > 8) variants.add(raw.slice(0, -1));
+    }
+    return [...variants].filter(Boolean);
+  }
+
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
     return locations
@@ -838,6 +859,14 @@ export default function InventariosPage() {
   useEffect(() => {
     summaryRef.current = summary;
   }, [summary]);
+
+  useEffect(() => {
+    setSummaryPage(1);
+  }, [selectedSessionId, summaryQuery, summarySort.key, summarySort.direction]);
+
+  useEffect(() => {
+    if (summaryPage > summaryTotalPages) setSummaryPage(summaryTotalPages);
+  }, [summaryPage, summaryTotalPages]);
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
@@ -3669,11 +3698,14 @@ export default function InventariosPage() {
     const text = query.trim();
     const raw = normalizeCode(text).toUpperCase();
     if (!raw || !selectedSessionId) return { products: [], message: "" };
+    const variants = barcodeVariants(raw);
     const isNumericSearch = /^\d+$/.test(raw);
     const shouldSearchDescription = mode === "typed" && !isNumericSearch;
 
     if (typeof navigator !== "undefined" && !navigator.onLine) {
-      const cachedProducts = await findCachedProductsByCode(raw);
+      const cachedProducts = (await Promise.all(variants.map(code => findCachedProductsByCode(code))))
+        .flat()
+        .filter((product, index, rows) => rows.findIndex(item => item.sku === product.sku) === index);
       if (cachedProducts.length === 0) return { products: [], message: "Codigo no encontrado en el catalogo offline descargado." };
       return {
         products: (cachedProducts as Product[]).sort((a, b) => codeMatchRank(a, raw) - codeMatchRank(b, raw) || a.sku.localeCompare(b.sku, "es", { numeric: true })),
@@ -3696,24 +3728,23 @@ export default function InventariosPage() {
       }
     } else if (mode === "scan") {
       const [byUpc, byAlu] = await Promise.all([
-        supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
-        supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", variants).not("codsap", "is", null).limit(50),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", variants).not("codsap", "is", null).limit(50),
       ]).catch(async () => {
-        const cachedProducts = await findCachedProductsByCode(raw);
+        const cachedProducts = (await Promise.all(variants.map(code => findCachedProductsByCode(code)))).flat();
         return [
           { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
           { data: [] },
         ];
       });
       const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
-      const candidateSkus = [...new Set([raw, ...mapped])];
+      const candidateSkus = [...new Set([...variants, ...mapped])];
 
-      const { data } = await supabase
-        .from("cyclic_products")
-        .select("*")
-        .eq("is_active", true)
-        .or(`sku.eq.${raw},barcode.eq.${raw}`);
-      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+      const [bySku, byBarcode] = await Promise.all([
+        supabase.from("cyclic_products").select("*").in("sku", variants).eq("is_active", true).limit(50),
+        supabase.from("cyclic_products").select("*").in("barcode", variants).eq("is_active", true).limit(50),
+      ]);
+      for (const product of ([...(bySku.data || []), ...(byBarcode.data || [])] as Product[])) productMap.set(product.sku, product);
 
       if (candidateSkus.length > 0) {
         const { data: mappedProducts } = await supabase
@@ -3726,17 +3757,17 @@ export default function InventariosPage() {
       }
     } else {
       const [byUpc, byAlu] = await Promise.all([
-        supabase.from("codigos_barra").select("codsap,upc,alu").eq("upc", raw).not("codsap", "is", null).limit(20),
-        supabase.from("codigos_barra").select("codsap,upc,alu").eq("alu", raw).not("codsap", "is", null).limit(20),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", variants).not("codsap", "is", null).limit(50),
+        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", variants).not("codsap", "is", null).limit(50),
       ]).catch(async () => {
-        const cachedProducts = await findCachedProductsByCode(raw);
+        const cachedProducts = (await Promise.all(variants.map(code => findCachedProductsByCode(code)))).flat();
         return [
           { data: cachedProducts.map(product => ({ codsap: product.sku, upc: null, alu: null })) },
           { data: [] },
         ];
       });
       const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
-      const candidateSkus = [...new Set([raw, ...mapped])];
+      const candidateSkus = [...new Set([...variants, ...mapped])];
 
       const { data } = await supabase
         .from("cyclic_products")
@@ -7286,13 +7317,17 @@ export default function InventariosPage() {
               inventoryNotesDraft={inventoryNotesDraft}
               showValidationSummary={showValidationSummary}
               summarySort={summarySort}
-              filteredSummary={filteredSummary}
+              filteredSummary={pagedSummary}
+              totalSummaryRows={filteredSummary.length}
+              summaryPage={summaryPage}
+              summaryTotalPages={summaryTotalPages}
               observationDrafts={observationDrafts}
               isSelectedSessionFinished={isSelectedSessionFinished}
               onGenerateGeneralInventoryReport={generateGeneralInventoryReport}
               onGenerateInventoryCategoryReport={generateInventoryCategoryReport}
               onExportSummary={exportSummary}
               onSummaryQueryChange={setSummaryQuery}
+              onSummaryPageChange={setSummaryPage}
               onInventoryNotesDraftChange={setInventoryNotesDraft}
               onSaveInventoryNotes={saveInventoryNotes}
               onToggleSummarySort={toggleSummarySort}

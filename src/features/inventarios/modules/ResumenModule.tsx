@@ -5,6 +5,8 @@ import type { SummaryRow, SummarySortKey, SortState } from "@/features/inventari
 import { DonutKpi, Kpi, SortHeader, ValueBarKpi } from "@/features/inventarios/components/InventoryUi";
 import { money, number2, summaryStatus } from "@/features/inventarios/utils";
 
+const SUMMARY_PAGE_SIZE = 120;
+
 type SummaryKpis = {
   skuProgress: number;
   countedCodes: number;
@@ -32,12 +34,16 @@ type ResumenModuleProps = {
   showValidationSummary: boolean;
   summarySort: SortState<SummarySortKey>;
   filteredSummary: SummaryRow[];
+  totalSummaryRows: number;
+  summaryPage: number;
+  summaryTotalPages: number;
   observationDrafts: Record<string, string>;
   isSelectedSessionFinished: boolean;
   onGenerateGeneralInventoryReport: () => void;
   onGenerateInventoryCategoryReport: () => void;
   onExportSummary: () => void;
   onSummaryQueryChange: (value: string) => void;
+  onSummaryPageChange: (page: number) => void;
   onInventoryNotesDraftChange: (value: string) => void;
   onSaveInventoryNotes: () => void;
   onToggleSummarySort: (key: SummarySortKey) => void;
@@ -57,12 +63,16 @@ export function ResumenModule({
   showValidationSummary,
   summarySort,
   filteredSummary,
+  totalSummaryRows,
+  summaryPage,
+  summaryTotalPages,
   observationDrafts,
   isSelectedSessionFinished,
   onGenerateGeneralInventoryReport,
   onGenerateInventoryCategoryReport,
   onExportSummary,
   onSummaryQueryChange,
+  onSummaryPageChange,
   onInventoryNotesDraftChange,
   onSaveInventoryNotes,
   onToggleSummarySort,
@@ -73,14 +83,14 @@ export function ResumenModule({
 }: ResumenModuleProps) {
   const okCount = summary.filter(row => row.diff === 0 && row.counted > 0).length;
   const maxDifferenceValue = Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1);
+  const fromRow = totalSummaryRows === 0 ? 0 : ((summaryPage - 1) * SUMMARY_PAGE_SIZE) + 1;
+  const toRow = Math.min(summaryPage * SUMMARY_PAGE_SIZE, totalSummaryRows);
 
   return (
     <>
       <section className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="font-black">{title}</h2>
-          </div>
+          <h2 className="font-black">{title}</h2>
           <div className="flex flex-wrap gap-2">
             {summaryLoading && <span className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black text-slate-500"><RefreshCw size={14} /> Actualizando...</span>}
             <button onClick={onGenerateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
@@ -108,8 +118,8 @@ export function ResumenModule({
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
-          <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
-          <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
+          <Kpi label="Codigos sobrantes" value={kpis.surplusCodes} tone="blue" />
+          <Kpi label="Codigos faltantes" value={kpis.missingCodes} tone="red" />
           <Kpi label="Diferencia valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
         </div>
       </section>
@@ -117,8 +127,29 @@ export function ResumenModule({
       <section className="rounded-2xl border bg-white shadow-sm">
         <div className="border-b p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por código</h2>
-            <input value={summaryQuery} onChange={event => onSummaryQueryChange(event.target.value)} placeholder="Buscar código, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
+            <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por codigo</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
+                {totalSummaryRows === 0 ? "Sin filas" : `Mostrando ${fromRow}-${toRow} de ${totalSummaryRows}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => onSummaryPageChange(Math.max(1, summaryPage - 1))}
+                disabled={summaryPage <= 1}
+                className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+              >
+                Anterior
+              </button>
+              <button
+                type="button"
+                onClick={() => onSummaryPageChange(Math.min(summaryTotalPages, summaryPage + 1))}
+                disabled={summaryPage >= summaryTotalPages}
+                className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+              >
+                Siguiente
+              </button>
+              <input value={summaryQuery} onChange={event => onSummaryQueryChange(event.target.value)} placeholder="Buscar codigo, descripcion u observacion" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
+            </div>
           </div>
         </div>
         <div className="border-b px-4 pb-4">
@@ -141,8 +172,8 @@ export function ResumenModule({
           <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1360px]" : "min-w-[1280px]"}`}>
             <thead className="bg-slate-100 text-xs text-slate-600">
               <tr>
-                <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => onToggleSummarySort("sku")} align="left" />
-                <SortHeader label="Descripción" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => onToggleSummarySort("description")} align="left" />
+                <SortHeader label="Codigo" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => onToggleSummarySort("sku")} align="left" />
+                <SortHeader label="Descripcion" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => onToggleSummarySort("description")} align="left" />
                 <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => onToggleSummarySort("unit")} />
                 <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => onToggleSummarySort("system_stock")} />
                 <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => onToggleSummarySort("counted_original")} />
@@ -152,7 +183,7 @@ export function ResumenModule({
                 <th className="p-2 text-center">Status</th>
                 <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => onToggleSummarySort("cost")} />
                 <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => onToggleSummarySort("valueDiff")} />
-                <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => onToggleSummarySort("observation")} align="left" />
+                <SortHeader label="Observacion" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => onToggleSummarySort("observation")} align="left" />
                 <th className="p-2">Acciones</th>
               </tr>
             </thead>
