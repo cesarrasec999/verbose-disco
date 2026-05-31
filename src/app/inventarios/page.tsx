@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, PackageSearch, Plus, Printer, QrCode, RefreshCw, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
+import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, Plus, QrCode, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -23,6 +23,10 @@ import {
 } from "@/features/inventarios/api";
 import { InventoryHeader } from "@/features/inventarios/components/InventoryHeader";
 import { InventoryTabs } from "@/features/inventarios/components/InventoryTabs";
+import { MiniMetric, SortHeader } from "@/features/inventarios/components/InventoryUi";
+import { RegistrosModule } from "@/features/inventarios/modules/RegistrosModule";
+import { ReconteoModule } from "@/features/inventarios/modules/ReconteoModule";
+import { ResumenModule } from "@/features/inventarios/modules/ResumenModule";
 import type {
   CountRow,
   CyclicUser,
@@ -6534,81 +6538,30 @@ export default function InventariosPage() {
           )}
 
           {canManageInventory && selectedSessionId && (validatorTab === "reconteo" || validatorTab === "validacion") && (
-            <section className="space-y-4">
-              <section className="rounded-2xl border bg-white p-4 shadow-sm">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="inline-flex items-center gap-2 font-black"><UserCheck size={18} /> {isValidationManagerTab ? "Validacion" : "Reconteo"}</h2>
-                    <p className="text-xs text-slate-500">{isValidationManagerTab ? "Asigna diferencias ya recontadas para una validacion final." : "Asigna diferencias por bloques a operadores activos."}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {user?.role === "Administrador" && (
-                      <button
-                        onClick={toggleValidationPlan}
-                        disabled={isSelectedSessionFinished}
-                        className={`rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40 ${selectedSession?.validation_enabled ? "border-green-300 bg-green-50 text-green-800" : "text-slate-800"}`}
-                      >
-                        {selectedSession?.validation_enabled ? "Validacion activa" : "Activar validacion"}
-                      </button>
-                    )}
-                    <button onClick={() => assignRecountBlock(10)} disabled={isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
-                      Asignar 10 primeros
-                    </button>
-                    <button onClick={() => assignRecountBlock(20)} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                      Asignar 20 primeros
-                    </button>
-                    <button onClick={assignSelectedRecountRows} disabled={selectedPendingRecountRows.length === 0 || isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
-                      Asignar seleccionados
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_220px]">
-                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border p-1 md:grid-cols-4">
-                    <button onClick={() => changeRecountFilter("surplus")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "surplus" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrantes</button>
-                    <button onClick={() => changeRecountFilter("surplus_zero_stock")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "surplus_zero_stock" ? "bg-blue-700 text-white" : "text-slate-600"}`}>Sobrante stock 0</button>
-                    <button onClick={() => changeRecountFilter("missing")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "missing" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltantes</button>
-                    <button onClick={() => changeRecountFilter("missing_not_counted")} className={`rounded-lg px-3 py-2 text-xs font-black ${recountFilter === "missing_not_counted" ? "bg-red-600 text-white" : "text-slate-600"}`}>Faltante no contado</button>
-                  </div>
-
-                  <select value={recountOperatorId} onChange={event => setRecountOperatorId(event.target.value)} disabled={isSelectedSessionFinished} className="rounded-xl border bg-white px-3 py-3 text-sm disabled:opacity-40">
-                    <option value="">Operador</option>
-                    {sessionOperators.map(row => <option key={row.id} value={row.id}>{row.full_name}</option>)}
-                  </select>
-
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
-                    {filteredUnassignedRecountCandidates.length}{filteredUnassignedRecountCandidates.length !== unassignedRecountCandidates.length ? ` de ${unassignedRecountCandidates.length}` : ""} pendientes | {activeAssignedRecountCount} asignados
-                  </div>
-                </div>
-                <p className="mt-3 text-xs font-bold text-slate-500">Orden operativo: sobrantes por mayor diferencia valorizada y faltantes por menor diferencia valorizada.</p>
-              </section>
-
-              <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-4">
-                <button
-                  onClick={() => setRecountManagerTab("pendientes")}
-                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "pendientes" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
-                >
-                  Pendientes por asignar ({unassignedRecountCandidates.length})
-                </button>
-                <button
-                  onClick={() => setRecountManagerTab("asignados")}
-                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "asignados" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
-                >
-                  {isValidationManagerTab ? "Validaciones asignadas" : "Reconteos asignados"} ({assignedRecountRows.length})
-                </button>
-                <button
-                  onClick={() => setRecountManagerTab("manual")}
-                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "manual" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
-                >
-                  {isValidationManagerTab ? "Validacion manual" : "Reconteo manual"} ({manualRecountRows.length})
-                </button>
-                <button
-                  onClick={() => setRecountManagerTab("registros")}
-                  className={`rounded-xl px-4 py-3 text-sm font-black ${recountManagerTab === "registros" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"}`}
-                >
-                  {adminRecordLayer === "validation" ? "Validaciones guardadas" : adminRecordLayer === "recount" ? "Reconteos guardados" : "Registros guardados"} ({filteredAdminRecountRecords.length})
-                </button>
-              </div>
+            <ReconteoModule
+              isValidationManagerTab={isValidationManagerTab}
+              isAdmin={user?.role === "Administrador"}
+              validationEnabled={Boolean(selectedSession?.validation_enabled)}
+              isSelectedSessionFinished={isSelectedSessionFinished}
+              recountFilter={recountFilter}
+              recountOperatorId={recountOperatorId}
+              sessionOperators={sessionOperators}
+              filteredUnassignedCount={filteredUnassignedRecountCandidates.length}
+              unassignedCount={unassignedRecountCandidates.length}
+              activeAssignedRecountCount={activeAssignedRecountCount}
+              recountManagerTab={recountManagerTab}
+              assignedCount={assignedRecountRows.length}
+              manualCount={manualRecountRows.length}
+              recordsLabel={adminRecordLayer === "validation" ? "Validaciones guardadas" : adminRecordLayer === "recount" ? "Reconteos guardados" : "Registros guardados"}
+              recordsCount={filteredAdminRecountRecords.length}
+              selectedPendingCount={selectedPendingRecountRows.length}
+              onToggleValidationPlan={toggleValidationPlan}
+              onAssignRecountBlock={assignRecountBlock}
+              onAssignSelectedRecountRows={assignSelectedRecountRows}
+              onChangeRecountFilter={changeRecountFilter}
+              onRecountOperatorChange={setRecountOperatorId}
+              onRecountManagerTabChange={setRecountManagerTab}
+            >
 
               {recountManagerTab === "pendientes" && (
               <section className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -7137,7 +7090,7 @@ export default function InventariosPage() {
                   )}
                 </div>
               </section>
-            </section>
+            </ReconteoModule>
           )}
 
           {isValidator && user?.role === "Administrador" && validatorTab === "usuarios" && (
@@ -7221,47 +7174,6 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {isValidator && selectedSessionId && validatorTab === "resumen" && (
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-black">Dashboard de inventario</h2>
-                  <div className="mt-1 text-xs font-black text-emerald-600">KPIs y stock no protegido se actualizan en tiempo real.</div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {summaryLoading && <span className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black text-slate-500"><RefreshCw size={14} /> Actualizando...</span>}
-                  <button onClick={generateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
-                  <button onClick={generateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte IG</button>
-                  <button onClick={exportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
-                </div>
-              </div>
-              <div className="grid gap-4">
-                <div className="grid gap-4 lg:grid-cols-3">
-                  <DonutKpi label="AVANCE POR SKU" value={kpis.skuProgress} detail={`${kpis.countedCodes} / ${kpis.totalCodes} codigos`} />
-                  <DonutKpi label="AVANCE POR VALORIZADO" value={kpis.valueProgress} detail={`${money(kpis.countedValue)} de ${money(kpis.systemValue)} total`} tone="blue" />
-                  <DonutKpi label="ERI" value={kpis.eri} detail={`${summary.filter(row => row.diff === 0 && row.counted > 0).length} OK / ${kpis.totalCodes} total`} tone="green" />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                  <Kpi label="Codigos totales" value={kpis.totalCodes} />
-                  <Kpi label="Codigos contados" value={kpis.countedCodes} tone="green" />
-                  <Kpi label="Codigos OK" value={summary.filter(row => row.diff === 0 && row.counted > 0).length} />
-                  <Kpi label="No contados" value={kpis.notCountedCodes} tone="amber" />
-                  <Kpi label="Codigos con diferencia" value={kpis.codesWithDifference} tone={kpis.codesWithDifference > 0 ? "amber" : "slate"} />
-                </div>
-              </div>
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <ValueBarKpi label="Sobrantes valorizados" value={kpis.surplusValue} maxValue={Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1)} tone="blue" />
-                <ValueBarKpi label="Faltantes valorizados" value={kpis.missingValue} maxValue={Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1)} tone="red" />
-              </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <Kpi label="Valor sistema" value={money(kpis.systemValue)} />
-                <Kpi label="Códigos sobrantes" value={kpis.surplusCodes} tone="blue" />
-                <Kpi label="Códigos faltantes" value={kpis.missingCodes} tone="red" />
-                <Kpi label="Diferencia valorizada" value={money(kpis.diffValue)} tone={kpis.diffValue < 0 ? "red" : "blue"} />
-              </div>
-            </section>
-          )}
-
           {isValidator && selectedSessionId && validatorTab === "productividad" && (
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -7296,179 +7208,56 @@ export default function InventariosPage() {
           )}
 
           {((!isValidator && !operator) || !selectedSessionId || (isValidator && validatorTab === "registros")) && (
-          <div className="space-y-4">
-          <section className="rounded-2xl border bg-white shadow-sm">
-            <div className="border-b p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="inline-flex items-center gap-2 font-black"><ClipboardList size={18} /> Registros</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  {isValidator && (
-                    <select
-                      value={recordsOperatorFilter}
-                      onChange={event => setRecordsOperatorFilter(event.target.value)}
-                      className="min-h-10 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700"
-                    >
-                      <option value="">Todos los operadores</option>
-                      {recordsOperatorOptions.map(row => (
-                        <option key={row.id} value={row.id}>{row.name}</option>
-                      ))}
-                    </select>
-                  )}
-                  <select
-                    value={recordsZoneFilter}
-                    onChange={event => setRecordsZoneFilter(event.target.value)}
-                    className="min-h-10 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700"
-                  >
-                    <option value="">Todas las zonas</option>
-                    {recordsZoneOptions.map(zone => (
-                      <option key={zone} value={zone}>Zona {zone}</option>
-                    ))}
-                  </select>
-                  <div className="flex min-w-[220px] flex-1 items-center rounded-xl border px-3 py-2 md:w-96">
-                    <Search size={16} className="text-slate-400" />
-                    <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, descripción o ubicación" className="min-w-0 flex-1 px-2 text-sm outline-none" />
-                    {recordsQuery && (
-                      <button type="button" onClick={() => setRecordsQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda">
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-                  <button onClick={exportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
-                    <Download size={15} /> Descargar Excel
-                  </button>
-                  <button onClick={printRecordsByZone} disabled={counts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
-                    <Printer size={15} /> Imprimir registros
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="overflow-auto">
-              <table className="w-full min-w-[920px] text-sm">
-                <thead className="bg-slate-100 text-xs text-slate-600">
-                  <tr>
-                    <SortHeader label="Fecha" active={recordsSort.key === "counted_at"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("counted_at")} />
-                    <SortHeader label="Contador" active={recordsSort.key === "operator_name"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("operator_name")} align="left" />
-                    <SortHeader label="Ubicacion" active={recordsSort.key === "location_code"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("location_code")} />
-                    <SortHeader label="Codigo" active={recordsSort.key === "sku"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("sku")} />
-                    <SortHeader label="Descripcion" active={recordsSort.key === "description"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("description")} align="left" />
-                    <SortHeader label="UM" active={recordsSort.key === "unit"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("unit")} />
-                    <SortHeader label="Cantidad" active={recordsSort.key === "quantity"} direction={recordsSort.direction} onClick={() => toggleRecordsSort("quantity")} />
-                    <th className="p-2 text-center">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody key={recordsRenderKey}>
-                  {filteredCounts.map(row => (
-                    <tr key={countRowKey(row)} className="border-b">
-                      <td className="p-2 text-center text-xs text-slate-500">{new Date(row.counted_at).toLocaleString("es-PE")}</td>
-                      <td className="max-w-[180px] truncate p-2 font-bold text-slate-700">{row.operator_name || "Sin usuario"}</td>
-                      <td className="p-2 text-center font-black text-slate-800">{row.location_code}</td>
-                      <td className="p-2 text-center font-black text-blue-700">{row.sku}</td>
-                      <td className="max-w-md whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
-                      <td className="p-2 text-center">{row.unit}</td>
-                      <td className="p-2 text-center font-black">{number2(row.quantity)}</td>
-                      <td className="p-2 text-center">
-                        {(operator?.id === row.operator_id || isValidator) && (
-                          <div className="flex justify-center gap-1">
-                            {operator?.id === row.operator_id && !isValidator && (
-                              <button onClick={() => editCount(row)} className="rounded-lg border px-2 py-1 text-xs font-black">Editar</button>
-                            )}
-                            {isValidator && (
-                              <button onClick={() => openAdminEditCount(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Editar</button>
-                            )}
-                            {canManageInventory && (
-                              <button onClick={() => deleteCount(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-red-600 disabled:opacity-40"><Trash2 size={14} /></button>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredCounts.length === 0 && (
-                    <tr><td colSpan={8} className="p-8 text-center text-sm text-slate-400">Sin registros.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-          </div>
+            <RegistrosModule
+              isValidator={isValidator}
+              canManageInventory={canManageInventory}
+              isSelectedSessionFinished={isSelectedSessionFinished}
+              operatorId={operator?.id}
+              recordsOperatorFilter={recordsOperatorFilter}
+              recordsOperatorOptions={recordsOperatorOptions}
+              recordsZoneFilter={recordsZoneFilter}
+              recordsZoneOptions={recordsZoneOptions}
+              recordsQuery={recordsQuery}
+              recordsSort={recordsSort}
+              recordsRenderKey={recordsRenderKey}
+              filteredCounts={filteredCounts}
+              countsTotal={counts.length}
+              onRecordsOperatorFilterChange={setRecordsOperatorFilter}
+              onRecordsZoneFilterChange={setRecordsZoneFilter}
+              onRecordsQueryChange={setRecordsQuery}
+              onExportRecords={exportRecords}
+              onPrintRecordsByZone={printRecordsByZone}
+              onToggleRecordsSort={toggleRecordsSort}
+              onEditCount={editCount}
+              onAdminEditCount={openAdminEditCount}
+              onDeleteCount={deleteCount}
+            />
           )}
 
           {isValidator && selectedSessionId && validatorTab === "resumen" && (
-            <section className="rounded-2xl border bg-white shadow-sm">
-              <div className="border-b p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por código</h2>
-                  <input value={summaryQuery} onChange={event => setSummaryQuery(event.target.value)} placeholder="Buscar código, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
-                </div>
-              </div>
-              <div className="border-b px-4 pb-4">
-                <div className="rounded-2xl border bg-slate-50 p-3">
-                  <label className="text-xs font-black text-slate-500">Notas del validador para el informe</label>
-                  <textarea
-                    value={inventoryNotesDraft}
-                    onChange={event => setInventoryNotesDraft(event.target.value)}
-                    className="mt-2 min-h-20 w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:border-slate-500"
-                    placeholder="Escribe observaciones generales del inventario, incidencias, criterios aplicados o acuerdos con tienda."
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <button onClick={saveInventoryNotes} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white disabled:opacity-40">
-                      Guardar notas
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="overflow-auto">
-                <table className={`w-full text-sm ${showValidationSummary ? "min-w-[1360px]" : "min-w-[1280px]"}`}>
-                  <thead className="bg-slate-100 text-xs text-slate-600">
-                    <tr>
-                      <SortHeader label="Código" active={summarySort.key === "sku"} direction={summarySort.direction} onClick={() => toggleSummarySort("sku")} align="left" />
-                      <SortHeader label="Descripción" active={summarySort.key === "description"} direction={summarySort.direction} onClick={() => toggleSummarySort("description")} align="left" />
-                      <SortHeader label="UM" active={summarySort.key === "unit"} direction={summarySort.direction} onClick={() => toggleSummarySort("unit")} />
-                      <SortHeader label="Sistema" active={summarySort.key === "system_stock"} direction={summarySort.direction} onClick={() => toggleSummarySort("system_stock")} />
-                      <SortHeader label="Conteo" active={summarySort.key === "counted_original"} direction={summarySort.direction} onClick={() => toggleSummarySort("counted_original")} />
-                      <SortHeader label="Reconteo" active={summarySort.key === "recounted_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("recounted_qty")} />
-                      {showValidationSummary && <SortHeader label="Validacion" active={summarySort.key === "validation_qty"} direction={summarySort.direction} onClick={() => toggleSummarySort("validation_qty")} />}
-                      <SortHeader label="Dif." active={summarySort.key === "diff"} direction={summarySort.direction} onClick={() => toggleSummarySort("diff")} />
-                      <th className="p-2 text-center">Status</th>
-                      <SortHeader label="Costo" active={summarySort.key === "cost"} direction={summarySort.direction} onClick={() => toggleSummarySort("cost")} />
-                      <SortHeader label="Dif. Val." active={summarySort.key === "valueDiff"} direction={summarySort.direction} onClick={() => toggleSummarySort("valueDiff")} />
-                      <SortHeader label="Observación" active={summarySort.key === "observation"} direction={summarySort.direction} onClick={() => toggleSummarySort("observation")} align="left" />
-                      <th className="p-2">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredSummary.map(row => (
-                      <tr key={row.product_id} className="border-b">
-                        <td className="p-2 font-black">{row.sku}</td>
-                        <td className="max-w-sm whitespace-normal break-words p-2">{row.description}</td>
-                        <td className="p-2 text-center">{row.unit}</td>
-                        <td className="p-2 text-center">{number2(row.system_stock)}</td>
-                        <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
-                        <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}</td>
-                        {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
-                        <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
-                        <td className="p-2 text-center">
-                          <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
-                            {summaryStatus(row)}
-                          </span>
-                        </td>
-                        <td className="p-2 text-center">{money(row.cost)}</td>
-                        <td className={`p-2 text-center font-black ${row.valueDiff < 0 ? "text-red-600" : row.valueDiff > 0 ? "text-blue-700" : "text-green-700"}`}>{money(row.valueDiff)}</td>
-                        <td className="p-2">
-                          <input value={observationDrafts[row.product_id] || ""} onChange={event => setObservationDrafts(prev => ({ ...prev, [row.product_id]: event.target.value }))} className="w-full rounded-lg border px-2 py-1 text-xs" />
-                        </td>
-                        <td className="p-2 text-center">
-                          <div className="flex justify-center gap-1">
-                            <button onClick={() => saveObservation(row)} disabled={isSelectedSessionFinished} className="rounded-lg border px-2 py-1 text-xs font-black disabled:opacity-40">Guardar</button>
-                            <button onClick={() => markSummaryAsNonInventory(row)} disabled={isSelectedSessionFinished} className="rounded-lg border border-amber-300 px-2 py-1 text-xs font-black text-amber-700 disabled:opacity-40">No inv.</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+            <ResumenModule
+              summaryLoading={summaryLoading}
+              kpis={kpis}
+              summary={summary}
+              summaryQuery={summaryQuery}
+              inventoryNotesDraft={inventoryNotesDraft}
+              showValidationSummary={showValidationSummary}
+              summarySort={summarySort}
+              filteredSummary={filteredSummary}
+              observationDrafts={observationDrafts}
+              isSelectedSessionFinished={isSelectedSessionFinished}
+              onGenerateGeneralInventoryReport={generateGeneralInventoryReport}
+              onGenerateInventoryCategoryReport={generateInventoryCategoryReport}
+              onExportSummary={exportSummary}
+              onSummaryQueryChange={setSummaryQuery}
+              onInventoryNotesDraftChange={setInventoryNotesDraft}
+              onSaveInventoryNotes={saveInventoryNotes}
+              onToggleSummarySort={toggleSummarySort}
+              onObservationDraftChange={(productId, value) => setObservationDrafts(prev => ({ ...prev, [productId]: value }))}
+              onSaveObservation={saveObservation}
+              onMarkSummaryAsNonInventory={markSummaryAsNonInventory}
+              summaryQuantityStatusLabel={summaryQuantityStatusLabel}
+            />
           )}
       </section>
       </div>
@@ -7579,92 +7368,5 @@ export default function InventariosPage() {
         </div>
       )}
     </main>
-  );
-}
-
-function SortHeader({ label, active, direction, onClick, align = "center" }: { label: string; active: boolean; direction: SortDirection; onClick: () => void; align?: "left" | "center" }) {
-  return (
-    <th className={`p-0 ${align === "left" ? "text-left" : "text-center"}`}>
-      <button
-        type="button"
-        onClick={onClick}
-        className={`flex w-full items-center gap-1 px-2 py-2 text-xs font-black ${align === "left" ? "justify-start" : "justify-center"} ${active ? "text-slate-950" : "text-slate-600 hover:text-slate-950"}`}
-      >
-        <span>{label}</span>
-        <span className="text-[10px]">{active ? (direction === "desc" ? "?" : "?") : "?"}</span>
-      </button>
-    </th>
-  );
-}
-
-function MiniMetric({ label, value, compact = false }: { label: string; value: string | number; compact?: boolean }) {
-  const displayValue = typeof value === "number" ? number2(value) : value;
-  return (
-    <div className={`rounded-xl bg-white text-center ${compact ? "p-1" : "p-2"}`}>
-      <div className={`${compact ? "text-xs" : "text-sm"} font-black text-slate-950`}>{displayValue}</div>
-      <div className="text-[10px] font-bold text-slate-500">{label}</div>
-    </div>
-  );
-}
-
-function DonutKpi({ label, value, detail, tone = "slate" }: { label: string; value: number; detail: string; tone?: "slate" | "blue" | "green" }) {
-  const pct = Math.max(0, Math.min(100, Math.round(Number(value || 0))));
-  const color = tone === "blue" ? "#1d4ed8" : tone === "green" ? "#16a34a" : "#0f172a";
-  return (
-    <div className="rounded-xl border bg-slate-50 p-4">
-      <div className="flex items-center gap-4">
-        <div
-          className="grid h-28 w-28 shrink-0 place-items-center rounded-full"
-          style={{ background: `conic-gradient(${color} ${pct * 3.6}deg, #e2e8f0 0deg)` }}
-        >
-          <div className="grid h-20 w-20 place-items-center rounded-full bg-white text-2xl font-black text-slate-950">
-            {pct}%
-          </div>
-        </div>
-        <div className="min-w-0">
-          <div className="text-[11px] font-black uppercase text-slate-500">{label}</div>
-          <div className="mt-2 text-base font-black text-slate-900">{detail}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ValueBarKpi({ label, value, maxValue, tone }: { label: string; value: number; maxValue: number; tone: "blue" | "red" }) {
-  const absValue = Math.abs(Number(value || 0));
-  const pct = Math.max(2, Math.min(100, (absValue / Math.max(1, maxValue)) * 100));
-  const barColor = tone === "blue" ? "bg-blue-700" : "bg-red-600";
-  const softColor = tone === "blue" ? "bg-blue-50 border-blue-100" : "bg-red-50 border-red-100";
-  const textColor = tone === "blue" ? "text-blue-700" : "text-red-600";
-  return (
-    <div className={`rounded-xl border p-4 ${softColor}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-black uppercase text-slate-500">{label}</div>
-          <div className={`mt-1 text-2xl font-black ${textColor}`}>{money(value)}</div>
-        </div>
-        <div className="flex h-16 items-end gap-1">
-          {[0.35, 0.55, 0.75, 1].map((step, index) => (
-            <div key={index} className="w-3 rounded-t bg-white/80">
-              <div className={`${barColor} rounded-t`} style={{ height: `${Math.max(8, pct * step * 0.6)}px` }} />
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="mt-4 h-3 overflow-hidden rounded-full bg-white">
-        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function Kpi({ label, value, tone = "slate" }: { label: string; value: string | number; tone?: "slate" | "blue" | "red" | "amber" | "green" }) {
-  const color = tone === "blue" ? "text-blue-700" : tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : tone === "green" ? "text-green-700" : "text-slate-900";
-  const displayValue = typeof value === "number" ? number2(value) : value;
-  return (
-    <div className="rounded-xl border bg-slate-50 p-3 text-center">
-      <div className={`text-xl font-black ${color}`}>{displayValue}</div>
-      <div className="mt-1 text-xs font-bold text-slate-500">{label}</div>
-    </div>
   );
 }
