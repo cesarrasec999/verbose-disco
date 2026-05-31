@@ -783,6 +783,10 @@ export default function InventariosPage() {
     return normalizeCode(value).replace(/['’‘´`]/g, "-").toUpperCase();
   }
 
+  function normalizeProductKeyboardInput(value: string) {
+    return value.replace(/['’‘´`]/g, "-").toUpperCase();
+  }
+
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
     return locations
@@ -6297,7 +6301,7 @@ export default function InventariosPage() {
                   </button>
                 </div>
                 <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
-                  <input ref={productInputRef} value={productCode} onChange={event => { setProductLookupMode("typed"); productLookupModeRef.current = "typed"; setProductCode(event.target.value); }} placeholder="Codigo, barra o descripcion" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
+                  <input ref={productInputRef} value={productCode} onChange={event => { setProductLookupMode("typed"); productLookupModeRef.current = "typed"; setProductCode(normalizeProductKeyboardInput(event.target.value)); }} placeholder="Codigo, barra o descripcion" className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base outline-none" />
                   <button onClick={() => openScanner("product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear producto">
                     <QrCode size={22} />
                   </button>
@@ -6467,7 +6471,7 @@ export default function InventariosPage() {
                         <div>
                           <label className="mb-1 block text-[11px] font-black text-slate-500">Codigo validado</label>
                           <div className="flex rounded-xl border bg-white p-1">
-                            <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", event.target.value)} placeholder="Codigo final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
+                            <input value={draft.productCode} onChange={event => updateRecountDraft(row.id, "productCode", normalizeProductKeyboardInput(event.target.value))} placeholder="Codigo final" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-sm font-bold outline-none" />
                             <button onClick={() => openRecountScanner(row.id, "recount_product")} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95" title="Escanear producto">
                               <QrCode size={18} />
                             </button>
