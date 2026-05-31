@@ -33,14 +33,20 @@ export function InventoryHeader({
   onOpenOperatorRecountMode,
 }: InventoryHeaderProps) {
   const operatorOnly = Boolean(operator && !user);
+  const operatorModeButtonClass = (mode: OperatorMode, disabled = false) =>
+    `inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs font-black transition sm:px-3 sm:text-sm ${
+      operatorMode === mode
+        ? "border-slate-900 bg-slate-900 text-white"
+        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+    } ${disabled ? "cursor-not-allowed opacity-45 hover:bg-white" : ""}`;
 
   return (
     <header className="sticky top-0 z-30 border-b bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-2 py-3 sm:gap-3 sm:px-3">
         <button
           onClick={onBack}
           className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
-          title={operatorOnly ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesion") : "Menu principal"}
+          title={operatorOnly ? (operatorMode === "reconteo" || operatorMode === "consulta" ? "Volver a conteo" : "Cerrar sesion") : "Menu principal"}
         >
           {operatorOnly ? (operatorMode === "reconteo" || operatorMode === "consulta" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <Home size={18} />}
         </button>
@@ -69,17 +75,26 @@ export function InventoryHeader({
             <option value="/inventarios">Inventarios</option>
           </select>
         )}
-        {operatorOnly && !selectedSession?.manual_recount_enabled && (
-          <button onClick={operatorMode === "reconteo" ? onOpenOperatorCountMode : onOpenOperatorRecountMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "reconteo" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "reconteo" ? "Volver a conteo" : "Modo reconteo"}>
-            {operatorMode === "reconteo" ? <ClipboardList size={18} /> : <PackageSearch size={18} />}
-            <span className="hidden sm:inline">{operatorMode === "reconteo" ? "Conteo" : "Reconteo"}</span>
-          </button>
-        )}
         {operatorOnly && (
-          <button onClick={operatorMode === "consulta" ? onOpenOperatorCountMode : onOpenOperatorLookupMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "consulta" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "consulta" ? "Volver a conteo" : "Consultar codigo"}>
-            {operatorMode === "consulta" ? <ClipboardList size={18} /> : <Search size={18} />}
-            <span className="hidden sm:inline">{operatorMode === "consulta" ? "Conteo" : "Consulta"}</span>
-          </button>
+          <div className="order-last grid w-full grid-cols-3 gap-2 sm:order-none sm:w-auto sm:flex">
+            <button onClick={onOpenOperatorCountMode} className={operatorModeButtonClass("conteo")} title="Modo conteo">
+              <ClipboardList size={18} />
+              <span>Conteo</span>
+            </button>
+            <button
+              onClick={selectedSession?.manual_recount_enabled ? undefined : onOpenOperatorRecountMode}
+              disabled={Boolean(selectedSession?.manual_recount_enabled)}
+              className={operatorModeButtonClass("reconteo", Boolean(selectedSession?.manual_recount_enabled))}
+              title={selectedSession?.manual_recount_enabled ? "Reconteo manual impreso activo" : "Modo reconteo"}
+            >
+              <PackageSearch size={18} />
+              <span>Reconteo</span>
+            </button>
+            <button onClick={onOpenOperatorLookupMode} className={operatorModeButtonClass("consulta")} title="Buscar registros por codigo">
+              <Search size={18} />
+              <span>Busqueda</span>
+            </button>
+          </div>
         )}
         {!user && !operator && (
           <button onClick={onLogin} className="inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" title="Iniciar sesion">
