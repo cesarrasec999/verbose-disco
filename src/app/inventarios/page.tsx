@@ -767,7 +767,8 @@ export default function InventariosPage() {
 
   function barcodeVariants(value: string) {
     const raw = normalizeCode(value).toUpperCase();
-    const variants = new Set<string>([raw]);
+    const hyphenated = raw.replace(/['’‘´`]/g, "-");
+    const variants = new Set<string>([raw, hyphenated]);
     if (/^\d+$/.test(raw)) {
       const noLeadingZeros = raw.replace(/^0+/, "");
       if (noLeadingZeros) variants.add(noLeadingZeros);
@@ -776,6 +777,10 @@ export default function InventariosPage() {
       if (raw.length > 8) variants.add(raw.slice(0, -1));
     }
     return [...variants].filter(Boolean);
+  }
+
+  function normalizeScannedBarcode(value: string) {
+    return normalizeCode(value).replace(/['’‘´`]/g, "-").toUpperCase();
   }
 
   const pendingLocations = useMemo(() => {
@@ -1324,10 +1329,11 @@ export default function InventariosPage() {
       setTimeout(() => productInputRef.current?.focus(), 50);
     }
     if (target === "product") {
+      const scannedCode = normalizeScannedBarcode(clean);
       setProductLookupMode("scan");
       productLookupModeRef.current = "scan";
-      setProductCode(clean);
-      await validateScannedProduct(clean);
+      setProductCode(scannedCode);
+      await validateScannedProduct(scannedCode);
     }
     if (target === "recount_location" && activeRecountScanId) {
       const [rowId, indexText] = activeRecountScanId.split(":");
@@ -1337,7 +1343,7 @@ export default function InventariosPage() {
     }
     if (target === "recount_product" && activeRecountScanId) {
       const [rowId] = activeRecountScanId.split(":");
-      updateRecountDraft(rowId, "productCode", clean);
+      updateRecountDraft(rowId, "productCode", normalizeScannedBarcode(clean));
       setMessage("Codigo de reconteo escaneado.");
     }
   }
