@@ -98,6 +98,12 @@ const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 
+type SummaryCacheEntry = {
+  rows: SummaryRow[];
+  observationDrafts: Record<string, string>;
+  cachedAt: number;
+};
+
 function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_status">) {
   const status = row.recount_status || (row.re_counted ? "counted" : "no");
   if (status === "counted") return "Si";
@@ -169,6 +175,7 @@ export default function InventariosPage() {
   const productLookupModeRef = useRef<ProductLookupMode>("typed");
   const pendingStockSkusRef = useRef<Set<string>>(new Set());
   const summaryRef = useRef<SummaryRow[]>([]);
+  const summaryCacheRef = useRef<Map<string, SummaryCacheEntry>>(new Map());
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
   const loadedSessionTabsRef = useRef<Set<string>>(new Set());
@@ -295,6 +302,24 @@ export default function InventariosPage() {
   function isSessionTabFresh(sessionId: string, tab: ValidatorTab) {
     const key = sessionTabKey(sessionId, tab);
     return loadedSessionTabsRef.current.has(key) && !staleSessionTabsRef.current.has(key);
+  }
+
+  function cacheSummary(sessionId: string, rows: SummaryRow[]) {
+    summaryCacheRef.current.set(sessionId, {
+      rows,
+      observationDrafts: Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])),
+      cachedAt: Date.now(),
+    });
+  }
+
+  function applyCachedSummary(sessionId: string) {
+    const cached = summaryCacheRef.current.get(sessionId);
+    if (!cached) return false;
+    setSummary(cached.rows);
+    setObservationDrafts(cached.observationDrafts);
+    setSummaryLoadedSessionId(sessionId);
+    setSummaryHasPendingChanges(false);
+    return true;
   }
 
   const recordsOperatorOptions = useMemo(() => {
@@ -817,6 +842,7 @@ export default function InventariosPage() {
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
+    if (validatorTab === "resumen") applyCachedSummary(selectedSessionId);
     if (isSessionTabFresh(selectedSessionId, validatorTab)) return;
     void loadSessionData(selectedSessionId, validatorTab);
   }, [selectedSessionId, validatorTab, isValidator, operator?.id]);
@@ -2443,13 +2469,16 @@ export default function InventariosPage() {
 
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
+    const hadCachedSummary = applyCachedSummary(sessionId);
+    if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
     try {
       const rpcRows = await loadSummaryFromRpc(sessionId);
       if (rpcRows) {
         rpcRows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+        cacheSummary(sessionId, rpcRows);
         setSummary(rpcRows);
-        setObservationDrafts(Object.fromEntries(rpcRows.map(row => [row.product_id, row.observation || ""])));
+        setObservationDrafts(summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
         setSummaryLoadedSessionId(sessionId);
         setSummaryHasPendingChanges(false);
         markSessionTabLoaded(sessionId, "resumen");
@@ -2652,8 +2681,9 @@ export default function InventariosPage() {
     }
 
     rows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+    cacheSummary(sessionId, rows);
     setSummary(rows);
-    setObservationDrafts(Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])));
+    setObservationDrafts(summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
     setSummaryLoadedSessionId(sessionId);
     setSummaryHasPendingChanges(false);
     markSessionTabLoaded(sessionId, "resumen");
@@ -7236,6 +7266,7 @@ export default function InventariosPage() {
 
           {isValidator && selectedSessionId && validatorTab === "resumen" && (
             <ResumenModule
+              title={`Resumen Inventario General - ${selectedSession?.store_name || selectedSession?.name || "Tienda"}`}
               summaryLoading={summaryLoading}
               kpis={kpis}
               summary={summary}

@@ -23,6 +23,7 @@ type SummaryKpis = {
 };
 
 type ResumenModuleProps = {
+  title: string;
   summaryLoading: boolean;
   kpis: SummaryKpis;
   summary: SummaryRow[];
@@ -47,6 +48,7 @@ type ResumenModuleProps = {
 };
 
 export function ResumenModule({
+  title,
   summaryLoading,
   kpis,
   summary,
@@ -77,8 +79,7 @@ export function ResumenModule({
       <section className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="font-black">Dashboard de inventario</h2>
-            <div className="mt-1 text-xs font-black text-emerald-600">KPIs y stock no protegido se actualizan en tiempo real.</div>
+            <h2 className="font-black">{title}</h2>
           </div>
           <div className="flex flex-wrap gap-2">
             {summaryLoading && <span className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black text-slate-500"><RefreshCw size={14} /> Actualizando...</span>}
