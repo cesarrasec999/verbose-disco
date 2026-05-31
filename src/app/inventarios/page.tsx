@@ -2635,9 +2635,7 @@ export default function InventariosPage() {
   }
 
   async function loadSummaryFromRpc(sessionId: string): Promise<SummaryRow[] | null> {
-    const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
-    if (!summarySession?.stock_frozen_at) return null;
-    return fetchSummaryRowsFromRpc(supabase, { sessionId, session: summarySession, stores });
+    return null;
   }
 
   function sessionSede(sessionId: string) {
@@ -2651,9 +2649,6 @@ export default function InventariosPage() {
   }
 
   async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]) {
-    const session = sessions.find(row => row.id === sessionId) || selectedSession;
-    if (session?.stock_frozen_at) return;
-
     const sede = sessionSede(sessionId);
     if (!sede) return;
 
@@ -2699,9 +2694,6 @@ export default function InventariosPage() {
   }
 
   async function protectOkProductSnapshot(sessionId: string, product: Product) {
-    const session = sessions.find(row => row.id === sessionId) || selectedSession;
-    if (session?.stock_frozen_at) return;
-
     const sku = normalizeCode(product.sku).toUpperCase();
     const stockBySku = await loadStockGeneralBySkuForSession(sessionId, [sku]);
     const liveStock = stockBySku.get(sku);
@@ -2756,7 +2748,6 @@ export default function InventariosPage() {
     }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
-    const sessionStockFrozen = Boolean(summarySession?.stock_frozen_at);
     const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows, validationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
@@ -2767,9 +2758,7 @@ export default function InventariosPage() {
       loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
     const { validationCountRows, validationItemRows } = validationRows;
-    const liveStockBySku = sessionStockFrozen
-      ? new Map<string, StockGeneralRow>()
-      : await loadStockGeneralBySkuForSession(sessionId, [
+    const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
         ...snapshotRows.map(row => row.sku),
         ...countRows.map(row => row.sku),
         ...recountCountRows.map(row => row.sku),
@@ -2884,10 +2873,10 @@ export default function InventariosPage() {
       const snapshotStock = Number(snap.system_stock || 0);
       const protectedOkStock = counted > 0 && counted === snapshotStock;
       const liveStock = liveStockBySku.get(normalizeCode(snap.sku).toUpperCase());
-      const systemStock = sessionStockFrozen || protectedOkStock ? snapshotStock : Number(liveStock?.stock || 0);
+      const systemStock = protectedOkStock ? snapshotStock : Number(liveStock?.stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
       productIdsInSnapshot.add(snap.product_id);
-      const cost = sessionStockFrozen || protectedOkStock ? Number(snap.cost || 0) : Number(liveStock?.costo ?? snap.cost ?? 0);
+      const cost = protectedOkStock ? Number(snap.cost || 0) : Number(liveStock?.costo ?? snap.cost ?? 0);
       const diff = counted - systemStock;
       rows.push({
         product_id: snap.product_id,
