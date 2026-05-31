@@ -98,6 +98,7 @@ const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 const SUMMARY_PAGE_SIZE = 120;
+const VALIDATOR_RECORDS_PAGE_SIZE = 120;
 
 type SummaryCacheEntry = {
   rows: SummaryRow[];
@@ -189,6 +190,7 @@ export default function InventariosPage() {
   const [summaryHasPendingChanges, setSummaryHasPendingChanges] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
   const [summaryPage, setSummaryPage] = useState(1);
+  const [validatorRecordsPage, setValidatorRecordsPage] = useState(1);
   const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
@@ -390,6 +392,12 @@ export default function InventariosPage() {
   const operatorRecordsTotalPages = Math.max(1, Math.ceil(operatorRecordsTotal / OPERATOR_RECORDS_PAGE_SIZE));
   const operatorRecordsFrom = operatorRecordsTotal === 0 ? 0 : ((operatorRecordsPage - 1) * OPERATOR_RECORDS_PAGE_SIZE) + 1;
   const operatorRecordsTo = Math.min(operatorRecordsPage * OPERATOR_RECORDS_PAGE_SIZE, operatorRecordsTotal);
+  const validatorRecordsTotalPages = Math.max(1, Math.ceil(filteredCounts.length / VALIDATOR_RECORDS_PAGE_SIZE));
+  const pagedValidatorCounts = useMemo(() => {
+    const page = Math.min(validatorRecordsPage, validatorRecordsTotalPages);
+    const start = (page - 1) * VALIDATOR_RECORDS_PAGE_SIZE;
+    return filteredCounts.slice(start, start + VALIDATOR_RECORDS_PAGE_SIZE);
+  }, [filteredCounts, validatorRecordsPage, validatorRecordsTotalPages]);
 
   const recordsRenderKey = useMemo(() => [
     selectedSessionId,
@@ -399,7 +407,8 @@ export default function InventariosPage() {
     recordsSort.key,
     recordsSort.direction,
     filteredCounts.length,
-  ].join("__"), [filteredCounts.length, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter, selectedSessionId]);
+    validatorRecordsPage,
+  ].join("__"), [filteredCounts.length, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter, selectedSessionId, validatorRecordsPage]);
 
   const counterStats = useMemo(() => {
     const grouped = new Map<string, { id: string; name: string; count: number; first: number; last: number; times: number[] }>();
@@ -902,6 +911,14 @@ export default function InventariosPage() {
   useEffect(() => {
     if (summaryPage > summaryTotalPages) setSummaryPage(summaryTotalPages);
   }, [summaryPage, summaryTotalPages]);
+
+  useEffect(() => {
+    setValidatorRecordsPage(1);
+  }, [selectedSessionId, recordsOperatorFilter, recordsZoneFilter, recordsQuery, recordsSort.key, recordsSort.direction]);
+
+  useEffect(() => {
+    if (validatorRecordsPage > validatorRecordsTotalPages) setValidatorRecordsPage(validatorRecordsTotalPages);
+  }, [validatorRecordsPage, validatorRecordsTotalPages]);
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
@@ -7342,11 +7359,15 @@ export default function InventariosPage() {
               recordsQuery={recordsQuery}
               recordsSort={recordsSort}
               recordsRenderKey={recordsRenderKey}
-              filteredCounts={filteredCounts}
+              filteredCounts={pagedValidatorCounts}
+              totalFilteredCounts={filteredCounts.length}
+              recordsPage={validatorRecordsPage}
+              recordsTotalPages={validatorRecordsTotalPages}
               countsTotal={counts.length}
               onRecordsOperatorFilterChange={setRecordsOperatorFilter}
               onRecordsZoneFilterChange={setRecordsZoneFilter}
               onRecordsQueryChange={setRecordsQuery}
+              onRecordsPageChange={setValidatorRecordsPage}
               onExportRecords={exportRecords}
               onPrintRecordsByZone={printRecordsByZone}
               onToggleRecordsSort={toggleRecordsSort}

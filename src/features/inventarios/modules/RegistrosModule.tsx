@@ -18,10 +18,14 @@ type RegistrosModuleProps = {
   recordsSort: SortState<RecordsSortKey>;
   recordsRenderKey: string;
   filteredCounts: CountRow[];
+  totalFilteredCounts: number;
+  recordsPage: number;
+  recordsTotalPages: number;
   countsTotal: number;
   onRecordsOperatorFilterChange: (value: string) => void;
   onRecordsZoneFilterChange: (value: string) => void;
   onRecordsQueryChange: (value: string) => void;
+  onRecordsPageChange: (page: number) => void;
   onExportRecords: () => void;
   onPrintRecordsByZone: () => void;
   onToggleRecordsSort: (key: RecordsSortKey) => void;
@@ -43,10 +47,14 @@ export function RegistrosModule({
   recordsSort,
   recordsRenderKey,
   filteredCounts,
+  totalFilteredCounts,
+  recordsPage,
+  recordsTotalPages,
   countsTotal,
   onRecordsOperatorFilterChange,
   onRecordsZoneFilterChange,
   onRecordsQueryChange,
+  onRecordsPageChange,
   onExportRecords,
   onPrintRecordsByZone,
   onToggleRecordsSort,
@@ -54,6 +62,32 @@ export function RegistrosModule({
   onAdminEditCount,
   onDeleteCount,
 }: RegistrosModuleProps) {
+  const fromRow = totalFilteredCounts === 0 ? 0 : ((recordsPage - 1) * 120) + 1;
+  const toRow = Math.min(recordsPage * 120, totalFilteredCounts);
+  const paginationControls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
+        {totalFilteredCounts === 0 ? "Sin registros" : `Mostrando ${fromRow}-${toRow} de ${totalFilteredCounts}`}
+      </span>
+      <button
+        type="button"
+        onClick={() => onRecordsPageChange(Math.max(1, recordsPage - 1))}
+        disabled={recordsPage <= 1}
+        className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+      >
+        Anterior
+      </button>
+      <button
+        type="button"
+        onClick={() => onRecordsPageChange(Math.min(recordsTotalPages, recordsPage + 1))}
+        disabled={recordsPage >= recordsTotalPages}
+        className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+      >
+        Siguiente
+      </button>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <section className="rounded-2xl border bg-white shadow-sm">
@@ -92,7 +126,8 @@ export function RegistrosModule({
                   </button>
                 )}
               </div>
-              <button onClick={onExportRecords} disabled={filteredCounts.length === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+              {paginationControls}
+              <button onClick={onExportRecords} disabled={totalFilteredCounts === 0} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
                 <Download size={15} /> Descargar Excel
               </button>
               <button onClick={onPrintRecordsByZone} disabled={countsTotal === 0} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
@@ -147,6 +182,9 @@ export function RegistrosModule({
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex justify-end border-t p-4">
+          {paginationControls}
         </div>
       </section>
     </div>
