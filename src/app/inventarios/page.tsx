@@ -99,6 +99,7 @@ const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
 const SUMMARY_PAGE_SIZE = 120;
 const VALIDATOR_RECORDS_PAGE_SIZE = 120;
+const RECOUNT_PAGE_SIZE = 80;
 
 type SummaryCacheEntry = {
   rows: SummaryRow[];
@@ -191,6 +192,10 @@ export default function InventariosPage() {
   const [summaryQuery, setSummaryQuery] = useState("");
   const [summaryPage, setSummaryPage] = useState(1);
   const [validatorRecordsPage, setValidatorRecordsPage] = useState(1);
+  const [pendingRecountPage, setPendingRecountPage] = useState(1);
+  const [assignedRecountPage, setAssignedRecountPage] = useState(1);
+  const [manualRecountPage, setManualRecountPage] = useState(1);
+  const [adminRecountRecordsPage, setAdminRecountRecordsPage] = useState(1);
   const [inventoryNotesDraft, setInventoryNotesDraft] = useState("");
   const [observationDrafts, setObservationDrafts] = useState<Record<string, string>>({});
   const [validatorTab, setValidatorTab] = useState<ValidatorTab>("preparacion");
@@ -657,6 +662,12 @@ export default function InventariosPage() {
     () => unassignedRecountCandidates.filter(row => recountCandidateMatchesQuery(row, pendingRecountQuery)),
     [pendingRecountQuery, unassignedRecountCandidates]
   );
+  const pendingRecountTotalPages = Math.max(1, Math.ceil(filteredUnassignedRecountCandidates.length / RECOUNT_PAGE_SIZE));
+  const pagedUnassignedRecountCandidates = useMemo(() => {
+    const page = Math.min(pendingRecountPage, pendingRecountTotalPages);
+    const start = (page - 1) * RECOUNT_PAGE_SIZE;
+    return filteredUnassignedRecountCandidates.slice(start, start + RECOUNT_PAGE_SIZE);
+  }, [filteredUnassignedRecountCandidates, pendingRecountPage, pendingRecountTotalPages]);
 
   const selectedPendingRecountRows = useMemo(
     () => filteredUnassignedRecountCandidates.filter(row => selectedPendingRecountKeys.has(recountKey(row))),
@@ -700,6 +711,12 @@ export default function InventariosPage() {
       return compareValues(left as string | number, right as string | number, recountAssignedSort.direction);
     });
   }, [recountAssignedQuery, recountAssignedSort, recountAssignedStatusFilter, recountItems, recountPrintOperatorId, recountType]);
+  const assignedRecountTotalPages = Math.max(1, Math.ceil(assignedRecountRows.length / RECOUNT_PAGE_SIZE));
+  const pagedAssignedRecountRows = useMemo(() => {
+    const page = Math.min(assignedRecountPage, assignedRecountTotalPages);
+    const start = (page - 1) * RECOUNT_PAGE_SIZE;
+    return assignedRecountRows.slice(start, start + RECOUNT_PAGE_SIZE);
+  }, [assignedRecountRows, assignedRecountPage, assignedRecountTotalPages]);
 
   const assignedRecountStatusCounts = useMemo(() => {
     const baseRows = recountItems.filter(row =>
@@ -722,6 +739,12 @@ export default function InventariosPage() {
   const manualRecountRows = useMemo(() => {
     return assignedRecountRows;
   }, [assignedRecountRows]);
+  const manualRecountTotalPages = Math.max(1, Math.ceil(manualRecountRows.length / RECOUNT_PAGE_SIZE));
+  const pagedManualRecountRows = useMemo(() => {
+    const page = Math.min(manualRecountPage, manualRecountTotalPages);
+    const start = (page - 1) * RECOUNT_PAGE_SIZE;
+    return manualRecountRows.slice(start, start + RECOUNT_PAGE_SIZE);
+  }, [manualRecountRows, manualRecountPage, manualRecountTotalPages]);
 
   const filteredOperatorRecountItems = useMemo(() => {
     const q = operatorRecountQuery.trim();
@@ -760,6 +783,12 @@ export default function InventariosPage() {
         String(record.operator_name || "").toLowerCase().includes(q);
     });
   }, [adminRecountRecords, adminRecordLayer, recountRecordsQuery, recountType]);
+  const adminRecountRecordsTotalPages = Math.max(1, Math.ceil(filteredAdminRecountRecords.length / RECOUNT_PAGE_SIZE));
+  const pagedAdminRecountRecords = useMemo(() => {
+    const page = Math.min(adminRecountRecordsPage, adminRecountRecordsTotalPages);
+    const start = (page - 1) * RECOUNT_PAGE_SIZE;
+    return filteredAdminRecountRecords.slice(start, start + RECOUNT_PAGE_SIZE);
+  }, [filteredAdminRecountRecords, adminRecountRecordsPage, adminRecountRecordsTotalPages]);
 
   function toggleRecordsSort(key: RecordsSortKey) {
     setRecordsSort(prev => ({ key, direction: prev.key === key && prev.direction === "desc" ? "asc" : "desc" }));
@@ -798,6 +827,34 @@ export default function InventariosPage() {
     setRecountFilter(filter);
     setSelectedPendingRecountKeys(new Set());
     setRecountManagerTab("pendientes");
+  }
+
+  function renderRecountPagination(total: number, page: number, totalPages: number, onPageChange: (page: number) => void) {
+    const from = total === 0 ? 0 : ((page - 1) * RECOUNT_PAGE_SIZE) + 1;
+    const to = Math.min(page * RECOUNT_PAGE_SIZE, total);
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
+          {total === 0 ? "Sin filas" : `Mostrando ${from}-${to} de ${total}`}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+        >
+          Anterior
+        </button>
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+        >
+          Siguiente
+        </button>
+      </div>
+    );
   }
 
   function barcodeVariants(value: string) {
@@ -919,6 +976,38 @@ export default function InventariosPage() {
   useEffect(() => {
     if (validatorRecordsPage > validatorRecordsTotalPages) setValidatorRecordsPage(validatorRecordsTotalPages);
   }, [validatorRecordsPage, validatorRecordsTotalPages]);
+
+  useEffect(() => {
+    setPendingRecountPage(1);
+  }, [selectedSessionId, pendingRecountQuery, recountFilter, recountType, isValidationManagerTab]);
+
+  useEffect(() => {
+    setAssignedRecountPage(1);
+  }, [selectedSessionId, recountAssignedQuery, recountAssignedStatusFilter, recountAssignedSort.key, recountAssignedSort.direction, recountPrintOperatorId, recountType]);
+
+  useEffect(() => {
+    setManualRecountPage(1);
+  }, [selectedSessionId, recountPrintOperatorId, recountType]);
+
+  useEffect(() => {
+    setAdminRecountRecordsPage(1);
+  }, [selectedSessionId, adminRecordLayer, recountRecordsQuery, recountType]);
+
+  useEffect(() => {
+    if (pendingRecountPage > pendingRecountTotalPages) setPendingRecountPage(pendingRecountTotalPages);
+  }, [pendingRecountPage, pendingRecountTotalPages]);
+
+  useEffect(() => {
+    if (assignedRecountPage > assignedRecountTotalPages) setAssignedRecountPage(assignedRecountTotalPages);
+  }, [assignedRecountPage, assignedRecountTotalPages]);
+
+  useEffect(() => {
+    if (manualRecountPage > manualRecountTotalPages) setManualRecountPage(manualRecountTotalPages);
+  }, [manualRecountPage, manualRecountTotalPages]);
+
+  useEffect(() => {
+    if (adminRecountRecordsPage > adminRecountRecordsTotalPages) setAdminRecountRecordsPage(adminRecountRecordsTotalPages);
+  }, [adminRecountRecordsPage, adminRecountRecordsTotalPages]);
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
@@ -6722,6 +6811,7 @@ export default function InventariosPage() {
                       )}
                     </div>
                     <div className="text-xs font-bold text-slate-500">{selectedPendingRecountRows.length} seleccionadas</div>
+                    {renderRecountPagination(filteredUnassignedRecountCandidates.length, pendingRecountPage, pendingRecountTotalPages, setPendingRecountPage)}
                   </div>
                 </div>
                 <div className="overflow-auto rounded-xl border">
@@ -6752,7 +6842,7 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredUnassignedRecountCandidates.map(row => (
+                      {pagedUnassignedRecountCandidates.map(row => (
                         <tr key={recountKey(row)} className="border-t">
                           <td className="p-2 text-center">
                             <input
@@ -6791,6 +6881,9 @@ export default function InventariosPage() {
                     </tbody>
                   </table>
                 </div>
+                <div className="mt-3 flex justify-end">
+                  {renderRecountPagination(filteredUnassignedRecountCandidates.length, pendingRecountPage, pendingRecountTotalPages, setPendingRecountPage)}
+                </div>
               </section>
               )}
 
@@ -6799,6 +6892,7 @@ export default function InventariosPage() {
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-black">{isValidationManagerTab ? "Codigos en validacion / reasignar" : "Codigos asignados / reasignar"}</h3>
                   <div className="flex flex-wrap gap-2">
+                    {renderRecountPagination(assignedRecountRows.length, assignedRecountPage, assignedRecountTotalPages, setAssignedRecountPage)}
                     <select
                       value={recountPrintOperatorId}
                       onChange={event => setRecountPrintOperatorId(event.target.value)}
@@ -6864,7 +6958,7 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {assignedRecountRows.map(row => (
+                      {pagedAssignedRecountRows.map(row => (
                         <tr key={row.id} className="border-t">
                           <td className="p-2 font-black">{row.status === "counted" ? "Contado" : "Asignado"}</td>
                           <td className="p-2 font-black">
@@ -6947,6 +7041,9 @@ export default function InventariosPage() {
                     </tbody>
                   </table>
                 </div>
+                <div className="mt-3 flex justify-end">
+                  {renderRecountPagination(assignedRecountRows.length, assignedRecountPage, assignedRecountTotalPages, setAssignedRecountPage)}
+                </div>
               </section>
               )}
 
@@ -6958,6 +7055,7 @@ export default function InventariosPage() {
                     <p className="text-xs text-slate-500">Imprime hojas A4 horizontal y registra aqui la validacion escrita por los recontadores.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {renderRecountPagination(manualRecountRows.length, manualRecountPage, manualRecountTotalPages, setManualRecountPage)}
                     <select
                       value={recountPrintOperatorId}
                       onChange={event => setRecountPrintOperatorId(event.target.value)}
@@ -7014,12 +7112,12 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {manualRecountRows.map((row, index) => {
+                      {pagedManualRecountRows.map((row, index) => {
                         const draft = manualRecountDrafts[row.id] || { locationCode: "", quantity: "" };
                         const originalLines = countLocationLinesByProduct.get(row.product_id) || row.original_locations || [];
                         return (
                           <tr key={row.id} className="border-t align-top">
-                            <td className="p-2 text-center font-black">{index + 1}</td>
+                            <td className="p-2 text-center font-black">{((manualRecountPage - 1) * RECOUNT_PAGE_SIZE) + index + 1}</td>
                             <td className="p-2 font-bold">{row.assigned_operator_name || "-"}</td>
                             <td className="p-2 font-black text-slate-950">{row.sku}</td>
                             <td className="max-w-sm whitespace-normal break-words p-2 text-slate-700">{row.description}</td>
@@ -7078,6 +7176,9 @@ export default function InventariosPage() {
                     </tbody>
                   </table>
                 </div>
+                <div className="mt-3 flex justify-end">
+                  {renderRecountPagination(manualRecountRows.length, manualRecountPage, manualRecountTotalPages, setManualRecountPage)}
+                </div>
               </section>
               )}
 
@@ -7122,6 +7223,7 @@ export default function InventariosPage() {
                     />
                   </div>
                   <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{filteredAdminRecountRecords.length}</div>
+                  {renderRecountPagination(filteredAdminRecountRecords.length, adminRecountRecordsPage, adminRecountRecordsTotalPages, setAdminRecountRecordsPage)}
                 </div>
                 <div className="overflow-auto rounded-xl border">
                   <table className="w-full min-w-[1460px] text-xs">
@@ -7145,7 +7247,7 @@ export default function InventariosPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredAdminRecountRecords.map(record => (
+                      {pagedAdminRecountRecords.map(record => (
                         <tr key={record.id} className="border-t">
                           <td className="p-2 font-black text-slate-800">{record.operator_name || "Sin recontador"}</td>
                           <td className="p-2 font-black text-slate-700">{record.item.layer === "validation" ? "Validacion" : "Reconteo"}</td>
@@ -7179,6 +7281,9 @@ export default function InventariosPage() {
                       )}
                     </tbody>
                   </table>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  {renderRecountPagination(filteredAdminRecountRecords.length, adminRecountRecordsPage, adminRecountRecordsTotalPages, setAdminRecountRecordsPage)}
                 </div>
               </section>
               )}
