@@ -177,6 +177,7 @@ export default function InventariosPage() {
   const pendingStockSkusRef = useRef<Set<string>>(new Set());
   const summaryRef = useRef<SummaryRow[]>([]);
   const summaryCacheRef = useRef<Map<string, SummaryCacheEntry>>(new Map());
+  const dirtyObservationKeysRef = useRef<Set<string>>(new Set());
   const productInputRef = useRef<HTMLInputElement | null>(null);
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
   const loadedSessionTabsRef = useRef<Set<string>>(new Set());
@@ -306,10 +307,35 @@ export default function InventariosPage() {
     return loadedSessionTabsRef.current.has(key) && !staleSessionTabsRef.current.has(key);
   }
 
+  function observationKey(sessionId: string, productId: string) {
+    return `${sessionId}__${productId}`;
+  }
+
+  function observationDraftsFromRows(rows: SummaryRow[]) {
+    return Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""]));
+  }
+
+  function applyObservationDraftsFromServer(sessionId: string, nextDrafts: Record<string, string>) {
+    setObservationDrafts(prev => {
+      const merged = { ...nextDrafts };
+      for (const productId of Object.keys(prev)) {
+        if (dirtyObservationKeysRef.current.has(observationKey(sessionId, productId))) {
+          merged[productId] = prev[productId];
+        }
+      }
+      return merged;
+    });
+  }
+
+  function updateObservationDraft(productId: string, value: string) {
+    if (selectedSessionId) dirtyObservationKeysRef.current.add(observationKey(selectedSessionId, productId));
+    setObservationDrafts(prev => ({ ...prev, [productId]: value }));
+  }
+
   function cacheSummary(sessionId: string, rows: SummaryRow[]) {
     summaryCacheRef.current.set(sessionId, {
       rows,
-      observationDrafts: Object.fromEntries(rows.map(row => [row.product_id, row.observation || ""])),
+      observationDrafts: observationDraftsFromRows(rows),
       cachedAt: Date.now(),
     });
   }
@@ -318,7 +344,7 @@ export default function InventariosPage() {
     const cached = summaryCacheRef.current.get(sessionId);
     if (!cached) return false;
     setSummary(cached.rows);
-    setObservationDrafts(cached.observationDrafts);
+    applyObservationDraftsFromServer(sessionId, cached.observationDrafts);
     setSummaryLoadedSessionId(sessionId);
     setSummaryHasPendingChanges(false);
     return true;
@@ -2517,7 +2543,7 @@ export default function InventariosPage() {
         rpcRows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
         cacheSummary(sessionId, rpcRows);
         setSummary(rpcRows);
-        setObservationDrafts(summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
+        applyObservationDraftsFromServer(sessionId, summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
         setSummaryLoadedSessionId(sessionId);
         setSummaryHasPendingChanges(false);
         markSessionTabLoaded(sessionId, "resumen");
@@ -2722,7 +2748,7 @@ export default function InventariosPage() {
     rows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
     cacheSummary(sessionId, rows);
     setSummary(rows);
-    setObservationDrafts(summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
+    applyObservationDraftsFromServer(sessionId, summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
     setSummaryLoadedSessionId(sessionId);
     setSummaryHasPendingChanges(false);
     markSessionTabLoaded(sessionId, "resumen");
@@ -4758,18 +4784,31 @@ export default function InventariosPage() {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!user || !selectedSessionId) return;
+    const observation = observationDrafts[row.product_id] || "";
     const { error } = await supabase
       .from("general_inventory_item_observations")
       .upsert({
         session_id: selectedSessionId,
         product_id: row.product_id,
-        observation: observationDrafts[row.product_id] || null,
+        observation: observation || null,
         updated_by: user.id,
         updated_at: new Date().toISOString(),
       }, { onConflict: "session_id,product_id" });
     if (error) {
       setMessage("No se pudo guardar observacion: " + error.message);
       return;
+    }
+    dirtyObservationKeysRef.current.delete(observationKey(selectedSessionId, row.product_id));
+    setSummary(prev => prev.map(item => item.product_id === row.product_id ? { ...item, observation } : item));
+    const cached = summaryCacheRef.current.get(selectedSessionId);
+    if (cached) {
+      const rows = cached.rows.map(item => item.product_id === row.product_id ? { ...item, observation } : item);
+      summaryCacheRef.current.set(selectedSessionId, {
+        ...cached,
+        rows,
+        observationDrafts: { ...cached.observationDrafts, [row.product_id]: observation },
+        cachedAt: Date.now(),
+      });
     }
     setMessage("Observacion guardada.");
     await loadSummary(selectedSessionId, true);
@@ -7341,7 +7380,7 @@ export default function InventariosPage() {
               onInventoryNotesDraftChange={setInventoryNotesDraft}
               onSaveInventoryNotes={saveInventoryNotes}
               onToggleSummarySort={toggleSummarySort}
-              onObservationDraftChange={(productId, value) => setObservationDrafts(prev => ({ ...prev, [productId]: value }))}
+              onObservationDraftChange={updateObservationDraft}
               onSaveObservation={saveObservation}
               onMarkSummaryAsNonInventory={markSummaryAsNonInventory}
               summaryQuantityStatusLabel={summaryQuantityStatusLabel}
