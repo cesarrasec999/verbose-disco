@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
-import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems } from "@/lib/offline/pendingQueue";
+import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems, removeOfflineItem } from "@/lib/offline/pendingQueue";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import {
   fetchAllInventoryCounts,
@@ -4024,7 +4024,7 @@ export default function InventariosPage() {
         sync_origin: navigator.onLine ? "web" : "pwa_offline",
       };
 
-      const keepCountPending = async (messageText: string) => {
+      const persistCountPending = async () => {
         const pendingPayload = { ...insertRow, sync_origin: "pwa_offline" };
         await enqueueOfflineItem({
           localId: clientUuid,
@@ -4039,6 +4039,10 @@ export default function InventariosPage() {
           createdAt: pendingEdit?.createdAt || now,
           updatedAt: now,
         });
+      };
+
+      const keepCountPending = async (messageText: string) => {
+        await persistCountPending();
 
         const localRow: CountRow = {
           id: clientUuid,
@@ -4070,6 +4074,10 @@ export default function InventariosPage() {
         return;
       }
 
+      if (!editingCountId) {
+        await persistCountPending();
+      }
+
       const request = editingCountId
         ? supabase.from("general_inventory_counts").update(row).eq("id", editingCountId)
         : supabase.from("general_inventory_counts").insert(insertRow);
@@ -4082,6 +4090,10 @@ export default function InventariosPage() {
         }
         setMessage("No se pudo guardar la edicion en Supabase. El registro original no fue modificado: " + error.message);
         return;
+      }
+
+      if (!editingCountId) {
+        await removeOfflineItem(clientUuid).catch(() => undefined);
       }
 
       await upsertKnownProductLocation(product, loc.location_code);

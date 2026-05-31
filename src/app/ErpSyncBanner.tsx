@@ -15,11 +15,29 @@ const SOURCE_THRESHOLDS: Record<string, number> = {
 
 type SyncStatusRow = { id: string; synced_at: string };
 type StaleSource = { id: string; minutesAgo: number };
+type UserRole = "Administrador" | "Supervisor" | "Validador" | "Operario" | string;
+
+function canSeeErpSyncWarnings() {
+  if (typeof window === "undefined") return false;
+  const rawUser = localStorage.getItem("cyclic_user");
+  if (!rawUser) return false;
+  try {
+    const user = JSON.parse(rawUser) as { role?: UserRole };
+    return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador";
+  } catch {
+    return false;
+  }
+}
 
 export default function ErpSyncBanner() {
   const [staleSources, setStaleSources] = useState<StaleSource[]>([]);
+  const [canSeeWarnings, setCanSeeWarnings] = useState(false);
 
   useEffect(() => {
+    const allowed = canSeeErpSyncWarnings();
+    setCanSeeWarnings(allowed);
+    if (!allowed) return;
+
     async function check() {
       const { data, error } = await supabase
         .from("erp_sync_status")
@@ -48,7 +66,7 @@ export default function ErpSyncBanner() {
     return () => clearInterval(interval);
   }, []);
 
-  if (staleSources.length === 0) return null;
+  if (!canSeeWarnings || staleSources.length === 0) return null;
 
   const hasRealtimeIssue = staleSources.some(s => s.id === "picking_requests" || s.id === "stock_general");
   const hasSalesIssue    = staleSources.some(s => s.id.includes("sales"));
