@@ -2636,6 +2636,7 @@ export default function InventariosPage() {
 
   async function loadSummaryFromRpc(sessionId: string): Promise<SummaryRow[] | null> {
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
+    if (!summarySession?.stock_frozen_at) return null;
     return fetchSummaryRowsFromRpc(supabase, { sessionId, session: summarySession, stores });
   }
 
@@ -2650,6 +2651,9 @@ export default function InventariosPage() {
   }
 
   async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]) {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    if (session?.stock_frozen_at) return;
+
     const sede = sessionSede(sessionId);
     if (!sede) return;
 
@@ -2694,6 +2698,41 @@ export default function InventariosPage() {
     if (error) throw error;
   }
 
+  async function protectOkProductSnapshot(sessionId: string, product: Product) {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    if (session?.stock_frozen_at) return;
+
+    const sku = normalizeCode(product.sku).toUpperCase();
+    const stockBySku = await loadStockGeneralBySkuForSession(sessionId, [sku]);
+    const liveStock = stockBySku.get(sku);
+    const systemStock = Number(liveStock?.stock || 0);
+    if (systemStock <= 0) return;
+
+    const { data, error } = await supabase
+      .from("general_inventory_counts")
+      .select("quantity")
+      .eq("session_id", sessionId)
+      .eq("product_id", product.id);
+    if (error) throw error;
+
+    const counted = (data || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+    if (counted <= 0 || counted !== systemStock) return;
+
+    const { error: snapshotError } = await supabase
+      .from("general_inventory_stock_snapshot")
+      .upsert({
+        session_id: sessionId,
+        product_id: product.id,
+        sku: product.sku,
+        description: product.description,
+        unit: product.unit,
+        system_stock: systemStock,
+        cost: Number(liveStock?.costo ?? product.cost ?? 0),
+        frozen_at: new Date().toISOString(),
+      }, { onConflict: "session_id,product_id" });
+    if (snapshotError) throw snapshotError;
+  }
+
   async function loadSummary(sessionId: string, force = false) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     const hadCachedSummary = applyCachedSummary(sessionId);
@@ -2717,6 +2756,7 @@ export default function InventariosPage() {
     }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
+    const sessionStockFrozen = Boolean(summarySession?.stock_frozen_at);
     const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows, validationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
@@ -2727,10 +2767,10 @@ export default function InventariosPage() {
       loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
     const { validationCountRows, validationItemRows } = validationRows;
-    const hasFrozenSnapshot = snapshotRows.length > 0;
-    const liveStockBySku = hasFrozenSnapshot
+    const liveStockBySku = sessionStockFrozen
       ? new Map<string, StockGeneralRow>()
       : await loadStockGeneralBySkuForSession(sessionId, [
+        ...snapshotRows.map(row => row.sku),
         ...countRows.map(row => row.sku),
         ...recountCountRows.map(row => row.sku),
         ...validationCountRows.map(row => row.sku),
@@ -2841,10 +2881,13 @@ export default function InventariosPage() {
         ? "counted" as const
         : (assignedValidationByProduct.has(snap.product_id) || countedValidationByProduct.has(snap.product_id)) ? "assigned" as const : "no" as const;
       const counted = validationQty ?? recountedQty ?? countedOriginal;
-      const systemStock = Number(snap.system_stock || 0);
+      const snapshotStock = Number(snap.system_stock || 0);
+      const protectedOkStock = counted > 0 && counted === snapshotStock;
+      const liveStock = liveStockBySku.get(normalizeCode(snap.sku).toUpperCase());
+      const systemStock = sessionStockFrozen || protectedOkStock ? snapshotStock : Number(liveStock?.stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
       productIdsInSnapshot.add(snap.product_id);
-      const cost = Number(snap.cost || 0);
+      const cost = sessionStockFrozen || protectedOkStock ? Number(snap.cost || 0) : Number(liveStock?.costo ?? snap.cost ?? 0);
       const diff = counted - systemStock;
       rows.push({
         product_id: snap.product_id,
@@ -4325,6 +4368,9 @@ export default function InventariosPage() {
         await removeOfflineItem(clientUuid).catch(() => undefined);
       }
 
+      await protectOkProductSnapshot(selectedSession.id, product).catch(error => {
+        console.warn("No se pudo proteger snapshot OK:", error);
+      });
       await upsertKnownProductLocation(product, loc.location_code);
       setProductCode("");
       setProductCandidates([]);
