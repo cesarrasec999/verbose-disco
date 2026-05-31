@@ -949,7 +949,7 @@ export default function InventariosPage() {
       try {
         setOperator(JSON.parse(rawOperator) as InventoryOperator);
         const savedMode = localStorage.getItem(OPERATOR_MODE_KEY);
-        if (savedMode === "reconteo") setOperatorMode("reconteo");
+        if (savedMode === "reconteo" || savedMode === "consulta") setOperatorMode(savedMode);
       } catch {
         localStorage.removeItem(OPERATOR_KEY);
       }
@@ -6058,6 +6058,14 @@ export default function InventariosPage() {
     localStorage.setItem(OPERATOR_MODE_KEY, "conteo");
   }
 
+  function openOperatorLookupMode() {
+    setOperatorMode("consulta");
+    localStorage.setItem(OPERATOR_MODE_KEY, "consulta");
+    setProductCandidates([]);
+    setProductLookupMessage("");
+    setSelectedProduct(null);
+  }
+
   function goLogin() {
     window.location.href = "/";
   }
@@ -6150,11 +6158,12 @@ export default function InventariosPage() {
         operatorMode={operatorMode}
         selectedSession={selectedSession}
         isMobileAccess={isMobileAccess}
-        onBack={() => operator && !user ? (operatorMode === "reconteo" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
+        onBack={() => operator && !user ? (operatorMode === "reconteo" || operatorMode === "consulta" ? openOperatorCountMode() : logoutOperator()) : window.location.href = "/"}
         onRefresh={refreshCurrentView}
         onGoModule={goModule}
         onLogin={goLogin}
         onOpenOperatorCountMode={openOperatorCountMode}
+        onOpenOperatorLookupMode={openOperatorLookupMode}
         onOpenOperatorRecountMode={openOperatorRecountMode}
       />
 
@@ -6476,7 +6485,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && operatorMode === "conteo" && (
+          {operator && !isValidator && operatorMode === "consulta" && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>

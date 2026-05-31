@@ -1,6 +1,6 @@
 "use client";
 
-import { ClipboardList, Home, LogIn, LogOut, PackageSearch, RefreshCw } from "lucide-react";
+import { ClipboardList, Home, LogIn, LogOut, PackageSearch, RefreshCw, Search } from "lucide-react";
 import type { CyclicUser, InventoryOperator, InventorySession, OperatorMode } from "../types";
 
 type InventoryHeaderProps = {
@@ -14,6 +14,7 @@ type InventoryHeaderProps = {
   onGoModule: (path: string) => void;
   onLogin: () => void;
   onOpenOperatorCountMode: () => void;
+  onOpenOperatorLookupMode: () => void;
   onOpenOperatorRecountMode: () => void;
 };
 
@@ -28,6 +29,7 @@ export function InventoryHeader({
   onGoModule,
   onLogin,
   onOpenOperatorCountMode,
+  onOpenOperatorLookupMode,
   onOpenOperatorRecountMode,
 }: InventoryHeaderProps) {
   const operatorOnly = Boolean(operator && !user);
@@ -40,7 +42,7 @@ export function InventoryHeader({
           className="shrink-0 rounded-xl border p-2 text-slate-600 hover:bg-slate-50"
           title={operatorOnly ? (operatorMode === "reconteo" ? "Volver a conteo" : "Cerrar sesion") : "Menu principal"}
         >
-          {operatorOnly ? (operatorMode === "reconteo" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <Home size={18} />}
+          {operatorOnly ? (operatorMode === "reconteo" || operatorMode === "consulta" ? <ClipboardList size={18} /> : <LogOut size={18} />) : <Home size={18} />}
         </button>
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-600 font-black text-white">R</div>
         <div className="min-w-0 flex-1">
@@ -71,6 +73,12 @@ export function InventoryHeader({
           <button onClick={operatorMode === "reconteo" ? onOpenOperatorCountMode : onOpenOperatorRecountMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "reconteo" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "reconteo" ? "Volver a conteo" : "Modo reconteo"}>
             {operatorMode === "reconteo" ? <ClipboardList size={18} /> : <PackageSearch size={18} />}
             <span className="hidden sm:inline">{operatorMode === "reconteo" ? "Conteo" : "Reconteo"}</span>
+          </button>
+        )}
+        {operatorOnly && (
+          <button onClick={operatorMode === "consulta" ? onOpenOperatorCountMode : onOpenOperatorLookupMode} className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50 ${operatorMode === "consulta" ? "bg-slate-900 text-white hover:bg-slate-800" : "text-slate-700"}`} title={operatorMode === "consulta" ? "Volver a conteo" : "Consultar codigo"}>
+            {operatorMode === "consulta" ? <ClipboardList size={18} /> : <Search size={18} />}
+            <span className="hidden sm:inline">{operatorMode === "consulta" ? "Conteo" : "Consulta"}</span>
           </button>
         )}
         {!user && !operator && (
