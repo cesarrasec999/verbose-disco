@@ -6520,7 +6520,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && operatorMode === "consulta" && (
+          {operator && !isValidator && operatorMode === "conteo" && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
@@ -6585,7 +6585,7 @@ export default function InventariosPage() {
             </section>
           )}
 
-          {operator && !isValidator && operatorMode === "conteo" && (
+          {operator && !isValidator && operatorMode === "consulta" && (
             <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
