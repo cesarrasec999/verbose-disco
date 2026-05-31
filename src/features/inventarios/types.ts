@@ -127,7 +127,7 @@ export type SummaryRow = {
 
 export type RecountType = "surplus" | "missing";
 export type RecountFilter = RecountType | "surplus_zero_stock" | "missing_not_counted";
-export type ScannerTarget = "location" | "product" | "recount_location" | "recount_product" | null;
+export type ScannerTarget = "location" | "product" | "operator_lookup_product" | "recount_location" | "recount_product" | null;
 export type ProductLookupMode = "typed" | "scan";
 
 export type RecountLocationLine = {

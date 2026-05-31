@@ -172,6 +172,10 @@ export default function InventariosPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
   const [productLookupMode, setProductLookupMode] = useState<ProductLookupMode>("typed");
+  const [operatorLookupCode, setOperatorLookupCode] = useState("");
+  const [operatorLookupRows, setOperatorLookupRows] = useState<CountRow[]>([]);
+  const [operatorLookupLoading, setOperatorLookupLoading] = useState(false);
+  const [operatorLookupMessage, setOperatorLookupMessage] = useState("");
   const [savingCount, setSavingCount] = useState(false);
   const savingCountRef = useRef(false);
   const productLookupRequestRef = useRef(0);
@@ -1265,6 +1269,12 @@ export default function InventariosPage() {
   }, [productCode, selectedSessionId, operator?.id, isValidator, selectedProduct, productLookupMode]);
 
   useEffect(() => {
+    if (!operator || isValidator) return;
+    setOperatorLookupRows([]);
+    setOperatorLookupMessage("");
+  }, [selectedSessionId, operator?.id, isValidator]);
+
+  useEffect(() => {
     scannerTargetRef.current = scannerTarget;
   }, [scannerTarget]);
 
@@ -1471,6 +1481,11 @@ export default function InventariosPage() {
       setProductCode(scannedCode);
       await validateScannedProduct(scannedCode);
     }
+    if (target === "operator_lookup_product") {
+      const scannedCode = normalizeScannedBarcode(clean);
+      setOperatorLookupCode(scannedCode);
+      await searchOperatorCodeRecords(scannedCode);
+    }
     if (target === "recount_location" && activeRecountScanId) {
       const [rowId, indexText] = activeRecountScanId.split(":");
       const item = recountItems.find(row => row.id === rowId);
@@ -1674,6 +1689,47 @@ export default function InventariosPage() {
       if (isValidator && !operatorId) markSessionTabLoaded(sessionId, "registros");
     } catch (error) {
       setMessage("Error leyendo registros: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  async function searchOperatorCodeRecords(rawCode = operatorLookupCode) {
+    if (!operator || !selectedSessionId || isValidator) return;
+    const query = normalizeCode(rawCode).toUpperCase();
+    if (!query) {
+      setOperatorLookupRows([]);
+      setOperatorLookupMessage("Ingresa un codigo para consultar.");
+      return;
+    }
+    setOperatorLookupLoading(true);
+    setOperatorLookupMessage("");
+    try {
+      const productResult = await findProductCandidates(query, "scan");
+      const skus = [...new Set([
+        query,
+        ...barcodeVariants(query),
+        ...productResult.products.map(product => normalizeCode(product.sku).toUpperCase()),
+      ].filter(Boolean))];
+
+      const { data, error } = await supabase
+        .from("general_inventory_counts")
+        .select("*, general_inventory_operators(full_name)")
+        .eq("session_id", selectedSessionId)
+        .in("sku", skus)
+        .order("counted_at", { ascending: false })
+        .limit(80);
+
+      if (error) throw error;
+      const rows = ((data || []) as any[]).map(row => ({
+        ...row,
+        operator_name: row.general_inventory_operators?.full_name || null,
+      })) as CountRow[];
+      setOperatorLookupRows(rows);
+      setOperatorLookupMessage(rows.length > 0 ? `${rows.length} registro(s) encontrados.` : "No hay registros guardados para ese codigo en esta sesion.");
+    } catch (error) {
+      setOperatorLookupRows([]);
+      setOperatorLookupMessage("No se pudo consultar registros: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setOperatorLookupLoading(false);
     }
   }
 
@@ -6482,6 +6538,57 @@ export default function InventariosPage() {
                   </button>
                 </div>
               </div>
+            </section>
+          )}
+
+          {operator && !isValidator && operatorMode === "conteo" && (
+            <section className="min-w-0 overflow-hidden rounded-2xl border bg-white p-3 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-black">Consultar codigo</h2>
+                  <p className="text-xs text-slate-500">Busca registros de este inventario por codigo.</p>
+                </div>
+                <div className="text-xs font-black text-slate-500">{operatorLookupRows.length} resultado(s)</div>
+              </div>
+              <div className="flex w-full min-w-0 rounded-xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
+                <input
+                  value={operatorLookupCode}
+                  onChange={event => setOperatorLookupCode(normalizeProductKeyboardInput(event.target.value))}
+                  onKeyDown={event => { if (event.key === "Enter") void searchOperatorCodeRecords(); }}
+                  placeholder="Codigo o barra"
+                  className="min-w-0 flex-1 rounded-lg px-3 py-3 text-base font-bold outline-none"
+                />
+                <button onClick={() => openScanner("operator_lookup_product")} className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-900 text-white transition active:scale-95 active:bg-slate-700" title="Escanear codigo">
+                  <QrCode size={22} />
+                </button>
+              </div>
+              <button
+                onClick={() => void searchOperatorCodeRecords()}
+                disabled={operatorLookupLoading || !operatorLookupCode.trim()}
+                className="mt-2 w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"
+              >
+                {operatorLookupLoading ? "Buscando..." : "Buscar registros"}
+              </button>
+              {operatorLookupMessage && <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">{operatorLookupMessage}</div>}
+              {operatorLookupRows.length > 0 && (
+                <div className="mt-3 divide-y overflow-hidden rounded-xl border">
+                  {operatorLookupRows.map(row => (
+                    <div key={row.id} className="p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-black text-blue-700">{row.sku}</span>
+                            <span className="font-black text-slate-900">{row.location_code}</span>
+                          </div>
+                          <div className="whitespace-normal break-words text-sm font-semibold text-slate-700">{row.description}</div>
+                          <div className="mt-1 text-xs text-slate-500">{row.operator_name || "Sin contador"} · {new Date(row.counted_at).toLocaleString("es-PE")} · {row.unit}</div>
+                        </div>
+                        <div className="shrink-0 text-right text-xl font-black text-slate-950">{number2(row.quantity)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
