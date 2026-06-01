@@ -503,6 +503,7 @@ export default function RecepcionPage() {
       }
       applyRequests(nextRows);
       await loadSummaryScans(nextRows.map(req => req.id));
+      await resetCompletedRequestsWithoutScans(nextRows.filter(req => req.reception_status === "completed").map(req => req.id));
     } catch (e: any) {
       if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
     }
@@ -785,6 +786,7 @@ export default function RecepcionPage() {
       setScanProduct("");
       setActiveLine(null);
       setEditLineInputs({});
+      if (selected.reception_status === "completed") await resetCompletedRequestsWithoutScans(requestIdsToUpdate, true);
       await reloadScans(selected.request_ids);
       await loadSummaryScans(requests.map(req => req.id));
       showMsg("Recepción registrada.");
@@ -805,6 +807,7 @@ export default function RecepcionPage() {
         .eq("id", editingScanId);
       if (error) throw error;
       setEditingScanId(""); setEditScanQty(""); setEditScanNotes("");
+      if (selected?.reception_status === "completed") await resetCompletedRequestsWithoutScans(selected.request_ids, true);
       if (selected) await reloadScans(selected.request_ids);
       showMsg("Registro actualizado.");
     } catch (e: any) { showMsg("Error editando: " + e.message); }
@@ -817,9 +820,78 @@ export default function RecepcionPage() {
     if (!window.confirm(`¿Eliminar este registro de ${fmt(num(scan.qty))} unidades?`)) return;
     const { error } = await supabase.from("reception_scans").delete().eq("id", scan.id);
     if (error) { showMsg("Error eliminando: " + error.message); return; }
+    if (selected) await resetCompletedRequestsWithoutScans(selected.request_ids, true);
     if (selected) await reloadScans(selected.request_ids);
     setSummaryScans(prev => prev.filter(item => item.id !== scan.id));
     showMsg("Registro eliminado.");
+  }
+
+  async function resetCompletedRequestsWithoutScans(requestIds: string[], downgradeWithScans = false) {
+    const uniqueIds = [...new Set(requestIds.filter(Boolean))];
+    if (uniqueIds.length === 0) return new Set<string>();
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < uniqueIds.length; i += 200) chunks.push(uniqueIds.slice(i, i + 200));
+
+    const scanResults = await Promise.all(chunks.map(ids =>
+      supabase.from("reception_scans").select("request_id").in("request_id", ids)
+    ));
+    const scanError = scanResults.find(result => result.error)?.error;
+    if (scanError) throw scanError;
+
+    const requestIdsWithScans = new Set(
+      scanResults.flatMap(result => (result.data || []) as Pick<ReceptionScan, "request_id">[])
+        .map(row => row.request_id)
+    );
+    const emptyRequestIds = uniqueIds.filter(id => !requestIdsWithScans.has(id));
+    const inProgressRequestIds = downgradeWithScans ? uniqueIds.filter(id => requestIdsWithScans.has(id)) : [];
+    if (emptyRequestIds.length === 0 && inProgressRequestIds.length === 0) return new Set<string>();
+
+    if (emptyRequestIds.length > 0) {
+      const { error } = await supabase.from("reception_requests").update({
+        reception_status: "pending",
+        completed_at: null,
+        completed_by_id: null,
+        completed_by_name: null,
+        updated_at: new Date().toISOString(),
+      }).in("id", emptyRequestIds).eq("reception_status", "completed");
+      if (error) throw error;
+    }
+
+    if (inProgressRequestIds.length > 0) {
+      const { error } = await supabase.from("reception_requests").update({
+        reception_status: "in_progress",
+        completed_at: null,
+        completed_by_id: null,
+        completed_by_name: null,
+        updated_at: new Date().toISOString(),
+      }).in("id", inProgressRequestIds).eq("reception_status", "completed");
+      if (error) throw error;
+    }
+
+    const changedRequestIds = [...emptyRequestIds, ...inProgressRequestIds];
+
+    updateRequests(prev => prev.map(req => changedRequestIds.includes(req.id)
+      ? { ...req, reception_status: emptyRequestIds.includes(req.id) ? "pending" : "in_progress", completed_at: null, completed_by_name: null }
+      : req
+    ));
+    setSelected(prev => {
+      if (!prev) return prev;
+      const childRequests = prev.child_requests.map(req => changedRequestIds.includes(req.id)
+        ? { ...req, reception_status: (emptyRequestIds.includes(req.id) ? "pending" : "in_progress") as ReceptionRequest["reception_status"], completed_at: null, completed_by_name: null }
+        : req
+      );
+      return {
+        ...prev,
+        child_requests: childRequests,
+        reception_status: groupedStatus(childRequests),
+        completed_by_name: childRequests.every(req => req.reception_status === "completed")
+          ? childRequests.find(req => req.completed_by_name)?.completed_by_name || null
+          : null,
+      };
+    });
+
+    return new Set(changedRequestIds);
   }
 
   // ─── Marcar completado ─────────────────────────────────────────────────────
@@ -975,7 +1047,9 @@ export default function RecepcionPage() {
   async function loadDifferencesReport() {
     if (!canViewSummary) return;
     const completedGroups = scopedRequestGroups.filter(req => req.reception_status === "completed");
-    const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
+    const completedRequestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
+    const staleCompletedIds = await resetCompletedRequestsWithoutScans(completedRequestIds);
+    const requestIds = completedRequestIds.filter(id => !staleCompletedIds.has(id));
     if (requestIds.length === 0) {
       setDifferenceRows([]);
       return;
