@@ -1177,7 +1177,6 @@ export default function RecepcionPage() {
   }, [stores]);
 
   const summaryRows = useMemo(() => {
-    const scannedRequestIds = new Set(summaryScans.map(scan => scan.request_id));
     const grouped = new Map<string, {
       key: string;
       name: string;
@@ -1188,7 +1187,7 @@ export default function RecepcionPage() {
       units: number;
     }>();
 
-    for (const req of scopedRequestGroups) {
+    for (const req of scopedRequestGroups.filter(item => item.reception_status === "in_progress")) {
       const key = req.destination_store_code || req.destination_store_name || "SIN_TIENDA";
       if (!grouped.has(key)) {
         grouped.set(key, {
@@ -1205,9 +1204,7 @@ export default function RecepcionPage() {
       row.total += 1;
       row.lines += num(req.line_count);
       row.units += num(req.qty_requested_total);
-      const hasExistingScan = req.request_ids.some(id => scannedRequestIds.has(id));
-      if (req.reception_status === "completed" || hasExistingScan) row.advanced += 1;
-      else row.pending += 1;
+      row.advanced += 1;
     }
 
     return [...grouped.values()]
@@ -1217,7 +1214,7 @@ export default function RecepcionPage() {
         pendingPct: row.total > 0 ? Math.round((row.pending / row.total) * 100) : 0,
       }))
       .sort((a, b) => b.pct - a.pct || b.total - a.total || a.name.localeCompare(b.name, "es"));
-  }, [scopedRequestGroups, summaryScans]);
+  }, [scopedRequestGroups]);
 
   const differenceStats = useMemo(() => {
     const faltantes = differenceRows.filter(row => row.difference < 0).length;
