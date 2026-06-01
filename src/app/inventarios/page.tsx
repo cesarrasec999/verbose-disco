@@ -107,6 +107,14 @@ type SummaryCacheEntry = {
   cachedAt: number;
 };
 
+type ProductivityLayerRow = {
+  layer: "recount" | "validation";
+  operator_id: string;
+  operator_name: string | null;
+  product_id: string;
+  sku: string;
+};
+
 function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_status">) {
   const status = row.recount_status || (row.re_counted ? "counted" : "no");
   if (status === "counted") return "Si";
@@ -154,6 +162,7 @@ export default function InventariosPage() {
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [savingEmptyLocationId, setSavingEmptyLocationId] = useState<string | null>(null);
   const [counts, setCounts] = useState<CountRow[]>([]);
+  const [productivityLayerRows, setProductivityLayerRows] = useState<ProductivityLayerRow[]>([]);
   const [operatorRecordsPage, setOperatorRecordsPage] = useState(1);
   const [operatorRecordsTotal, setOperatorRecordsTotal] = useState(0);
   const [operatorRecordsLoading, setOperatorRecordsLoading] = useState(false);
@@ -442,6 +451,67 @@ export default function InventariosPage() {
     const maxPerMinute = Math.max(1, ...rows.map(row => row.perMinute));
     return { rows, maxPerMinute };
   }, [counts]);
+
+  const productivityByUser = useMemo(() => {
+    type Bucket = {
+      id: string;
+      name: string;
+      counted: Set<string>;
+      recounted: Set<string>;
+      validated: Set<string>;
+    };
+    const grouped = new Map<string, Bucket>();
+    const ensureBucket = (operatorId: string, operatorName: string | null | undefined) => {
+      const key = operatorId || "sin_usuario";
+      const current = grouped.get(key);
+      if (current) {
+        if ((!current.name || current.name === "Sin usuario") && operatorName) current.name = operatorName;
+        return current;
+      }
+      const next = {
+        id: key,
+        name: operatorName || "Sin usuario",
+        counted: new Set<string>(),
+        recounted: new Set<string>(),
+        validated: new Set<string>(),
+      };
+      grouped.set(key, next);
+      return next;
+    };
+    const codeKey = (productId: string | null | undefined, sku: string | null | undefined) =>
+      String(productId || "").trim() || normalizeCode(sku).toUpperCase();
+
+    for (const row of counts) {
+      const key = codeKey(row.product_id, row.sku);
+      if (!key) continue;
+      ensureBucket(row.operator_id, row.operator_name).counted.add(key);
+    }
+    for (const row of productivityLayerRows) {
+      const key = codeKey(row.product_id, row.sku);
+      if (!key) continue;
+      const bucket = ensureBucket(row.operator_id, row.operator_name);
+      if (row.layer === "validation") bucket.validated.add(key);
+      else bucket.recounted.add(key);
+    }
+
+    const rows = [...grouped.values()].map(row => ({
+      id: row.id,
+      name: row.name,
+      counted: row.counted.size,
+      recounted: row.recounted.size,
+      validated: row.validated.size,
+      total: row.counted.size + row.recounted.size + row.validated.size,
+    })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+
+    const totals = rows.reduce((acc, row) => ({
+      counted: acc.counted + row.counted,
+      recounted: acc.recounted + row.recounted,
+      validated: acc.validated + row.validated,
+      total: acc.total + row.total,
+    }), { counted: 0, recounted: 0, validated: 0, total: 0 });
+
+    return { rows, totals, maxTotal: Math.max(1, ...rows.map(row => row.total)) };
+  }, [counts, productivityLayerRows]);
 
   const filteredSummary = useMemo(() => {
     const q = summaryQuery.trim().toLowerCase();
@@ -1082,7 +1152,8 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (validatorTab === "registros" || validatorTab === "productividad") void loadRecordsData(selectedSessionId);
+        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
+        else if (validatorTab === "productividad") void loadProductivityData(selectedSessionId);
         else {
           markSessionTabStale(selectedSessionId, "registros");
           markSessionTabStale(selectedSessionId, "productividad");
@@ -1628,9 +1699,14 @@ export default function InventariosPage() {
         markSessionTabLoaded(sessionId, "preparacion");
         return;
       }
-      if (tab === "registros" || tab === "productividad") {
+      if (tab === "registros") {
         await loadRecordsData(sessionId);
         markSessionTabLoaded(sessionId, tab);
+        return;
+      }
+      if (tab === "productividad") {
+        await loadProductivityData(sessionId);
+        markSessionTabLoaded(sessionId, "productividad");
         return;
       }
       if ((tab === "reconteo" || tab === "validacion") && canManageInventory) {
@@ -1689,6 +1765,42 @@ export default function InventariosPage() {
       if (isValidator && !operatorId) markSessionTabLoaded(sessionId, "registros");
     } catch (error) {
       setMessage("Error leyendo registros: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  async function loadProductivityLayerRows(sessionId: string, layer: "recount" | "validation") {
+    const table = layer === "validation" ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+    const rows = await loadPagedSessionRows(
+      table,
+      "operator_id,product_id,sku,general_inventory_operators(full_name)",
+      sessionId,
+      "operator_id"
+    );
+    return rows.map((row: any) => ({
+      layer,
+      operator_id: String(row.operator_id || ""),
+      operator_name: row.general_inventory_operators?.full_name || null,
+      product_id: String(row.product_id || ""),
+      sku: String(row.sku || ""),
+    })).filter(row => row.operator_id && (row.product_id || row.sku)) as ProductivityLayerRow[];
+  }
+
+  async function loadProductivityData(sessionId: string) {
+    try {
+      const validationEnabled = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
+      const [countRows, pendingRows, recountRows, validationRows] = await Promise.all([
+        loadAllCounts(sessionId, null),
+        loadPendingOfflineCountRows(sessionId, null),
+        loadProductivityLayerRows(sessionId, "recount"),
+        validationEnabled ? loadProductivityLayerRows(sessionId, "validation") : Promise.resolve([] as ProductivityLayerRow[]),
+      ]);
+      const rows = mergePendingCounts(countRows, pendingRows);
+      setCounts(rows);
+      setProductivityLayerRows([...recountRows, ...validationRows]);
+      setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
+      markSessionTabLoaded(sessionId, "productividad");
+    } catch (error) {
+      setMessage("Error leyendo productividad: " + (error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -7570,34 +7682,96 @@ export default function InventariosPage() {
           )}
 
           {isValidator && selectedSessionId && validatorTab === "productividad" && (
-            <section className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="font-black">Productividad de contadores</h2>
-                  <p className="text-xs text-slate-500">Registros por minuto efectivo. Pausas mayores a {COUNTER_ACTIVE_GAP_MINUTES} min no se consideran.</p>
-                </div>
-                <div className="text-xs font-black text-slate-500">{counts.length} registros</div>
-              </div>
-              <div className="space-y-3">
-                {counterStats.rows.map(row => (
-                  <div key={row.id} className="grid gap-2 md:grid-cols-[220px_1fr_160px] md:items-center">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-black text-slate-900">{row.name}</div>
-                      <div className="text-xs text-slate-500">{row.count} registros</div>
-                    </div>
-                    <div className="h-4 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-blue-700"
-                        style={{ width: `${Math.max(4, Math.round((row.perMinute / counterStats.maxPerMinute) * 100))}%` }}
-                      />
-                    </div>
-                    <div className="text-sm font-black text-slate-900">
-                      {row.perMinute.toFixed(2)} reg/min
-                      <div className="text-[11px] font-bold text-slate-500">{row.minutes.toFixed(1)} min activos</div>
-                    </div>
+            <section className="space-y-4">
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-black">Productividad por usuario</h2>
+                    <p className="text-xs text-slate-500">Codigos unicos contados, recontados y validados por usuario.</p>
                   </div>
-                ))}
-                {counterStats.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin registros para graficar.</div>}
+                  <div className="text-xs font-black text-slate-500">{productivityByUser.totals.total} codigos procesados</div>
+                </div>
+
+                <div className={`mb-4 grid gap-2 ${showValidationSummary ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
+                  <div className="rounded-xl border bg-slate-50 p-3 text-center">
+                    <div className="text-xl font-black text-slate-950">{productivityByUser.totals.total}</div>
+                    <div className="text-xs font-black text-slate-500">Total</div>
+                  </div>
+                  <div className="rounded-xl border bg-blue-50 p-3 text-center">
+                    <div className="text-xl font-black text-blue-700">{productivityByUser.totals.counted}</div>
+                    <div className="text-xs font-black text-slate-500">Contados</div>
+                  </div>
+                  <div className="rounded-xl border bg-amber-50 p-3 text-center">
+                    <div className="text-xl font-black text-amber-700">{productivityByUser.totals.recounted}</div>
+                    <div className="text-xs font-black text-slate-500">Recontados</div>
+                  </div>
+                  {showValidationSummary && (
+                    <div className="rounded-xl border bg-green-50 p-3 text-center">
+                      <div className="text-xl font-black text-green-700">{productivityByUser.totals.validated}</div>
+                      <div className="text-xs font-black text-slate-500">Validados</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  {productivityByUser.rows.map(row => {
+                    const countedWidth = row.total > 0 ? (row.counted / row.total) * 100 : 0;
+                    const recountedWidth = row.total > 0 ? (row.recounted / row.total) * 100 : 0;
+                    const validatedWidth = row.total > 0 ? (row.validated / row.total) * 100 : 0;
+                    return (
+                      <div key={row.id} className="grid gap-2 md:grid-cols-[220px_1fr_220px] md:items-center">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-black text-slate-900">{row.name}</div>
+                          <div className="text-xs font-bold text-slate-500">{row.total} codigos</div>
+                        </div>
+                        <div className="h-5 overflow-hidden rounded-full bg-slate-100">
+                          <div className="flex h-full" style={{ width: `${Math.max(4, Math.round((row.total / productivityByUser.maxTotal) * 100))}%` }}>
+                            {row.counted > 0 && <div className="h-full bg-blue-700" style={{ width: `${countedWidth}%` }} />}
+                            {row.recounted > 0 && <div className="h-full bg-amber-500" style={{ width: `${recountedWidth}%` }} />}
+                            {showValidationSummary && row.validated > 0 && <div className="h-full bg-green-600" style={{ width: `${validatedWidth}%` }} />}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1 text-[11px] font-black">
+                          <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">C {row.counted}</span>
+                          <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">R {row.recounted}</span>
+                          {showValidationSummary && <span className="rounded-full bg-green-50 px-2 py-1 text-green-700">V {row.validated}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {productivityByUser.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin codigos para graficar.</div>}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-black">Velocidad de conteo</h2>
+                    <p className="text-xs text-slate-500">Registros por minuto efectivo. Pausas mayores a {COUNTER_ACTIVE_GAP_MINUTES} min no se consideran.</p>
+                  </div>
+                  <div className="text-xs font-black text-slate-500">{counts.length} registros</div>
+                </div>
+                <div className="space-y-3">
+                  {counterStats.rows.map(row => (
+                    <div key={row.id} className="grid gap-2 md:grid-cols-[220px_1fr_160px] md:items-center">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-black text-slate-900">{row.name}</div>
+                        <div className="text-xs text-slate-500">{row.count} registros</div>
+                      </div>
+                      <div className="h-4 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-blue-700"
+                          style={{ width: `${Math.max(4, Math.round((row.perMinute / counterStats.maxPerMinute) * 100))}%` }}
+                        />
+                      </div>
+                      <div className="text-sm font-black text-slate-900">
+                        {row.perMinute.toFixed(2)} reg/min
+                        <div className="text-[11px] font-bold text-slate-500">{row.minutes.toFixed(1)} min activos</div>
+                      </div>
+                    </div>
+                  ))}
+                  {counterStats.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin registros para graficar.</div>}
+                </div>
               </div>
             </section>
           )}
