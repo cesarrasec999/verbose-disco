@@ -65,7 +65,6 @@ with finished_sessions as (
     s.scheduled_date,
     s.created_at,
     s.finished_at,
-    s.finished_by,
     s.stock_frozen_at,
     coalesce(s.validation_enabled, false) as validation_enabled
   from public.general_inventory_sessions s
@@ -258,7 +257,7 @@ select
   st.name as store_name,
   fs.scheduled_date,
   fs.finished_at,
-  coalesce(u.full_name, '') as finished_by_name,
+  ''::text as finished_by_name,
   fs.stock_frozen_at,
   round((extract(epoch from (fs.finished_at - fs.created_at)) / 60)::numeric, 2) as duration_minutes,
   coalesce(ss.total_codes, 0)::bigint as total_codes,
@@ -282,7 +281,6 @@ select
 from finished_sessions fs
 left join session_summary ss on ss.session_id = fs.id
 left join public.stores st on st.id = fs.store_id
-left join public.cyclic_users u on u.id = fs.finished_by
 order by fs.finished_at desc, st.name, fs.name;
 $$;
 

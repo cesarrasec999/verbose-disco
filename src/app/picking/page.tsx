@@ -162,6 +162,10 @@ function inDateRange(value: string | null | undefined, from: string, to: string)
   return true;
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function normalize(value: string | null | undefined) {
   return String(value || "").trim().toUpperCase();
 }
@@ -278,10 +282,10 @@ export default function PickingPage() {
   const [selectedReportPicker, setSelectedReportPicker] = useState("all");
   const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
   const [selectedRegistryRequesterStore, setSelectedRegistryRequesterStore] = useState("all");
-  const [assignmentDate, setAssignmentDate] = useState("");
-  const [pickingDate, setPickingDate] = useState("");
-  const [reportDate, setReportDate] = useState("");
-  const [registryDate, setRegistryDate] = useState("");
+  const [assignmentDate, setAssignmentDate] = useState(todayISO());
+  const [pickingDate, setPickingDate] = useState(todayISO());
+  const [reportDate, setReportDate] = useState(todayISO());
+  const [registryDate, setRegistryDate] = useState(todayISO());
   const [productivityDateFrom, setProductivityDateFrom] = useState("");
   const [productivityDateTo, setProductivityDateTo] = useState("");
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());

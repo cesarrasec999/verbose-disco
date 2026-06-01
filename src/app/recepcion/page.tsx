@@ -69,6 +69,12 @@ type ReceptionScan = {
   created_at: string;
 };
 
+type ConsolidatedReceptionLine = ReceptionLine & {
+  line_ids: string[];
+  request_detail: string;
+  source_lines: ReceptionLine[];
+};
+
 type ReceptionDifferenceRow = {
   key: string;
   document: string;
@@ -203,6 +209,43 @@ function diffLabel(d: number) {
   if (d === 0) return "OK";
   return (d > 0 ? "+" : "") + fmt(d);
 }
+function isInvalidExtraLine(line: Pick<ReceptionLine, "id" | "qty_requested" | "description">) {
+  return String(line.id || "").includes("|EXTRA|") &&
+    num(line.qty_requested) === 0 &&
+    /producto no incluido/i.test(String(line.description || ""));
+}
+function lineProductKey(line: Pick<ReceptionLine, "product_code" | "sku">) {
+  return normalize(line.product_code || line.sku);
+}
+function requestLineLabel(req: ReceptionRequest | undefined, quantity: number) {
+  const label = req?.doc_number || req?.inv_request_no || req?.erp_inv_request_id || "RQ";
+  return `${label} (${fmt(quantity)})`;
+}
+function consolidateReceptionLines(lines: ReceptionLine[], requestsById: Map<string, ReceptionRequest>): ConsolidatedReceptionLine[] {
+  const grouped = new Map<string, ReceptionLine[]>();
+  for (const line of lines) {
+    if (isInvalidExtraLine(line)) continue;
+    const key = lineProductKey(line);
+    if (!key) continue;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(line);
+  }
+
+  return [...grouped.values()].map(group => {
+    const sorted = [...group].sort((a, b) => a.line_id - b.line_id || a.id.localeCompare(b.id));
+    const base = sorted[0];
+    const requestDetails = sorted.map(line => requestLineLabel(requestsById.get(line.request_id), num(line.qty_requested)));
+    return {
+      ...base,
+      id: sorted.map(line => line.id).join("|"),
+      line_ids: sorted.map(line => line.id),
+      source_lines: sorted,
+      request_detail: requestDetails.join(" / "),
+      qty_requested: sorted.reduce((sum, line) => sum + num(line.qty_requested), 0),
+      qty_pending: sorted.reduce((sum, line) => sum + num(line.qty_pending), 0),
+    };
+  }).sort((a, b) => a.line_id - b.line_id || a.product_code.localeCompare(b.product_code, "es"));
+}
 
 function ReasonBadge({ reason }: { reason: string | null }) {
   const isUrgente = /urgente/i.test(reason || "");
@@ -240,6 +283,7 @@ export default function RecepcionPage() {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
 
   // Filtros lista
   const [storeFilter, setStoreFilter]   = useState("all");
@@ -251,6 +295,7 @@ export default function RecepcionPage() {
   const [activeLine, setActiveLine]     = useState<ReceptionLine | null>(null);
   const [editQty, setEditQty]           = useState(1);
   const [editNotes, setEditNotes]       = useState("");
+  const [editLineInputs, setEditLineInputs] = useState<Record<string, { qty: string; notes: string }>>({});
 
   // Edición de scan
   const [editingScanId, setEditingScanId]   = useState("");
@@ -297,6 +342,53 @@ export default function RecepcionPage() {
     setRequests(rows);
     writeRequestCache(requestScopeKey(), rows);
   }, [requestScopeKey]);
+
+  function toggleSelectedGroup(groupId: string) {
+    setSelectedGroupIds(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }
+
+  function mergeRequestGroups(groups: ReceptionRequestGroup[]): ReceptionRequestGroup | null {
+    if (groups.length === 0) return null;
+    const sorted = [...groups].sort((a, b) =>
+      String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))
+    );
+    const base = sorted[0];
+    const childRequests = sorted.flatMap(group => group.child_requests);
+    const requestIds = [...new Set(sorted.flatMap(group => group.request_ids))];
+    const documents = sorted.map(group => group.doc_number || group.inv_request_no || group.erp_inv_request_id).filter(Boolean);
+    return {
+      ...base,
+      id: sorted.map(group => group.id).join("||"),
+      erp_inv_request_id: sorted.map(group => group.erp_inv_request_id).join(", "),
+      inv_request_no: documents.join(" + "),
+      doc_number: documents.join(" + "),
+      line_count: sorted.reduce((sum, group) => sum + num(group.line_count), 0),
+      qty_requested_total: sorted.reduce((sum, group) => sum + num(group.qty_requested_total), 0),
+      qty_pending_total: sorted.reduce((sum, group) => sum + num(group.qty_pending_total), 0),
+      reception_status: groupedStatus(childRequests),
+      completed_by_name: childRequests.every(item => item.reception_status === "completed")
+        ? childRequests.find(item => item.completed_by_name)?.completed_by_name || null
+        : null,
+      request_ids: requestIds,
+      transfer_count: childRequests.length,
+      child_requests: childRequests,
+    };
+  }
+
+  function openSelectedGroups() {
+    const groups = filteredRequests.filter(req => selectedGroupIds.has(req.id));
+    const merged = mergeRequestGroups(groups);
+    if (!merged) {
+      showMsg("Selecciona al menos un requerimiento.");
+      return;
+    }
+    void openRequest(merged);
+  }
 
   const updateRequests = useCallback((updater: (prev: ReceptionRequest[]) => ReceptionRequest[]) => {
     setRequests(prev => {
@@ -505,7 +597,8 @@ export default function RecepcionPage() {
     ].filter(Boolean).map(v => v.trim().toUpperCase()))];
 
     // Búsqueda directa en product_code / sku / barcode de las líneas cargadas
-    const direct = lines.find(l =>
+    const searchableLines = lines.filter(line => !isInvalidExtraLine(line));
+    const direct = searchableLines.find(l =>
       candidates.some(c =>
         c === normalize(l.product_code) ||
         c === normalize(l.sku) ||
@@ -525,7 +618,7 @@ export default function RecepcionPage() {
           .flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>))
           .map(v => v.trim().toUpperCase())
       );
-      return lines.find(l =>
+      return searchableLines.find(l =>
         mapped.has(normalize(l.product_code)) || mapped.has(normalize(l.sku))
       ) || null;
     } catch { return null; }
@@ -579,7 +672,8 @@ export default function RecepcionPage() {
     const requestId = baseRequest.id;
     const erpRequestId = String(baseRequest.erp_inv_request_id || selected.erp_inv_request_id).split(",")[0].trim();
     const product = await lookupProduct(raw);
-    const productCode = product?.sku || normalizedCode || raw;
+    if (!product?.sku) return null;
+    const productCode = product.sku;
     const extraId = `${requestId}|EXTRA|${normalize(productCode)}`;
     const existingById = lines.find(line => line.id === extraId);
     if (existingById) return existingById;
@@ -589,11 +683,11 @@ export default function RecepcionPage() {
       id: extraId,
       request_id: requestId,
       line_id: nextLineId,
-      sku: product?.sku || productCode,
+      sku: product.sku,
       product_code: productCode,
-      barcode: product?.barcode || raw,
-      description: product?.description || "Producto no incluido en el requerimiento",
-      unit: product?.unit || null,
+      barcode: product.barcode || raw,
+      description: product.description || "Producto adicional",
+      unit: product.unit || null,
       qty_requested: 0,
       qty_pending: 0,
     };
@@ -624,16 +718,21 @@ export default function RecepcionPage() {
       setActiveLine(found);
       setEditQty(1);
       setEditNotes("");
+      prepareLineInputs(found);
       setTimeout(() => {
         lineRefs.current[found.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 80);
     } else {
       try {
         const extraLine = await createExtraLine(code);
-        if (!extraLine) return;
+        if (!extraLine) {
+          showMsg(`Codigo "${code}" no existe en la base de productos. No se agrego al requerimiento.`);
+          return;
+        }
         setActiveLine(extraLine);
         setEditQty(1);
         setEditNotes("Sobrante no enviado");
+        prepareLineInputs(extraLine, "Sobrante no enviado");
         setScanProduct(code.trim());
         setTimeout(() => {
           lineRefs.current[extraLine.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -649,32 +748,43 @@ export default function RecepcionPage() {
 
   async function saveScan() {
     if (!activeLine || !selected || !user) return;
-    if (editQty <= 0) { showMsg("La cantidad debe ser mayor a 0."); return; }
+    const activeGroup = consolidatedLines.find(line => line.line_ids.includes(activeLine.id));
+    const sourceLines = activeGroup?.source_lines || [activeLine];
+    const rows = sourceLines.map(line => {
+      const input = editLineInputs[line.id];
+      const qty = num(input?.qty ?? (sourceLines.length === 1 ? editQty : 0));
+      const notes = (input?.notes ?? editNotes).trim();
+      return { line, qty, notes };
+    }).filter(row => row.qty > 0);
+    if (rows.length === 0) { showMsg("Ingresa al menos una cantidad mayor a 0."); return; }
     setSaving(true);
     try {
-      const { error } = await supabase.from("reception_scans").insert({
-        request_id:    activeLine.request_id,
-        line_id:       activeLine.id,
+      const payload = rows.map(row => ({
+        request_id:    row.line.request_id,
+        line_id:       row.line.id,
         operator_id:   user.id,
         operator_name: user.full_name,
-        product_code:  activeLine.product_code,
+        product_code:  row.line.product_code,
         scanned_code:  scanProduct.trim() || null,
-        qty:           editQty,
-        notes:         editNotes.trim() || null,
-      });
+        qty:           row.qty,
+        notes:         row.notes || null,
+      }));
+      const { error } = await supabase.from("reception_scans").insert(payload);
       if (error) throw error;
 
       // Pasar a in_progress si estaba pendiente
+      const requestIdsToUpdate = [...new Set(rows.map(row => row.line.request_id))];
       await supabase.from("reception_requests").update({
         reception_status: "in_progress",
         updated_at: new Date().toISOString(),
-      }).eq("id", activeLine.request_id).eq("reception_status", "pending");
+      }).in("id", requestIdsToUpdate).eq("reception_status", "pending");
 
       setSelected(prev => prev ? { ...prev, reception_status: prev.reception_status === "pending" ? "in_progress" : prev.reception_status } : null);
-      updateRequests(prev => prev.map(r => r.id === activeLine.request_id && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
+      updateRequests(prev => prev.map(r => requestIdsToUpdate.includes(r.id) && r.reception_status === "pending" ? { ...r, reception_status: "in_progress" } : r));
 
       setScanProduct("");
       setActiveLine(null);
+      setEditLineInputs({});
       await reloadScans(selected.request_ids);
       await loadSummaryScans(requests.map(req => req.id));
       showMsg("Recepción registrada.");
@@ -758,8 +868,9 @@ export default function RecepcionPage() {
 
   function printReport() {
     if (!selected) return;
-    const lineRows = lines.map(line => {
-      const lineScans = scans.filter(s => s.line_id === line.id);
+    const lineRows = consolidatedLines.map(line => {
+      const lineIdSet = new Set(line.line_ids);
+      const lineScans = scans.filter(s => lineIdSet.has(s.line_id));
       const received = lineScans.reduce((sum, s) => sum + num(s.qty), 0);
       const diff = received - num(line.qty_requested);
       return { line, received, diff, lineScans };
@@ -901,8 +1012,12 @@ export default function RecepcionPage() {
       }
 
       const rows: ReceptionDifferenceRow[] = [];
-      for (const line of lineResults.flatMap(result => (result.data || []) as ReceptionLine[])) {
-        const lineScans = scansByLineReport.get(line.id) || [];
+      const linesByRequest = lineResults.flatMap(result => (result.data || []) as ReceptionLine[]);
+      const requestsById = reportRequests;
+      const consolidatedReportLines = consolidateReceptionLines(linesByRequest, requestsById);
+      for (const line of consolidatedReportLines) {
+        const lineIdSet = new Set(line.line_ids);
+        const lineScans = [...lineIdSet].flatMap(lineId => scansByLineReport.get(lineId) || []);
         const receivedQty = lineScans.reduce((sum, scan) => sum + num(scan.qty), 0);
         const requestedQty = num(line.qty_requested);
         const difference = receivedQty - requestedQty;
@@ -912,7 +1027,7 @@ export default function RecepcionPage() {
         if (!req) continue;
         rows.push({
           key: `${line.id}:${difference}`,
-          document: req.doc_number || req.inv_request_no || req.erp_inv_request_id,
+          document: line.request_detail || req.doc_number || req.inv_request_no || req.erp_inv_request_id,
           destinationStore: req.destination_store_name || req.destination_store_code,
           sourceStore: req.source_store_name || req.source_store_code,
           completedAt: req.completed_at,
@@ -1036,7 +1151,34 @@ export default function RecepcionPage() {
     return m;
   }, [scans]);
 
-  const linesScanned = useMemo(() => lines.filter(l => (scanTotalByLine.get(l.id) || 0) > 0).length, [lines, scanTotalByLine]);
+  const selectedRequestsById = useMemo(() => {
+    const map = new Map<string, ReceptionRequest>();
+    for (const req of selected?.child_requests || []) map.set(req.id, req);
+    return map;
+  }, [selected]);
+
+  const consolidatedLines = useMemo(
+    () => consolidateReceptionLines(lines, selectedRequestsById),
+    [lines, selectedRequestsById]
+  );
+
+  const consolidatedScanTotal = useCallback((line: ConsolidatedReceptionLine) =>
+    line.line_ids.reduce((sum, lineId) => sum + (scanTotalByLine.get(lineId) || 0), 0),
+  [scanTotalByLine]);
+
+  const prepareLineInputs = useCallback((line: ReceptionLine, defaultNotes = "") => {
+    const group = consolidatedLines.find(item => item.line_ids.includes(line.id));
+    const sourceLines = group?.source_lines || [line];
+    const singleLine = sourceLines.length === 1;
+    const next: Record<string, { qty: string; notes: string }> = {};
+    for (const sourceLine of sourceLines) {
+      next[sourceLine.id] = { qty: singleLine ? "1" : "", notes: defaultNotes };
+    }
+    setEditLineInputs(next);
+  }, [consolidatedLines]);
+
+  const linesScanned = useMemo(() => consolidatedLines.filter(l => consolidatedScanTotal(l) > 0).length, [consolidatedLines, consolidatedScanTotal]);
+  const receptionProgressPct = consolidatedLines.length > 0 ? Math.round((linesScanned / consolidatedLines.length) * 100) : 0;
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -1259,6 +1401,27 @@ export default function RecepcionPage() {
             </div>
           )}
 
+          {!loading && listPanel === "recepcion" && filteredRequests.length > 0 && (
+            <div className="sticky top-[72px] z-20 rounded-2xl border bg-white/95 p-3 shadow-sm backdrop-blur">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-black uppercase text-slate-500">Revision agrupada</p>
+                  <p className="text-xs font-bold text-slate-400">{selectedGroupIds.size} requerimiento{selectedGroupIds.size !== 1 ? "s" : ""} seleccionado{selectedGroupIds.size !== 1 ? "s" : ""}</p>
+                </div>
+                <div className="flex gap-2">
+                  {selectedGroupIds.size > 0 && (
+                    <button type="button" onClick={() => setSelectedGroupIds(new Set())} className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600">
+                      Limpiar
+                    </button>
+                  )}
+                  <button type="button" onClick={openSelectedGroups} disabled={selectedGroupIds.size === 0} className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                    Revisar seleccionados juntos
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {listPanel === "recepcion" && filteredRequests.map(req => (
             <button key={req.id} onClick={() => openRequest(req)}
               className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-teal-400 ${req.reception_status === "in_progress" ? "border-teal-200 bg-white" : "bg-white"}`}>
@@ -1269,6 +1432,22 @@ export default function RecepcionPage() {
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  <span
+                    role="checkbox"
+                    aria-checked={selectedGroupIds.has(req.id)}
+                    tabIndex={0}
+                    onClick={event => { event.stopPropagation(); toggleSelectedGroup(req.id); }}
+                    onKeyDown={event => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleSelectedGroup(req.id);
+                    }}
+                    className={`grid h-8 w-8 place-items-center rounded-xl border text-xs font-black ${selectedGroupIds.has(req.id) ? "border-teal-500 bg-teal-50 text-teal-700" : "border-slate-200 text-slate-300"}`}
+                    title="Seleccionar para revisar junto con otros requerimientos"
+                  >
+                    {selectedGroupIds.has(req.id) ? "✓" : ""}
+                  </span>
                   <StatusBadge status={req.reception_status} />
                   {canDeleteRequests && (
                     <span
@@ -1322,21 +1501,21 @@ export default function RecepcionPage() {
               {selected.request_date  && <span>Tránsito: <b className="text-teal-600">{dateShort(selected.request_date)}</b></span>}
               {selected.transfer_count > 1 && <span><b className="text-slate-600">{selected.transfer_count}</b> transferencias agrupadas</span>}
             </div>
-            {lines.length > 0 && (
+            {consolidatedLines.length > 0 && (
               <div className="mt-3">
                 <div className="flex justify-between text-xs font-black text-slate-500 mb-1">
-                  <span>{linesScanned} / {lines.length} líneas recepcionadas</span>
-                  <span>{Math.round((linesScanned / lines.length) * 100)}%</span>
+                  <span>{linesScanned} / {consolidatedLines.length} lineas recepcionadas</span>
+                  <span>{receptionProgressPct}%</span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100">
-                  <div className="h-2 rounded-full bg-teal-600 transition-all" style={{ width: `${Math.round((linesScanned / lines.length) * 100)}%` }} />
+                  <div className="h-2 rounded-full bg-teal-600 transition-all" style={{ width: `${receptionProgressPct}%` }} />
                 </div>
               </div>
             )}
           </div>
 
           {/* Barra de escaneo / digitación */}
-          {selected.reception_status !== "completed" && (
+          {(
             <div className="rounded-2xl border bg-white p-3 shadow-sm">
               <p className="text-xs font-black uppercase text-slate-500 mb-2">Escanear o digitar código de producto</p>
               <div className="flex gap-2">
@@ -1376,21 +1555,25 @@ export default function RecepcionPage() {
             <p className="text-center py-10 text-slate-400 font-bold">Cargando líneas...</p>
           ) : (
             <div className="space-y-2">
-              {lines.map(line => {
-                const received = scanTotalByLine.get(line.id) || 0;
+              {consolidatedLines.map(line => {
+                const received = consolidatedScanTotal(line);
                 const diff = received - num(line.qty_requested);
-                const isActive = activeLine?.id === line.id;
-                const lineScans = scansByLine.get(line.id) || [];
+                const isActive = activeLine ? line.line_ids.includes(activeLine.id) : false;
+                const lineScans = line.line_ids.flatMap(lineId => scansByLine.get(lineId) || []);
 
                 return (
-                  <div key={line.id} ref={el => { lineRefs.current[line.id] = el; }}>
+                  <div key={line.id} ref={el => {
+                    lineRefs.current[line.id] = el;
+                    line.line_ids.forEach(lineId => { lineRefs.current[lineId] = el; });
+                  }}>
                     {/* ── Card de línea ── */}
                     <button
                       onClick={() => {
                         if (isActive) { setActiveLine(null); return; }
-                        setActiveLine(line);
+                        setActiveLine(line.source_lines[0] || line);
                         setEditQty(1);
                         setEditNotes("");
+                        prepareLineInputs(line.source_lines[0] || line);
                         setScanProduct("");
                       }}
                       className={`w-full text-left rounded-2xl border p-3 transition-all ${isActive ? "border-teal-500 bg-teal-50 shadow-md" : received > 0 ? "border-emerald-200 bg-white" : "border-slate-200 bg-white"}`}
@@ -1399,6 +1582,9 @@ export default function RecepcionPage() {
                         <div className="min-w-0">
                           <p className="font-black text-slate-900 text-sm">{line.product_code}</p>
                           <p className="text-xs text-slate-500 truncate">{line.description}</p>
+                          {line.request_detail && (
+                            <p className="mt-1 text-[11px] font-black text-slate-500">{line.request_detail}</p>
+                          )}
                           {/* Unidad de medida en negrita */}
                           {line.unit && (
                             <p className="text-xs font-black text-slate-700 mt-0.5">
@@ -1427,36 +1613,54 @@ export default function RecepcionPage() {
                     </button>
 
                     {/* ── Formulario de scan (activa) ── */}
-                    {isActive && selected.reception_status !== "completed" && (
+                    {isActive && (
                       <div className="mx-2 rounded-b-2xl border border-t-0 border-teal-200 bg-teal-50/60 p-3 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1">
-                            <label className="text-[10px] font-black uppercase text-teal-600">Cantidad recibida</label>
-                            <input
-                              type="number" min="0" step="1"
-                              value={editQty}
-                              onChange={e => setEditQty(Number(e.target.value))}
-                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-900 focus:border-teal-500 focus:ring-1 focus:ring-teal-300"
-                              autoFocus
-                            />
-                          </div>
-                          <div className="flex-1">
-                            <label className="text-[10px] font-black uppercase text-slate-500">Observación (opcional)</label>
-                            <input
-                              type="text"
-                              value={editNotes}
-                              onChange={e => setEditNotes(e.target.value)}
-                              placeholder="Ej: embalaje dañado"
-                              className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900"
-                            />
-                          </div>
-                        </div>
+                        {line.source_lines.map((sourceLine, index) => {
+                          const req = selectedRequestsById.get(sourceLine.request_id);
+                          const input = editLineInputs[sourceLine.id] || { qty: line.source_lines.length === 1 ? String(editQty) : "", notes: editNotes };
+                          return (
+                            <div key={sourceLine.id} className="grid gap-2 rounded-xl border bg-white p-2 sm:grid-cols-[minmax(120px,180px)_1fr_1fr]">
+                              <div className="text-xs font-black text-slate-700">
+                                <p>{req?.doc_number || req?.inv_request_no || req?.erp_inv_request_id || "RQ"}</p>
+                                <p className="text-[10px] text-slate-400">Enviado: {fmt(num(sourceLine.qty_requested))}</p>
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-black uppercase text-teal-600">Cantidad</label>
+                                <input
+                                  type="number" min="0" step="1"
+                                  value={input.qty}
+                                  onChange={e => {
+                                    const value = e.target.value;
+                                    setEditLineInputs(prev => ({ ...prev, [sourceLine.id]: { qty: value, notes: prev[sourceLine.id]?.notes || "" } }));
+                                    if (line.source_lines.length === 1) setEditQty(Number(value));
+                                  }}
+                                  className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-900 focus:border-teal-500 focus:ring-1 focus:ring-teal-300"
+                                  autoFocus={index === 0}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-black uppercase text-slate-500">Obs.</label>
+                                <input
+                                  type="text"
+                                  value={input.notes}
+                                  onChange={e => {
+                                    const value = e.target.value;
+                                    setEditLineInputs(prev => ({ ...prev, [sourceLine.id]: { qty: prev[sourceLine.id]?.qty || "", notes: value } }));
+                                    if (line.source_lines.length === 1) setEditNotes(value);
+                                  }}
+                                  placeholder="Observacion"
+                                  className="mt-0.5 w-full rounded-xl border bg-white px-3 py-2 text-sm text-slate-900"
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
                         <div className="flex gap-2">
-                          <button onClick={saveScan} disabled={saving || editQty <= 0}
+                          <button onClick={saveScan} disabled={saving || line.source_lines.every(sourceLine => num(editLineInputs[sourceLine.id]?.qty) <= 0)}
                             className="flex-1 rounded-xl bg-teal-600 text-white py-2.5 text-sm font-black disabled:opacity-50 flex items-center justify-center gap-1.5">
                             <CheckCircle2 size={15} /> {saving ? "Guardando..." : "Guardar"}
                           </button>
-                          <button onClick={() => setActiveLine(null)} className="rounded-xl border px-4 py-2.5 text-sm font-black text-slate-600 hover:bg-slate-50">
+                          <button onClick={() => { setActiveLine(null); setEditLineInputs({}); }} className="rounded-xl border px-4 py-2.5 text-sm font-black text-slate-600 hover:bg-slate-50">
                             Cancelar
                           </button>
                         </div>
@@ -1490,7 +1694,7 @@ export default function RecepcionPage() {
                                   {scan.notes && <span className="text-xs text-slate-400 ml-2">· {scan.notes}</span>}
                                   <p className="text-[10px] text-slate-400">{scan.operator_name} · {timeShort(scan.created_at)}</p>
                                 </div>
-                                {selected.reception_status !== "completed" && (
+                                {(
                                   <div className="flex gap-1 shrink-0">
                                     <button onClick={() => { setEditingScanId(scan.id); setEditScanQty(String(num(scan.qty))); setEditScanNotes(scan.notes || ""); }}
                                       className="grid h-7 w-7 place-items-center rounded-lg border text-slate-500 hover:bg-slate-50">
