@@ -10,6 +10,9 @@ const OTHER_DEVICE_REASON = "Tu usuario se conecto en otro dispositivo.";
 
 type SessionUser = {
   id: string;
+  username?: string | null;
+  full_name?: string | null;
+  role?: string | null;
   cyclic_session_token?: string;
   cyclic_device_id?: string;
 };
@@ -19,6 +22,21 @@ const ACTIVE_SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
 function randomToken() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function normalizeAdminText(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+export function isPrincipalAdministrator(user: SessionUser | null | undefined) {
+  if (!user) return false;
+  return normalizeAdminText(user.role) === "administrador" &&
+    normalizeAdminText(user.full_name) === "administrador principal";
 }
 
 export function readStoredUser<T extends SessionUser = SessionUser>(): T | null {
@@ -73,6 +91,16 @@ export function onStoredSessionExpired(handler: (reason: string) => void) {
 }
 
 export async function startSingleDeviceSession<T extends SessionUser>(user: T): Promise<T> {
+  if (isPrincipalAdministrator(user)) {
+    const nextUser = {
+      ...user,
+      cyclic_session_token: undefined,
+      cyclic_device_id: undefined,
+    };
+    writeStoredUser(nextUser);
+    return nextUser;
+  }
+
   const deviceId = getOrCreateDeviceId();
   const { data: existing } = await supabase
     .from("cyclic_user_sessions")
@@ -98,6 +126,7 @@ export async function startSingleDeviceSession<T extends SessionUser>(user: T): 
 
 export async function touchSingleDeviceSession(user = readStoredUser()) {
   if (!user?.id) return true;
+  if (isPrincipalAdministrator(user)) return true;
   if (!user.cyclic_session_token) return true;
   const { data, error } = await supabase
     .from("cyclic_user_sessions")
@@ -120,7 +149,7 @@ export async function touchSingleDeviceSession(user = readStoredUser()) {
 }
 
 export async function endSingleDeviceSession(user = readStoredUser()) {
-  if (user?.id && user.cyclic_session_token) {
+  if (user?.id && user.cyclic_session_token && !isPrincipalAdministrator(user)) {
     await supabase
       .from("cyclic_user_sessions")
       .delete()
