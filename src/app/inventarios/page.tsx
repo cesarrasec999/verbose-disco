@@ -501,7 +501,7 @@ export default function InventariosPage() {
       const summaryRow = summaryByProduct.get(row.product_id);
       if (!summaryRow || summaryRow.diff <= 0) continue;
       if (!validationMode && summaryRow.re_counted) continue;
-      const location = locationById.get(row.location_id) || null;
+      const location = locationById.get(row.location_id) || findInventoryLocation(locations, row.location_code) || null;
       const key = row.product_id;
       const qty = Number(row.quantity || 0);
       const current = surplusGroups.get(key);
@@ -593,7 +593,7 @@ export default function InventariosPage() {
     const locationById = new Map(locations.map(row => [row.id, row]));
     const grouped = new Map<string, RecountLocationLine[]>();
     for (const row of counts) {
-      const location = locationById.get(row.location_id) || null;
+      const location = locationById.get(row.location_id) || findInventoryLocation(locations, row.location_code) || null;
       const locationCode = normalizeLocationCode(row.location_code || location?.location_code || "");
       if (!row.product_id || !locationCode) continue;
       const lines = grouped.get(row.product_id) || [];
@@ -2406,7 +2406,7 @@ export default function InventariosPage() {
     const addSourceLines = (sourceLayer: "recount" | "validation", countRows: any[]) => {
       for (const countRow of countRows || []) {
         const productId = String(countRow.product_id || "");
-        const loc = locationById.get(String(countRow.location_id || ""));
+        const loc = locationById.get(String(countRow.location_id || "")) || findInventoryLocation(activeLocations, countRow.location_code || "");
         const code = normalizeLocationCode(countRow.location_code || loc?.location_code || "");
         if (!code) continue;
         const sku = normalizeCode(countRow.sku).toUpperCase();
