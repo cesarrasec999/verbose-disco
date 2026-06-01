@@ -15,6 +15,7 @@ const MANAGER_TABS: Array<{ key: ValidatorTab; label: string; requiresManage?: b
   { key: "reconteo", label: "Reconteo", requiresManage: true },
   { key: "validacion", label: "Validacion", requiresManage: true, requiresValidation: true },
   { key: "resumen", label: "Resumen" },
+  { key: "reportes", label: "Reportes", adminOnly: true },
   { key: "usuarios", label: "Usuarios", adminOnly: true },
 ];
 
@@ -34,7 +35,7 @@ export function InventoryTabs({
 
   return (
     <section className="rounded-2xl border bg-white p-2 shadow-sm">
-      <div className={`grid gap-2 ${isAdmin ? "grid-cols-2 md:grid-cols-7" : "grid-cols-2 md:grid-cols-6"}`}>
+      <div className={`grid gap-2 ${isAdmin ? "grid-cols-2 md:grid-cols-8" : "grid-cols-2 md:grid-cols-6"}`}>
         {visibleTabs.map(tab => (
           <button
             key={tab.key}

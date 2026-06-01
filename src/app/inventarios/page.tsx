@@ -117,6 +117,37 @@ type ProductivityLayerRow = {
 
 type ProductivityAssignedRow = ProductivityLayerRow;
 
+type FinishedGeneralInventoryReportRow = {
+  session_id: string;
+  inventory_name: string;
+  store_id: string;
+  store_name: string | null;
+  scheduled_date: string | null;
+  finished_at: string | null;
+  finished_by_name: string | null;
+  stock_frozen_at: string | null;
+  duration_minutes: number;
+  total_codes: number;
+  counted_codes: number;
+  ok_codes: number;
+  no_counted_codes: number;
+  surplus_codes: number;
+  missing_codes: number;
+  difference_codes: number;
+  system_value: number;
+  counted_value: number;
+  surplus_value: number;
+  missing_value: number;
+  net_value_diff: number;
+  abs_value_diff: number;
+  eri_pct: number;
+};
+
+function currentMonthStartISO() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_status">) {
   const status = row.recount_status || (row.re_counted ? "counted" : "no");
   if (status === "counted") return "Si";
@@ -248,6 +279,10 @@ export default function InventariosPage() {
   const [editingAdminRecountMode, setEditingAdminRecountMode] = useState<"edit" | "add">("edit");
   const [editingAdminRecountLocation, setEditingAdminRecountLocation] = useState("");
   const [editingAdminRecountQuantity, setEditingAdminRecountQuantity] = useState("");
+  const [finishedReportFrom, setFinishedReportFrom] = useState(currentMonthStartISO());
+  const [finishedReportTo, setFinishedReportTo] = useState(new Date().toISOString().slice(0, 10));
+  const [finishedReportRows, setFinishedReportRows] = useState<FinishedGeneralInventoryReportRow[]>([]);
+  const [finishedReportLoading, setFinishedReportLoading] = useState(false);
   const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
   const editingRecountItemIdRef = useRef<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -1029,6 +1064,24 @@ export default function InventariosPage() {
     };
   }, [summary]);
 
+  const finishedReportTotals = useMemo(() => finishedReportRows.reduce((acc, row) => ({
+    inventories: acc.inventories + 1,
+    totalCodes: acc.totalCodes + Number(row.total_codes || 0),
+    okCodes: acc.okCodes + Number(row.ok_codes || 0),
+    differenceCodes: acc.differenceCodes + Number(row.difference_codes || 0),
+    systemValue: acc.systemValue + Number(row.system_value || 0),
+    netValueDiff: acc.netValueDiff + Number(row.net_value_diff || 0),
+    absValueDiff: acc.absValueDiff + Number(row.abs_value_diff || 0),
+  }), {
+    inventories: 0,
+    totalCodes: 0,
+    okCodes: 0,
+    differenceCodes: 0,
+    systemValue: 0,
+    netValueDiff: 0,
+    absValueDiff: 0,
+  }), [finishedReportRows]);
+
   useEffect(() => {
     const rawUser = localStorage.getItem("cyclic_user");
     if (rawUser) {
@@ -1246,6 +1299,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator || validatorTab !== "resumen") return;
+    if (selectedSession?.stock_frozen_at || selectedSession?.status === "finished") return;
     const sede = sessionSede(selectedSessionId);
     if (!sede) return;
 
@@ -1280,7 +1334,7 @@ export default function InventariosPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [selectedSessionId, isValidator, validatorTab, summaryLoadedSessionId, sessions, stores]);
+  }, [selectedSessionId, isValidator, validatorTab, summaryLoadedSessionId, sessions, stores, selectedSession?.stock_frozen_at, selectedSession?.status]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -1706,6 +1760,10 @@ export default function InventariosPage() {
 
   async function refreshCurrentView() {
     await loadInitial(selectedSessionId);
+    if (validatorTab === "reportes" && user?.role === "Administrador") {
+      await loadFinishedGeneralInventoryReport();
+      return;
+    }
     if (selectedSessionId) await loadSessionData(selectedSessionId, validatorTab);
   }
 
@@ -1744,6 +1802,11 @@ export default function InventariosPage() {
         markSessionTabLoaded(sessionId, "usuarios");
         return;
       }
+      if (tab === "reportes" && user?.role === "Administrador") {
+        await loadFinishedGeneralInventoryReport();
+        markSessionTabLoaded(sessionId, "reportes");
+        return;
+      }
       await loadSummary(sessionId, summaryHasPendingChanges);
       markSessionTabLoaded(sessionId, "resumen");
       return;
@@ -1756,6 +1819,69 @@ export default function InventariosPage() {
     }
 
     await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId, operator.id)]);
+  }
+
+  async function loadFinishedGeneralInventoryReport() {
+    if (user?.role !== "Administrador") {
+      setMessage("Solo el administrador puede ver este reporte.");
+      return;
+    }
+    if (!finishedReportFrom || !finishedReportTo) {
+      setMessage("Selecciona el rango de fechas del reporte.");
+      return;
+    }
+    if (finishedReportFrom > finishedReportTo) {
+      setMessage("La fecha inicial no puede ser mayor que la fecha final.");
+      return;
+    }
+
+    setFinishedReportLoading(true);
+    setMessage("");
+    const { data, error } = await supabase.rpc("get_finished_general_inventory_report", {
+      p_date_from: finishedReportFrom,
+      p_date_to: finishedReportTo,
+    });
+    setFinishedReportLoading(false);
+
+    if (error) {
+      setMessage("No se pudo cargar el reporte. Ejecuta el SQL get_finished_general_inventory_report en Supabase: " + error.message);
+      return;
+    }
+    setFinishedReportRows((data || []) as FinishedGeneralInventoryReportRow[]);
+    setMessage(`Reporte cargado: ${(data || []).length} inventario(s) finalizado(s).`);
+  }
+
+  function exportFinishedGeneralInventoryReport() {
+    if (finishedReportRows.length === 0) {
+      setMessage("Primero carga el reporte de inventarios finalizados.");
+      return;
+    }
+    const rows = finishedReportRows.map(row => ({
+      Inventario: row.inventory_name,
+      Tienda: row.store_name || "",
+      FechaProgramada: dateOnly(row.scheduled_date),
+      Finalizado: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
+      FinalizadoPor: row.finished_by_name || "",
+      StockCongelado: row.stock_frozen_at ? new Date(row.stock_frozen_at).toLocaleString("es-PE") : "",
+      DuracionMin: Number(row.duration_minutes || 0),
+      CodigosTotales: Number(row.total_codes || 0),
+      CodigosContados: Number(row.counted_codes || 0),
+      CodigosOK: Number(row.ok_codes || 0),
+      NoContados: Number(row.no_counted_codes || 0),
+      Sobrantes: Number(row.surplus_codes || 0),
+      Faltantes: Number(row.missing_codes || 0),
+      CodigosDiferencia: Number(row.difference_codes || 0),
+      ValorSistema: Number(row.system_value || 0),
+      ValorContado: Number(row.counted_value || 0),
+      ValorSobrante: Number(row.surplus_value || 0),
+      ValorFaltante: Number(row.missing_value || 0),
+      DiferenciaNeta: Number(row.net_value_diff || 0),
+      DiferenciaAbs: Number(row.abs_value_diff || 0),
+      ERI: Number(row.eri_pct || 0),
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Inventarios finalizados");
+    XLSX.writeFile(wb, `inventarios-finalizados-${finishedReportFrom}-${finishedReportTo}.xlsx`);
   }
 
   async function loadPreparationData(sessionId: string) {
@@ -2929,6 +3055,7 @@ export default function InventariosPage() {
     }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
+    const useFrozenSnapshot = Boolean(summarySession?.stock_frozen_at);
     const [snapshotRows, countRows, observationRows, nonInventoryRows, recountCountRows, recountItemRows, validationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_stock_snapshot", "*", sessionId, "sku"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,description,unit,quantity,cost_snapshot", sessionId, "sku"),
@@ -2939,7 +3066,7 @@ export default function InventariosPage() {
       loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
     const { validationCountRows, validationItemRows } = validationRows;
-    const liveStockBySku = await loadStockGeneralBySkuForSession(sessionId, [
+    const liveStockBySku = useFrozenSnapshot ? new Map<string, StockGeneralRow>() : await loadStockGeneralBySkuForSession(sessionId, [
         ...snapshotRows.map(row => row.sku),
         ...countRows.map(row => row.sku),
         ...recountCountRows.map(row => row.sku),
@@ -3054,10 +3181,10 @@ export default function InventariosPage() {
       const snapshotStock = Number(snap.system_stock || 0);
       const protectedOkStock = counted > 0 && counted === snapshotStock;
       const liveStock = liveStockBySku.get(normalizeCode(snap.sku).toUpperCase());
-      const systemStock = protectedOkStock ? snapshotStock : Number(liveStock?.stock || 0);
+      const systemStock = useFrozenSnapshot || protectedOkStock ? snapshotStock : Number(liveStock?.stock || 0);
       if (systemStock <= 0 && counted <= 0) continue;
       productIdsInSnapshot.add(snap.product_id);
-      const cost = protectedOkStock ? Number(snap.cost || 0) : Number(liveStock?.costo ?? snap.cost ?? 0);
+      const cost = useFrozenSnapshot || protectedOkStock ? Number(snap.cost || 0) : Number(liveStock?.costo ?? snap.cost ?? 0);
       const diff = counted - systemStock;
       rows.push({
         product_id: snap.product_id,
@@ -3093,8 +3220,8 @@ export default function InventariosPage() {
         : (assignedValidationByProduct.has(row.product_id) || countedValidationByProduct.has(row.product_id)) ? "assigned" as const : "no" as const;
       const counted = validationQty ?? recountedQty ?? countedOriginal;
       const liveStock = liveStockBySku.get(normalizeCode(row.sku).toUpperCase());
-      const systemStock = Number(liveStock?.stock || 0);
-      const cost = Number(liveStock?.costo ?? row.cost_snapshot ?? 0);
+      const systemStock = useFrozenSnapshot ? 0 : Number(liveStock?.stock || 0);
+      const cost = useFrozenSnapshot ? Number(row.cost_snapshot || 0) : Number(liveStock?.costo ?? row.cost_snapshot ?? 0);
       const diff = counted - systemStock;
       rows.push({
         product_id: row.product_id,
@@ -6532,7 +6659,7 @@ export default function InventariosPage() {
             </div>
           )}
 
-          {isValidator && selectedSessionId && (
+          {isValidator && (selectedSessionId || user?.role === "Administrador") && (
             <InventoryTabs
               activeTab={validatorTab}
               canManageInventory={canManageInventory}
@@ -6540,6 +6667,111 @@ export default function InventariosPage() {
               validationEnabled={Boolean(selectedSession?.validation_enabled)}
               onTabChange={setValidatorTab}
             />
+          )}
+
+          {isValidator && user?.role === "Administrador" && validatorTab === "reportes" && (
+            <section className="space-y-4 rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-black">Reporte de inventarios finalizados</h2>
+                  <p className="text-xs text-slate-500">Incluye solo inventarios generales finalizados dentro del rango.</p>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="grid gap-1 text-xs font-black text-slate-500">
+                    Desde
+                    <input
+                      type="date"
+                      value={finishedReportFrom}
+                      onChange={event => setFinishedReportFrom(event.target.value)}
+                      className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs font-black text-slate-500">
+                    Hasta
+                    <input
+                      type="date"
+                      value={finishedReportTo}
+                      onChange={event => setFinishedReportTo(event.target.value)}
+                      className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void loadFinishedGeneralInventoryReport()}
+                    disabled={finishedReportLoading}
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40"
+                  >
+                    {finishedReportLoading ? "Cargando..." : "Generar"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exportFinishedGeneralInventoryReport}
+                    disabled={finishedReportLoading || finishedReportRows.length === 0}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700 disabled:opacity-40"
+                  >
+                    <Download size={16} /> Excel
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <MiniMetric label="Inventarios" value={number2(finishedReportTotals.inventories)} />
+                <MiniMetric label="Codigos" value={number2(finishedReportTotals.totalCodes)} />
+                <MiniMetric label="OK" value={number2(finishedReportTotals.okCodes)} />
+                <MiniMetric label="Con diferencia" value={number2(finishedReportTotals.differenceCodes)} />
+                <MiniMetric label="Dif. valorizada" value={money(finishedReportTotals.netValueDiff)} />
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border">
+                <table className="w-full min-w-[1320px] text-xs">
+                  <thead className="bg-slate-100 text-slate-600">
+                    <tr>
+                      <th className="border p-2 text-left">Inventario</th>
+                      <th className="border p-2 text-left">Tienda</th>
+                      <th className="border p-2 text-left">Finalizado</th>
+                      <th className="border p-2 text-left">Usuario</th>
+                      <th className="border p-2 text-right">Codigos</th>
+                      <th className="border p-2 text-right">Contados</th>
+                      <th className="border p-2 text-right">OK</th>
+                      <th className="border p-2 text-right">No contados</th>
+                      <th className="border p-2 text-right">Sobrantes</th>
+                      <th className="border p-2 text-right">Faltantes</th>
+                      <th className="border p-2 text-right">ERI</th>
+                      <th className="border p-2 text-right">Valor sistema</th>
+                      <th className="border p-2 text-right">Dif. neta</th>
+                      <th className="border p-2 text-right">Dif. abs.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {finishedReportRows.map(row => (
+                      <tr key={row.session_id} className="hover:bg-slate-50">
+                        <td className="border p-2 font-black text-slate-900">{row.inventory_name}</td>
+                        <td className="border p-2 font-semibold">{row.store_name || "-"}</td>
+                        <td className="border p-2">{row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "-"}</td>
+                        <td className="border p-2">{row.finished_by_name || "-"}</td>
+                        <td className="border p-2 text-right font-bold">{number2(Number(row.total_codes || 0))}</td>
+                        <td className="border p-2 text-right font-bold">{number2(Number(row.counted_codes || 0))}</td>
+                        <td className="border p-2 text-right font-bold text-green-700">{number2(Number(row.ok_codes || 0))}</td>
+                        <td className="border p-2 text-right font-bold">{number2(Number(row.no_counted_codes || 0))}</td>
+                        <td className="border p-2 text-right font-bold text-blue-700">{number2(Number(row.surplus_codes || 0))}</td>
+                        <td className="border p-2 text-right font-bold text-red-700">{number2(Number(row.missing_codes || 0))}</td>
+                        <td className="border p-2 text-right font-black">{number2(Number(row.eri_pct || 0))}%</td>
+                        <td className="border p-2 text-right font-black">{money(Number(row.system_value || 0))}</td>
+                        <td className={`border p-2 text-right font-black ${Number(row.net_value_diff || 0) < 0 ? "text-red-700" : "text-blue-700"}`}>{money(Number(row.net_value_diff || 0))}</td>
+                        <td className="border p-2 text-right font-black">{money(Number(row.abs_value_diff || 0))}</td>
+                      </tr>
+                    ))}
+                    {finishedReportRows.length === 0 && (
+                      <tr>
+                        <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
+                          Genera el reporte para ver inventarios finalizados.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
 
           {canManageInventory && validatorTab === "preparacion" && (

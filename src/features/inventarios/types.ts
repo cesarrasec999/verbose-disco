@@ -1,6 +1,6 @@
 export type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 export type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
-export type ValidatorTab = "preparacion" | "registros" | "productividad" | "reconteo" | "validacion" | "resumen" | "usuarios";
+export type ValidatorTab = "preparacion" | "registros" | "productividad" | "reconteo" | "validacion" | "resumen" | "reportes" | "usuarios";
 export type OperatorMode = "conteo" | "consulta" | "reconteo";
 export type RecountManagerTab = "pendientes" | "asignados" | "manual" | "registros";
 export type RecountAssignedStatusFilter = "all" | "pending" | "counted";
