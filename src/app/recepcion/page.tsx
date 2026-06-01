@@ -753,11 +753,13 @@ export default function RecepcionPage() {
     const sourceLines = activeGroup?.source_lines || [activeLine];
     const rows = sourceLines.map(line => {
       const input = editLineInputs[line.id];
-      const qty = num(input?.qty ?? (sourceLines.length === 1 ? editQty : 0));
+      const rawQty = input?.qty ?? (sourceLines.length === 1 ? String(editQty) : "");
+      const hasQty = String(rawQty).trim() !== "";
+      const qty = num(rawQty);
       const notes = (input?.notes ?? editNotes).trim();
-      return { line, qty, notes };
-    }).filter(row => row.qty > 0);
-    if (rows.length === 0) { showMsg("Ingresa al menos una cantidad mayor a 0."); return; }
+      return { line, qty, notes, hasQty };
+    }).filter(row => row.hasQty && row.qty >= 0);
+    if (rows.length === 0) { showMsg("Ingresa una cantidad para registrar la linea."); return; }
     setSaving(true);
     try {
       const payload = rows.map(row => ({
@@ -799,7 +801,7 @@ export default function RecepcionPage() {
   async function saveEditScan() {
     if (!editingScanId || !user) return;
     const qty = num(editScanQty);
-    if (qty <= 0) { showMsg("La cantidad debe ser mayor a 0."); return; }
+    if (qty < 0) { showMsg("La cantidad no puede ser negativa."); return; }
     setSaving(true);
     try {
       const { error } = await supabase.from("reception_scans")
@@ -898,6 +900,22 @@ export default function RecepcionPage() {
 
   async function markComplete() {
     if (!selected || !user) return;
+    const missingLine = progressLines.find(line => !consolidatedHasScan(line));
+    if (missingLine) {
+      const targetLine = missingLine.source_lines[0] || missingLine;
+      setActiveLine(targetLine);
+      prepareLineInputs(targetLine);
+      setEditLineInputs(Object.fromEntries(
+        missingLine.source_lines.map(line => [line.id, { qty: "0", notes: "No recibido" }])
+      ));
+      setEditQty(0);
+      setEditNotes("No recibido");
+      setTimeout(() => {
+        lineRefs.current[missingLine.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+      window.alert(`Falta registrar el codigo ${missingLine.product_code}. Si no se recibio, guarda esta linea con cantidad 0 antes de marcar el requerimiento como completado.`);
+      return;
+    }
     if (!window.confirm("¿Marcar este requerimiento como completado?")) return;
     setSaving(true);
     try {
@@ -1240,6 +1258,15 @@ export default function RecepcionPage() {
     line.line_ids.reduce((sum, lineId) => sum + (scanTotalByLine.get(lineId) || 0), 0),
   [scanTotalByLine]);
 
+  const consolidatedHasScan = useCallback((line: ConsolidatedReceptionLine) =>
+    line.line_ids.some(lineId => (scansByLine.get(lineId) || []).length > 0),
+  [scansByLine]);
+
+  const progressLines = useMemo(
+    () => consolidatedLines.filter(line => num(line.qty_requested) > 0),
+    [consolidatedLines]
+  );
+
   const prepareLineInputs = useCallback((line: ReceptionLine, defaultNotes = "") => {
     const group = consolidatedLines.find(item => item.line_ids.includes(line.id));
     const sourceLines = group?.source_lines || [line];
@@ -1251,8 +1278,8 @@ export default function RecepcionPage() {
     setEditLineInputs(next);
   }, [consolidatedLines]);
 
-  const linesScanned = useMemo(() => consolidatedLines.filter(l => consolidatedScanTotal(l) > 0).length, [consolidatedLines, consolidatedScanTotal]);
-  const receptionProgressPct = consolidatedLines.length > 0 ? Math.round((linesScanned / consolidatedLines.length) * 100) : 0;
+  const linesScanned = useMemo(() => progressLines.filter(line => consolidatedHasScan(line)).length, [consolidatedHasScan, progressLines]);
+  const receptionProgressPct = progressLines.length > 0 ? Math.round((linesScanned / progressLines.length) * 100) : 0;
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -1575,10 +1602,10 @@ export default function RecepcionPage() {
               {selected.request_date  && <span>Tránsito: <b className="text-teal-600">{dateShort(selected.request_date)}</b></span>}
               {selected.transfer_count > 1 && <span><b className="text-slate-600">{selected.transfer_count}</b> transferencias agrupadas</span>}
             </div>
-            {consolidatedLines.length > 0 && (
+            {progressLines.length > 0 && (
               <div className="mt-3">
                 <div className="flex justify-between text-xs font-black text-slate-500 mb-1">
-                  <span>{linesScanned} / {consolidatedLines.length} lineas recepcionadas</span>
+                  <span>{linesScanned} / {progressLines.length} lineas recepcionadas</span>
                   <span>{receptionProgressPct}%</span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100">
@@ -1730,7 +1757,7 @@ export default function RecepcionPage() {
                           );
                         })}
                         <div className="flex gap-2">
-                          <button onClick={saveScan} disabled={saving || line.source_lines.every(sourceLine => num(editLineInputs[sourceLine.id]?.qty) <= 0)}
+                          <button onClick={saveScan} disabled={saving || line.source_lines.every(sourceLine => String(editLineInputs[sourceLine.id]?.qty ?? "").trim() === "")}
                             className="flex-1 rounded-xl bg-teal-600 text-white py-2.5 text-sm font-black disabled:opacity-50 flex items-center justify-center gap-1.5">
                             <CheckCircle2 size={15} /> {saving ? "Guardando..." : "Guardar"}
                           </button>
