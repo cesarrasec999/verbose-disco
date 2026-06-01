@@ -33,6 +33,9 @@ export type Product = {
   cost: number;
   is_active: boolean;
   system_stock?: number;
+  rotation_category?: string | null;
+  inventory_value?: number;
+  recommendation_group?: "A" | "OTRAS" | string | null;
 };
 
 export type StockGeneralRow = {

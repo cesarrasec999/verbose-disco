@@ -158,6 +158,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
     const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
+    const [assignRecommendationsLoading, setAssignRecommendationsLoading] = useState(false);
     const assignSearchRequestRef = useRef(0);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
@@ -2583,6 +2584,57 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         const nextResults = filterAssignableProducts(preferFullCodsapProducts(deduped as Product[])).slice(0, 500);
         setAssignResults(nextResults);
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
+    }
+
+    async function loadAssignmentRecommendations() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
+        if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
+        if (!valStoreId || valStoreId === ALL_STORES_VALUE) {
+            showMessage("Selecciona una tienda especifica para recomendar codigos.", "error");
+            return;
+        }
+        if (assignRecommendationsLoading) return;
+
+        setAssignRecommendationsLoading(true);
+        setAssignSearchNotice("");
+        try {
+            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations", {
+                p_store_id: valStoreId,
+                p_assigned_date: valDate,
+                p_a_limit: 15,
+                p_other_limit: 15,
+            });
+            if (error) {
+                setAssignSearchNotice("No se pudo generar la recomendacion. Ejecuta el SQL get_cyclic_assignment_recommendations en Supabase: " + error.message);
+                return;
+            }
+            const rows = ((data || []) as any[]).map(row => ({
+                id: String(row.product_id || row.id || ""),
+                sku: String(row.sku || ""),
+                barcode: row.barcode || null,
+                description: String(row.description || ""),
+                unit: String(row.unit || ""),
+                cost: Number(row.cost || 0),
+                is_active: true,
+                system_stock: Number(row.system_stock || 0),
+                rotation_category: row.rotation_category || null,
+                inventory_value: Number(row.inventory_value || 0),
+                recommendation_group: row.recommendation_group || null,
+            })).filter(product => product.id && product.sku) as Product[];
+
+            setAssignSearch("");
+            setAssignUnitFilter("");
+            setAssignResults(rows);
+            setAssignSelectedIds(new Set(rows.map(product => product.id)));
+            setAssignSearchNotice(rows.length > 0
+                ? `Recomendacion SQL cargada: ${rows.filter(row => row.recommendation_group === "A").length} rotacion A y ${rows.filter(row => row.recommendation_group !== "A").length} otras rotaciones.`
+                : "No se encontraron codigos recomendables con stock para esta tienda/fecha."
+            );
+        } catch (error: any) {
+            setAssignSearchNotice("No se pudo generar la recomendacion: " + (error?.message || error));
+        } finally {
+            setAssignRecommendationsLoading(false);
+        }
     }
 
     function handleAssignSearchChange(text: string) {
@@ -7152,6 +7204,19 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                             {assignUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
                                         </select>
                                     </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={loadAssignmentRecommendations}
+                                            disabled={assignRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-40"
+                                        >
+                                            {assignRecommendationsLoading ? "Calculando..." : "Recomendar 30 codigos"}
+                                        </button>
+                                        <span className="text-xs font-semibold text-slate-500">
+                                            15 rotacion A valorizados + 15 otras rotaciones valorizadas
+                                        </span>
+                                    </div>
                                     {assignSearchNotice && (
                                         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
                                             {assignSearchNotice}
@@ -7199,7 +7264,12 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="font-semibold text-slate-900 text-sm">{p.sku}</div>
                                                                 <div className="whitespace-normal break-words text-xs text-slate-600">{p.description}</div>
-                                                                <div className="text-xs text-slate-400">UM: {p.unit} · Código: {p.barcode || "—"}</div>
+                                                                <div className="text-xs text-slate-400">
+                                                                    UM: {p.unit} · Código: {p.barcode || "—"}
+                                                                    {p.rotation_category && <> · Rot: {p.rotation_category}</>}
+                                                                    {p.system_stock !== undefined && <> · Stock: {formatNumber(Number(p.system_stock || 0))}</>}
+                                                                    {p.inventory_value !== undefined && <> · Val: {formatMoney(Number(p.inventory_value || 0))}</>}
+                                                                </div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
                                                                 {alreadyAssigned ? (
@@ -8689,4 +8759,3 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         </main>
     );
 }
-
