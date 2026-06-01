@@ -414,10 +414,31 @@ export default function PickingPage() {
     });
   }, [assignmentProgressFilter, assignmentsByLine, selectedAssignedPicker, sortedVisibleLines]);
 
+  const firstScanDateByRequest = useMemo(() => {
+    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const grouped = new Map<string, string>();
+    for (const scan of scans) {
+      if (!requestIds.has(scan.request_id)) continue;
+      const scanDate = String(scan.created_at || "").slice(0, 10);
+      if (!scanDate) continue;
+      const current = grouped.get(scan.request_id);
+      if (!current || scanDate < current) grouped.set(scan.request_id, scanDate);
+    }
+    return grouped;
+  }, [scans, sourceFilteredRequests]);
+
+  const assignmentEffectiveDate = useCallback((assignment: PickingAssignment) => {
+    return assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
+  }, [firstScanDateByRequest]);
+
   const myAssignments = useMemo(() => {
     if (!user) return [];
-    return assignments.filter(assignment => assignment.picker_id === user.id || normalize(assignment.picker_name) === normalize(user.full_name));
-  }, [assignments, user]);
+    return assignments.filter(assignment => {
+      const isMine = assignment.picker_id === user.id || normalize(assignment.picker_name) === normalize(user.full_name);
+      if (!isMine) return false;
+      return sameDate(assignmentEffectiveDate(assignment), pickingDate);
+    });
+  }, [assignmentEffectiveDate, assignments, pickingDate, user]);
 
   const requesterStoreOptions = useMemo(() => {
     const myRequestIds = new Set(myAssignments.map(assignment => assignment.request_id));
@@ -478,23 +499,6 @@ export default function PickingPage() {
     }).length;
     return { requiredCodes, assignedCodes, pendingCodes: Math.max(0, requiredCodes - assignedCodes), assignedRequests };
   }, [assignments, filteredRequests, lines]);
-
-  const firstScanDateByRequest = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
-    const grouped = new Map<string, string>();
-    for (const scan of scans) {
-      if (!requestIds.has(scan.request_id)) continue;
-      const scanDate = String(scan.created_at || "").slice(0, 10);
-      if (!scanDate) continue;
-      const current = grouped.get(scan.request_id);
-      if (!current || scanDate < current) grouped.set(scan.request_id, scanDate);
-    }
-    return grouped;
-  }, [scans, sourceFilteredRequests]);
-
-  const assignmentEffectiveDate = useCallback((assignment: PickingAssignment) => {
-    return assignment.picking_date || firstScanDateByRequest.get(assignment.request_id) || assignment.created_at;
-  }, [firstScanDateByRequest]);
 
   const summaryAssignments = useMemo(() => {
     const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
@@ -808,13 +812,18 @@ export default function PickingPage() {
     [sortedMyAssignments]
   );
 
+  const filteredMyAssignmentKeys = useMemo(() =>
+    new Set(filteredMyAssignments.map(assignment => `${assignment.request_id}:${assignment.line_id}`)),
+  [filteredMyAssignments]);
+
   const operatorScanRows = useMemo(
     () => allScanRows.filter(row => {
       const isMine = row.scan.picker_id === user?.id || normalize(row.scan.picker_name) === normalize(user?.full_name);
       if (!isMine) return false;
+      if (!filteredMyAssignmentKeys.has(`${row.scan.request_id}:${row.scan.line_id}`)) return false;
       return selectedRequesterStore === "all" || requesterStoreKey(row.request) === selectedRequesterStore;
     }),
-    [allScanRows, selectedRequesterStore, user]
+    [allScanRows, filteredMyAssignmentKeys, selectedRequesterStore, user]
   );
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
@@ -2721,6 +2730,28 @@ export default function PickingPage() {
                   <p className="text-xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-black uppercase text-slate-500">Fecha asignacion</label>
+                  <input
+                    type="date"
+                    value={pickingDate}
+                    onChange={event => {
+                      setPickingDate(event.target.value);
+                      setActiveAssignmentId("");
+                    }}
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+                  />
+                  {pickingDate !== todayISO() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickingDate(todayISO());
+                        setActiveAssignmentId("");
+                      }}
+                      className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600"
+                    >
+                      Hoy
+                    </button>
+                  )}
                   <label className="text-xs font-black uppercase text-slate-500">Tienda solicitante</label>
                   <select
                     value={selectedRequesterStore}
