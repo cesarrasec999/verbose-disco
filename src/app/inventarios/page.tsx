@@ -510,7 +510,14 @@ export default function InventariosPage() {
       total: acc.total + row.total,
     }), { counted: 0, recounted: 0, validated: 0, total: 0 });
 
-    return { rows, totals, maxTotal: Math.max(1, ...rows.map(row => row.total)) };
+    return {
+      rows,
+      totals,
+      maxTotal: Math.max(1, ...rows.map(row => row.total)),
+      maxCounted: Math.max(1, ...rows.map(row => row.counted)),
+      maxRecounted: Math.max(1, ...rows.map(row => row.recounted)),
+      maxValidated: Math.max(1, ...rows.map(row => row.validated)),
+    };
   }, [counts, productivityLayerRows]);
 
   const filteredSummary = useMemo(() => {
@@ -7713,33 +7720,71 @@ export default function InventariosPage() {
                   )}
                 </div>
 
-                <div className="space-y-3">
-                  {productivityByUser.rows.map(row => {
-                    const countedWidth = row.total > 0 ? (row.counted / row.total) * 100 : 0;
-                    const recountedWidth = row.total > 0 ? (row.recounted / row.total) * 100 : 0;
-                    const validatedWidth = row.total > 0 ? (row.validated / row.total) * 100 : 0;
-                    return (
-                      <div key={row.id} className="grid gap-2 md:grid-cols-[220px_1fr_220px] md:items-center">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-black text-slate-900">{row.name}</div>
-                          <div className="text-xs font-bold text-slate-500">{row.total} codigos</div>
-                        </div>
-                        <div className="h-5 overflow-hidden rounded-full bg-slate-100">
-                          <div className="flex h-full" style={{ width: `${Math.max(4, Math.round((row.total / productivityByUser.maxTotal) * 100))}%` }}>
-                            {row.counted > 0 && <div className="h-full bg-blue-700" style={{ width: `${countedWidth}%` }} />}
-                            {row.recounted > 0 && <div className="h-full bg-amber-500" style={{ width: `${recountedWidth}%` }} />}
-                            {showValidationSummary && row.validated > 0 && <div className="h-full bg-green-600" style={{ width: `${validatedWidth}%` }} />}
+                <div className={`grid gap-4 ${showValidationSummary ? "xl:grid-cols-3" : "xl:grid-cols-2"}`}>
+                  <div className="rounded-2xl border bg-slate-50 p-3">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h3 className="font-black text-slate-900">Conteo</h3>
+                      <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">{productivityByUser.totals.counted}</span>
+                    </div>
+                    <div className="space-y-3">
+                      {productivityByUser.rows.filter(row => row.counted > 0).map(row => (
+                        <div key={`counted-${row.id}`} className="grid gap-1">
+                          <div className="flex items-center justify-between gap-2 text-xs font-black">
+                            <span className="truncate text-slate-800">{row.name}</span>
+                            <span className="text-blue-700">{row.counted}</span>
+                          </div>
+                          <div className="h-4 overflow-hidden rounded-full bg-white">
+                            <div className="h-full rounded-full bg-blue-700" style={{ width: `${Math.max(4, Math.round((row.counted / productivityByUser.maxCounted) * 100))}%` }} />
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-1 text-[11px] font-black">
-                          <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">C {row.counted}</span>
-                          <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">R {row.recounted}</span>
-                          {showValidationSummary && <span className="rounded-full bg-green-50 px-2 py-1 text-green-700">V {row.validated}</span>}
+                      ))}
+                      {productivityByUser.rows.every(row => row.counted === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin conteos.</div>}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border bg-slate-50 p-3">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h3 className="font-black text-slate-900">Reconteo</h3>
+                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">{productivityByUser.totals.recounted}</span>
+                    </div>
+                    <div className="space-y-3">
+                      {productivityByUser.rows.filter(row => row.recounted > 0).map(row => (
+                        <div key={`recounted-${row.id}`} className="grid gap-1">
+                          <div className="flex items-center justify-between gap-2 text-xs font-black">
+                            <span className="truncate text-slate-800">{row.name}</span>
+                            <span className="text-amber-700">{row.recounted}</span>
+                          </div>
+                          <div className="h-4 overflow-hidden rounded-full bg-white">
+                            <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.max(4, Math.round((row.recounted / productivityByUser.maxRecounted) * 100))}%` }} />
+                          </div>
                         </div>
+                      ))}
+                      {productivityByUser.rows.every(row => row.recounted === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin reconteos.</div>}
+                    </div>
+                  </div>
+
+                  {showValidationSummary && (
+                    <div className="rounded-2xl border bg-slate-50 p-3">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <h3 className="font-black text-slate-900">Validacion</h3>
+                        <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">{productivityByUser.totals.validated}</span>
                       </div>
-                    );
-                  })}
-                  {productivityByUser.rows.length === 0 && <div className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">Sin codigos para graficar.</div>}
+                      <div className="space-y-3">
+                        {productivityByUser.rows.filter(row => row.validated > 0).map(row => (
+                          <div key={`validated-${row.id}`} className="grid gap-1">
+                            <div className="flex items-center justify-between gap-2 text-xs font-black">
+                              <span className="truncate text-slate-800">{row.name}</span>
+                              <span className="text-green-700">{row.validated}</span>
+                            </div>
+                            <div className="h-4 overflow-hidden rounded-full bg-white">
+                              <div className="h-full rounded-full bg-green-600" style={{ width: `${Math.max(4, Math.round((row.validated / productivityByUser.maxValidated) * 100))}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                        {productivityByUser.rows.every(row => row.validated === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin validaciones.</div>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
