@@ -115,6 +115,8 @@ type ProductivityLayerRow = {
   sku: string;
 };
 
+type ProductivityAssignedRow = ProductivityLayerRow;
+
 function summaryRecountLabel(row: Pick<SummaryRow, "re_counted" | "recount_status">) {
   const status = row.recount_status || (row.re_counted ? "counted" : "no");
   if (status === "counted") return "Si";
@@ -163,6 +165,7 @@ export default function InventariosPage() {
   const [savingEmptyLocationId, setSavingEmptyLocationId] = useState<string | null>(null);
   const [counts, setCounts] = useState<CountRow[]>([]);
   const [productivityLayerRows, setProductivityLayerRows] = useState<ProductivityLayerRow[]>([]);
+  const [productivityAssignedRows, setProductivityAssignedRows] = useState<ProductivityAssignedRow[]>([]);
   const [operatorRecordsPage, setOperatorRecordsPage] = useState(1);
   const [operatorRecordsTotal, setOperatorRecordsTotal] = useState(0);
   const [operatorRecordsLoading, setOperatorRecordsLoading] = useState(false);
@@ -459,6 +462,8 @@ export default function InventariosPage() {
       counted: Set<string>;
       recounted: Set<string>;
       validated: Set<string>;
+      assignedRecount: Set<string>;
+      assignedValidation: Set<string>;
     };
     const grouped = new Map<string, Bucket>();
     const ensureBucket = (operatorId: string, operatorName: string | null | undefined) => {
@@ -474,6 +479,8 @@ export default function InventariosPage() {
         counted: new Set<string>(),
         recounted: new Set<string>(),
         validated: new Set<string>(),
+        assignedRecount: new Set<string>(),
+        assignedValidation: new Set<string>(),
       };
       grouped.set(key, next);
       return next;
@@ -493,6 +500,13 @@ export default function InventariosPage() {
       if (row.layer === "validation") bucket.validated.add(key);
       else bucket.recounted.add(key);
     }
+    for (const row of productivityAssignedRows) {
+      const key = codeKey(row.product_id, row.sku);
+      if (!key) continue;
+      const bucket = ensureBucket(row.operator_id, row.operator_name);
+      if (row.layer === "validation") bucket.assignedValidation.add(key);
+      else bucket.assignedRecount.add(key);
+    }
 
     const rows = [...grouped.values()].map(row => ({
       id: row.id,
@@ -500,6 +514,8 @@ export default function InventariosPage() {
       counted: row.counted.size,
       recounted: row.recounted.size,
       validated: row.validated.size,
+      assignedRecount: row.assignedRecount.size,
+      assignedValidation: row.assignedValidation.size,
       total: row.counted.size + row.recounted.size + row.validated.size,
     })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
 
@@ -507,8 +523,10 @@ export default function InventariosPage() {
       counted: acc.counted + row.counted,
       recounted: acc.recounted + row.recounted,
       validated: acc.validated + row.validated,
+      assignedRecount: acc.assignedRecount + row.assignedRecount,
+      assignedValidation: acc.assignedValidation + row.assignedValidation,
       total: acc.total + row.total,
-    }), { counted: 0, recounted: 0, validated: 0, total: 0 });
+    }), { counted: 0, recounted: 0, validated: 0, assignedRecount: 0, assignedValidation: 0, total: 0 });
 
     return {
       rows,
@@ -518,7 +536,7 @@ export default function InventariosPage() {
       maxRecounted: Math.max(1, ...rows.map(row => row.recounted)),
       maxValidated: Math.max(1, ...rows.map(row => row.validated)),
     };
-  }, [counts, productivityLayerRows]);
+  }, [counts, productivityAssignedRows, productivityLayerRows]);
 
   const filteredSummary = useMemo(() => {
     const q = summaryQuery.trim().toLowerCase();
@@ -1792,18 +1810,62 @@ export default function InventariosPage() {
     })).filter(row => row.operator_id && (row.product_id || row.sku)) as ProductivityLayerRow[];
   }
 
+  async function loadProductivityAssignedRows(sessionId: string, layer: "recount" | "validation") {
+    const table = layer === "validation" ? "general_inventory_validation_items" : "general_inventory_recount_items";
+    const rows = await loadPagedSessionRows(
+      table,
+      "assigned_operator_id,product_id,sku,status",
+      sessionId,
+      "assigned_operator_id"
+    );
+    return rows.map((row: any) => ({
+      layer,
+      operator_id: String(row.assigned_operator_id || ""),
+      operator_name: null,
+      product_id: String(row.product_id || ""),
+      sku: String(row.sku || ""),
+      status: String(row.status || ""),
+    }))
+      .filter(row => row.operator_id && row.status !== "cancelled" && (row.product_id || row.sku))
+      .map(({ status, ...row }) => row) as ProductivityAssignedRow[];
+  }
+
+  async function loadOperatorNameMap(operatorIds: string[]) {
+    const ids = [...new Set(operatorIds.filter(Boolean))];
+    const names = new Map<string, string>();
+    for (let i = 0; i < ids.length; i += 500) {
+      const { data, error } = await supabase
+        .from("general_inventory_operators")
+        .select("id,full_name")
+        .in("id", ids.slice(i, i + 500));
+      if (error) throw error;
+      for (const row of data || []) names.set(String(row.id), String(row.full_name || "Sin usuario"));
+    }
+    return names;
+  }
+
   async function loadProductivityData(sessionId: string) {
     try {
       const validationEnabled = Boolean((sessions.find(session => session.id === sessionId) || selectedSession)?.validation_enabled);
-      const [countRows, pendingRows, recountRows, validationRows] = await Promise.all([
+      const [countRows, pendingRows, recountRows, validationRows, assignedRecountRows, assignedValidationRows] = await Promise.all([
         loadAllCounts(sessionId, null),
         loadPendingOfflineCountRows(sessionId, null),
         loadProductivityLayerRows(sessionId, "recount"),
         validationEnabled ? loadProductivityLayerRows(sessionId, "validation") : Promise.resolve([] as ProductivityLayerRow[]),
+        loadProductivityAssignedRows(sessionId, "recount"),
+        validationEnabled ? loadProductivityAssignedRows(sessionId, "validation") : Promise.resolve([] as ProductivityAssignedRow[]),
       ]);
       const rows = mergePendingCounts(countRows, pendingRows);
-      setCounts(rows);
-      setProductivityLayerRows([...recountRows, ...validationRows]);
+      const nextLayerRows = [...recountRows, ...validationRows];
+      const nextAssignedRows = [...assignedRecountRows, ...assignedValidationRows];
+      const operatorNames = await loadOperatorNameMap([
+        ...rows.map(row => row.operator_id),
+        ...nextLayerRows.map(row => row.operator_id),
+        ...nextAssignedRows.map(row => row.operator_id),
+      ]);
+      setCounts(rows.map(row => ({ ...row, operator_name: row.operator_name || operatorNames.get(row.operator_id) || null })));
+      setProductivityLayerRows(nextLayerRows.map(row => ({ ...row, operator_name: row.operator_name || operatorNames.get(row.operator_id) || null })));
+      setProductivityAssignedRows(nextAssignedRows.map(row => ({ ...row, operator_name: row.operator_name || operatorNames.get(row.operator_id) || null })));
       setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
       markSessionTabLoaded(sessionId, "productividad");
     } catch (error) {
@@ -7709,13 +7771,13 @@ export default function InventariosPage() {
                     <div className="text-xs font-black text-slate-500">Contados</div>
                   </div>
                   <div className="rounded-xl border bg-amber-50 p-3 text-center">
-                    <div className="text-xl font-black text-amber-700">{productivityByUser.totals.recounted}</div>
-                    <div className="text-xs font-black text-slate-500">Recontados</div>
+                    <div className="text-xl font-black text-amber-700">{productivityByUser.totals.recounted}/{productivityByUser.totals.assignedRecount}</div>
+                    <div className="text-xs font-black text-slate-500">Reconteo</div>
                   </div>
                   {showValidationSummary && (
                     <div className="rounded-xl border bg-green-50 p-3 text-center">
-                      <div className="text-xl font-black text-green-700">{productivityByUser.totals.validated}</div>
-                      <div className="text-xs font-black text-slate-500">Validados</div>
+                      <div className="text-xl font-black text-green-700">{productivityByUser.totals.validated}/{productivityByUser.totals.assignedValidation}</div>
+                      <div className="text-xs font-black text-slate-500">Validacion</div>
                     </div>
                   )}
                 </div>
@@ -7745,21 +7807,26 @@ export default function InventariosPage() {
                   <div className="rounded-2xl border bg-slate-50 p-3">
                     <div className="mb-3 flex items-center justify-between gap-2">
                       <h3 className="font-black text-slate-900">Reconteo</h3>
-                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">{productivityByUser.totals.recounted}</span>
+                      <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">{productivityByUser.totals.recounted}/{productivityByUser.totals.assignedRecount}</span>
                     </div>
                     <div className="space-y-3">
-                      {productivityByUser.rows.filter(row => row.recounted > 0).sort((a, b) => b.recounted - a.recounted || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => (
+                      {productivityByUser.rows.filter(row => row.recounted > 0 || row.assignedRecount > 0).sort((a, b) => b.assignedRecount - a.assignedRecount || b.recounted - a.recounted || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => {
+                        const assigned = Math.max(row.assignedRecount, row.recounted);
+                        const percent = assigned > 0 ? Math.min(100, Math.round((row.recounted / assigned) * 100)) : 0;
+                        return (
                         <div key={`recounted-${row.id}`} className="grid gap-1">
                           <div className="flex items-center justify-between gap-2 text-xs font-black">
                             <span className="truncate text-slate-800">{row.name}</span>
-                            <span className="text-amber-700">{row.recounted}</span>
+                            <span className="text-amber-700">{row.recounted}/{row.assignedRecount} · {percent}%</span>
                           </div>
                           <div className="h-4 overflow-hidden rounded-full bg-white">
-                            <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.max(4, Math.round((row.recounted / productivityByUser.maxRecounted) * 100))}%` }} />
+                            <div className="h-full rounded-full bg-amber-500" style={{ width: `${Math.max(row.recounted > 0 ? 4 : 0, percent)}%` }} />
                           </div>
+                          {row.recounted > row.assignedRecount && <div className="text-[10px] font-black text-amber-700">Extra: {row.recounted - row.assignedRecount}</div>}
                         </div>
-                      ))}
-                      {productivityByUser.rows.every(row => row.recounted === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin reconteos.</div>}
+                        );
+                      })}
+                      {productivityByUser.rows.every(row => row.recounted === 0 && row.assignedRecount === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin reconteos.</div>}
                     </div>
                   </div>
 
@@ -7767,21 +7834,26 @@ export default function InventariosPage() {
                     <div className="rounded-2xl border bg-slate-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-2">
                         <h3 className="font-black text-slate-900">Validacion</h3>
-                        <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">{productivityByUser.totals.validated}</span>
+                        <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">{productivityByUser.totals.validated}/{productivityByUser.totals.assignedValidation}</span>
                       </div>
                       <div className="space-y-3">
-                        {productivityByUser.rows.filter(row => row.validated > 0).sort((a, b) => b.validated - a.validated || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => (
-                          <div key={`validated-${row.id}`} className="grid gap-1">
-                            <div className="flex items-center justify-between gap-2 text-xs font-black">
-                              <span className="truncate text-slate-800">{row.name}</span>
-                              <span className="text-green-700">{row.validated}</span>
+                        {productivityByUser.rows.filter(row => row.validated > 0 || row.assignedValidation > 0).sort((a, b) => b.assignedValidation - a.assignedValidation || b.validated - a.validated || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => {
+                          const assigned = Math.max(row.assignedValidation, row.validated);
+                          const percent = assigned > 0 ? Math.min(100, Math.round((row.validated / assigned) * 100)) : 0;
+                          return (
+                            <div key={`validated-${row.id}`} className="grid gap-1">
+                              <div className="flex items-center justify-between gap-2 text-xs font-black">
+                                <span className="truncate text-slate-800">{row.name}</span>
+                                <span className="text-green-700">{row.validated}/{row.assignedValidation} · {percent}%</span>
+                              </div>
+                              <div className="h-4 overflow-hidden rounded-full bg-white">
+                                <div className="h-full rounded-full bg-green-600" style={{ width: `${Math.max(row.validated > 0 ? 4 : 0, percent)}%` }} />
+                              </div>
+                              {row.validated > row.assignedValidation && <div className="text-[10px] font-black text-green-700">Extra: {row.validated - row.assignedValidation}</div>}
                             </div>
-                            <div className="h-4 overflow-hidden rounded-full bg-white">
-                              <div className="h-full rounded-full bg-green-600" style={{ width: `${Math.max(4, Math.round((row.validated / productivityByUser.maxValidated) * 100))}%` }} />
-                            </div>
-                          </div>
-                        ))}
-                        {productivityByUser.rows.every(row => row.validated === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin validaciones.</div>}
+                          );
+                        })}
+                        {productivityByUser.rows.every(row => row.validated === 0 && row.assignedValidation === 0) && <div className="rounded-xl bg-white p-5 text-center text-sm text-slate-400">Sin validaciones.</div>}
                       </div>
                     </div>
                   )}
