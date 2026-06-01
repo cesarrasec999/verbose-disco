@@ -7727,7 +7727,7 @@ export default function InventariosPage() {
                       <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">{productivityByUser.totals.counted}</span>
                     </div>
                     <div className="space-y-3">
-                      {productivityByUser.rows.filter(row => row.counted > 0).map(row => (
+                      {productivityByUser.rows.filter(row => row.counted > 0).sort((a, b) => b.counted - a.counted || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => (
                         <div key={`counted-${row.id}`} className="grid gap-1">
                           <div className="flex items-center justify-between gap-2 text-xs font-black">
                             <span className="truncate text-slate-800">{row.name}</span>
@@ -7748,7 +7748,7 @@ export default function InventariosPage() {
                       <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">{productivityByUser.totals.recounted}</span>
                     </div>
                     <div className="space-y-3">
-                      {productivityByUser.rows.filter(row => row.recounted > 0).map(row => (
+                      {productivityByUser.rows.filter(row => row.recounted > 0).sort((a, b) => b.recounted - a.recounted || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => (
                         <div key={`recounted-${row.id}`} className="grid gap-1">
                           <div className="flex items-center justify-between gap-2 text-xs font-black">
                             <span className="truncate text-slate-800">{row.name}</span>
@@ -7770,7 +7770,7 @@ export default function InventariosPage() {
                         <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-black text-green-700">{productivityByUser.totals.validated}</span>
                       </div>
                       <div className="space-y-3">
-                        {productivityByUser.rows.filter(row => row.validated > 0).map(row => (
+                        {productivityByUser.rows.filter(row => row.validated > 0).sort((a, b) => b.validated - a.validated || a.name.localeCompare(b.name, "es", { sensitivity: "base" })).map(row => (
                           <div key={`validated-${row.id}`} className="grid gap-1">
                             <div className="flex items-center justify-between gap-2 text-xs font-black">
                               <span className="truncate text-slate-800">{row.name}</span>
