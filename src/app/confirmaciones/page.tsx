@@ -19,6 +19,7 @@ type PaymentConfirmation = {
   cashier_id: string | null;
   cashier_name: string;
   document_reference: string;
+  cashier_observation: string | null;
   amount: number;
   payment_method: PaymentMethod;
   payment_purpose: PaymentPurpose;
@@ -203,6 +204,7 @@ export default function ConfirmacionesPage() {
   const [messageType, setMessageType] = useState<"info" | "success" | "error">("info");
 
   const [documentReference, setDocumentReference] = useState("");
+  const [cashierObservation, setCashierObservation] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Yape");
   const [paymentPurpose, setPaymentPurpose] = useState<PaymentPurpose>("Anticipo");
@@ -214,6 +216,7 @@ export default function ConfirmacionesPage() {
   const [filterDate, setFilterDate] = useState(todayISO());
   const [filterStoreId, setFilterStoreId] = useState("");
   const [filterUsageStatus, setFilterUsageStatus] = useState<"todos" | UsageStatus>("todos");
+  const [filterPaymentPurpose, setFilterPaymentPurpose] = useState<"todos" | PaymentPurpose>("todos");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<PaymentConfirmation | null>(null);
   const [operationNumber, setOperationNumber] = useState("");
@@ -246,10 +249,12 @@ export default function ConfirmacionesPage() {
       : [...rows].sort((a, b) => new Date(b.registered_at).getTime() - new Date(a.registered_at).getTime());
     return orderedRows.filter((row) => {
       if (filterUsageStatus !== "todos" && (row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo")) !== filterUsageStatus) return false;
+      if (!canValidate && filterPaymentPurpose !== "todos" && (row.payment_purpose || "Anticipo") !== filterPaymentPurpose) return false;
       if (!term) return true;
       return [
         row.store_name,
         row.cashier_name,
+        row.cashier_observation || "",
         row.document_reference,
         row.operation_number || "",
         row.bank || "",
@@ -259,7 +264,7 @@ export default function ConfirmacionesPage() {
         row.status,
       ].some((value) => value.toLowerCase().includes(term));
     });
-  }, [canValidate, filterUsageStatus, rows, search]);
+  }, [canValidate, filterPaymentPurpose, filterUsageStatus, rows, search]);
   const pendingUnopenedCount = useMemo(() => rows.filter((row) => row.status === "Pendiente" && !row.opened_at).length, [rows]);
   const answeredRows = useMemo(() => rows.filter((row) => responseMs(row) != null), [rows]);
   const averageResponseMs = useMemo(() => {
@@ -515,6 +520,7 @@ export default function ConfirmacionesPage() {
       cashier_id: user.id,
       cashier_name: user.full_name,
       document_reference: documentReference.trim(),
+      cashier_observation: cashierObservation.trim() || null,
       amount: parsedAmount,
       payment_method: paymentMethod,
       payment_purpose: paymentPurpose,
@@ -529,6 +535,7 @@ export default function ConfirmacionesPage() {
       return;
     }
     setDocumentReference("");
+    setCashierObservation("");
     setAmount("");
     setPaymentMethod("Yape");
     setPaymentPurpose("Anticipo");
@@ -751,6 +758,10 @@ export default function ConfirmacionesPage() {
                   <span className="mb-1 block text-xs font-black uppercase text-slate-500">Documento referencia</span>
                   <input value={documentReference} onChange={(event) => setDocumentReference(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold outline-none focus:border-rose-500" placeholder="Boleta, pedido, comprobante..." />
                 </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-black uppercase text-slate-500">Observaciones</span>
+                  <textarea value={cashierObservation} onChange={(event) => setCashierObservation(event.target.value)} className="min-h-20 w-full rounded-xl border px-3 py-3 text-sm font-bold outline-none focus:border-rose-500" placeholder="Opcional" />
+                </label>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="block">
                     <span className="mb-1 block text-xs font-black uppercase text-slate-500">Monto</span>
@@ -791,6 +802,20 @@ export default function ConfirmacionesPage() {
                 <button onClick={createConfirmation} disabled={saving} className="w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-50">
                   {saving ? "Guardando..." : "Guardar solicitud"}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {!canValidate && (
+            <div className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-base font-black"><Search size={18} /> Filtros de mis registros</div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <input type="date" value={filterDate} onChange={(event) => setFilterDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" />
+                <select value={filterPaymentPurpose} onChange={(event) => setFilterPaymentPurpose(event.target.value as "todos" | PaymentPurpose)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
+                  <option value="todos">Todos los tipos</option>
+                  <option value="Anticipo">Anticipo</option>
+                  <option value="Pago total">Pago total</option>
+                </select>
               </div>
             </div>
           )}
@@ -865,9 +890,13 @@ export default function ConfirmacionesPage() {
                     {!row.opened_at && row.status === "Pendiente" && <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-black text-red-700">Nuevo</span>}
                     <span className="font-black">{row.store_name}</span>
                     <span className="text-sm font-bold text-slate-500">{formatMoney(row.amount)}</span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-black text-slate-700">
+                      Respuesta: {formatDurationMs(responseMs(row))}
+                    </span>
                   </div>
                   <div className="mt-2 grid gap-1 text-sm font-semibold text-slate-600 sm:grid-cols-3">
                     <span>Doc: {row.document_reference}</span>
+                    {row.cashier_observation && <span>Obs: {row.cashier_observation}</span>}
                     <span>Cajero: {row.cashier_name}</span>
                     <span>Registro: {formatDateTime(row.registered_at)}</span>
                     <span>Medio: {row.payment_method}</span>
@@ -927,6 +956,7 @@ export default function ConfirmacionesPage() {
                   <span>Tiempo respuesta: {formatDurationMs(responseMs(selected))}</span>
                   <span>Tipo deposito: {selected.payment_purpose || "Anticipo"}</span>
                   <span>Estado de uso: {selected.usage_status || usageStatusForPurpose(selected.payment_purpose || "Anticipo")}</span>
+                  {selected.cashier_observation && <span>Observaciones: {selected.cashier_observation}</span>}
                   {selected.status !== "Pendiente" && selected.operation_number && <span>Operacion: {selected.operation_number}</span>}
                   {selected.bank && <span>Banco: {selected.bank}</span>}
                   {selected.denied_reason && <span>Razon denegado: {selected.denied_reason}</span>}

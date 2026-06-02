@@ -8,6 +8,7 @@ create table if not exists public.payment_confirmations (
   cashier_id uuid references public.cyclic_users(id) on delete set null,
   cashier_name text not null,
   document_reference text not null,
+  cashier_observation text,
   amount numeric(12,2) not null check (amount > 0),
   payment_method text not null default 'Yape' check (payment_method in ('Yape', 'Plin', 'Deposito')),
   payment_purpose text not null default 'Anticipo' check (payment_purpose in ('Anticipo', 'Pago total')),
@@ -37,6 +38,7 @@ create table if not exists public.payment_confirmations (
 alter table public.payment_confirmations
   add column if not exists denied_reason text,
   add column if not exists denied_at timestamptz,
+  add column if not exists cashier_observation text,
   add column if not exists payment_purpose text not null default 'Anticipo',
   add column if not exists usage_status text not null default 'Pendiente de uso';
 
