@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Edit3, Eye, Home, RotateCcw, Save, Search, XCircle } from "lucide-react";
+import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Edit3, Eye, Home, RotateCcw, Save, Search, Upload, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
@@ -152,6 +152,7 @@ export default function ConfirmacionesPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [rows, setRows] = useState<PaymentConfirmation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"info" | "success" | "error">("info");
 
@@ -177,7 +178,9 @@ export default function ConfirmacionesPage() {
   const [soundBlocked, setSoundBlocked] = useState(false);
   const audioRef = useRef<AudioContext | null>(null);
   const beepTimerRef = useRef<number | null>(null);
+  const realtimeRefreshRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
   const canValidate = Boolean(user && (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor"));
   const canCashier = Boolean(user && (user.role === "Cajero" || user.role === "Administrador"));
@@ -209,9 +212,11 @@ export default function ConfirmacionesPage() {
     setStores((data || []) as Store[]);
   }, []);
 
-  const loadRows = useCallback(async (currentUser: CyclicUser | null = user) => {
+  const loadRows = useCallback(async (currentUser: CyclicUser | null = user, options: { showLoading?: boolean } = {}) => {
     if (!currentUser) return;
-    setLoading(true);
+    const showLoading = options.showLoading ?? false;
+    if (showLoading) setLoading(true);
+    else setRefreshing(true);
     let query = supabase
       .from("payment_confirmations")
       .select("*")
@@ -228,7 +233,8 @@ export default function ConfirmacionesPage() {
     }
 
     const { data, error } = await query;
-    setLoading(false);
+    if (showLoading) setLoading(false);
+    else setRefreshing(false);
     if (error) {
       showMessage("No se pudieron cargar confirmaciones: " + error.message, "error");
       return;
@@ -261,13 +267,13 @@ export default function ConfirmacionesPage() {
       writeStoredUser(current);
       setUser(current);
       await loadStores();
-      await loadRows(current);
+      await loadRows(current, { showLoading: true });
     })();
   }, [loadRows, loadStores]);
 
   useEffect(() => {
     if (!user) return;
-    const timer = window.setTimeout(() => void loadRows(user), 0);
+    const timer = window.setTimeout(() => void loadRows(user, { showLoading: true }), 0);
     return () => window.clearTimeout(timer);
   }, [loadRows, user]);
 
@@ -277,38 +283,45 @@ export default function ConfirmacionesPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "payment_confirmations" },
-        () => void loadRows()
+        () => {
+          if (realtimeRefreshRef.current) window.clearTimeout(realtimeRefreshRef.current);
+          realtimeRefreshRef.current = window.setTimeout(() => void loadRows(user, { showLoading: false }), 250);
+        }
       )
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
+      if (realtimeRefreshRef.current) window.clearTimeout(realtimeRefreshRef.current);
     };
-  }, [loadRows]);
+  }, [loadRows, user]);
 
   function stopSound() {
     if (beepTimerRef.current) window.clearInterval(beepTimerRef.current);
     beepTimerRef.current = null;
   }
 
-  const playBeep = useCallback(async () => {
-    if (!soundEnabled) return;
+  const playBeep = useCallback(async (force = false) => {
+    if (!soundEnabled && !force) return;
     try {
       const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtor) return;
       const ctx = audioRef.current || new AudioCtor();
       audioRef.current = ctx;
       if (ctx.state === "suspended") await ctx.resume();
-      const oscillator = ctx.createOscillator();
-      const gain = ctx.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.55);
-      oscillator.connect(gain);
-      gain.connect(ctx.destination);
-      oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.6);
+      [980, 1240, 1560].forEach((frequency, index) => {
+        const start = ctx.currentTime + index * 0.18;
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "square";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.45, start + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start(start);
+        oscillator.stop(start + 0.16);
+      });
       setSoundBlocked(false);
     } catch {
       setSoundBlocked(true);
@@ -319,7 +332,7 @@ export default function ConfirmacionesPage() {
     stopSound();
     if (!canValidate || pendingUnopenedCount === 0 || !soundEnabled) return;
     const firstBeep = window.setTimeout(() => void playBeep(), 0);
-    beepTimerRef.current = window.setInterval(() => void playBeep(), 1400);
+    beepTimerRef.current = window.setInterval(() => void playBeep(), 950);
     return () => {
       window.clearTimeout(firstBeep);
       stopSound();
@@ -328,7 +341,7 @@ export default function ConfirmacionesPage() {
 
   async function enableSound() {
     setSoundEnabled(true);
-    await playBeep();
+    await playBeep(true);
   }
 
   async function onPhotoChange(file: File | null) {
@@ -356,7 +369,7 @@ export default function ConfirmacionesPage() {
       return;
     }
     if (!photoBlob || !photoTakenAt) {
-      showMessage("La foto tomada desde la camara es obligatoria.", "error");
+      showMessage("La foto es obligatoria. Puedes tomarla con camara o subirla desde galeria.", "error");
       return;
     }
 
@@ -402,6 +415,7 @@ export default function ConfirmacionesPage() {
     setPhotoPreview("");
     setPhotoTakenAt(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
     showMessage("Solicitud registrada. Estado: Pendiente.", "success");
     await loadRows(user);
   }
@@ -573,9 +587,16 @@ export default function ConfirmacionesPage() {
                   </label>
                 </div>
                 <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void onPhotoChange(event.target.files?.[0] || null)} />
-                <button onClick={() => fileInputRef.current?.click()} className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700">
-                  <Camera size={18} /> Tomar foto
-                </button>
+                <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void onPhotoChange(event.target.files?.[0] || null)} />
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700">
+                    <Camera size={18} /> Camara
+                  </button>
+                  <button onClick={() => galleryInputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-black text-slate-700">
+                    <Upload size={18} /> Galeria
+                  </button>
+                </div>
+                {photoTakenAt && <p className="text-xs font-bold text-slate-500">Hora registrada en la foto: {formatDateTime(photoTakenAt.toISOString())}</p>}
                 {photoPreview && (
                   <div className="overflow-hidden rounded-xl border bg-black">
                     <img src={photoPreview} alt="Foto con fecha y hora" className="max-h-72 w-full object-contain" />
@@ -613,8 +634,8 @@ export default function ConfirmacionesPage() {
               <h2 className="text-base font-black">Registros</h2>
               <p className="text-xs font-bold text-slate-500">{visibleRows.length} resultados · {pendingUnopenedCount} pendientes sin abrir</p>
             </div>
-            <button onClick={() => void loadRows()} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
-              <RotateCcw size={16} /> Actualizar
+            <button onClick={() => void loadRows(user, { showLoading: true })} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
+              <RotateCcw size={16} /> {refreshing ? "Actualizando" : "Actualizar"}
             </button>
           </div>
 
