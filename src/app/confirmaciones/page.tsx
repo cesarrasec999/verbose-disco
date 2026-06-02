@@ -9,6 +9,8 @@ import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
 type ConfirmationStatus = "Pendiente" | "Confirmado" | "Denegado" | "Anulacion solicitada" | "Anulado";
 type PaymentMethod = "Yape" | "Plin" | "Deposito";
+type PaymentPurpose = "Anticipo" | "Pago total";
+type UsageStatus = "Pendiente de uso" | "Usado";
 
 type PaymentConfirmation = {
   id: string;
@@ -19,6 +21,8 @@ type PaymentConfirmation = {
   document_reference: string;
   amount: number;
   payment_method: PaymentMethod;
+  payment_purpose: PaymentPurpose;
+  usage_status: UsageStatus;
   photo_path: string;
   photo_taken_at: string;
   registered_at: string;
@@ -99,6 +103,15 @@ function formatDurationMs(value: number | null | undefined) {
   return `${hours} h ${minutes} min`;
 }
 
+function usageStatusForPurpose(purpose: PaymentPurpose): UsageStatus {
+  return purpose === "Pago total" ? "Usado" : "Pendiente de uso";
+}
+
+function usageStatusClass(status: UsageStatus | null | undefined) {
+  if (status === "Usado") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  return "bg-sky-100 text-sky-800 border-sky-200";
+}
+
 function parseAmount(value: string) {
   const normalized = value.replace(/[^\d.,]/g, "").replace(",", ".");
   const parts = normalized.split(".");
@@ -152,18 +165,22 @@ async function stampPhoto(file: File, takenAt: Date) {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(takenAt);
-  const fontSize = Math.max(24, Math.round(width * 0.035));
+  const fontSize = Math.max(18, Math.round(width * 0.022));
   ctx.font = `700 ${fontSize}px Arial, sans-serif`;
-  const padding = Math.round(fontSize * 0.65);
+  const padding = Math.round(fontSize * 0.45);
   const metrics = ctx.measureText(stamp);
   const boxW = metrics.width + padding * 2;
-  const boxH = fontSize + padding * 1.5;
-  const x = padding;
-  const y = height - boxH - padding;
-  ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
+  const boxH = fontSize + padding * 1.35;
+  const margin = Math.max(14, Math.round(width * 0.018));
+  const x = Math.max(margin, width - boxW - margin);
+  const y = margin;
+  ctx.fillStyle = "rgba(15, 23, 42, 0.58)";
   ctx.fillRect(x, y, boxW, boxH);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.72)";
+  ctx.lineWidth = Math.max(1, Math.round(width * 0.0015));
+  ctx.strokeRect(x, y, boxW, boxH);
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(stamp, x + padding, y + fontSize + padding * 0.15);
+  ctx.fillText(stamp, x + padding, y + fontSize + padding * 0.1);
 
   return new Promise<{ blob: Blob; previewUrl: string }>((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -188,6 +205,7 @@ export default function ConfirmacionesPage() {
   const [documentReference, setDocumentReference] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Yape");
+  const [paymentPurpose, setPaymentPurpose] = useState<PaymentPurpose>("Anticipo");
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
   const [photoPreview, setPhotoPreview] = useState("");
   const [photoTakenAt, setPhotoTakenAt] = useState<Date | null>(null);
@@ -195,6 +213,7 @@ export default function ConfirmacionesPage() {
 
   const [filterDate, setFilterDate] = useState(todayISO());
   const [filterStoreId, setFilterStoreId] = useState("");
+  const [filterUsageStatus, setFilterUsageStatus] = useState<"todos" | UsageStatus>("todos");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<PaymentConfirmation | null>(null);
   const [operationNumber, setOperationNumber] = useState("");
@@ -202,6 +221,7 @@ export default function ConfirmacionesPage() {
   const [editDocument, setEditDocument] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [editMethod, setEditMethod] = useState<PaymentMethod>("Yape");
+  const [editPurpose, setEditPurpose] = useState<PaymentPurpose>("Anticipo");
   const [editing, setEditing] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -212,6 +232,8 @@ export default function ConfirmacionesPage() {
   const beepTimerRef = useRef<number | null>(null);
   const realtimeRefreshRef = useRef<number | null>(null);
   const loadSeqRef = useRef(0);
+  const confirmedNotifiedRef = useRef<Set<string>>(new Set());
+  const cashierConfirmSoundReadyRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -223,6 +245,7 @@ export default function ConfirmacionesPage() {
       ? sortRows(rows)
       : [...rows].sort((a, b) => new Date(b.registered_at).getTime() - new Date(a.registered_at).getTime());
     return orderedRows.filter((row) => {
+      if (filterUsageStatus !== "todos" && (row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo")) !== filterUsageStatus) return false;
       if (!term) return true;
       return [
         row.store_name,
@@ -231,10 +254,12 @@ export default function ConfirmacionesPage() {
         row.operation_number || "",
         row.bank || "",
         row.payment_method,
+        row.payment_purpose || "",
+        row.usage_status || "",
         row.status,
       ].some((value) => value.toLowerCase().includes(term));
     });
-  }, [canValidate, rows, search]);
+  }, [canValidate, filterUsageStatus, rows, search]);
   const pendingUnopenedCount = useMemo(() => rows.filter((row) => row.status === "Pendiente" && !row.opened_at).length, [rows]);
   const answeredRows = useMemo(() => rows.filter((row) => responseMs(row) != null), [rows]);
   const averageResponseMs = useMemo(() => {
@@ -243,6 +268,32 @@ export default function ConfirmacionesPage() {
     return total / answeredRows.length;
   }, [answeredRows]);
   const pendingRowsCount = useMemo(() => rows.filter((row) => row.status === "Pendiente").length, [rows]);
+
+  const playCashierConfirmedSound = useCallback(async () => {
+    try {
+      const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtor) return;
+      const ctx = audioRef.current || new AudioCtor();
+      audioRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+      [660, 880].forEach((frequency, index) => {
+        const start = ctx.currentTime + index * 0.16;
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.28, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.18);
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start(start);
+        oscillator.stop(start + 0.2);
+      });
+    } catch {
+      // Si el navegador bloquea autoplay, no interrumpimos al cajero.
+    }
+  }, []);
 
   const showMessage = useCallback((text: string, type: "info" | "success" | "error" = "info") => {
     setMessage(text);
@@ -386,6 +437,21 @@ export default function ConfirmacionesPage() {
     return stopSound;
   }, [canValidate, pendingUnopenedCount, soundEnabled, startAlarm]);
 
+  useEffect(() => {
+    if (!user || canValidate) return;
+    for (const row of rows) {
+      if (row.status !== "Confirmado") continue;
+      if (!cashierConfirmSoundReadyRef.current) {
+        confirmedNotifiedRef.current.add(row.id);
+        continue;
+      }
+      if (confirmedNotifiedRef.current.has(row.id)) continue;
+      confirmedNotifiedRef.current.add(row.id);
+      void playCashierConfirmedSound();
+    }
+    cashierConfirmSoundReadyRef.current = true;
+  }, [canValidate, playCashierConfirmedSound, rows, user]);
+
   async function enableSound() {
     const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (AudioCtor && !audioRef.current) audioRef.current = new AudioCtor();
@@ -451,6 +517,8 @@ export default function ConfirmacionesPage() {
       document_reference: documentReference.trim(),
       amount: parsedAmount,
       payment_method: paymentMethod,
+      payment_purpose: paymentPurpose,
+      usage_status: usageStatusForPurpose(paymentPurpose),
       photo_path: path,
       photo_taken_at: photoTakenAt.toISOString(),
       status: "Pendiente",
@@ -463,6 +531,7 @@ export default function ConfirmacionesPage() {
     setDocumentReference("");
     setAmount("");
     setPaymentMethod("Yape");
+    setPaymentPurpose("Anticipo");
     setPhotoBlob(null);
     setPhotoPreview("");
     setPhotoTakenAt(null);
@@ -483,6 +552,7 @@ export default function ConfirmacionesPage() {
     setEditDocument(row.document_reference);
     setEditAmount(String(row.amount));
     setEditMethod(row.payment_method);
+    setEditPurpose(row.payment_purpose || "Anticipo");
     setEditing(false);
     if (canValidate && !row.opened_at && user) {
       await supabase.from("payment_confirmations").update({
@@ -505,6 +575,8 @@ export default function ConfirmacionesPage() {
       document_reference: editDocument.trim(),
       amount: parsedAmount,
       payment_method: editMethod,
+      payment_purpose: editPurpose,
+      usage_status: usageStatusForPurpose(editPurpose),
       operation_number: operationNumber ? normalizeOperation(operationNumber) : null,
       bank: bank.trim() || null,
     }).eq("id", selected.id);
@@ -577,6 +649,21 @@ export default function ConfirmacionesPage() {
     }
     showMessage("Registro denegado.", "success");
     setSelected(null);
+    await loadRows();
+  }
+
+  async function markAsUsed(row: PaymentConfirmation) {
+    if (!canValidate) return;
+    const { error } = await supabase
+      .from("payment_confirmations")
+      .update({ usage_status: "Usado" })
+      .eq("id", row.id);
+    if (error) {
+      showMessage("No se pudo marcar como usado: " + error.message, "error");
+      return;
+    }
+    showMessage("Deposito marcado como usado.", "success");
+    if (selected?.id === row.id) setSelected({ ...selected, usage_status: "Usado" });
     await loadRows();
   }
 
@@ -678,6 +765,13 @@ export default function ConfirmacionesPage() {
                     </select>
                   </label>
                 </div>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-black uppercase text-slate-500">Tipo de deposito</span>
+                  <select value={paymentPurpose} onChange={(event) => setPaymentPurpose(event.target.value as PaymentPurpose)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold outline-none focus:border-rose-500">
+                    <option value="Anticipo">Anticipo</option>
+                    <option value="Pago total">Pago total</option>
+                  </select>
+                </label>
                 <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void onPhotoChange(event.target.files?.[0] || null)} />
                 <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void onPhotoChange(event.target.files?.[0] || null)} />
                 <div className="grid grid-cols-2 gap-2">
@@ -704,11 +798,16 @@ export default function ConfirmacionesPage() {
           {canValidate && (
             <div className="border bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2 text-base font-black"><Search size={18} /> Filtros</div>
-              <div className="mt-4 grid gap-3 md:grid-cols-[180px_1fr_1.4fr_auto]">
+              <div className="mt-4 grid gap-3 md:grid-cols-[180px_1fr_220px_1.4fr_auto]">
                 <input type="date" value={filterDate} onChange={(event) => setFilterDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" />
                 <select value={filterStoreId} onChange={(event) => setFilterStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
                   <option value="">Todas las tiendas</option>
                   {stores.filter((store) => store.is_active).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                </select>
+                <select value={filterUsageStatus} onChange={(event) => setFilterUsageStatus(event.target.value as "todos" | UsageStatus)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
+                  <option value="todos">Todos los usos</option>
+                  <option value="Pendiente de uso">Pendiente de uso</option>
+                  <option value="Usado">Usado</option>
                 </select>
                 <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" placeholder="Buscar documento, tienda, operacion..." />
                 <button onClick={enableSound} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
@@ -760,6 +859,9 @@ export default function ConfirmacionesPage() {
                 <button onClick={() => void openRecord(row)} className="text-left">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`rounded-full border px-2.5 py-1 text-xs font-black ${statusClass(row.status)}`}>{row.status}</span>
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-black ${usageStatusClass(row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo"))}`}>
+                      {row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo")}
+                    </span>
                     {!row.opened_at && row.status === "Pendiente" && <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-black text-red-700">Nuevo</span>}
                     <span className="font-black">{row.store_name}</span>
                     <span className="text-sm font-bold text-slate-500">{formatMoney(row.amount)}</span>
@@ -769,6 +871,7 @@ export default function ConfirmacionesPage() {
                     <span>Cajero: {row.cashier_name}</span>
                     <span>Registro: {formatDateTime(row.registered_at)}</span>
                     <span>Medio: {row.payment_method}</span>
+                    <span>Tipo: {row.payment_purpose || "Anticipo"}</span>
                     <span>Respuesta: {formatDurationMs(responseMs(row))}</span>
                     <span>{responseAt(row) ? `Respondido: ${formatDateTime(responseAt(row))}` : "Sin respuesta"}</span>
                   </div>
@@ -785,6 +888,11 @@ export default function ConfirmacionesPage() {
                   {user?.role === "Administrador" && (
                     <button onClick={() => void deleteRecord(row)} className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700">
                       <Trash2 size={15} /> Eliminar
+                    </button>
+                  )}
+                  {canValidate && (row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo")) === "Pendiente de uso" && (
+                    <button onClick={() => void markAsUsed(row)} className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-3 py-2 text-xs font-black text-emerald-700">
+                      <CheckCircle2 size={15} /> Marcar usado
                     </button>
                   )}
                 </div>
@@ -817,6 +925,8 @@ export default function ConfirmacionesPage() {
                   <span><Clock size={15} className="mr-1 inline" /> Abierto: {formatDateTime(selected.opened_at)}</span>
                   <span><CheckCircle2 size={15} className="mr-1 inline" /> Confirmado: {formatDateTime(selected.confirmed_at)}</span>
                   <span>Tiempo respuesta: {formatDurationMs(responseMs(selected))}</span>
+                  <span>Tipo deposito: {selected.payment_purpose || "Anticipo"}</span>
+                  <span>Estado de uso: {selected.usage_status || usageStatusForPurpose(selected.payment_purpose || "Anticipo")}</span>
                   {selected.status !== "Pendiente" && selected.operation_number && <span>Operacion: {selected.operation_number}</span>}
                   {selected.bank && <span>Banco: {selected.bank}</span>}
                   {selected.denied_reason && <span>Razon denegado: {selected.denied_reason}</span>}
@@ -840,6 +950,10 @@ export default function ConfirmacionesPage() {
                           <option value="Plin">Plin</option>
                           <option value="Deposito">Deposito</option>
                         </select>
+                        <select value={editPurpose} onChange={(event) => setEditPurpose(event.target.value as PaymentPurpose)} className="rounded-xl border bg-white px-3 py-2 text-sm font-bold">
+                          <option value="Anticipo">Anticipo</option>
+                          <option value="Pago total">Pago total</option>
+                        </select>
                       </div>
                     )}
                     <input value={operationNumber} onChange={(event) => setOperationNumber(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" placeholder="Numero de operacion" />
@@ -861,6 +975,11 @@ export default function ConfirmacionesPage() {
                       {user?.role === "Administrador" && (
                         <button onClick={() => void deleteRecord(selected)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 px-4 py-3 text-sm font-black text-red-700">
                           <Trash2 size={16} /> Eliminar
+                        </button>
+                      )}
+                      {(selected.usage_status || usageStatusForPurpose(selected.payment_purpose || "Anticipo")) === "Pendiente de uso" && (
+                        <button onClick={() => void markAsUsed(selected)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-200 px-4 py-3 text-sm font-black text-emerald-700">
+                          <CheckCircle2 size={16} /> Marcar usado
                         </button>
                       )}
                     </div>

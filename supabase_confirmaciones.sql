@@ -10,6 +10,8 @@ create table if not exists public.payment_confirmations (
   document_reference text not null,
   amount numeric(12,2) not null check (amount > 0),
   payment_method text not null default 'Yape' check (payment_method in ('Yape', 'Plin', 'Deposito')),
+  payment_purpose text not null default 'Anticipo' check (payment_purpose in ('Anticipo', 'Pago total')),
+  usage_status text not null default 'Pendiente de uso' check (usage_status in ('Pendiente de uso', 'Usado')),
   photo_path text not null,
   photo_taken_at timestamptz not null,
   registered_at timestamptz not null default now(),
@@ -34,7 +36,51 @@ create table if not exists public.payment_confirmations (
 
 alter table public.payment_confirmations
   add column if not exists denied_reason text,
-  add column if not exists denied_at timestamptz;
+  add column if not exists denied_at timestamptz,
+  add column if not exists payment_purpose text not null default 'Anticipo',
+  add column if not exists usage_status text not null default 'Pendiente de uso';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace nsp on nsp.oid = rel.relnamespace
+    where nsp.nspname = 'public'
+      and rel.relname = 'payment_confirmations'
+      and con.conname = 'payment_confirmations_payment_purpose_check'
+  ) then
+    alter table public.payment_confirmations
+      add constraint payment_confirmations_payment_purpose_check
+      check (payment_purpose in ('Anticipo', 'Pago total'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint con
+    join pg_class rel on rel.oid = con.conrelid
+    join pg_namespace nsp on nsp.oid = rel.relnamespace
+    where nsp.nspname = 'public'
+      and rel.relname = 'payment_confirmations'
+      and con.conname = 'payment_confirmations_usage_status_check'
+  ) then
+    alter table public.payment_confirmations
+      add constraint payment_confirmations_usage_status_check
+      check (usage_status in ('Pendiente de uso', 'Usado'));
+  end if;
+end $$;
+
+update public.payment_confirmations
+set usage_status = case
+  when payment_purpose = 'Pago total' then 'Usado'
+  else coalesce(usage_status, 'Pendiente de uso')
+end
+where usage_status is null
+   or payment_purpose = 'Pago total';
 
 do $$
 declare
