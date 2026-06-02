@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Edit3, Eye, Home, RotateCcw, Save, Search, Trash2, Upload, XCircle } from "lucide-react";
+import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Download, Edit3, Eye, Home, RotateCcw, Save, Search, Trash2, Upload, XCircle } from "lucide-react";
+import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
@@ -552,6 +553,72 @@ export default function ConfirmacionesPage() {
     return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
   }
 
+  function exportRowsToExcel() {
+    if (visibleRows.length === 0) {
+      showMessage("No hay registros para exportar.", "error");
+      return;
+    }
+
+    const headers = [
+      "Estado",
+      "Estado de uso",
+      "Tienda",
+      "Cajero",
+      "Documento",
+      "Observaciones",
+      "Monto",
+      "Medio",
+      "Tipo deposito",
+      "Fecha registro",
+      "Fecha foto",
+      "Abierto",
+      "Confirmado",
+      "Denegado",
+      "Tiempo respuesta",
+      "Operacion",
+      "Banco",
+      "Validador",
+      "Razon denegado",
+      "Motivo anulacion",
+      "Foto",
+    ];
+    const body = visibleRows.map((row) => [
+      row.status,
+      row.usage_status || usageStatusForPurpose(row.payment_purpose || "Anticipo"),
+      row.store_name,
+      row.cashier_name,
+      row.document_reference,
+      row.cashier_observation || "",
+      Number(row.amount || 0),
+      row.payment_method,
+      row.payment_purpose || "Anticipo",
+      formatDateTime(row.registered_at),
+      formatDateTime(row.photo_taken_at),
+      formatDateTime(row.opened_at),
+      formatDateTime(row.confirmed_at),
+      formatDateTime(row.denied_at),
+      formatDurationMs(responseMs(row)),
+      row.operation_number || "",
+      row.bank || "",
+      row.validator_name || "",
+      row.denied_reason || "",
+      row.cancellation_reason || "",
+      "Abrir foto",
+    ]);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...body]);
+    visibleRows.forEach((row, index) => {
+      const cellAddress = XLSX.utils.encode_cell({ r: index + 1, c: headers.length - 1 });
+      const cell = worksheet[cellAddress];
+      if (cell) cell.l = { Target: photoUrl(row.photo_path), Tooltip: "Abrir foto del registro" };
+    });
+    worksheet["!cols"] = headers.map((header) => ({ wch: Math.max(14, Math.min(32, header.length + 6)) }));
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Confirmaciones");
+    const filename = `confirmaciones_${filterDate || todayISO()}.xlsx`;
+    XLSX.writeFile(workbook, filename);
+  }
+
   async function openRecord(row: PaymentConfirmation) {
     setSelected(row);
     setOperationNumber(row.operation_number || "");
@@ -872,9 +939,14 @@ export default function ConfirmacionesPage() {
               <h2 className="text-base font-black">Registros</h2>
               <p className="text-xs font-bold text-slate-500">{visibleRows.length} resultados · {pendingUnopenedCount} pendientes sin abrir</p>
             </div>
-            <button onClick={() => void loadRows(user, { showLoading: rows.length === 0 })} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
-              <RotateCcw size={16} /> {refreshing ? "Actualizando" : "Actualizar"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={exportRowsToExcel} className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-800">
+                <Download size={16} /> Descargar Excel
+              </button>
+              <button onClick={() => void loadRows(user, { showLoading: rows.length === 0 })} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
+                <RotateCcw size={16} /> {refreshing ? "Actualizando" : "Actualizar"}
+              </button>
+            </div>
           </div>
 
           <div className="divide-y">
