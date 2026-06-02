@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Edit3, Eye, Home, RotateCcw, Save, Search, Upload, XCircle } from "lucide-react";
+import { AlertTriangle, Banknote, Camera, CheckCircle2, Clock, Edit3, Eye, Home, RotateCcw, Save, Search, Trash2, Upload, XCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
@@ -77,6 +77,26 @@ function formatMoney(value: number | string | null | undefined) {
     style: "currency",
     currency: "PEN",
   }).format(amount);
+}
+
+function responseAt(row: PaymentConfirmation) {
+  return row.confirmed_at || row.denied_at || null;
+}
+
+function responseMs(row: PaymentConfirmation) {
+  const end = responseAt(row);
+  if (!end) return null;
+  const diff = new Date(end).getTime() - new Date(row.registered_at).getTime();
+  return Number.isFinite(diff) && diff >= 0 ? diff : null;
+}
+
+function formatDurationMs(value: number | null | undefined) {
+  if (value == null) return "-";
+  const totalMinutes = Math.max(0, Math.round(value / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes} min`;
+  return `${hours} h ${minutes} min`;
 }
 
 function parseAmount(value: string) {
@@ -199,7 +219,10 @@ export default function ConfirmacionesPage() {
   const canCashier = Boolean(user && (user.role === "Cajero" || user.role === "Administrador"));
   const visibleRows = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return sortRows(rows).filter((row) => {
+    const orderedRows = canValidate
+      ? sortRows(rows)
+      : [...rows].sort((a, b) => new Date(b.registered_at).getTime() - new Date(a.registered_at).getTime());
+    return orderedRows.filter((row) => {
       if (!term) return true;
       return [
         row.store_name,
@@ -211,8 +234,15 @@ export default function ConfirmacionesPage() {
         row.status,
       ].some((value) => value.toLowerCase().includes(term));
     });
-  }, [rows, search]);
+  }, [canValidate, rows, search]);
   const pendingUnopenedCount = useMemo(() => rows.filter((row) => row.status === "Pendiente" && !row.opened_at).length, [rows]);
+  const answeredRows = useMemo(() => rows.filter((row) => responseMs(row) != null), [rows]);
+  const averageResponseMs = useMemo(() => {
+    if (answeredRows.length === 0) return null;
+    const total = answeredRows.reduce((sum, row) => sum + (responseMs(row) || 0), 0);
+    return total / answeredRows.length;
+  }, [answeredRows]);
+  const pendingRowsCount = useMemo(() => rows.filter((row) => row.status === "Pendiente").length, [rows]);
 
   const showMessage = useCallback((text: string, type: "info" | "success" | "error" = "info") => {
     setMessage(text);
@@ -583,6 +613,22 @@ export default function ConfirmacionesPage() {
     await loadRows();
   }
 
+  async function deleteRecord(row: PaymentConfirmation) {
+    if (user?.role !== "Administrador") {
+      showMessage("Solo el administrador puede eliminar registros.", "error");
+      return;
+    }
+    if (!window.confirm(`Eliminar registro de ${row.store_name} por ${formatMoney(row.amount)}?`)) return;
+    const { error } = await supabase.from("payment_confirmations").delete().eq("id", row.id);
+    if (error) {
+      showMessage("No se pudo eliminar: " + error.message, "error");
+      return;
+    }
+    showMessage("Registro eliminado.", "success");
+    if (selected?.id === row.id) setSelected(null);
+    await loadRows();
+  }
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-30 border-b bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
@@ -602,8 +648,8 @@ export default function ConfirmacionesPage() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-[390px_1fr]">
-        <section className="space-y-4">
+      <div className={canValidate ? "mx-auto max-w-7xl space-y-4 p-4" : "mx-auto grid max-w-7xl gap-4 p-4 lg:grid-cols-[390px_1fr]"}>
+        <section className={canValidate ? "space-y-4" : "space-y-4"}>
           {message && (
             <div className={`rounded-2xl border px-4 py-3 text-sm font-bold ${messageType === "error" ? "border-red-200 bg-red-50 text-red-700" : messageType === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-blue-200 bg-blue-50 text-blue-700"}`}>
               {message}
@@ -656,9 +702,9 @@ export default function ConfirmacionesPage() {
           )}
 
           {canValidate && (
-            <div className="rounded-2xl border bg-white p-4 shadow-sm">
-              <h2 className="flex items-center gap-2 text-base font-black"><Search size={18} /> Filtros</h2>
-              <div className="mt-4 space-y-3">
+            <div className="border bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-base font-black"><Search size={18} /> Filtros</div>
+              <div className="mt-4 grid gap-3 md:grid-cols-[180px_1fr_1.4fr_auto]">
                 <input type="date" value={filterDate} onChange={(event) => setFilterDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" />
                 <select value={filterStoreId} onChange={(event) => setFilterStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
                   <option value="">Todas las tiendas</option>
@@ -674,7 +720,29 @@ export default function ConfirmacionesPage() {
           )}
         </section>
 
-        <section className="rounded-2xl border bg-white shadow-sm">
+        {canValidate && (
+          <section className="grid gap-3 md:grid-cols-4">
+            <div className="border bg-white p-4">
+              <p className="text-xs font-black uppercase text-slate-500">Tiempo promedio de respuesta</p>
+              <p className="mt-2 text-2xl font-black text-slate-950">{formatDurationMs(averageResponseMs)}</p>
+              <p className="text-xs font-bold text-slate-500">{answeredRows.length} respondidos en el dia</p>
+            </div>
+            <div className="border bg-white p-4">
+              <p className="text-xs font-black uppercase text-slate-500">Pendientes</p>
+              <p className="mt-2 text-2xl font-black text-amber-700">{pendingRowsCount}</p>
+            </div>
+            <div className="border bg-white p-4">
+              <p className="text-xs font-black uppercase text-slate-500">Sin abrir</p>
+              <p className="mt-2 text-2xl font-black text-red-700">{pendingUnopenedCount}</p>
+            </div>
+            <div className="border bg-white p-4">
+              <p className="text-xs font-black uppercase text-slate-500">Total registros</p>
+              <p className="mt-2 text-2xl font-black text-slate-950">{rows.length}</p>
+            </div>
+          </section>
+        )}
+
+        <section className={canValidate ? "border bg-white shadow-sm" : "rounded-2xl border bg-white shadow-sm"}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
             <div>
               <h2 className="text-base font-black">Registros</h2>
@@ -688,7 +756,7 @@ export default function ConfirmacionesPage() {
           <div className="divide-y">
             {loading && rows.length === 0 && <div className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</div>}
             {visibleRows.map((row) => (
-              <div key={row.id} className="grid gap-3 p-4 hover:bg-slate-50 md:grid-cols-[1fr_auto]">
+              <div key={row.id} className="grid gap-3 border-b p-3 last:border-b-0 hover:bg-slate-50 md:grid-cols-[1fr_auto]">
                 <button onClick={() => void openRecord(row)} className="text-left">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={`rounded-full border px-2.5 py-1 text-xs font-black ${statusClass(row.status)}`}>{row.status}</span>
@@ -696,11 +764,13 @@ export default function ConfirmacionesPage() {
                     <span className="font-black">{row.store_name}</span>
                     <span className="text-sm font-bold text-slate-500">{formatMoney(row.amount)}</span>
                   </div>
-                  <div className="mt-2 grid gap-1 text-sm font-semibold text-slate-600 sm:grid-cols-2">
+                  <div className="mt-2 grid gap-1 text-sm font-semibold text-slate-600 sm:grid-cols-3">
                     <span>Doc: {row.document_reference}</span>
                     <span>Cajero: {row.cashier_name}</span>
                     <span>Registro: {formatDateTime(row.registered_at)}</span>
                     <span>Medio: {row.payment_method}</span>
+                    <span>Respuesta: {formatDurationMs(responseMs(row))}</span>
+                    <span>{responseAt(row) ? `Respondido: ${formatDateTime(responseAt(row))}` : "Sin respuesta"}</span>
                   </div>
                 </button>
                 <div className="flex items-center gap-2 md:justify-end">
@@ -710,6 +780,11 @@ export default function ConfirmacionesPage() {
                   {!canValidate && row.status === "Pendiente" && (
                     <button onClick={() => void requestCancellation(row)} className="inline-flex items-center gap-2 rounded-xl border border-orange-200 px-3 py-2 text-xs font-black text-orange-700">
                       <XCircle size={15} /> Anular
+                    </button>
+                  )}
+                  {user?.role === "Administrador" && (
+                    <button onClick={() => void deleteRecord(row)} className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700">
+                      <Trash2 size={15} /> Eliminar
                     </button>
                   )}
                 </div>
@@ -741,6 +816,7 @@ export default function ConfirmacionesPage() {
                 <div className="grid gap-2 text-sm font-semibold text-slate-700">
                   <span><Clock size={15} className="mr-1 inline" /> Abierto: {formatDateTime(selected.opened_at)}</span>
                   <span><CheckCircle2 size={15} className="mr-1 inline" /> Confirmado: {formatDateTime(selected.confirmed_at)}</span>
+                  <span>Tiempo respuesta: {formatDurationMs(responseMs(selected))}</span>
                   {selected.status !== "Pendiente" && selected.operation_number && <span>Operacion: {selected.operation_number}</span>}
                   {selected.bank && <span>Banco: {selected.bank}</span>}
                   {selected.denied_reason && <span>Razon denegado: {selected.denied_reason}</span>}
@@ -780,6 +856,11 @@ export default function ConfirmacionesPage() {
                       {selected.status === "Anulacion solicitada" && (
                         <button onClick={approveCancellation} className="inline-flex items-center justify-center gap-2 rounded-xl border border-orange-200 px-4 py-3 text-sm font-black text-orange-700">
                           <AlertTriangle size={16} /> Aprobar anulacion
+                        </button>
+                      )}
+                      {user?.role === "Administrador" && (
+                        <button onClick={() => void deleteRecord(selected)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 px-4 py-3 text-sm font-black text-red-700">
+                          <Trash2 size={16} /> Eliminar
                         </button>
                       )}
                     </div>
