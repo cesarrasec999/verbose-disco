@@ -7,7 +7,7 @@ import { canAccessModule } from "@/features/access/moduleAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
-type ConfirmationStatus = "Pendiente" | "Confirmado" | "Anulacion solicitada" | "Anulado";
+type ConfirmationStatus = "Pendiente" | "Confirmado" | "Denegado" | "Anulacion solicitada" | "Anulado";
 type PaymentMethod = "Yape" | "Plin" | "Deposito";
 
 type PaymentConfirmation = {
@@ -31,6 +31,8 @@ type PaymentConfirmation = {
   validator_id: string | null;
   validator_name: string | null;
   confirmed_at: string | null;
+  denied_reason: string | null;
+  denied_at: string | null;
   cancellation_requested_at: string | null;
   cancellation_reason: string | null;
   cancellation_validator_id: string | null;
@@ -45,7 +47,8 @@ const STATUS_ORDER: Record<ConfirmationStatus, number> = {
   "Pendiente": 0,
   "Anulacion solicitada": 1,
   "Confirmado": 2,
-  "Anulado": 3,
+  "Denegado": 3,
+  "Anulado": 4,
 };
 
 function todayISO() {
@@ -92,6 +95,7 @@ function normalizeOperation(value: string) {
 function statusClass(status: ConfirmationStatus) {
   if (status === "Pendiente") return "bg-amber-100 text-amber-800 border-amber-200";
   if (status === "Confirmado") return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (status === "Denegado") return "bg-red-100 text-red-800 border-red-200";
   if (status === "Anulacion solicitada") return "bg-orange-100 text-orange-800 border-orange-200";
   return "bg-slate-100 text-slate-600 border-slate-200";
 }
@@ -104,7 +108,7 @@ function sortRows(rows: PaymentConfirmation[]) {
   return [...rows].sort((a, b) => {
     const byStatus = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (byStatus !== 0) return byStatus;
-    if (a.status === "Confirmado" || a.status === "Anulado") {
+    if (a.status === "Confirmado" || a.status === "Denegado" || a.status === "Anulado") {
       return new Date(a.registered_at).getTime() - new Date(b.registered_at).getTime();
     }
     return new Date(b.registered_at).getTime() - new Date(a.registered_at).getTime();
@@ -313,8 +317,7 @@ export default function ConfirmacionesPage() {
     beepTimerRef.current = null;
   }
 
-  const playBeep = useCallback(async (force = false) => {
-    if (!soundEnabled && !force) return;
+  const playBeep = useCallback(async () => {
     try {
       const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtor) return;
@@ -339,18 +342,19 @@ export default function ConfirmacionesPage() {
     } catch {
       setSoundBlocked(true);
     }
-  }, [soundEnabled]);
+  }, []);
+
+  const startAlarm = useCallback(() => {
+    if (beepTimerRef.current) return;
+    void playBeep();
+    beepTimerRef.current = window.setInterval(() => void playBeep(), 900);
+  }, [playBeep]);
 
   useEffect(() => {
-    stopSound();
-    if (!canValidate || pendingUnopenedCount === 0 || !soundEnabled) return;
-    const firstBeep = window.setTimeout(() => void playBeep(), 0);
-    beepTimerRef.current = window.setInterval(() => void playBeep(), 950);
-    return () => {
-      window.clearTimeout(firstBeep);
-      stopSound();
-    };
-  }, [canValidate, pendingUnopenedCount, playBeep, soundEnabled]);
+    if (canValidate && pendingUnopenedCount > 0 && soundEnabled) startAlarm();
+    else stopSound();
+    return stopSound;
+  }, [canValidate, pendingUnopenedCount, soundEnabled, startAlarm]);
 
   async function enableSound() {
     const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -358,7 +362,8 @@ export default function ConfirmacionesPage() {
     if (audioRef.current?.state === "suspended") await audioRef.current.resume();
     localStorage.setItem(SOUND_ENABLED_KEY, "1");
     setSoundEnabled(true);
-    await playBeep(true);
+    if (canValidate && pendingUnopenedCount > 0) startAlarm();
+    else await playBeep();
   }
 
   async function onPhotoChange(file: File | null) {
@@ -517,6 +522,30 @@ export default function ConfirmacionesPage() {
       return;
     }
     showMessage("Registro confirmado.", "success");
+    setSelected(null);
+    await loadRows();
+  }
+
+  async function denyRecord() {
+    if (!selected || !user) return;
+    const reason = window.prompt("Razon para denegar la confirmacion");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      showMessage("La razon es obligatoria para denegar.", "error");
+      return;
+    }
+    const { error } = await supabase.from("payment_confirmations").update({
+      status: "Denegado",
+      denied_reason: reason.trim(),
+      denied_at: new Date().toISOString(),
+      validator_id: user.id,
+      validator_name: user.full_name,
+    }).eq("id", selected.id);
+    if (error) {
+      showMessage("No se pudo denegar: " + error.message, "error");
+      return;
+    }
+    showMessage("Registro denegado.", "success");
     setSelected(null);
     await loadRows();
   }
@@ -714,6 +743,7 @@ export default function ConfirmacionesPage() {
                   <span><CheckCircle2 size={15} className="mr-1 inline" /> Confirmado: {formatDateTime(selected.confirmed_at)}</span>
                   {selected.status !== "Pendiente" && selected.operation_number && <span>Operacion: {selected.operation_number}</span>}
                   {selected.bank && <span>Banco: {selected.bank}</span>}
+                  {selected.denied_reason && <span>Razon denegado: {selected.denied_reason}</span>}
                   {selected.cancellation_reason && <span>Motivo anulacion: {selected.cancellation_reason}</span>}
                 </div>
 
@@ -742,6 +772,11 @@ export default function ConfirmacionesPage() {
                       <button onClick={editing ? saveValidatorEdits : confirmRecord} disabled={selected.status === "Anulado"} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                         {editing ? <Save size={16} /> : <CheckCircle2 size={16} />} {editing ? "Guardar" : "Confirmar"}
                       </button>
+                      {selected.status === "Pendiente" && !editing && (
+                        <button onClick={denyRecord} className="inline-flex items-center justify-center gap-2 rounded-xl border border-red-200 px-4 py-3 text-sm font-black text-red-700">
+                          <XCircle size={16} /> Denegar
+                        </button>
+                      )}
                       {selected.status === "Anulacion solicitada" && (
                         <button onClick={approveCancellation} className="inline-flex items-center justify-center gap-2 rounded-xl border border-orange-200 px-4 py-3 text-sm font-black text-orange-700">
                           <AlertTriangle size={16} /> Aprobar anulacion

@@ -13,7 +13,7 @@ create table if not exists public.payment_confirmations (
   photo_path text not null,
   photo_taken_at timestamptz not null,
   registered_at timestamptz not null default now(),
-  status text not null default 'Pendiente' check (status in ('Pendiente', 'Confirmado', 'Anulacion solicitada', 'Anulado')),
+  status text not null default 'Pendiente' check (status in ('Pendiente', 'Confirmado', 'Denegado', 'Anulacion solicitada', 'Anulado')),
   opened_at timestamptz,
   opened_by uuid references public.cyclic_users(id) on delete set null,
   opened_by_name text,
@@ -22,6 +22,8 @@ create table if not exists public.payment_confirmations (
   validator_id uuid references public.cyclic_users(id) on delete set null,
   validator_name text,
   confirmed_at timestamptz,
+  denied_reason text,
+  denied_at timestamptz,
   cancellation_requested_at timestamptz,
   cancellation_reason text,
   cancellation_validator_id uuid references public.cyclic_users(id) on delete set null,
@@ -29,6 +31,34 @@ create table if not exists public.payment_confirmations (
   cancelled_at timestamptz,
   updated_at timestamptz not null default now()
 );
+
+alter table public.payment_confirmations
+  add column if not exists denied_reason text,
+  add column if not exists denied_at timestamptz;
+
+do $$
+declare
+  constraint_name text;
+begin
+  select con.conname
+    into constraint_name
+  from pg_constraint con
+  join pg_class rel on rel.oid = con.conrelid
+  join pg_namespace nsp on nsp.oid = rel.relnamespace
+  where nsp.nspname = 'public'
+    and rel.relname = 'payment_confirmations'
+    and con.contype = 'c'
+    and pg_get_constraintdef(con.oid) ilike '%status%'
+  limit 1;
+
+  if constraint_name is not null then
+    execute format('alter table public.payment_confirmations drop constraint %I', constraint_name);
+  end if;
+
+  alter table public.payment_confirmations
+    add constraint payment_confirmations_status_check
+    check (status in ('Pendiente', 'Confirmado', 'Denegado', 'Anulacion solicitada', 'Anulado'));
+end $$;
 
 create unique index if not exists payment_confirmations_operation_number_uidx
   on public.payment_confirmations (lower(operation_number))
