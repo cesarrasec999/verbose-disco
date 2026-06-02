@@ -40,6 +40,7 @@ type PaymentConfirmation = {
 };
 
 const BUCKET = "payment-confirmations";
+const SOUND_ENABLED_KEY = "payment_confirmations_sound_enabled";
 const STATUS_ORDER: Record<ConfirmationStatus, number> = {
   "Pendiente": 0,
   "Anulacion solicitada": 1,
@@ -93,6 +94,10 @@ function statusClass(status: ConfirmationStatus) {
   if (status === "Confirmado") return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (status === "Anulacion solicitada") return "bg-orange-100 text-orange-800 border-orange-200";
   return "bg-slate-100 text-slate-600 border-slate-200";
+}
+
+function userCanValidate(user: CyclicUser | null) {
+  return Boolean(user && (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor"));
 }
 
 function sortRows(rows: PaymentConfirmation[]) {
@@ -174,15 +179,19 @@ export default function ConfirmacionesPage() {
   const [editAmount, setEditAmount] = useState("");
   const [editMethod, setEditMethod] = useState<PaymentMethod>("Yape");
   const [editing, setEditing] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(SOUND_ENABLED_KEY) === "1";
+  });
   const [soundBlocked, setSoundBlocked] = useState(false);
   const audioRef = useRef<AudioContext | null>(null);
   const beepTimerRef = useRef<number | null>(null);
   const realtimeRefreshRef = useRef<number | null>(null);
+  const loadSeqRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
-  const canValidate = Boolean(user && (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor"));
+  const canValidate = userCanValidate(user);
   const canCashier = Boolean(user && (user.role === "Cajero" || user.role === "Administrador"));
   const visibleRows = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -214,6 +223,7 @@ export default function ConfirmacionesPage() {
 
   const loadRows = useCallback(async (currentUser: CyclicUser | null = user, options: { showLoading?: boolean } = {}) => {
     if (!currentUser) return;
+    const seq = ++loadSeqRef.current;
     const showLoading = options.showLoading ?? false;
     if (showLoading) setLoading(true);
     else setRefreshing(true);
@@ -224,7 +234,7 @@ export default function ConfirmacionesPage() {
       .lte("registered_at", dateEnd(filterDate))
       .order("registered_at", { ascending: false });
 
-    if (canValidate) {
+    if (userCanValidate(currentUser)) {
       if (filterStoreId) query = query.eq("store_id", filterStoreId);
     } else if (currentUser.store_id) {
       query = query.eq("store_id", currentUser.store_id);
@@ -235,12 +245,13 @@ export default function ConfirmacionesPage() {
     const { data, error } = await query;
     if (showLoading) setLoading(false);
     else setRefreshing(false);
+    if (seq !== loadSeqRef.current) return;
     if (error) {
       showMessage("No se pudieron cargar confirmaciones: " + error.message, "error");
       return;
     }
     setRows((data || []) as PaymentConfirmation[]);
-  }, [canValidate, filterDate, filterStoreId, showMessage, user]);
+  }, [filterDate, filterStoreId, showMessage, user]);
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -269,13 +280,15 @@ export default function ConfirmacionesPage() {
       await loadStores();
       await loadRows(current, { showLoading: true });
     })();
-  }, [loadRows, loadStores]);
+    // La autenticacion inicial no debe re-ejecutarse con cada refresh realtime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!user) return;
-    const timer = window.setTimeout(() => void loadRows(user, { showLoading: true }), 0);
+    const timer = window.setTimeout(() => void loadRows(user, { showLoading: false }), 0);
     return () => window.clearTimeout(timer);
-  }, [loadRows, user]);
+  }, [filterDate, filterStoreId, loadRows, user]);
 
   useEffect(() => {
     const channel = supabase
@@ -315,7 +328,7 @@ export default function ConfirmacionesPage() {
         oscillator.type = "square";
         oscillator.frequency.value = frequency;
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(0.45, start + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.7, start + 0.025);
         gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.14);
         oscillator.connect(gain);
         gain.connect(ctx.destination);
@@ -340,6 +353,10 @@ export default function ConfirmacionesPage() {
   }, [canValidate, pendingUnopenedCount, playBeep, soundEnabled]);
 
   async function enableSound() {
+    const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (AudioCtor && !audioRef.current) audioRef.current = new AudioCtor();
+    if (audioRef.current?.state === "suspended") await audioRef.current.resume();
+    localStorage.setItem(SOUND_ENABLED_KEY, "1");
     setSoundEnabled(true);
     await playBeep(true);
   }
@@ -634,14 +651,14 @@ export default function ConfirmacionesPage() {
               <h2 className="text-base font-black">Registros</h2>
               <p className="text-xs font-bold text-slate-500">{visibleRows.length} resultados · {pendingUnopenedCount} pendientes sin abrir</p>
             </div>
-            <button onClick={() => void loadRows(user, { showLoading: true })} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
+            <button onClick={() => void loadRows(user, { showLoading: rows.length === 0 })} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-black text-slate-600">
               <RotateCcw size={16} /> {refreshing ? "Actualizando" : "Actualizar"}
             </button>
           </div>
 
           <div className="divide-y">
-            {loading && <div className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</div>}
-            {!loading && visibleRows.map((row) => (
+            {loading && rows.length === 0 && <div className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</div>}
+            {visibleRows.map((row) => (
               <div key={row.id} className="grid gap-3 p-4 hover:bg-slate-50 md:grid-cols-[1fr_auto]">
                 <button onClick={() => void openRecord(row)} className="text-left">
                   <div className="flex flex-wrap items-center gap-2">
