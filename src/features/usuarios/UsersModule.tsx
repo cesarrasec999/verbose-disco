@@ -18,6 +18,7 @@ type Props = {
 
 export function UsersModule({ stores, showMessage }: Props) {
   const [users, setUsers] = useState<CyclicUser[]>([]);
+  const [userSearch, setUserSearch] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newFullName, setNewFullName] = useState("");
@@ -191,6 +192,22 @@ export function UsersModule({ stores, showMessage }: Props) {
     await loadUsers();
   }
 
+  const filteredUsers = users.filter((user) => {
+    const store = stores.find((item) => item.id === user.store_id);
+    const modules = normalizedModuleAccess(user).map(moduleLabel).join(" ");
+    const text = [
+      user.username,
+      user.full_name,
+      user.role,
+      store?.name || "",
+      user.can_access_all_stores ? "Todas" : "",
+      user.whatsapp || "",
+      user.is_active ? "Activo" : "Inactivo",
+      modules,
+    ].join(" ").toLowerCase();
+    return text.includes(userSearch.trim().toLowerCase());
+  });
+
   return (
     <>
       <section className="bg-white rounded-3xl p-5 shadow space-y-4">
@@ -238,6 +255,16 @@ export function UsersModule({ stores, showMessage }: Props) {
           <button className="px-5 py-3 rounded-2xl bg-slate-900 text-white font-semibold text-sm" onClick={createUser}>+ Crear usuario</button>
         </div>
 
+        <div className="rounded-2xl border bg-white p-3">
+          <input
+            className="w-full rounded-xl border px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-slate-900"
+            placeholder="Buscar por usuario, nombre, rol, tienda, WhatsApp o modulo..."
+            value={userSearch}
+            onChange={(event) => setUserSearch(event.target.value)}
+          />
+          <p className="mt-2 text-xs font-bold text-slate-500">{filteredUsers.length} de {users.length} usuarios</p>
+        </div>
+
         <div className="border rounded-2xl overflow-hidden">
           <div className="max-h-[450px] overflow-auto">
             <table className="w-full text-sm">
@@ -254,7 +281,7 @@ export function UsersModule({ stores, showMessage }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => {
+                {filteredUsers.map((user) => {
                   const store = stores.find((item) => item.id === user.store_id);
                   return (
                     <tr key={user.id} className={!user.is_active ? "opacity-40" : ""}>
@@ -288,7 +315,7 @@ export function UsersModule({ stores, showMessage }: Props) {
                     </tr>
                   );
                 })}
-                {users.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-slate-400">No hay usuarios.</td></tr>}
+                {filteredUsers.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-slate-400">No hay usuarios que coincidan.</td></tr>}
               </tbody>
             </table>
           </div>

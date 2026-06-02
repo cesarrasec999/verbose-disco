@@ -6,7 +6,7 @@ import { getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 const USER_KEY = "cyclic_user";
 const SESSION_EVENT = "cyclic-session-expired";
 const SESSION_REASON_KEY = "cyclic_session_expired_reason";
-const OTHER_DEVICE_REASON = "Tu usuario se conecto en otro dispositivo.";
+const OTHER_DEVICE_REASON = "Tu usuario supero el maximo de 3 dispositivos conectados.";
 
 type SessionUser = {
   id: string;
@@ -18,6 +18,7 @@ type SessionUser = {
 };
 
 const ACTIVE_SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
+const MAX_ACTIVE_DEVICES = 3;
 
 function randomToken() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -102,22 +103,51 @@ export async function startSingleDeviceSession<T extends SessionUser>(user: T): 
   }
 
   const deviceId = getOrCreateDeviceId();
-  const { data: existing } = await supabase
+  const now = Date.now();
+  const cutoff = new Date(now - ACTIVE_SESSION_GRACE_MS).toISOString();
+
+  await supabase
+    .from("cyclic_user_sessions")
+    .delete()
+    .eq("user_id", user.id)
+    .lt("last_seen_at", cutoff);
+
+  const { data: sessions } = await supabase
     .from("cyclic_user_sessions")
     .select("session_token,device_id,last_seen_at")
     .eq("user_id", user.id)
-    .maybeSingle();
+    .order("last_seen_at", { ascending: false });
+
+  const activeSessions = (sessions || []).filter((session) => {
+    const lastSeenMs = session.last_seen_at ? new Date(session.last_seen_at).getTime() : 0;
+    return now - lastSeenMs < ACTIVE_SESSION_GRACE_MS;
+  });
+  const existing = activeSessions.find((session) => session.device_id === deviceId);
   const lastSeenMs = existing?.last_seen_at ? new Date(existing.last_seen_at).getTime() : 0;
-  const sameActiveDevice = existing?.device_id === deviceId && Date.now() - lastSeenMs < ACTIVE_SESSION_GRACE_MS;
+  const sameActiveDevice = existing?.device_id === deviceId && now - lastSeenMs < ACTIVE_SESSION_GRACE_MS;
   const token = sameActiveDevice && existing?.session_token ? existing.session_token : randomToken();
   const nextUser = { ...user, cyclic_session_token: token, cyclic_device_id: deviceId };
+
+  if (!sameActiveDevice && activeSessions.length >= MAX_ACTIVE_DEVICES) {
+    const sessionsToRemove = activeSessions
+      .slice(MAX_ACTIVE_DEVICES - 1)
+      .map((session) => session.session_token)
+      .filter(Boolean);
+    if (sessionsToRemove.length > 0) {
+      await supabase
+        .from("cyclic_user_sessions")
+        .delete()
+        .eq("user_id", user.id)
+        .in("session_token", sessionsToRemove);
+    }
+  }
 
   const { error } = await supabase.from("cyclic_user_sessions").upsert({
     user_id: user.id,
     session_token: token,
     device_id: deviceId,
     last_seen_at: new Date().toISOString(),
-  });
+  }, { onConflict: "user_id,device_id" });
 
   if (error) throw error;
   writeStoredUser(nextUser);
@@ -132,6 +162,7 @@ export async function touchSingleDeviceSession(user = readStoredUser()) {
     .from("cyclic_user_sessions")
     .select("session_token,device_id")
     .eq("user_id", user.id)
+    .eq("session_token", user.cyclic_session_token)
     .maybeSingle();
   if (error) return true;
 
