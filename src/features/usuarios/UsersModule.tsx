@@ -204,8 +204,9 @@ export function UsersModule({ stores, showMessage }: Props) {
             <input className="border rounded-2xl p-3 text-sm bg-white text-slate-900 md:col-span-2" placeholder="WhatsApp (ej: 51987654321 - con codigo de pais)" value={newUserWhatsapp} onChange={(e) => setNewUserWhatsapp(e.target.value)} />
             <div>
               <label className="text-xs text-slate-500 block mb-1">Rol</label>
-              <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={(e) => { const role = e.target.value as Role; setNewRole(role); setNewUserModuleAccess(legacyModuleAccessForRole(role, newUserAuditAccess)); if (role !== "Operario") setNewUserAllStores(true); }}>
+              <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={(e) => { const role = e.target.value as Role; setNewRole(role); setNewUserModuleAccess(legacyModuleAccessForRole(role, newUserAuditAccess)); if (role === "Administrador" || role === "Supervisor" || role === "Validador") setNewUserAllStores(true); }}>
                 <option value="Operario">Operario</option>
+                <option value="Cajero">Cajero</option>
                 <option value="Validador">Validador</option>
                 <option value="Supervisor">Supervisor lectura</option>
                 <option value="Administrador">Administrador</option>
@@ -260,7 +261,7 @@ export function UsersModule({ stores, showMessage }: Props) {
                       <td className="p-2 border font-mono text-xs">{user.username}</td>
                       <td className="p-2 border font-medium">{user.full_name}</td>
                       <td className="p-2 border text-center">
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${user.role === "Administrador" ? "bg-purple-100 text-purple-700" : user.role === "Supervisor" ? "bg-emerald-100 text-emerald-700" : user.role === "Validador" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}`}>{user.role}</span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${user.role === "Administrador" ? "bg-purple-100 text-purple-700" : user.role === "Supervisor" ? "bg-emerald-100 text-emerald-700" : user.role === "Validador" ? "bg-blue-100 text-blue-700" : user.role === "Cajero" ? "bg-rose-100 text-rose-700" : "bg-slate-100 text-slate-700"}`}>{user.role}</span>
                       </td>
                       <td className="p-2 border text-center text-xs">{user.can_access_all_stores ? "Todas" : (store?.name || "-")}</td>
                       <td className="p-2 border text-center text-xs">
@@ -311,8 +312,9 @@ export function UsersModule({ stores, showMessage }: Props) {
               </div>
               <div>
                 <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
-                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={(e) => { const role = e.target.value as Role; setEditUserRole(role); setEditUserModuleAccess(legacyModuleAccessForRole(role, editUserAuditAccess)); if (role !== "Operario") setEditUserAllStores(true); }}>
+                <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={(e) => { const role = e.target.value as Role; setEditUserRole(role); setEditUserModuleAccess(legacyModuleAccessForRole(role, editUserAuditAccess)); if (role === "Administrador" || role === "Supervisor" || role === "Validador") setEditUserAllStores(true); }}>
                   <option value="Operario">Operario</option>
+                  <option value="Cajero">Cajero</option>
                   <option value="Validador">Validador</option>
                   <option value="Supervisor">Supervisor lectura</option>
                   <option value="Administrador">Administrador</option>

@@ -1,4 +1,4 @@
-export type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
+export type Role = "Operario" | "Cajero" | "Validador" | "Supervisor" | "Administrador";
 export type SessionStatus = "planned" | "open" | "frozen" | "finished" | "cancelled";
 export type ValidatorTab = "preparacion" | "registros" | "productividad" | "reconteo" | "validacion" | "resumen" | "reportes" | "usuarios";
 export type OperatorMode = "conteo" | "consulta" | "reconteo";

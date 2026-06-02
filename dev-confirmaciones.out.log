@@ -1,0 +1,12 @@
+
+> ciclicos@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.18.18:3000
+- Environments: .env.local
+✓ Ready in 1682ms
+
+ GET /confirmaciones 200 in 1570ms (next.js: 1250ms, application-code: 320ms)
+ GET / 200 in 199ms (next.js: 86ms, application-code: 113ms)
