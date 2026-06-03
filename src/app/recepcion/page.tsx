@@ -1612,6 +1612,17 @@ export default function RecepcionPage() {
             )}
           </div>
 
+          {/* Botón completar */}
+          {selected.reception_status !== "completed" && !loading && (
+            <div className="rounded-2xl border bg-white p-3 shadow-sm">
+              <button onClick={markComplete} disabled={saving || scans.length === 0}
+                className="w-full rounded-2xl bg-slate-900 text-white py-3.5 font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40">
+                <CheckCircle2 size={18} /> {saving ? "Guardando..." : "Marcar requerimiento completado"}
+              </button>
+              {scans.length === 0 && <p className="text-center text-xs text-slate-400 mt-1">Registra al menos un ítem para completar</p>}
+            </div>
+          )}
+
           {/* Barra de escaneo / digitación */}
           {(
             <div className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -1813,17 +1824,6 @@ export default function RecepcionPage() {
                   </div>
                 );
               })}
-            </div>
-          )}
-
-          {/* Botón completar */}
-          {selected.reception_status !== "completed" && !loading && (
-            <div className="sticky bottom-4 pt-2">
-              <button onClick={markComplete} disabled={saving || scans.length === 0}
-                className="w-full rounded-2xl bg-slate-900 text-white py-4 font-black text-sm flex items-center justify-center gap-2 disabled:opacity-40">
-                <CheckCircle2 size={18} /> {saving ? "Guardando..." : "Marcar requerimiento completado"}
-              </button>
-              {scans.length === 0 && <p className="text-center text-xs text-slate-400 mt-1">Registra al menos un ítem para completar</p>}
             </div>
           )}
 
