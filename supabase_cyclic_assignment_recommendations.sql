@@ -76,7 +76,7 @@ returns table (
 language sql
 stable
 as $$
-with target_store as (
+with target_store as materialized (
   select
     s.id,
     s.code,
@@ -147,14 +147,31 @@ already_counted_before as materialized (
 stock_candidates as materialized (
   select
     sg.codsap,
-    sg.stock::numeric as system_stock,
-    sg.costo::numeric as stock_cost
+    sg.stock   as system_stock,
+    sg.costo   as stock_cost
   from target_store ts
   join public.stock_general sg
     on sg.sede = ts.sede
-  where coalesce(sg.stock::numeric, 0) > 0
+  where sg.stock > 0
 ),
--- FIX: separa el OR en dos ramas UNION para usar indices en cada columna
+-- Pre-computa los SKUs en stock para filtrar rotation tables
+stock_skus as materialized (
+  select distinct upper(trim(codsap)) as sku_upper
+  from stock_candidates
+),
+-- Pre-computa los product_ids no inventariables para anti-join eficiente (evita OR en join)
+non_inventory_ids as materialized (
+  select ni.product_id
+  from public.cyclic_non_inventory_products ni
+  where ni.is_active = true and ni.product_id is not null
+  union
+  select p.id as product_id
+  from public.cyclic_products p
+  join public.cyclic_non_inventory_products ni
+    on ni.is_active = true
+    and upper(trim(ni.sku)) = upper(trim(p.sku))
+  where coalesce(p.is_active, true) = true
+),
 rotation_store as materialized (
   select distinct on (product_code)
     product_code,
@@ -166,6 +183,7 @@ rotation_store as materialized (
       prs.calculated_at
     from public.product_rotation_store prs
     where upper(trim(prs.store_code)) in (select store_code from store_codes)
+      and upper(trim(prs.product_code)) in (select sku_upper from stock_skus)
       and nullif(trim(prs.product_code), '') is not null
     union
     select
@@ -174,6 +192,7 @@ rotation_store as materialized (
       prs.calculated_at
     from public.product_rotation_store prs
     where upper(trim(prs.store_name)) in (select store_key from store_keys)
+      and upper(trim(prs.product_code)) in (select sku_upper from stock_skus)
       and nullif(trim(prs.product_code), '') is not null
   ) rs_union
   order by product_code, calculated_at desc nulls last
@@ -185,6 +204,7 @@ rotation_monthly as materialized (
     prm.period_month
   from public.product_rotation_monthly prm
   where upper(trim(prm.store_key)) in (select store_key from store_keys)
+    and upper(trim(prm.product_code)) in (select sku_upper from stock_skus)
     and prm.period_month <= date_trunc('month', coalesce(p_assigned_date, current_date))::date
     and nullif(trim(prm.product_code), '') is not null
   order by upper(trim(prm.product_code)), prm.period_month desc
@@ -212,16 +232,11 @@ base as materialized (
   left join already_assigned aa on aa.product_id = p.id
   left join already_completed ac on ac.product_id = p.id
   left join already_counted_before cb on cb.product_id = p.id
-  left join public.cyclic_non_inventory_products ni
-    on ni.is_active = true
-    and (
-      (ni.product_id is not null and ni.product_id = p.id)
-      or upper(trim(ni.sku)) = upper(trim(p.sku))
-    )
+  left join non_inventory_ids ni on ni.product_id = p.id
   where aa.product_id is null
     and ac.product_id is null
     and cb.product_id is null
-    and ni.id is null
+    and ni.product_id is null
 ),
 priority_ranked as (
   select
