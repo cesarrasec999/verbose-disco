@@ -1,7 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, FileText, RefreshCw } from "lucide-react";
+import { ArrowLeft, Download, FileText, RefreshCw, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { readSafeSheetMatrix } from "@/lib/safeExcel";
@@ -172,11 +172,11 @@ function cellByHeaders(row: unknown[], headers: string[], names: string[]) {
 
 function storeNameFromSnapshotRow(row: unknown[], headers: string[]) {
   const normalized = headers.map(header => header.trim().toLowerCase());
-  const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacén", "local", "sede"].includes(header));
+  const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacÃƒÂ©n", "local", "sede"].includes(header));
   if (exactStoreIdx >= 0) return String(row[exactStoreIdx] || "").trim();
   const nameIdx = normalized.findIndex(header =>
-    ["tienda", "store", "almacen", "almacén", "local", "sede"].some(name => header.includes(name)) &&
-    !["codigo", "código", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
+    ["tienda", "store", "almacen", "almacÃƒÂ©n", "local", "sede"].some(name => header.includes(name)) &&
+    !["codigo", "cÃƒÂ³digo", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
   );
   return nameIdx >= 0 ? String(row[nameIdx] || "").trim() : "";
 }
@@ -266,9 +266,9 @@ export default function ReportesPage() {
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
   const [selectedStoreId, setSelectedStoreId] = useState("all");
   const [reportDate, setReportDate] = useState(todayISO());
-  const [snapshotDate, setSnapshotDate] = useState(todayISO());
-  const [snapshotFile, setSnapshotFile] = useState<File | null>(null);
-  const [snapshotFileName, setSnapshotFileName] = useState("");
+  const [rotationPeriod, setRotationPeriod] = useState(currentRotationPeriod().slice(0, 7));
+  const [rotationFile, setRotationFile] = useState<File | null>(null);
+  const [rotationFileName, setRotationFileName] = useState("");
   const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
   const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
@@ -276,7 +276,7 @@ export default function ReportesPage() {
   useEffect(() => {
     if (isMobileAccess) window.location.replace("/dashboard");
   }, [isMobileAccess]);
-  const snapshotInputRef = useRef<HTMLInputElement | null>(null);
+  const rotationInputRef = useRef<HTMLInputElement | null>(null);
 
   const canView = Boolean(
     user && (
@@ -467,49 +467,45 @@ export default function ReportesPage() {
     ));
   }
 
-  function parseSnapshotRows(rows: unknown[][]): ValuationRow[] {
+  function parseRotationUploadRows(rows: unknown[][]) {
     if (rows.length < 2) return [];
     const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
-    const grouped = new Map<string, ValuationRow>();
     const knownStores = new Map<string, Store>();
     for (const store of stores) {
-      knownStores.set(String(store.name || "").trim().toLowerCase(), store);
-      knownStores.set(String(store.code || "").trim().toLowerCase(), store);
-      if (store.erp_sede) knownStores.set(String(store.erp_sede).trim().toLowerCase(), store);
+      for (const key of storeMatchKeys(store)) knownStores.set(key, store);
     }
+    const parsed = new Map<string, {
+      period_month: string;
+      store_key: string;
+      store_name: string;
+      product_code: string;
+      description: string;
+      unit: string;
+      rotation_category: string;
+      source_name: string;
+    }>();
+    const periodMonth = `${rotationPeriod}-01`;
 
     for (const row of rows.slice(1)) {
       const rawStore = storeNameFromSnapshotRow(row, headers);
-      if (!rawStore) continue;
-      const store = knownStores.get(rawStore.toLowerCase());
+      const store = knownStores.get(normalizeRotationStoreKey(rawStore));
       const storeName = store?.name || rawStore;
-      if (/^\d+$/.test(storeName)) continue;
-      const key = store?.id || storeName.toLowerCase();
-      const code = String(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigo", "código", "cod.sap", "codsap", "sku"]) || "").trim();
-      const stock = parseCost(cellByHeaders(row, headers, ["unidades", "stock", "cantidad", "cant.disponible", "cant disponible"]));
-      const cost = parseCost(cellByHeaders(row, headers, ["costo prom", "costo", "ult costo", "cost"]));
-      const valueFromFile = parseCost(cellByHeaders(row, headers, ["valorizado", "valor", "total valor", "importe"]));
-      const isSummary = headers.some(header => header.includes("valorizado")) && headers.some(header => header.includes("codigos"));
-      const rowValue = valueFromFile > 0 ? valueFromFile : r2(stock * cost);
-      const existing = grouped.get(key) || {
-        store_id: store?.id || key,
+      const productCode = fullProductCode(cellByHeaders(row, headers, ["product_code", "producto", "codsap", "cod sap", "codigo", "cÃƒÂ³digo", "sku", "cod.prod", "cod prod"]));
+      const rotation = String(cellByHeaders(row, headers, ["rotation_category", "rotacion", "rotaciÃƒÂ³n", "abc", "clasificacion", "clasificaciÃƒÂ³n", "categoria", "categorÃƒÂ­a"]) || "").trim().toUpperCase();
+      if (!storeName || !productCode || !rotation) continue;
+      const storeKey = rotationStoreKeysForStore(store || { id: "", name: storeName, is_active: true })[0] || normalizeRotationStoreKey(storeName);
+      parsed.set(`${storeKey}__${productCode}`, {
+        period_month: periodMonth,
+        store_key: storeKey,
         store_name: storeName,
-        sede: store?.erp_sede || rawStore,
-        codes_with_stock: 0,
-        total_units: 0,
-        inventory_value: 0,
-        missing_cost_codes: 0,
-      };
-      existing.total_units = r2(existing.total_units + stock);
-      existing.inventory_value = r2(existing.inventory_value + rowValue);
-      if (isSummary) {
-        existing.codes_with_stock = Math.max(existing.codes_with_stock, Math.round(parseCost(cellByHeaders(row, headers, ["codigosconstock", "codigos con stock", "codigos"]))));
-      } else if (code) {
-        existing.codes_with_stock += 1;
-      }
-      grouped.set(key, existing);
+        product_code: productCode,
+        description: String(cellByHeaders(row, headers, ["descripcion", "descripciÃƒÂ³n", "description", "producto"]) || "").trim(),
+        unit: String(cellByHeaders(row, headers, ["um", "unidad", "unit"]) || "").trim(),
+        rotation_category: rotation,
+        source_name: rotationFileName,
+      });
     }
-    return [...grouped.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
+    return [...parsed.values()];
   }
 
   async function reloadSnapshots(selectId?: string) {
@@ -563,7 +559,7 @@ export default function ReportesPage() {
 
   async function deleteSnapshot(snapshot: InventorySnapshot) {
     const label = `${snapshot.snapshot_date} ${String(snapshot.snapshot_time || "").slice(0, 5)}`;
-    if (!confirm(`Eliminar la fotografía ${label}?`)) return;
+    if (!confirm(`Eliminar la fotografÃƒÂ­a ${label}?`)) return;
     setLoading(true);
     try {
       const { error } = await supabase.from("inventory_valuation_snapshots").delete().eq("id", snapshot.id);
@@ -573,80 +569,41 @@ export default function ReportesPage() {
         setSelectedSnapshotRows([]);
       }
       await reloadSnapshots();
-      setMessage("Fotografía eliminada.");
+      setMessage("FotografÃƒÂ­a eliminada.");
     } catch (error: unknown) {
-      setMessage("Error eliminando fotografía: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error eliminando fotografÃƒÂ­a: " + (error instanceof Error ? error.message : String(error)));
     } finally {
       setLoading(false);
     }
   }
 
-  async function uploadSnapshotExcel() {
-    if (!snapshotFile) {
-      setMessage("Selecciona el Excel de valorizado.");
+  async function uploadMonthlyRotations() {
+    if (!rotationFile) {
+      setMessage("Selecciona el Excel de rotaciones.");
       return;
     }
     setLoading(true);
-    setProgress("Leyendo fotografía...");
+    setProgress("Leyendo rotaciones...");
     try {
-      const rows = await readSafeSheetMatrix(snapshotFile, { maxRows: 50000, maxCols: 60, raw: false });
-      const parsed = parseSnapshotRows(rows);
+      const rows = await readSafeSheetMatrix(rotationFile, { maxBytes: 25 * 1024 * 1024, maxRows: 120000, maxCols: 40, raw: false });
+      const parsed = parseRotationUploadRows(rows);
       if (parsed.length === 0) {
-        setMessage("No pude leer tiendas/valorizado del Excel.");
+        setMessage("No pude leer rotaciones. Revisa columnas de tienda, codigo y rotacion.");
         return;
       }
-      const totals = parsed.reduce((acc, row) => ({
-        stores: acc.stores + 1,
-        codes: acc.codes + row.codes_with_stock,
-        units: r2(acc.units + row.total_units),
-        value: r2(acc.value + row.inventory_value),
-      }), { stores: 0, codes: 0, units: 0, value: 0 });
-      const { data: existing, error: existingError } = await supabase
-        .from("inventory_valuation_snapshots")
-        .select("id")
-        .eq("snapshot_date", snapshotDate)
-        .eq("snapshot_time", "08:00");
-      if (existingError) throw existingError;
-      if ((existing || []).length > 0) {
-        const { error } = await supabase.from("inventory_valuation_snapshots").delete().in("id", (existing || []).map(row => row.id));
+      for (let i = 0; i < parsed.length; i += 500) {
+        const { error } = await supabase
+          .from("product_rotation_monthly")
+          .upsert(parsed.slice(i, i + 500), { onConflict: "period_month,store_key,product_code" });
         if (error) throw error;
       }
-      const { data: snapshot, error: snapshotError } = await supabase
-        .from("inventory_valuation_snapshots")
-        .insert({
-          snapshot_date: snapshotDate,
-          snapshot_time: "08:00",
-          source_name: snapshotFileName,
-          total_stores: totals.stores,
-          total_codes: totals.codes,
-          total_units: totals.units,
-          total_value: totals.value,
-          uploaded_by: user?.id || null,
-        })
-        .select("id")
-        .single();
-      if (snapshotError) throw snapshotError;
-      const insertRows = parsed.map(row => ({
-        snapshot_id: snapshot.id,
-        store_id: stores.find(store => store.id === row.store_id)?.id || null,
-        store_name: row.store_name,
-        sede: row.sede,
-        codes_with_stock: row.codes_with_stock,
-        total_units: row.total_units,
-        inventory_value: row.inventory_value,
-        missing_cost_codes: row.missing_cost_codes,
-      }));
-      for (let i = 0; i < insertRows.length; i += 500) {
-        const { error } = await supabase.from("inventory_valuation_snapshot_stores").insert(insertRows.slice(i, i + 500));
-        if (error) throw error;
-      }
-      setSnapshotFile(null);
-      setSnapshotFileName("");
-      if (snapshotInputRef.current) snapshotInputRef.current.value = "";
-      setMessage(`Fotografía guardada: ${parsed.length} tienda(s).`);
-      await reloadSnapshots(snapshot.id);
+      setRotationFile(null);
+      setRotationFileName("");
+      if (rotationInputRef.current) rotationInputRef.current.value = "";
+      setMessage(`Rotaciones guardadas para ${rotationPeriod}: ${parsed.length.toLocaleString("es-PE")} cÃƒÂ³digo(s). Los meses anteriores se mantienen.`);
+      if (activeTab === "rotaciones") await loadReport();
     } catch (error: unknown) {
-      setMessage("Error guardando fotografía: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error guardando rotaciones: " + (error instanceof Error ? error.message : String(error)));
     } finally {
       setLoading(false);
       setProgress("");
@@ -1122,33 +1079,7 @@ export default function ReportesPage() {
             <div>
               <h2 className="font-black text-slate-900">Historial de valorizados</h2>
               <Formula>fotografia diaria = valorizado guardado a las 8:00 a. m. para comparar el stock historico.</Formula>
-              <p className="text-xs text-slate-500">Fotografías guardadas para revisar valorizados anteriores.</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
-                type="date"
-                value={snapshotDate}
-                onChange={e => setSnapshotDate(e.target.value)}
-              />
-              <button className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700" onClick={() => snapshotInputRef.current?.click()}>
-                {snapshotFileName || "Seleccionar Excel"}
-              </button>
-              <input
-                ref={snapshotInputRef}
-                type="file"
-                accept=".xlsx,.xls"
-                className="hidden"
-                onChange={e => {
-                  const file = e.target.files?.[0] || null;
-                  setSnapshotFile(file);
-                  setSnapshotFileName(file?.name || "");
-                  e.target.value = "";
-                }}
-              />
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40" disabled={loading || !snapshotFile} onClick={uploadSnapshotExcel}>
-                Guardar fotografía
-              </button>
+              <p className="text-xs text-slate-500">Fotografias automaticas guardadas por la sincronizacion diaria de las 8:00 a. m.</p>
             </div>
           </div>
 
@@ -1163,7 +1094,7 @@ export default function ReportesPage() {
                   >
                     <div className="min-w-0 flex-1">
                       <span className="block font-black">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
-                      <span className="block text-xs text-slate-500">{money(Number(snapshot.total_value || 0))} · {number2(snapshot.total_stores)} tiendas</span>
+                      <span className="block text-xs text-slate-500">{money(Number(snapshot.total_value || 0))} Ã‚Â· {number2(snapshot.total_stores)} tiendas</span>
                     </div>
                     <button
                       className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
@@ -1174,7 +1105,7 @@ export default function ReportesPage() {
                     </button>
                   </div>
                 ))}
-                {snapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografías guardadas.</div>}
+                {snapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografÃƒÂ­as guardadas.</div>}
               </div>
             </div>
 
@@ -1199,7 +1130,7 @@ export default function ReportesPage() {
                       </tr>
                     ))}
                     {selectedSnapshotRows.length === 0 && (
-                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStore ? "Selecciona una fotografía para ver esa tienda." : "Selecciona una fotografía para ver el resumen."}</td></tr>
+                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStore ? "Selecciona una fotografÃƒÂ­a para ver esa tienda." : "Selecciona una fotografÃƒÂ­a para ver el resumen."}</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1210,6 +1141,48 @@ export default function ReportesPage() {
 
         {activeTab === "rotaciones" && (
           <>
+            <div className="rounded-2xl border bg-white p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-black text-slate-900">Rotaciones mensuales</h2>
+                  <Formula>rotaciones del mes = archivo mensual guardado por periodo; los meses anteriores no se eliminan.</Formula>
+                  <p className="text-xs text-slate-500">Sube el archivo del mes actual para alimentar reportes histÃ³ricos por rotaciÃ³n.</p>
+                </div>
+                  <p className="mt-2 text-xs font-bold text-slate-600">
+                    Columnas obligatorias: Tienda, Codigo o CodSAP, Rotacion. Opcionales: Descripcion y UM.
+                  </p>
+                  <p className="text-[11px] font-semibold text-slate-400">
+                    Tambien acepta nombres como Sede, Store, SKU, Product_Code, ABC, Categoria, Unidad.
+                  </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
+                    type="month"
+                    value={rotationPeriod}
+                    onChange={e => setRotationPeriod(e.target.value)}
+                  />
+                  <button className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700" onClick={() => rotationInputRef.current?.click()}>
+                    <Upload className="mr-2 inline" size={16} /> {rotationFileName || "Elegir rotaciones"}
+                  </button>
+                  <input
+                    ref={rotationInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0] || null;
+                      setRotationFile(file);
+                      setRotationFileName(file?.name || "");
+                      e.target.value = "";
+                    }}
+                  />
+                  <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40" disabled={loading || !rotationFile || !rotationPeriod} onClick={uploadMonthlyRotations}>
+                    Subir rotaciones
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
                 <h2 className="font-black">Valorizado por rotacion</h2>
