@@ -1,5 +1,5 @@
 -- Recomendaciones de asignacion ciclica por valorizado.
--- Devuelve 15 codigos de rotacion prioritaria (A; si no hay A, B; si no hay B, C)
+-- Devuelve 15 codigos de rotacion prioritaria completando en orden A, B y C
 -- y 15 codigos adicionales con mayor valorizado, sin duplicados.
 
 create index if not exists idx_stock_general_sede_codsap
@@ -160,25 +160,24 @@ base as (
       )
   )
 ),
-priority_category as (
-  select
-    case
-      when exists (select 1 from base where rotation_category = 'A') then 'A'
-      when exists (select 1 from base where rotation_category = 'B') then 'B'
-      when exists (select 1 from base where rotation_category = 'C') then 'C'
-      else null
-    end as rotation_category
-),
 priority_ranked as (
   select
     base.rotation_category as recommendation_group,
     base.*,
     row_number() over (
-      order by inventory_value desc, system_stock desc, sku asc
+      order by
+        case base.rotation_category
+          when 'A' then 0
+          when 'B' then 1
+          when 'C' then 2
+          else 3
+        end,
+        inventory_value desc,
+        system_stock desc,
+        sku asc
     ) as rn
   from base
-  join priority_category pc
-    on base.rotation_category = pc.rotation_category
+  where base.rotation_category in ('A', 'B', 'C')
 ),
 priority_selected as (
   select

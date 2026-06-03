@@ -2628,9 +2628,8 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             setAssignSelectedIds(new Set(rows.map(product => product.id)));
             const rotationRecommended = rows.filter(row => row.recommendation_group !== "VALORIZADO");
             const valuedRecommended = rows.filter(row => row.recommendation_group === "VALORIZADO");
-            const rotationLabel = rotationRecommended[0]?.recommendation_group || "-";
             setAssignSearchNotice(rows.length > 0
-                ? `Recomendacion SQL cargada: ${rotationRecommended.length} rotacion ${rotationLabel} y ${valuedRecommended.length} de mayor valorizado.`
+                ? `Recomendacion SQL cargada: ${rotationRecommended.filter(row => row.rotation_category === "A").length} A, ${rotationRecommended.filter(row => row.rotation_category === "B").length} B, ${rotationRecommended.filter(row => row.rotation_category === "C").length} C y ${valuedRecommended.length} de mayor valorizado.`
                 : "No se encontraron codigos recomendables con stock para esta tienda/fecha."
             );
         } catch (error: any) {
@@ -7217,7 +7216,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                             {assignRecommendationsLoading ? "Calculando..." : "Recomendar 30 codigos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
-                                            15 rotacion A; si no hay A, usa B; si no hay B, usa C + 15 mayor valorizado
+                                            15 rotacion A; si no alcanza, completa con B y luego C + 15 mayor valorizado
                                         </span>
                                     </div>
                                     {assignSearchNotice && (
