@@ -526,7 +526,7 @@ export default function LoginPage() {
         }
       `}</style>
 
-      <div className="relative z-10 mx-auto grid min-h-[calc(100vh-48px)] max-w-6xl items-center gap-6 lg:grid-cols-[1.15fr_420px]">
+      <div className="relative z-10 mx-auto grid min-h-[calc(100vh-48px)] max-w-7xl items-center gap-5 lg:grid-cols-[1fr_280px]">
         <section className="space-y-5">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-600 text-xl font-black text-white shadow-lg shadow-orange-950/40">R</div>
@@ -537,7 +537,7 @@ export default function LoginPage() {
           </div>
 
           {authenticatedUser ? (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {allowedModules.map(module => {
               const Icon = module.icon;
               const isActive = selectedModule?.destination === module.destination;
@@ -549,18 +549,18 @@ export default function LoginPage() {
                     setError("");
                     enterSelectedDestination(authenticatedUser, module);
                   }}
-                  className={`group flex min-h-[112px] items-center gap-4 rounded-2xl border p-4 text-left shadow-xl shadow-slate-950/20 backdrop-blur-md transition ${
+                  className={`group flex min-h-[104px] items-center gap-3 rounded-2xl border p-3 text-left shadow-xl shadow-slate-950/20 backdrop-blur-md transition ${
                     isActive
                       ? "border-orange-400 bg-white ring-2 ring-orange-400"
                       : "border-white/25 bg-white/92 hover:border-orange-300 hover:bg-white"
                   }`}
                 >
-                  <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white ${module.accent}`}>
-                    <Icon size={24} />
+                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white ${module.accent}`}>
+                    <Icon size={22} />
                   </span>
                   <span>
                     <span className="block text-base font-black text-slate-950">{module.label}</span>
-                    <span className="mt-1 block text-sm font-semibold text-slate-500">{module.description}</span>
+                    <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{module.description}</span>
                   </span>
                 </button>
               );
@@ -578,15 +578,15 @@ export default function LoginPage() {
           )}
         </section>
 
-        <section className="rounded-3xl border border-white/25 bg-white/95 p-5 shadow-2xl shadow-slate-950/40 backdrop-blur-md">
+        <section className="rounded-3xl border border-white/25 bg-white/95 p-4 shadow-2xl shadow-slate-950/40 backdrop-blur-md">
           {authenticatedUser ? (
-            <div className="flex min-h-[420px] flex-col items-center justify-center text-center">
-              <Boxes size={48} className="text-slate-300" />
-              <p className="mt-4 text-lg font-black">Hola, {authenticatedUser.full_name}</p>
-              <p className="mt-1 text-sm font-semibold text-slate-500">Elige un modulo permitido para continuar.</p>
+            <div className="flex min-h-[180px] flex-col items-center justify-center text-center">
+              <Boxes size={34} className="text-slate-300" />
+              <p className="mt-3 text-sm font-black leading-5">Hola, {authenticatedUser.full_name}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">Elige un modulo permitido.</p>
               <button
                 type="button"
-                className="mt-5 rounded-2xl border px-4 py-2 text-sm font-black text-slate-600 hover:bg-slate-50"
+                className="mt-4 rounded-xl border px-3 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-50"
                 onClick={() => {
                   void endSingleDeviceSession();
                   sessionStorage.clear();
@@ -597,7 +597,7 @@ export default function LoginPage() {
                   setError("");
                 }}
               >
-                <LogOut className="mr-2 inline" size={16} /> Cerrar sesion
+                <LogOut className="mr-1.5 inline" size={14} /> Cerrar sesion
               </button>
             </div>
           ) : (
