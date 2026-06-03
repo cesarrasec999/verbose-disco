@@ -412,6 +412,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     }, [valDate]);
 
     useEffect(() => {
+        if (activeTab !== "validador" || valTab !== "asignar") return;
+        assignSearchRequestRef.current += 1;
+        setAssignSearch("");
+        setAssignUnitFilter("");
+        setAssignResults([]);
+        setAssignSelectedIds(new Set());
+        setAssignSearchNotice("");
+    }, [activeTab, valTab, valStoreId, valDate]);
+
+    useEffect(() => {
         if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
         loadAllStoreAssignmentSummary(valDate);
     }, [isMobileAccess, activeTab, valTab, valStoreId, valDate, stores]);
