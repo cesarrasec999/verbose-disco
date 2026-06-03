@@ -1,5 +1,6 @@
 -- Recomendaciones de asignacion ciclica por valorizado.
--- Devuelve 15 codigos rotacion A y 15 codigos de otras rotaciones, calculado en SQL.
+-- Devuelve 15 codigos de rotacion prioritaria (A; si no hay A, B; si no hay B, C)
+-- y 15 codigos adicionales con mayor valorizado, sin duplicados.
 
 create index if not exists idx_stock_general_sede_codsap
   on public.stock_general (sede, codsap);
@@ -159,15 +160,78 @@ base as (
       )
   )
 ),
-ranked as (
+priority_category as (
   select
-    case when rotation_category = 'A' then 'A' else 'OTRAS' end as recommendation_group,
+    case
+      when exists (select 1 from base where rotation_category = 'A') then 'A'
+      when exists (select 1 from base where rotation_category = 'B') then 'B'
+      when exists (select 1 from base where rotation_category = 'C') then 'C'
+      else null
+    end as rotation_category
+),
+priority_ranked as (
+  select
+    base.rotation_category as recommendation_group,
     base.*,
     row_number() over (
-      partition by case when rotation_category = 'A' then 'A' else 'OTRAS' end
       order by inventory_value desc, system_stock desc, sku asc
     ) as rn
   from base
+  join priority_category pc
+    on base.rotation_category = pc.rotation_category
+),
+priority_selected as (
+  select
+    0 as sort_group,
+    recommendation_group,
+    product_id,
+    sku,
+    barcode,
+    description,
+    unit,
+    cost,
+    system_stock,
+    inventory_value,
+    rotation_category,
+    period_month
+  from priority_ranked
+  where rn <= greatest(coalesce(p_a_limit, 15), 0)
+),
+value_ranked as (
+  select
+    'VALORIZADO'::text as recommendation_group,
+    base.*,
+    row_number() over (
+      order by inventory_value desc, system_stock desc, sku asc
+    ) as rn
+  from base
+  where not exists (
+    select 1
+    from priority_selected ps
+    where ps.product_id = base.product_id
+  )
+),
+value_selected as (
+  select
+    1 as sort_group,
+    recommendation_group,
+    product_id,
+    sku,
+    barcode,
+    description,
+    unit,
+    cost,
+    system_stock,
+    inventory_value,
+    rotation_category,
+    period_month
+  from value_ranked
+  where rn <= greatest(coalesce(p_other_limit, 15), 0)
+),
+combined as (
+  select * from priority_selected
+  union all
+  select * from value_selected
 )
 select
   recommendation_group,
@@ -181,11 +245,9 @@ select
   inventory_value,
   rotation_category,
   period_month
-from ranked
-where (recommendation_group = 'A' and rn <= greatest(coalesce(p_a_limit, 15), 0))
-   or (recommendation_group = 'OTRAS' and rn <= greatest(coalesce(p_other_limit, 15), 0))
+from combined
 order by
-  case recommendation_group when 'A' then 0 else 1 end,
+  sort_group,
   inventory_value desc,
   sku asc;
 $$;
