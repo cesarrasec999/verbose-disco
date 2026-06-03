@@ -5986,7 +5986,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     )}
 
                     {/* SUBMODULOS CICLICOS */}
-                    {(canTakeCount || hasCyclicSubmodules) && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && !(activeTab === "validador" && (valTab === "no_inventariables" || valTab === "resultados")) && (
+                    {(canTakeCount || hasCyclicSubmodules) && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && !(activeTab === "validador" && valTab === "no_inventariables") && (
                         <>
                             {/* Header de sección */}
                             <div className="px-5 pt-3 pb-1">
@@ -6106,7 +6106,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                         </>
                     )}
 
-                    {hasReportSubmodules && !isMobileAccess && activeTab === "validador" && (valTab === "no_inventariables" || valTab === "resultados") && (
+                    {hasReportSubmodules && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && (
                         <>
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reportes</p>
