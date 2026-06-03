@@ -16,9 +16,22 @@ create index if not exists idx_product_rotation_monthly_lookup_upper
     period_month desc
   );
 
+create index if not exists idx_product_rotation_monthly_norm_store_product_month
+  on public.product_rotation_monthly (
+    upper(trim(regexp_replace(regexp_replace(coalesce(store_key, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))),
+    upper(trim(product_code)),
+    period_month desc
+  );
+
 create index if not exists idx_product_rotation_store_lookup_upper
   on public.product_rotation_store (
     upper(trim(store_code)),
+    upper(trim(product_code))
+  );
+
+create index if not exists idx_product_rotation_store_norm_name_product
+  on public.product_rotation_store (
+    upper(trim(regexp_replace(regexp_replace(coalesce(store_name, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))),
     upper(trim(product_code))
   );
 
@@ -91,6 +104,18 @@ store_keys as (
   ) keys(key_value)
   where nullif(trim(coalesce(key_value, '')), '') is not null
 ),
+store_codes as (
+  select distinct upper(trim(code_value)) as store_code
+  from target_store ts
+  cross join lateral (
+    values
+      (ts.code),
+      (regexp_replace(coalesce(ts.erp_sede, ts.name, ''), '^.*?(GPC[0-9]+).*$'::text, '\1')),
+      ((1000 + nullif(regexp_replace(coalesce(ts.code, ''), '\D', '', 'g'), '')::integer)::text),
+      ((1000 + nullif(substring(coalesce(ts.erp_sede, ts.name, '') from 'GPC0*([0-9]+)'), '')::integer)::text)
+  ) codes(code_value)
+  where nullif(trim(coalesce(code_value, '')), '') is not null
+),
 already_assigned as materialized (
   select ca.product_id
   from public.cyclic_assignments ca
@@ -124,6 +149,29 @@ stock_candidates as materialized (
     on sg.sede = ts.sede
   where coalesce(sg.stock::numeric, 0) > 0
 ),
+rotation_store as materialized (
+  select distinct on (upper(trim(prs.product_code)))
+    upper(trim(prs.product_code)) as product_code,
+    upper(trim(prs.rotation_category)) as rotation_category
+  from public.product_rotation_store prs
+  where (
+      upper(trim(prs.store_code)) in (select store_code from store_codes)
+      or upper(trim(regexp_replace(regexp_replace(coalesce(prs.store_name, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
+    )
+    and nullif(trim(prs.product_code), '') is not null
+  order by upper(trim(prs.product_code)), prs.calculated_at desc nulls last
+),
+rotation_monthly as materialized (
+  select distinct on (upper(trim(prm.product_code)))
+    upper(trim(prm.product_code)) as product_code,
+    upper(trim(prm.rotation_category)) as rotation_category,
+    prm.period_month
+  from public.product_rotation_monthly prm
+  where upper(trim(regexp_replace(regexp_replace(coalesce(prm.store_key, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
+    and prm.period_month <= date_trunc('month', coalesce(p_assigned_date, current_date))::date
+    and nullif(trim(prm.product_code), '') is not null
+  order by upper(trim(prm.product_code)), prm.period_month desc
+),
 base as (
   select
     p.id as product_id,
@@ -134,42 +182,14 @@ base as (
     coalesce(nullif(sc.stock_cost, 0), p.cost::numeric, 0) as cost,
     sc.system_stock,
     coalesce(nullif(sc.stock_cost, 0), p.cost::numeric, 0) * sc.system_stock as inventory_value,
-    coalesce(rotation.rotation_category, 'SIN ROTACION') as rotation_category,
-    rotation.period_month
+    coalesce(rs.rotation_category, rm.rotation_category, 'SIN ROTACION') as rotation_category,
+    rm.period_month
   from stock_candidates sc
   join public.cyclic_products p
     on upper(trim(p.sku)) = upper(trim(sc.codsap))
    and coalesce(p.is_active, true) = true
-  left join lateral (
-    select
-      src.rotation_category,
-      src.period_month
-    from (
-      select
-        upper(trim(prs.rotation_category)) as rotation_category,
-        null::date as period_month,
-        0 as source_order
-      from public.product_rotation_store prs
-      where (
-          upper(trim(prs.store_code)) in (select store_key from store_keys)
-          or upper(trim(regexp_replace(regexp_replace(coalesce(prs.store_name, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
-        )
-        and upper(trim(prs.product_code)) = upper(trim(p.sku))
-
-      union all
-
-      select
-        upper(trim(prm.rotation_category)) as rotation_category,
-        prm.period_month,
-        1 as source_order
-      from public.product_rotation_monthly prm
-      where upper(trim(regexp_replace(regexp_replace(coalesce(prm.store_key, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
-        and upper(trim(prm.product_code)) = upper(trim(p.sku))
-        and prm.period_month <= date_trunc('month', coalesce(p_assigned_date, current_date))::date
-    ) src
-    order by src.source_order asc, src.period_month desc nulls last
-    limit 1
-  ) rotation on true
+  left join rotation_store rs on rs.product_code = upper(trim(p.sku))
+  left join rotation_monthly rm on rm.product_code = upper(trim(p.sku))
   left join already_assigned aa on aa.product_id = p.id
   left join already_completed ac on ac.product_id = p.id
   left join already_counted_before cb on cb.product_id = p.id
