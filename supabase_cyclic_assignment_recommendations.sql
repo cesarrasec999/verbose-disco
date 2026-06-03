@@ -1,6 +1,6 @@
 -- Recomendaciones de asignacion ciclica por valorizado.
--- Devuelve 15 codigos de rotacion prioritaria completando en orden A, B y C
--- y 15 codigos adicionales con mayor valorizado, sin duplicados.
+-- Devuelve 15 codigos priorizando rotacion A, B y C; si no alcanza, completa con otros valorizados.
+-- Luego devuelve 15 codigos adicionales con mayor valorizado, sin duplicados.
 
 create index if not exists idx_stock_general_sede_codsap
   on public.stock_general (sede, codsap);
@@ -14,6 +14,12 @@ create index if not exists idx_product_rotation_monthly_lookup_upper
     upper(trim(store_key)),
     upper(trim(product_code)),
     period_month desc
+  );
+
+create index if not exists idx_product_rotation_store_lookup_upper
+  on public.product_rotation_store (
+    upper(trim(store_code)),
+    upper(trim(product_code))
   );
 
 create index if not exists idx_cyclic_assignments_store_date_product
@@ -72,7 +78,8 @@ with target_store as (
   limit 1
 ),
 store_keys as (
-  select upper(trim(key_value)) as store_key
+  select distinct
+    upper(trim(regexp_replace(regexp_replace(coalesce(key_value, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) as store_key
   from target_store ts
   cross join lateral (
     values
@@ -135,13 +142,32 @@ base as (
    and coalesce(p.is_active, true) = true
   left join lateral (
     select
-      upper(trim(prm.rotation_category)) as rotation_category,
-      prm.period_month
-    from public.product_rotation_monthly prm
-    where upper(trim(prm.store_key)) in (select store_key from store_keys)
-      and upper(trim(prm.product_code)) = upper(trim(p.sku))
-      and prm.period_month <= date_trunc('month', coalesce(p_assigned_date, current_date))::date
-    order by prm.period_month desc
+      src.rotation_category,
+      src.period_month
+    from (
+      select
+        upper(trim(prs.rotation_category)) as rotation_category,
+        null::date as period_month,
+        0 as source_order
+      from public.product_rotation_store prs
+      where (
+          upper(trim(prs.store_code)) in (select store_key from store_keys)
+          or upper(trim(regexp_replace(regexp_replace(coalesce(prs.store_name, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
+        )
+        and upper(trim(prs.product_code)) = upper(trim(p.sku))
+
+      union all
+
+      select
+        upper(trim(prm.rotation_category)) as rotation_category,
+        prm.period_month,
+        1 as source_order
+      from public.product_rotation_monthly prm
+      where upper(trim(regexp_replace(regexp_replace(coalesce(prm.store_key, ''), '[^[:alnum:]]+', ' ', 'g'), '[[:space:]]+', ' ', 'g'))) in (select store_key from store_keys)
+        and upper(trim(prm.product_code)) = upper(trim(p.sku))
+        and prm.period_month <= date_trunc('month', coalesce(p_assigned_date, current_date))::date
+    ) src
+    order by src.source_order asc, src.period_month desc nulls last
     limit 1
   ) rotation on true
   left join already_assigned aa on aa.product_id = p.id
@@ -162,7 +188,10 @@ base as (
 ),
 priority_ranked as (
   select
-    base.rotation_category as recommendation_group,
+    case
+      when base.rotation_category in ('A', 'B', 'C') then base.rotation_category
+      else 'OTROS'
+    end as recommendation_group,
     base.*,
     row_number() over (
       order by
@@ -177,7 +206,6 @@ priority_ranked as (
         sku asc
     ) as rn
   from base
-  where base.rotation_category in ('A', 'B', 'C')
 ),
 priority_selected as (
   select

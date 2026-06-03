@@ -2639,7 +2639,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const rotationRecommended = rows.filter(row => row.recommendation_group !== "VALORIZADO");
             const valuedRecommended = rows.filter(row => row.recommendation_group === "VALORIZADO");
             setAssignSearchNotice(rows.length > 0
-                ? `Recomendacion SQL cargada: ${rotationRecommended.filter(row => row.rotation_category === "A").length} A, ${rotationRecommended.filter(row => row.rotation_category === "B").length} B, ${rotationRecommended.filter(row => row.rotation_category === "C").length} C y ${valuedRecommended.length} de mayor valorizado.`
+                ? `Recomendacion SQL cargada: ${rotationRecommended.filter(row => row.rotation_category === "A").length} A, ${rotationRecommended.filter(row => row.rotation_category === "B").length} B, ${rotationRecommended.filter(row => row.rotation_category === "C").length} C, ${rotationRecommended.filter(row => !["A", "B", "C"].includes(String(row.rotation_category || ""))).length} otros y ${valuedRecommended.length} de mayor valorizado.`
                 : "No se encontraron codigos recomendables con stock para esta tienda/fecha."
             );
         } catch (error: any) {
