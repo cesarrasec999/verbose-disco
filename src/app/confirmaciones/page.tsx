@@ -233,6 +233,10 @@ export default function ConfirmacionesPage() {
     return localStorage.getItem(SOUND_ENABLED_KEY) === "1";
   });
   const [soundBlocked, setSoundBlocked] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(() => {
+    if (typeof window === "undefined" || typeof Notification === "undefined") return "unsupported";
+    return Notification.permission;
+  });
   const audioRef = useRef<AudioContext | null>(null);
   const beepTimerRef = useRef<number | null>(null);
   const realtimeRefreshRef = useRef<number | null>(null);
@@ -501,12 +505,23 @@ export default function ConfirmacionesPage() {
     if (AudioCtor && !audioRef.current) audioRef.current = new AudioCtor();
     if (audioRef.current?.state === "suspended") await audioRef.current.resume();
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      await Notification.requestPermission();
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    } else if (typeof Notification !== "undefined") {
+      setNotificationPermission(Notification.permission);
     }
     localStorage.setItem(SOUND_ENABLED_KEY, "1");
     setSoundEnabled(true);
     if (canValidate && pendingUnopenedCount > 0) startAlarm();
     else await playBeep();
+  }
+
+  function soundButtonLabel() {
+    if (!soundEnabled) return "Activar sonido";
+    if (notificationPermission === "granted") return "Sonido activo · notificaciones permitidas";
+    if (notificationPermission === "denied") return "Sonido activo · notificaciones bloqueadas";
+    if (notificationPermission === "unsupported") return "Sonido activo · sin notificaciones";
+    return "Sonido activo · activar notificaciones";
   }
 
   async function onPhotoChange(file: File | null) {
@@ -944,9 +959,10 @@ export default function ConfirmacionesPage() {
                 </select>
                 <input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" placeholder="Buscar documento, tienda, operacion..." />
                 <button onClick={enableSound} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
-                  {soundEnabled ? "Sonido activo" : "Activar sonido"}
+                  {soundButtonLabel()}
                 </button>
                 {soundBlocked && <p className="text-xs font-bold text-amber-700">El navegador bloqueo el sonido. Presiona Activar sonido otra vez.</p>}
+                {notificationPermission === "denied" && <p className="text-xs font-bold text-amber-700">Las notificaciones estan bloqueadas. Habilitalas desde el candado del navegador para este sitio.</p>}
               </div>
             </div>
           )}
