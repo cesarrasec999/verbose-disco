@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /*
   Copiar este archivo al servidor:
-    \\192.168.5.51\rms\CESAR\erp-sync\sync-reportes-ventas.js
+    \\192.168.5.53\Users\cesar.quispe\erp-sync\sync-reportes-ventas.js
 
   Requiere las mismas variables .env del sync actual:
     SQL_USER, SQL_PASSWORD, SQL_DATABASE, SQL_SERVER, SUPABASE_URL, SUPABASE_SERVICE_ROLE
@@ -38,6 +38,12 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function yesterdayISO() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function monthStartISO() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
@@ -55,8 +61,9 @@ function normalizeNumber(value) {
 }
 
 async function syncSales() {
-  const start = arg("start", monthStartISO());
-  const end = arg("end", todayISO());
+  const isYesterday = process.argv.includes("--yesterday");
+  const start = isYesterday ? yesterdayISO() : arg("start", monthStartISO());
+  const end   = isYesterday ? yesterdayISO() : arg("end",   todayISO());
   const endExclusive = addDaysISO(end, 1);
   const pool = await sql.connect(sqlConfig);
 
@@ -131,7 +138,7 @@ async function syncSales() {
     cost_amount: normalizeNumber(row.cost_amount),
     quantity: normalizeNumber(row.quantity),
     documents: Number(row.documents || 0),
-    source_name: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    source_name: "\\\\192.168.5.53\\Users\\cesar.quispe\\erp-sync",
     synced_at: now,
     updated_at: now,
   })).filter(row => row.sales_date && row.store_key);
@@ -147,7 +154,7 @@ async function syncSales() {
     cost_amount: normalizeNumber(row.cost_amount),
     quantity: normalizeNumber(row.quantity),
     documents: Number(row.documents || 0),
-    source_name: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    source_name: "\\\\192.168.5.53\\Users\\cesar.quispe\\erp-sync",
     synced_at: now,
     updated_at: now,
   })).filter(row => row.sales_date && row.store_key && row.product_code);
@@ -174,14 +181,14 @@ async function syncSales() {
 
   await supabase.from("erp_sync_status").upsert({
     id: "erp_store_sales_daily",
-    source_path: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    source_path: "\\\\192.168.5.53\\Users\\cesar.quispe\\erp-sync",
     synced_at: now,
     updated_at: now,
   }, { onConflict: "id" });
 
   await supabase.from("erp_sync_status").upsert({
     id: "erp_product_sales_daily",
-    source_path: "\\\\192.168.5.51\\rms\\CESAR\\erp-sync",
+    source_path: "\\\\192.168.5.53\\Users\\cesar.quispe\\erp-sync",
     synced_at: now,
     updated_at: now,
   }, { onConflict: "id" });
