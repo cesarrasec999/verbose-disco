@@ -49,6 +49,7 @@ type PaymentConfirmation = {
 
 const BUCKET = "payment-confirmations";
 const SOUND_ENABLED_KEY = "payment_confirmations_sound_enabled";
+const CONFIRMATIONS_POLL_MS = 10000;
 const STATUS_ORDER: Record<ConfirmationStatus, number> = {
   "Pendiente": 0,
   "Anulacion solicitada": 1,
@@ -237,6 +238,7 @@ export default function ConfirmacionesPage() {
   const realtimeRefreshRef = useRef<number | null>(null);
   const loadSeqRef = useRef(0);
   const confirmedNotifiedRef = useRef<Set<string>>(new Set());
+  const validatorPendingNotifiedRef = useRef<Set<string>>(new Set());
   const cashierConfirmSoundReadyRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
@@ -274,6 +276,20 @@ export default function ConfirmacionesPage() {
     return total / answeredRows.length;
   }, [answeredRows]);
   const pendingRowsCount = useMemo(() => rows.filter((row) => row.status === "Pendiente").length, [rows]);
+
+  const notifyPendingConfirmation = useCallback((count = 1) => {
+    if (!canValidate || !soundEnabled) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const title = count > 1 ? `${count} confirmaciones pendientes` : "Nueva confirmacion pendiente";
+    const body = count > 1
+      ? "Hay pagos esperando validacion."
+      : "Hay un pago esperando validacion.";
+    new Notification(title, {
+      body,
+      icon: "/icon.png",
+      tag: "payment-confirmations-pending",
+    });
+  }, [canValidate, soundEnabled]);
 
   const playCashierConfirmedSound = useCallback(async () => {
     try {
@@ -387,7 +403,11 @@ export default function ConfirmacionesPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "payment_confirmations" },
-        () => {
+        (payload) => {
+          const next = payload.new as Partial<PaymentConfirmation> | null;
+          if (next?.status === "Pendiente" && canValidate && soundEnabled) {
+            notifyPendingConfirmation(1);
+          }
           if (realtimeRefreshRef.current) window.clearTimeout(realtimeRefreshRef.current);
           realtimeRefreshRef.current = window.setTimeout(() => void loadRows(user, { showLoading: false }), 250);
         }
@@ -397,6 +417,12 @@ export default function ConfirmacionesPage() {
       void supabase.removeChannel(channel);
       if (realtimeRefreshRef.current) window.clearTimeout(realtimeRefreshRef.current);
     };
+  }, [canValidate, loadRows, notifyPendingConfirmation, soundEnabled, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const timer = window.setInterval(() => void loadRows(user, { showLoading: false }), CONFIRMATIONS_POLL_MS);
+    return () => window.clearInterval(timer);
   }, [loadRows, user]);
 
   function stopSound() {
@@ -444,6 +470,18 @@ export default function ConfirmacionesPage() {
   }, [canValidate, pendingUnopenedCount, soundEnabled, startAlarm]);
 
   useEffect(() => {
+    if (!canValidate || !soundEnabled) return;
+    const newPendingIds = rows
+      .filter((row) => row.status === "Pendiente" && !row.opened_at)
+      .map((row) => row.id)
+      .filter((id) => !validatorPendingNotifiedRef.current.has(id));
+    if (newPendingIds.length === 0) return;
+    for (const id of newPendingIds) validatorPendingNotifiedRef.current.add(id);
+    void playBeep();
+    notifyPendingConfirmation(newPendingIds.length);
+  }, [canValidate, notifyPendingConfirmation, playBeep, rows, soundEnabled]);
+
+  useEffect(() => {
     if (!user || canValidate) return;
     for (const row of rows) {
       if (row.status !== "Confirmado") continue;
@@ -462,6 +500,9 @@ export default function ConfirmacionesPage() {
     const AudioCtor = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (AudioCtor && !audioRef.current) audioRef.current = new AudioCtor();
     if (audioRef.current?.state === "suspended") await audioRef.current.resume();
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
     localStorage.setItem(SOUND_ENABLED_KEY, "1");
     setSoundEnabled(true);
     if (canValidate && pendingUnopenedCount > 0) startAlarm();

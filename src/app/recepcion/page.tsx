@@ -225,12 +225,7 @@ function textValue(value: unknown) {
   return String(value ?? "").trim();
 }
 function requestRequirementLabel(req: ReceptionRequest | ReceptionRequestGroup | null | undefined) {
-  const requirement = textValue(req?.inv_request_no);
-  if (!requirement) return "";
-  if (requirement.includes("-")) return requirement;
-  const storeNo = Number(textValue(req?.destination_store_code));
-  if (Number.isFinite(storeNo) && storeNo > 0) return `${1000 + storeNo}-${requirement}`;
-  return requirement;
+  return textValue(req?.inv_request_no);
 }
 function requestDocumentLabel(req: ReceptionRequest | ReceptionRequestGroup | null | undefined, fallback = "RQ") {
   const requirement = requestRequirementLabel(req);
