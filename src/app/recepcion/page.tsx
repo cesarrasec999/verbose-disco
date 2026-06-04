@@ -152,7 +152,7 @@ function writeRequestCache(key: string, rows: ReceptionRequest[]) {
   if (typeof window === "undefined") return;
   localStorage.setItem(REQUEST_CACHE_PREFIX + key, JSON.stringify({ savedAt: Date.now(), rows } satisfies RequestCachePayload));
 }
-function rqKey(req: ReceptionRequest) { return req.doc_number || req.inv_request_no || req.erp_inv_request_id; }
+function rqKey(req: ReceptionRequest) { return req.erp_inv_request_id || req.doc_number || req.inv_request_no || req.id; }
 function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_status"] {
   if (items.length > 0 && items.every(item => item.reception_status === "completed")) return "completed";
   if (items.some(item => item.reception_status === "in_progress" || item.reception_status === "completed")) return "in_progress";

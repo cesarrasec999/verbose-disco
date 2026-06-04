@@ -269,6 +269,7 @@ export default function ReportesPage() {
   const [rotationPeriod, setRotationPeriod] = useState(currentRotationPeriod().slice(0, 7));
   const [rotationFile, setRotationFile] = useState<File | null>(null);
   const [rotationFileName, setRotationFileName] = useState("");
+  const [downloadingDetail, setDownloadingDetail] = useState(false);
   const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
   const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
@@ -922,6 +923,53 @@ export default function ReportesPage() {
     else void loadReport();
   }
 
+  async function downloadRotationDetail() {
+    if (!rotationPeriod) { setMessage("Selecciona un periodo."); return; }
+    setDownloadingDetail(true);
+    setMessage("Generando detalle de rotaciones...");
+    try {
+      const periodDate = `${rotationPeriod}-01`;
+      const { data, error } = await supabase.rpc("get_rotation_report", { p_month: periodDate });
+      if (error) throw error;
+      const rows = (data || []) as {
+        report_store_name: string;
+        report_product_code: string;
+        report_description: string;
+        report_unit: string;
+        report_rotation_category: string;
+        report_avg_sales_3m: number;
+        report_stock: number;
+        report_cost: number;
+        report_inventory_value: number;
+        report_last_sale_month: string | null;
+        report_sales_qty_total: number;
+        report_period_month: string;
+      }[];
+      if (rows.length === 0) { setMessage("Sin datos de rotación para ese periodo."); return; }
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.map(r => ({
+        Tienda: r.report_store_name,
+        Codigo: r.report_product_code,
+        Descripcion: r.report_description || "",
+        UM: r.report_unit || "",
+        Rotacion: r.report_rotation_category,
+        "Prom Ventas 3m": r.report_avg_sales_3m ?? 0,
+        "Stock Actual": r.report_stock ?? 0,
+        Costo: r.report_cost ?? 0,
+        Valorizado: r.report_inventory_value ?? 0,
+        "Ultimo Mes Venta": r.report_last_sale_month ?? "",
+        "Total Ventas": r.report_sales_qty_total ?? 0,
+        Periodo: r.report_period_month,
+      }))), "Detalle Rotaciones");
+      XLSX.writeFile(wb, `rotaciones-detalle-${rotationPeriod}.xlsx`);
+      setMessage(`${rows.length.toLocaleString("es-PE")} registros exportados.`);
+    } catch (e) {
+      setMessage("Error: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setDownloadingDetail(false);
+    }
+  }
+
   function exportExcel() {
     if (valuationRows.length === 0 && rotationRows.length === 0) {
       setMessage("Primero actualiza el reporte.");
@@ -1178,6 +1226,14 @@ export default function ReportesPage() {
                   />
                   <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40" disabled={loading || !rotationFile || !rotationPeriod} onClick={uploadMonthlyRotations}>
                     Subir rotaciones
+                  </button>
+                  <button
+                    className="rounded-xl border bg-emerald-50 px-4 py-2 text-sm font-black text-emerald-700 disabled:opacity-40 hover:bg-emerald-100"
+                    disabled={downloadingDetail || !rotationPeriod}
+                    onClick={downloadRotationDetail}
+                  >
+                    <Download className="mr-2 inline" size={16} />
+                    {downloadingDetail ? "Generando..." : "Detalle Excel"}
                   </button>
                 </div>
               </div>
