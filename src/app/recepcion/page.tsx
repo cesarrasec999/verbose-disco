@@ -221,15 +221,26 @@ function requestLineLabel(req: ReceptionRequest | undefined, quantity: number) {
   const label = requestDocumentLabel(req);
   return `${label} (${fmt(quantity)})`;
 }
+function textValue(value: unknown) {
+  return String(value ?? "").trim();
+}
+function requestRequirementLabel(req: ReceptionRequest | ReceptionRequestGroup | null | undefined) {
+  const requirement = textValue(req?.inv_request_no);
+  if (!requirement) return "";
+  if (requirement.includes("-")) return requirement;
+  const storeNo = Number(textValue(req?.destination_store_code));
+  if (Number.isFinite(storeNo) && storeNo > 0) return `${1000 + storeNo}-${requirement}`;
+  return requirement;
+}
 function requestDocumentLabel(req: ReceptionRequest | ReceptionRequestGroup | null | undefined, fallback = "RQ") {
-  const requirement = clean(req?.inv_request_no);
-  const guide = clean(req?.doc_number);
+  const requirement = requestRequirementLabel(req);
+  const guide = textValue(req?.doc_number);
   if (guide && requirement && guide !== requirement) return `${requirement} / ${guide}`;
-  return guide || requirement || clean(req?.erp_inv_request_id) || fallback;
+  return guide || requirement || textValue(req?.erp_inv_request_id) || fallback;
 }
 function isVisibleReceptionDocument(req: ReceptionRequest | ReceptionRequestGroup) {
   if (req.reception_status === "completed") return true;
-  return clean(req.doc_number).toUpperCase().startsWith("T200-");
+  return textValue(req.doc_number).toUpperCase().startsWith("T200-");
 }
 function consolidateReceptionLines(lines: ReceptionLine[], requestsById: Map<string, ReceptionRequest>): ConsolidatedReceptionLine[] {
   const grouped = new Map<string, ReceptionLine[]>();
@@ -672,15 +683,24 @@ export default function RecepcionPage() {
     }
   }
 
-  async function createExtraLine(code: string): Promise<ReceptionLine | null> {
+  async function createExtraLine(code: string, targetRequestId = ""): Promise<ReceptionLine | null> {
     if (!selected) return null;
     const raw = code.trim();
     const normalizedCode = normalize(fullProductCode(raw) || raw);
-    const existing = lines.find(line => line.qty_requested === 0 && normalize(line.product_code) === normalizedCode);
+
+    const baseRequest =
+      selected.child_requests.find(req => req.id === targetRequestId) ||
+      selected.child_requests.find(req => selected.request_ids.includes(req.id)) ||
+      selected.child_requests[0] ||
+      selected;
+    const requestId = baseRequest.id;
+    const existing = lines.find(line =>
+      line.request_id === requestId &&
+      line.qty_requested === 0 &&
+      normalize(line.product_code) === normalizedCode
+    );
     if (existing) return existing;
 
-    const baseRequest = selected.child_requests.find(req => selected.request_ids.includes(req.id)) || selected.child_requests[0] || selected;
-    const requestId = baseRequest.id;
     const erpRequestId = String(baseRequest.erp_inv_request_id || selected.erp_inv_request_id).split(",")[0].trim();
     const product = await lookupProduct(raw);
     if (!product?.sku) return null;
@@ -735,7 +755,22 @@ export default function RecepcionPage() {
       }, 80);
     } else {
       try {
-        const extraLine = await createExtraLine(code);
+        let targetRequestId = "";
+        const requestOptions = selected?.child_requests.filter(req => selected.request_ids.includes(req.id)) || [];
+        if (requestOptions.length > 1) {
+          const choiceText = requestOptions
+            .map((req, index) => `${index + 1}) ${requestDocumentLabel(req)}`)
+            .join("\n");
+          const choice = window.prompt(`Este producto es sobrante. En que guia/requerimiento deseas registrarlo?\n\n${choiceText}`);
+          if (choice === null) return;
+          const selectedIndex = Number(choice) - 1;
+          if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= requestOptions.length) {
+            showMsg("Seleccion de guia invalida para el sobrante.");
+            return;
+          }
+          targetRequestId = requestOptions[selectedIndex].id;
+        }
+        const extraLine = await createExtraLine(code, targetRequestId);
         if (!extraLine) {
           showMsg(`Codigo "${code}" no existe en la base de productos. No se agrego al requerimiento.`);
           return;
@@ -926,20 +961,53 @@ export default function RecepcionPage() {
       window.alert(`Falta registrar el codigo ${missingLine.product_code}. Si no se recibio, guarda esta linea con cantidad 0 antes de marcar el requerimiento como completado.`);
       return;
     }
-    if (!window.confirm("¿Marcar este requerimiento como completado?")) return;
+
+    const differenceLines = progressLines.map(line => {
+      const received = consolidatedScanTotal(line);
+      const requested = num(line.qty_requested);
+      return { line, received, requested, difference: received - requested };
+    });
+    const faltantes = differenceLines.filter(row => row.difference < 0);
+    if (faltantes.length > 0) {
+      const detail = faltantes.slice(0, 12).map(row => {
+        const docs = row.line.source_lines
+          .map(sourceLine => requestDocumentLabel(selectedRequestsById.get(sourceLine.request_id)))
+          .filter(Boolean)
+          .join(" / ");
+        return `${docs}: ${row.line.product_code}, falta ${fmt(Math.abs(row.difference))}`;
+      }).join("\n");
+      const more = faltantes.length > 12 ? `\n... y ${faltantes.length - 12} faltante(s) mas.` : "";
+      if (!window.confirm(`Hay faltantes antes de completar:\n\n${detail}${more}\n\nDeseas guardar el requerimiento como completado de todas formas?`)) return;
+    } else if (!window.confirm("Marcar este requerimiento como completado?")) return;
+
     setSaving(true);
     try {
       const completedAt = new Date().toISOString();
-      const { error } = await supabase.from("reception_requests").update({
+      const { data, error } = await supabase.from("reception_requests").update({
         reception_status:  "completed",
         completed_at:      completedAt,
         completed_by_id:   user.id,
         completed_by_name: user.full_name,
         updated_at:        new Date().toISOString(),
-      }).in("id", selected.request_ids);
+      }).in("id", selected.request_ids).select("id");
       if (error) throw error;
-      setSelected(prev => prev ? { ...prev, reception_status: "completed", completed_by_name: user.full_name } : null);
-      updateRequests(prev => prev.map(r => selected.request_ids.includes(r.id) ? { ...r, reception_status: "completed", completed_by_name: user.full_name } : r));
+      const updatedIds = new Set((data || []).map(row => row.id));
+      const missingIds = selected.request_ids.filter(id => !updatedIds.has(id));
+      if (missingIds.length > 0) throw new Error(`No se actualizaron ${missingIds.length} documento(s) del grupo.`);
+      setSelected(prev => prev ? {
+        ...prev,
+        reception_status: "completed",
+        completed_at: completedAt,
+        completed_by_name: user.full_name,
+        child_requests: prev.child_requests.map(req => selected.request_ids.includes(req.id)
+          ? { ...req, reception_status: "completed", completed_at: completedAt, completed_by_name: user.full_name }
+          : req
+        ),
+      } : null);
+      updateRequests(prev => prev.map(r => selected.request_ids.includes(r.id)
+        ? { ...r, reception_status: "completed", completed_at: completedAt, completed_by_name: user.full_name }
+        : r
+      ));
       showMsg("Requerimiento completado. Las diferencias quedan disponibles en el reporte de validadores.");
       if (listPanel === "diferencias") void loadDifferencesReport();
     } catch (e: any) { showMsg("Error: " + e.message); }
