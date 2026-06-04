@@ -218,8 +218,18 @@ function lineProductKey(line: Pick<ReceptionLine, "product_code" | "sku">) {
   return normalize(line.product_code || line.sku);
 }
 function requestLineLabel(req: ReceptionRequest | undefined, quantity: number) {
-  const label = req?.doc_number || req?.inv_request_no || req?.erp_inv_request_id || "RQ";
+  const label = requestDocumentLabel(req);
   return `${label} (${fmt(quantity)})`;
+}
+function requestDocumentLabel(req: ReceptionRequest | ReceptionRequestGroup | null | undefined, fallback = "RQ") {
+  const requirement = clean(req?.inv_request_no);
+  const guide = clean(req?.doc_number);
+  if (guide && requirement && guide !== requirement) return `${requirement} / ${guide}`;
+  return guide || requirement || clean(req?.erp_inv_request_id) || fallback;
+}
+function isVisibleReceptionDocument(req: ReceptionRequest | ReceptionRequestGroup) {
+  if (req.reception_status === "completed") return true;
+  return clean(req.doc_number).toUpperCase().startsWith("T200-");
 }
 function consolidateReceptionLines(lines: ReceptionLine[], requestsById: Map<string, ReceptionRequest>): ConsolidatedReceptionLine[] {
   const grouped = new Map<string, ReceptionLine[]>();
@@ -360,7 +370,7 @@ export default function RecepcionPage() {
     const base = sorted[0];
     const childRequests = sorted.flatMap(group => group.child_requests);
     const requestIds = [...new Set(sorted.flatMap(group => group.request_ids))];
-    const documents = sorted.map(group => group.doc_number || group.inv_request_no || group.erp_inv_request_id).filter(Boolean);
+    const documents = sorted.map(group => requestDocumentLabel(group, "")).filter(Boolean);
     return {
       ...base,
       id: sorted.map(group => group.id).join("||"),
@@ -938,7 +948,7 @@ export default function RecepcionPage() {
 
   async function deleteRequestGroup(req: ReceptionRequestGroup) {
     if (!canDeleteRequests) return;
-    const label = req.doc_number || req.inv_request_no || req.erp_inv_request_id;
+    const label = requestDocumentLabel(req);
     const confirmed = window.confirm(`¿Eliminar el requerimiento ${label}? Se eliminarán ${req.transfer_count} transferencia${req.transfer_count !== 1 ? "s" : ""} agrupada${req.transfer_count !== 1 ? "s" : ""} y sus líneas.`);
     if (!confirmed) return;
     setSaving(true);
@@ -977,7 +987,7 @@ export default function RecepcionPage() {
     const faltantes = lineRows.filter(r => r.diff < 0).length;
 
     const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-    <title>Recepción ${selected.doc_number || selected.inv_request_no}</title>
+    <title>Recepción ${requestDocumentLabel(selected)}</title>
     <style>
       body{font-family:Arial,sans-serif;font-size:11px;margin:20px;color:#111}
       h2{font-size:14px;margin:0 0 4px}
@@ -1003,7 +1013,7 @@ export default function RecepcionPage() {
     <p style="color:#555;font-size:10px;margin:0 0 8px">Generado: ${new Date().toLocaleString("es-PE")} | Por: ${selected.completed_by_name || user?.full_name || "-"}</p>
     <div class="info">
       <div class="info-item"><label>Motivo</label>${selected.reason || "Abastecimiento"}</div>
-      <div class="info-item"><label>Documento</label>${selected.doc_number || selected.inv_request_no || "-"}</div>
+      <div class="info-item"><label>Documento</label>${requestDocumentLabel(selected, "-")}</div>
       <div class="info-item"><label>Origen (CD)</label>${selected.source_store_name || selected.source_store_code}</div>
       <div class="info-item"><label>Tienda destino</label>${selected.destination_store_name || selected.destination_store_code}</div>
       <div class="info-item"><label>Fecha requerimiento</label>${dateShort(selected.creation_date)}</div>
@@ -1119,7 +1129,7 @@ export default function RecepcionPage() {
         if (!req) continue;
         rows.push({
           key: `${line.id}:${difference}`,
-          document: line.request_detail || req.doc_number || req.inv_request_no || req.erp_inv_request_id,
+          document: line.request_detail || requestDocumentLabel(req),
           destinationStore: req.destination_store_name || req.destination_store_code,
           sourceStore: req.source_store_name || req.source_store_code,
           completedAt: req.completed_at,
@@ -1161,6 +1171,7 @@ export default function RecepcionPage() {
   }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
 
   const filteredRequests = useMemo(() => scopedRequestGroups.filter(r => {
+    if (!isVisibleReceptionDocument(r)) return false;
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
     if (!search.trim()) return true;
     return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
@@ -1301,7 +1312,7 @@ export default function RecepcionPage() {
               </div>
               <div>
                 <h1 className="font-black text-slate-900 text-sm leading-tight">
-                  {view === "list" ? "Recepción" : selected?.doc_number || selected?.inv_request_no || "Detalle"}
+                  {view === "list" ? "Recepción" : requestDocumentLabel(selected, "Detalle")}
                 </h1>
                 <p className="text-[11px] text-slate-400 leading-none">{user?.full_name}</p>
               </div>
@@ -1526,7 +1537,7 @@ export default function RecepcionPage() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <ReasonBadge reason={req.reason} />
-                  <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{req.doc_number || req.inv_request_no || req.erp_inv_request_id}</p>
+                  <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{requestDocumentLabel(req)}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -1589,7 +1600,7 @@ export default function RecepcionPage() {
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <ReasonBadge reason={selected.reason} />
-                <h2 className="font-black text-slate-900 text-2xl leading-tight">{selected.doc_number || selected.inv_request_no}</h2>
+                <h2 className="font-black text-slate-900 text-2xl leading-tight">{requestDocumentLabel(selected)}</h2>
                 <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
               </div>
               <StatusBadge status={selected.reception_status} />
@@ -1730,7 +1741,7 @@ export default function RecepcionPage() {
                           return (
                             <div key={sourceLine.id} className="grid gap-2 rounded-xl border bg-white p-2 sm:grid-cols-[minmax(120px,180px)_1fr_1fr]">
                               <div className="text-xs font-black text-slate-700">
-                                <p>{req?.doc_number || req?.inv_request_no || req?.erp_inv_request_id || "RQ"}</p>
+                                <p>{requestDocumentLabel(req)}</p>
                                 <p className="text-[10px] text-slate-400">Enviado: {fmt(num(sourceLine.qty_requested))}</p>
                               </div>
                               <div>
