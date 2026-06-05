@@ -904,7 +904,7 @@ export default function PickingPage() {
       [allLines, allAssignments, scansResp] = await Promise.all([
         // Lineas: paginar para traer todos los codigos sin corte
         fetchAll<PickingLine>((from, to) =>
-          supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+          supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
         ),
         // Asignaciones: paginar tambien para no perder lotes
         fetchAll<PickingAssignment>((from, to) => {
