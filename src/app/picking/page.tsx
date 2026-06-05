@@ -518,7 +518,8 @@ export default function PickingPage() {
   const assignmentMatrix = useMemo(() => {
     const requestIds = new Set(summaryRequests.map(request => request.id));
     const requiredByStore = new Map<string, { label: string; required: number }>();
-    const assignedByStorePicker = new Map<string, number>();
+    const assignedLinesByStorePicker = new Map<string, Set<string>>();
+    const assignedLinesByStore = new Map<string, Set<string>>();
     const pickerColumns = new Map<string, string>();
 
     for (const line of lines) {
@@ -536,18 +537,22 @@ export default function PickingPage() {
       const storeKey = requesterStoreKey(request) || "SIN_TIENDA";
       const pickerKey = normalize(assignment.picker_id || assignment.picker_name) || "SIN_PICADOR";
       pickerColumns.set(pickerKey, assignmentPickerName(assignment));
-      assignedByStorePicker.set(`${storeKey}__${pickerKey}`, (assignedByStorePicker.get(`${storeKey}__${pickerKey}`) || 0) + 1);
+      const spKey = `${storeKey}__${pickerKey}`;
+      if (!assignedLinesByStorePicker.has(spKey)) assignedLinesByStorePicker.set(spKey, new Set());
+      assignedLinesByStorePicker.get(spKey)!.add(assignment.line_id);
+      if (!assignedLinesByStore.has(storeKey)) assignedLinesByStore.set(storeKey, new Set());
+      assignedLinesByStore.get(storeKey)!.add(assignment.line_id);
     }
 
     const columns = [...pickerColumns.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
     const rows = [...requiredByStore.entries()].map(([key, value]) => {
-      const assigned = columns.reduce((sum, column) => sum + (assignedByStorePicker.get(`${key}__${column.key}`) || 0), 0);
+      const assigned = assignedLinesByStore.get(key)?.size || 0;
       return {
         key,
         label: value.label,
         required: value.required,
         assigned,
-        byPicker: Object.fromEntries(columns.map(column => [column.key, assignedByStorePicker.get(`${key}__${column.key}`) || 0])) as Record<string, number>,
+        byPicker: Object.fromEntries(columns.map(column => [column.key, assignedLinesByStorePicker.get(`${key}__${column.key}`)?.size || 0])) as Record<string, number>,
       };
     }).sort((a, b) => a.label.localeCompare(b.label, "es"));
 
