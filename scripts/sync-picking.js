@@ -15,10 +15,11 @@ const supabase = createClient(
 const BATCH_SIZE = Number(process.env.PICKING_BATCH_SIZE || 500)
 const INTERVAL_MS = Number(process.env.PICKING_SYNC_INTERVAL_MS || 5 * 60 * 1000)
 const RETRY_ATTEMPTS = Number(process.env.PICKING_RETRY_ATTEMPTS || process.env.RETRY_ATTEMPTS || 3)
-const LOOKBACK_MINUTES = Number(process.env.PICKING_LOOKBACK_MINUTES || 15)
+const ACTIVE_LOOKBACK_DAYS = Number(process.env.PICKING_ACTIVE_LOOKBACK_DAYS || 0)
 const STATUS_FILE = path.join(__dirname, 'picking-sync-status.txt')
 const LOG_FILE = path.join(__dirname, 'picking-sync.log')
 const STATE_FILE = path.join(__dirname, 'picking-sync-state.json')
+const WATCHDOG_HB = path.join(__dirname, 'picking-watchdog-heartbeat.txt')
 
 const sqlConfig = {
   user: process.env.SQL_USER,
@@ -70,6 +71,7 @@ function writeStatus(text) {
   const line = `${new Date().toLocaleString('es-PE', { hour12: false })} | ${text}`
   fs.writeFileSync(STATUS_FILE, line + '\n', 'utf8')
   fs.appendFileSync(LOG_FILE, line + '\n', 'utf8')
+  fs.writeFileSync(WATCHDOG_HB, new Date().toISOString(), 'utf8')
   console.log(text)
 }
 
@@ -105,10 +107,6 @@ function readState() {
 
 function writeState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8')
-}
-
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60 * 1000)
 }
 
 function sleep(ms) {
@@ -151,7 +149,7 @@ function requestLinesQuery() {
     SELECT
       CONVERT(varchar(36), ir.InvRequestId) AS inv_request_id,
       CAST(ir.InvRequestNo AS varchar(30)) AS inv_request_no,
-      COALESCE(NULLIF(ir.DocNumber, ''), CONCAT(CAST(ir.OutToStore AS varchar(20)), '-', CAST(ir.InvRequestNo AS varchar(30)))) AS doc_number,
+      NULLIF(LTRIM(RTRIM(CAST(ir.DocNumber AS varchar(60)))), '') AS doc_number,
       ir.StatusCode AS status_code,
       ir.InvRequestDate AS request_date,
       ir.CreationDate AS creation_date,
@@ -181,13 +179,20 @@ function requestLinesQuery() {
     LEFT JOIN FILTER_VIEW fv ON irl.SKU = fv.SKU
     LEFT JOIN PRODUCT_UDF1 u ON fv.UDF1 = u.UDF1
     WHERE ir.ReasonCode = 'T'
-      AND ir.StatusCode = 'A'
+      AND (
+        ir.StatusCode = 'A'
+        OR (
+          ir.StatusCode IN ('D', 'C', 'X', 'Y')
+          AND ir.CreationDate >= COALESCE(
+            CONVERT(datetime2, @activeSince),
+            DATEADD(day, -30, GETDATE())
+          )
+        )
+      )
       AND (
         ir.IRFlag1 IN (2, 6)
         OR UPPER(COALESCE(flag.IRFlag1Description, '')) IN ('ABASTECIMIENTO', 'ABASTECIMIENTO URGENTE')
       )
-      AND ir.CreationDate >= CONVERT(datetime2, @since)
-      AND ir.CreationDate < CONVERT(datetime2, @until)
   `
 }
 
@@ -243,19 +248,27 @@ function mapRequests(rows) {
   return [...grouped.values()].filter(row => row.destination_store_code && row.source_store_code)
 }
 
-async function syncOnce({ since, until }) {
+async function syncOnce() {
   let pool
-  writeStatus(`Revisando requerimientos nuevos desde ${localDateTime(since)} hasta ${localDateTime(until)} hora local`)
+  const activeSince = ACTIVE_LOOKBACK_DAYS > 0
+    ? (() => {
+        const date = new Date()
+        date.setDate(date.getDate() - ACTIVE_LOOKBACK_DAYS)
+        return date
+      })()
+    : null
+  writeStatus(activeSince
+    ? `Reconciliando picking ERP desde ${localDateTime(activeSince)} hora local (activos + cerrados/aprobados recientes)`
+    : 'Reconciliando picking ERP: todos los activos + cerrados/aprobados de los ultimos 30 dias')
   try {
     pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
     const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()
-      .input('since', sql.VarChar, sqlLocalDateTime(since))
-      .input('until', sql.VarChar, sqlLocalDateTime(until))
+      .input('activeSince', sql.VarChar, activeSince ? sqlLocalDateTime(activeSince) : null)
       .query(requestLinesQuery()))
 
     const requests = mapRequests(result.recordset)
     const lines = mapLines(result.recordset)
-    writeStatus(`Requerimientos activos leidos: ${requests.length}; lineas: ${lines.length}`)
+    writeStatus(`Requerimientos leidos: ${requests.length}; lineas: ${lines.length}`)
 
     await upsert('picking_requests', requests, 'erp_inv_request_id')
 
@@ -296,10 +309,8 @@ async function main() {
     writeStatus(`Estado inicial creado. No se importo historial anterior a ${localDateTime(state.startedAt)} hora local`)
   }
 
-  const since = args.since ? new Date(String(args.since)) : addMinutes(new Date(state.lastSyncAt || state.startedAt), -LOOKBACK_MINUTES)
-  const until = args.until ? new Date(String(args.until)) : now
-  await syncOnce({ since, until })
-  state.lastSyncAt = until.toISOString()
+  await syncOnce()
+  state.lastSyncAt = now.toISOString()
   writeState(state)
 }
 
