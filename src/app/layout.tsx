@@ -7,6 +7,7 @@ import PwaCatalogSync from "./PwaCatalogSync";
 import PwaQueueSync from "./PwaQueueSync";
 import SingleDeviceSessionGuard from "./SingleDeviceSessionGuard";
 import ErpSyncBanner from "./ErpSyncBanner";
+import ConfirmationsAlert from "./ConfirmationsAlert";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -67,6 +68,7 @@ export default function RootLayout({
         <SingleDeviceSessionGuard />
         <GlobalNetworkIndicator />
         <ErpSyncBanner />
+        <ConfirmationsAlert />
         {children}
       </body>
     </html>

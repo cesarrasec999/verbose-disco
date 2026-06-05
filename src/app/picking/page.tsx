@@ -179,6 +179,10 @@ function formatQty(value: number) {
   return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 2 }).format(value);
 }
 
+function pickingDocumentLabel(request: PickingRequest | null | undefined) {
+  return request?.doc_number || request?.inv_request_no || request?.erp_inv_request_id || "";
+}
+
 function formatWhole(value: number) {
   return new Intl.NumberFormat("es-PE", { maximumFractionDigits: 0 }).format(value);
 }
@@ -878,7 +882,7 @@ export default function PickingPage() {
       let from = 0;
       while (true) {
         const { data, error } = await buildQuery(from, from + PAGE - 1);
-        if (error) break;
+        if (error) throw error;
         const rows = data || [];
         all = all.concat(rows);
         if (rows.length < PAGE) break;
@@ -887,30 +891,39 @@ export default function PickingPage() {
       return all;
     }
 
-    const [allLines, allAssignments, scansResp] = await Promise.all([
-      // Lineas: paginar para traer los 219+ codigos sin corte
-      fetchAll<PickingLine>((from, to) =>
-        supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
-      ),
-      // Asignaciones: paginar tambien para no perder lotes
-      fetchAll<PickingAssignment>((from, to) => {
-        const base = supabase
-          .from("picking_assignments")
-          .select("*")
-          .in("request_id", requestIds)
-          .neq("status", "cancelado")
-          .order("created_at", { ascending: false })
-          .range(from, to);
-        const q = currentUserCanManage
-          ? base
-          : base.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`);
-        return q as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>;
-      }),
-      // Scans: limite generoso, no requiere paginacion completa
-      currentUserCanManage
-        ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000)
-        : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500),
-    ]);
+    let allLines: PickingLine[] = [];
+    let allAssignments: PickingAssignment[] = [];
+    let scansResp: { data: PickingScan[] | null; error: { message: string } | null };
+    try {
+      [allLines, allAssignments, scansResp] = await Promise.all([
+        // Lineas: paginar para traer todos los codigos sin corte
+        fetchAll<PickingLine>((from, to) =>
+          supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("line_id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+        ),
+        // Asignaciones: paginar tambien para no perder lotes
+        fetchAll<PickingAssignment>((from, to) => {
+          const base = supabase
+            .from("picking_assignments")
+            .select("*")
+            .in("request_id", requestIds)
+            .neq("status", "cancelado")
+            .order("created_at", { ascending: false })
+            .range(from, to);
+          const q = currentUserCanManage
+            ? base
+            : base.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`);
+          return q as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>;
+        }),
+        // Scans: limite generoso, no requiere paginacion completa
+        (currentUserCanManage
+          ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000)
+          : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500)) as unknown as Promise<{ data: PickingScan[] | null; error: { message: string } | null }>,
+      ]);
+    } catch (error) {
+      setMessage("No se pudo cargar el detalle completo de picking. Refresca o revisa el sync antes de asignar.");
+      setLoading(false);
+      return;
+    }
 
     if ("error" in scansResp && scansResp.error) setMessage("No pude leer registros: " + (scansResp.error as { message: string }).message);
 
@@ -1249,6 +1262,11 @@ export default function PickingPage() {
 
     if (rows.length === 0) {
       setMessage("Los codigos seleccionados no tienen pendiente por asignar.");
+      return;
+    }
+    const invalidRows = rows.filter(item => !item.line.id || !item.line.product_code || !item.line.description);
+    if (invalidRows.length > 0) {
+      setMessage(`Hay ${invalidRows.length} codigo(s) sin detalle completo. Refresca la sincronizacion antes de asignar.`);
       return;
     }
 
@@ -1730,9 +1748,37 @@ export default function PickingPage() {
     });
   }
 
-  function printBatchAssignment(batchAssignments: PickingAssignment[], pickerName: string, batchIndex: number, batchTotal: number) {
+  async function printBatchAssignment(batchAssignments: PickingAssignment[], pickerName: string, batchIndex: number, batchTotal: number) {
     if (batchAssignments.length === 0) {
       setMessage("Este lote no tiene codigos.");
+      return;
+    }
+
+    let printLines = lines;
+    const localLineIds = new Set(printLines.map(line => line.id));
+    const missingLineIds = [...new Set(batchAssignments.map(item => item.line_id).filter(id => !localLineIds.has(id)))];
+    if (missingLineIds.length > 0) {
+      const { data, error } = await supabase
+        .from("picking_request_lines")
+        .select("*")
+        .in("id", missingLineIds);
+      if (error) {
+        setMessage("No se pudo completar el detalle del lote: " + error.message);
+        return;
+      }
+      const fetched = (data || []) as PickingLine[];
+      printLines = [...printLines, ...fetched.filter(line => !localLineIds.has(line.id))];
+      if (fetched.length > 0) setLines(prev => {
+        const prevIds = new Set(prev.map(line => line.id));
+        const additions = fetched.filter(line => !prevIds.has(line.id));
+        return additions.length > 0 ? [...prev, ...additions] : prev;
+      });
+    }
+
+    const lineById = new Map(printLines.map(line => [line.id, line]));
+    const unresolved = batchAssignments.filter(assignment => !lineById.has(assignment.line_id));
+    if (unresolved.length > 0) {
+      setMessage(`No se puede imprimir: ${unresolved.length} asignacion(es) no tienen detalle de producto sincronizado.`);
       return;
     }
 
@@ -1744,7 +1790,7 @@ export default function PickingPage() {
     const relatedRequests = requests.filter(r => requestIds.includes(r.id));
     const tiendaRequiere = relatedRequests[0]?.destination_store_name || relatedRequests[0]?.destination_store_code || "Tienda";
     const tiendaEntrega = relatedRequests[0]?.source_store_name || relatedRequests[0]?.source_store_code || "CD";
-    const docNumbers = relatedRequests.map(r => r.doc_number || r.inv_request_no).filter(Boolean).join(", ");
+    const docNumbers = relatedRequests.map(pickingDocumentLabel).filter(Boolean).join(", ");
     const motivo = relatedRequests[0]?.reason || "ABASTECIMIENTO";
 
     // Mismo orden que ve el picador: primera ubicacion A-Z, desempate por codigo de producto A-Z
@@ -1753,8 +1799,8 @@ export default function PickingPage() {
       const bLoc = (locationsByLine[b.line_id] || []).map(cleanLocationLabel)[0] || "ZZZ";
       const cmp = aLoc.localeCompare(bLoc, "es");
       if (cmp !== 0) return cmp;
-      const aLine = lines.find(l => l.id === a.line_id);
-      const bLine = lines.find(l => l.id === b.line_id);
+      const aLine = lineById.get(a.line_id);
+      const bLine = lineById.get(b.line_id);
       return String(aLine?.product_code || "").localeCompare(String(bLine?.product_code || ""), "es");
     });
 
@@ -1762,7 +1808,7 @@ export default function PickingPage() {
     const totalUnidades = sorted.reduce((s, a) => s + num(a.assigned_qty), 0);
 
     const rowsHtml = sorted.map((assignment, index) => {
-      const line = lines.find(item => item.id === assignment.line_id);
+      const line = lineById.get(assignment.line_id);
       const firstLocation = (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel)[0] || "";
       const zona = firstLocation ? firstLocation.substring(0, 2).toUpperCase() : "-";
       return `
@@ -2251,7 +2297,7 @@ export default function PickingPage() {
                           {batches.map(batch => (
                             <button
                               key={batch.key}
-                              onClick={() => printBatchAssignment(batch.assignments, batch.pickerName, batch.batchIndex, pickerTotals.get(batch.pickerName) || 1)}
+                              onClick={() => void printBatchAssignment(batch.assignments, batch.pickerName, batch.batchIndex, pickerTotals.get(batch.pickerName) || 1)}
                               className="flex items-center gap-1 rounded-xl border border-violet-300 bg-white px-3 py-2 text-xs font-black text-violet-800 hover:bg-violet-100"
                               title={`Asignado el ${batch.assignedAt ? new Date(batch.assignedAt).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" }) : "-"} · ${batch.assignments.length} codigos`}
                             >
