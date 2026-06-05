@@ -410,6 +410,7 @@ export default function PickingPage() {
     return sortedVisibleLines.filter(line => {
       const lineAssignments = assignmentsByLine.get(line.id) || [];
       if (selectedAssignedPicker === "all" && assignmentProgressFilter === "todos") return true;
+      if (lineAssignments.length === 0) return true;
       return lineAssignments.some(assignment => {
         const matchesPicker = selectedAssignedPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedAssignedPicker;
         const matchesProgress = assignmentProgressFilter === "todos" || num(assignment.picked_qty) <= 0;
@@ -841,7 +842,7 @@ export default function PickingPage() {
         .select("*")
         .eq("status_code", "A")
         .order("creation_date", { ascending: false })
-        .limit(200),
+        .limit(500),
       supabase
         .from("cyclic_users")
         .select("id,full_name,role,module_access,whatsapp")
