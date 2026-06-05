@@ -519,7 +519,6 @@ export default function RecepcionPage() {
       }
       applyRequests(nextRows);
       await loadSummaryScans(nextRows.map(req => req.id));
-      await resetCompletedRequestsWithoutScans(nextRows.filter(req => req.reception_status === "completed").map(req => req.id));
     } catch (e: any) {
       if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
     }
@@ -1138,9 +1137,7 @@ export default function RecepcionPage() {
   async function loadDifferencesReport() {
     if (!canViewSummary) return;
     const completedGroups = scopedRequestGroups.filter(req => req.reception_status === "completed");
-    const completedRequestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
-    const staleCompletedIds = await resetCompletedRequestsWithoutScans(completedRequestIds);
-    const requestIds = completedRequestIds.filter(id => !staleCompletedIds.has(id));
+    const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
     if (requestIds.length === 0) {
       setDifferenceRows([]);
       return;
