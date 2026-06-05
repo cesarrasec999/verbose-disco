@@ -484,7 +484,7 @@ export default function RecepcionPage() {
         let query = supabase
           .from("reception_requests")
           .select("*")
-          .eq("status_code", "T")
+          .or("status_code.eq.T,reception_status.in.(in_progress,completed)")
           .order("creation_date", { ascending: false })
           .range(offset, offset + REQUEST_PAGE_SIZE - 1);
 
