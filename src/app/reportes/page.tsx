@@ -264,7 +264,8 @@ export default function ReportesPage() {
   const [salesRows, setSalesRows] = useState<SalesReportRow[]>([]);
   const [updatedAt, setUpdatedAt] = useState("");
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
-  const [selectedStoreId, setSelectedStoreId] = useState("all");
+  const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>([]);
+  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [reportDate, setReportDate] = useState(todayISO());
   const [rotationPeriod, setRotationPeriod] = useState(currentRotationPeriod().slice(0, 7));
   const [rotationFile, setRotationFile] = useState<File | null>(null);
@@ -300,7 +301,7 @@ export default function ReportesPage() {
       }
       const rows = (data || []) as Store[];
       setStores(user?.can_access_all_stores ? rows : rows.filter(store => store.id === user?.store_id));
-      if (!user?.can_access_all_stores && user?.store_id) setSelectedStoreId(user.store_id);
+      if (!user?.can_access_all_stores && user?.store_id) setSelectedStoreIds([user.store_id]);
     }
     void loadStores();
   }, [user]);
@@ -326,9 +327,12 @@ export default function ReportesPage() {
   useEffect(() => {
     if (selectedSnapshotId) void loadSnapshotRows(selectedSnapshotId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStoreId]);
+  }, [selectedStoreIds]);
 
-  const selectedStore = useMemo(() => stores.find(store => store.id === selectedStoreId) || null, [stores, selectedStoreId]);
+  const selectedStores = useMemo(
+    () => selectedStoreIds.length === 0 ? [] : stores.filter(store => selectedStoreIds.includes(store.id)),
+    [stores, selectedStoreIds]
+  );
 
   async function loadCostMap() {
     const costBySku = new Map<string, number>();
@@ -539,12 +543,14 @@ export default function ReportesPage() {
     }
     const rows = (data || [])
       .filter(row => {
-        if (selectedStoreId === "all") return true;
-        const store = stores.find(item => item.id === selectedStoreId);
-        if (!store) return false;
+        if (selectedStoreIds.length === 0) return true;
+        const selectedStoreObjs = stores.filter(item => selectedStoreIds.includes(item.id));
+        if (selectedStoreObjs.length === 0) return false;
         const candidates = [row.store_id, row.store_name, row.sede].map(value => normalizeRotationStoreKey(String(value || "")));
-        const storeKeys = [store.id, store.name, store.erp_sede, store.code].map(value => normalizeRotationStoreKey(String(value || "")));
-        return candidates.some(candidate => storeKeys.includes(candidate));
+        return selectedStoreObjs.some(store => {
+          const storeKeys = [store.id, store.name, store.erp_sede, store.code].map(value => normalizeRotationStoreKey(String(value || "")));
+          return candidates.some(candidate => storeKeys.includes(candidate));
+        });
       })
       .map(row => ({
       store_id: row.store_id || row.store_name,
@@ -616,7 +622,7 @@ export default function ReportesPage() {
       setMessage("Tu usuario no tiene acceso a reportes.");
       return;
     }
-    const targetStores = stores.filter(store => store.is_active && (selectedStoreId === "all" || store.id === selectedStoreId));
+    const targetStores = stores.filter(store => store.is_active && (selectedStoreIds.length === 0 || selectedStoreIds.includes(store.id)));
     if (targetStores.length === 0) {
       setMessage("No hay tiendas activas para reportar.");
       return;
@@ -751,7 +757,10 @@ export default function ReportesPage() {
         .order("snapshot_date", { ascending: false })
         .order("inventory_value", { ascending: false })
         .limit(800);
-      if (selectedStore) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
+      if (selectedStores.length > 0) {
+        const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
+        query = query.in("store_key", allKeys);
+      }
       const { data, error } = await query;
       if (error) {
         console.warn("No se pudo cargar historico por rotacion:", error.message);
@@ -782,12 +791,12 @@ export default function ReportesPage() {
     setMessage("");
     setProgress("Leyendo ventas sincronizadas...");
     try {
-      const targetStores = stores.filter(store => store.is_active && (selectedStoreId === "all" || store.id === selectedStoreId));
+      const targetStores = stores.filter(store => store.is_active && (selectedStoreIds.length === 0 || selectedStoreIds.includes(store.id)));
       if (targetStores.length === 0) {
         setMessage("No hay tiendas activas para reportar.");
         return;
       }
-      const selectedIsCdGpc = selectedStore ? isCdGpcStoreName(selectedStore.name) : false;
+      const selectedIsCdGpc = selectedStores.length > 0 && selectedStores.some(s => isCdGpcStoreName(s.name));
       const calculationStores = selectedIsCdGpc ? stores.filter(store => store.is_active) : targetStores;
       const valuationFallback = valuationRows.length === 0 ? await loadReport() : valuationRows;
       const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
@@ -810,7 +819,10 @@ export default function ReportesPage() {
         .select("sales_date,store_key,store_name,sales_amount,cost_amount,quantity,documents")
         .gte("sales_date", salesStartDate)
         .lte("sales_date", salesEndDate);
-      if (selectedStore && !selectedIsCdGpc) query = query.in("store_key", rotationStoreKeysForStore(selectedStore));
+      if (selectedStores.length > 0 && !selectedIsCdGpc) {
+        const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
+        query = query.in("store_key", allKeys);
+      }
       const { data, error } = await query;
       if (error) throw error;
       const loadedSalesDates = [...new Set((data || []).map(row => isoDatePart(row.sales_date)).filter(Boolean))].sort();
@@ -903,7 +915,7 @@ export default function ReportesPage() {
         row.inventory_vs_budget = r2(row.inventory_value - row.inventory_budget);
       }
 
-      const visibleRows = selectedStoreId === "all" ? rows : rows.filter(row => row.store_id === selectedStoreId);
+      const visibleRows = selectedStoreIds.length === 0 ? rows : rows.filter(row => selectedStoreIds.includes(row.store_id));
       visibleRows.sort((a, b) => b.sales_amount - a.sales_amount || a.store_name.localeCompare(b.store_name));
       setSalesRows(visibleRows);
       setSalesUpdatedAt(`Fecha seleccionada: ${salesEndDate} | Filas del dia: ${selectedDayRows} | Ultima venta sincronizada: ${latestLoadedSalesDate || "sin datos"} | Dias habiles: ${elapsedBusinessDays}/${totalBusinessDays}`);
@@ -1085,22 +1097,60 @@ export default function ReportesPage() {
           <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
             <div>
               <p className="text-sm font-black text-slate-900">Filtro de tienda</p>
-              <p className="text-xs text-slate-500">El reporte y el historial se calculan con la tienda seleccionada.</p>
+              <p className="text-xs text-slate-500">Selecciona una o varias tiendas. Sin selección muestra todas.</p>
             </div>
-            <select
-              value={selectedStoreId}
-              onChange={e => {
-                setSelectedStoreId(e.target.value);
-                setValuationRows([]);
-                setRotationRows([]);
-                setUpdatedAt("");
-              }}
-              className="min-w-72 rounded-xl border px-3 py-2 text-sm font-bold text-slate-900"
-              disabled={!user?.can_access_all_stores || loading}
-            >
-              {user?.can_access_all_stores && <option value="all">Todas las tiendas</option>}
-              {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
-            </select>
+            <div className="relative min-w-72">
+              <button
+                type="button"
+                disabled={!user?.can_access_all_stores || loading}
+                onClick={() => setStoreDropdownOpen(prev => !prev)}
+                className="w-full rounded-xl border px-3 py-2 text-left text-sm font-bold text-slate-900 bg-white disabled:opacity-50 flex items-center justify-between gap-2"
+              >
+                <span className="truncate">
+                  {selectedStoreIds.length === 0
+                    ? "Todas las tiendas"
+                    : selectedStoreIds.length === 1
+                    ? (stores.find(s => s.id === selectedStoreIds[0])?.name ?? "1 tienda")
+                    : `${selectedStoreIds.length} tiendas seleccionadas`}
+                </span>
+                <span className="text-slate-400 shrink-0">{storeDropdownOpen ? "▲" : "▼"}</span>
+              </button>
+              {storeDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setStoreDropdownOpen(false)} />
+                  <div className="absolute right-0 z-20 mt-1 w-full min-w-72 max-h-72 overflow-y-auto rounded-xl border bg-white shadow-lg">
+                    {user?.can_access_all_stores && (
+                      <label className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={selectedStoreIds.length === 0}
+                          onChange={() => { setSelectedStoreIds([]); setValuationRows([]); setRotationRows([]); setUpdatedAt(""); }}
+                        />
+                        <span className="text-sm font-black text-slate-700">Todas las tiendas</span>
+                      </label>
+                    )}
+                    {stores.map(store => (
+                      <label key={store.id} className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={selectedStoreIds.includes(store.id)}
+                          onChange={() => {
+                            setSelectedStoreIds(prev => {
+                              const next = prev.includes(store.id) ? prev.filter(id => id !== store.id) : [...prev, store.id];
+                              return next;
+                            });
+                            setValuationRows([]);
+                            setRotationRows([]);
+                            setUpdatedAt("");
+                          }}
+                        />
+                        <span className="text-sm text-slate-700">{store.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             {(activeTab === "ventas" || activeTab === "presupuesto") && (
               <div className="grid gap-1">
                 <span className="text-xs font-black text-slate-500">Fecha de corte</span>
@@ -1178,7 +1228,7 @@ export default function ReportesPage() {
                       </tr>
                     ))}
                     {selectedSnapshotRows.length === 0 && (
-                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStore ? "Selecciona una fotografÃƒÂ­a para ver esa tienda." : "Selecciona una fotografÃƒÂ­a para ver el resumen."}</td></tr>
+                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStoreIds.length > 0 ? "Selecciona una fotografía para ver esa tienda." : "Selecciona una fotografía para ver el resumen."}</td></tr>
                     )}
                   </tbody>
                 </table>
