@@ -262,6 +262,7 @@ export default function ReportesPage() {
   const [rotationHistoryRows, setRotationHistoryRows] = useState<RotationHistoryRow[]>([]);
   const [rotationBreakRows, setRotationBreakRows] = useState<RotationBreakRow[]>([]);
   const [salesRows, setSalesRows] = useState<SalesReportRow[]>([]);
+  const [salesSort, setSalesSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
   const [updatedAt, setUpdatedAt] = useState("");
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
   const [selectedStoreIds, setSelectedStoreIds] = useState<string[]>([]);
@@ -333,6 +334,40 @@ export default function ReportesPage() {
     () => selectedStoreIds.length === 0 ? [] : stores.filter(store => selectedStoreIds.includes(store.id)),
     [stores, selectedStoreIds]
   );
+
+  const sortedSalesRows = useMemo(() => {
+    if (!salesSort) return salesRows;
+    return [...salesRows].sort((a, b) => {
+      let aVal: number | string = 0;
+      let bVal: number | string = 0;
+      switch (salesSort.col) {
+        case "store_name": aVal = a.store_name; bVal = b.store_name; break;
+        case "day_sales": aVal = a.day_sales_amount; bVal = b.day_sales_amount; break;
+        case "day_cost": aVal = a.day_cost_amount; bVal = b.day_cost_amount; break;
+        case "day_margin": aVal = a.day_sales_amount > 0 ? (a.day_sales_amount - a.day_cost_amount) / a.day_sales_amount : 0; bVal = b.day_sales_amount > 0 ? (b.day_sales_amount - b.day_cost_amount) / b.day_sales_amount : 0; break;
+        case "sales": aVal = a.sales_amount; bVal = b.sales_amount; break;
+        case "proj_sales": aVal = a.projected_sales; bVal = b.projected_sales; break;
+        case "proj_cost": aVal = a.projected_cost; bVal = b.projected_cost; break;
+        case "proj_margin": aVal = a.projected_sales > 0 ? (a.projected_sales - a.projected_cost) / a.projected_sales : 0; bVal = b.projected_sales > 0 ? (b.projected_sales - b.projected_cost) / b.projected_sales : 0; break;
+        case "inventory_value": aVal = a.inventory_value; bVal = b.inventory_value; break;
+        case "budget_cost": aVal = a.inventory_budget_cost; bVal = b.inventory_budget_cost; break;
+        case "budget": aVal = a.inventory_budget; bVal = b.inventory_budget; break;
+        case "compliance": aVal = a.inventory_budget > 0 ? a.inventory_value / a.inventory_budget : 0; bVal = b.inventory_budget > 0 ? b.inventory_value / b.inventory_budget : 0; break;
+        case "diff": aVal = a.inventory_vs_budget; bVal = b.inventory_vs_budget; break;
+      }
+      if (typeof aVal === "string") return salesSort.dir === "asc" ? aVal.localeCompare(bVal as string, "es") : (bVal as string).localeCompare(aVal, "es");
+      return salesSort.dir === "asc" ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
+    });
+  }, [salesRows, salesSort]);
+
+  function toggleSort(col: string) {
+    setSalesSort(prev => prev?.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "desc" });
+  }
+
+  function sortIcon(col: string) {
+    if (salesSort?.col !== col) return <span className="ml-1 opacity-30">⇅</span>;
+    return <span className="ml-1">{salesSort.dir === "asc" ? "▲" : "▼"}</span>;
+  }
 
   async function loadCostMap() {
     const costBySku = new Map<string, number>();
@@ -1429,10 +1464,19 @@ export default function ReportesPage() {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[1220px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
-                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Venta dia seleccionado</th><th className="border p-2 text-right">Costo dia</th><th className="border p-2 text-right">Margen dia</th><th className="border p-2 text-right">Venta acumulada</th><th className="border p-2 text-right">Venta proyectada</th><th className="border p-2 text-right">Costo proyectado</th><th className="border p-2 text-right">Margen proyectado</th></tr>
+                    <tr>
+                      <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
+                      <th onClick={() => toggleSort("day_sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta dia{sortIcon("day_sales")}</th>
+                      <th onClick={() => toggleSort("day_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo dia{sortIcon("day_cost")}</th>
+                      <th onClick={() => toggleSort("day_margin")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Margen dia{sortIcon("day_margin")}</th>
+                      <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta acumulada{sortIcon("sales")}</th>
+                      <th onClick={() => toggleSort("proj_sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta proyectada{sortIcon("proj_sales")}</th>
+                      <th onClick={() => toggleSort("proj_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo proyectado{sortIcon("proj_cost")}</th>
+                      <th onClick={() => toggleSort("proj_margin")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Margen proyectado{sortIcon("proj_margin")}</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {salesRows.map(row => (
+                    {sortedSalesRows.map(row => (
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.day_sales_amount)}</td>
@@ -1469,10 +1513,17 @@ export default function ReportesPage() {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
-                    <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Valorizado actual</th><th className="border p-2 text-right">Costo venta proyectado</th><th className="border p-2 text-right">Presupuesto inv.</th><th className="border p-2 text-right">Cumplimiento</th><th className="border p-2 text-right">Diferencia</th></tr>
+                    <tr>
+                      <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
+                      <th onClick={() => toggleSort("inventory_value")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado actual{sortIcon("inventory_value")}</th>
+                      <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectado{sortIcon("budget_cost")}</th>
+                      <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inv.{sortIcon("budget")}</th>
+                      <th onClick={() => toggleSort("compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento{sortIcon("compliance")}</th>
+                      <th onClick={() => toggleSort("diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Diferencia{sortIcon("diff")}</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {salesRows.map(row => (
+                    {sortedSalesRows.map(row => (
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
