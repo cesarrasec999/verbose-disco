@@ -1552,6 +1552,185 @@ export default function AuditoriaPage() {
     XLSX.writeFile(workbook, `resumen_auditorias_${range}.xlsx`);
   }
 
+  function buildAdminSummaryReportHTML() {
+    if (adminSummaryRows.length === 0) return "";
+    const range = adminSummaryRange();
+    const generatedAt = new Date().toLocaleString("es-PE");
+    const t = adminSummaryTotals;
+    const okTotal = adminSummaryRows.reduce((acc, r) => acc + r.ok_items, 0);
+
+    const storeMap = new Map<string, { store: string; ok: number; audited: number }>();
+    for (const row of adminSummaryRows) {
+      const cur = storeMap.get(row.store_id) || { store: row.store_name || row.store_id, ok: 0, audited: 0 };
+      cur.ok += row.ok_items;
+      cur.audited += row.audited_items;
+      storeMap.set(row.store_id, cur);
+    }
+    const storesSorted = [...storeMap.values()]
+      .map(s => ({ ...s, eri: s.audited > 0 ? Math.round((s.ok / s.audited) * 100) : 0 }))
+      .sort((a, b) => a.eri - b.eri)
+      .slice(0, 20);
+
+    const storeChartRows = storesSorted.map(s => {
+      const color = s.eri >= 90 ? "#16a34a" : s.eri >= 70 ? "#ca8a04" : "#dc2626";
+      return `<div style="display:grid;grid-template-columns:160px 1fr 44px;gap:8px;align-items:center;margin:5px 0;">
+        <div style="font-weight:800;font-size:10px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(s.store)}</div>
+        <div style="height:11px;background:#e2e8f0;border-radius:999px;overflow:hidden;"><div style="width:${Math.max(2, s.eri)}%;height:100%;background:${color};border-radius:999px;"></div></div>
+        <div style="text-align:right;font-weight:900;font-size:10px;color:${color};">${s.eri}%</div>
+      </div>`;
+    }).join("");
+
+    const globalChart = auditBarChart("Totales del periodo", [
+      { label: "OK", value: okTotal, color: "#16a34a" },
+      { label: "Faltantes", value: t.missingItems, color: "#dc2626" },
+      { label: "Sobrantes", value: t.surplusItems, color: "#2563eb" },
+    ]);
+
+    const totalDiffColor = t.diffValue < 0 ? "#b91c1c" : t.diffValue > 0 ? "#1d4ed8" : "#15803d";
+    const totalUnitsColor = t.diffUnits < 0 ? "#b91c1c" : t.diffUnits > 0 ? "#1d4ed8" : "#15803d";
+    const eriColor = t.eri >= 90 ? "#15803d" : t.eri >= 70 ? "#92400e" : "#b91c1c";
+
+    const sessionRows = adminSummaryRows.map(row => {
+      const sEri = row.audited_items > 0 ? Math.round((row.ok_items / row.audited_items) * 100) : 0;
+      const ec = sEri >= 90 ? "#15803d" : sEri >= 70 ? "#92400e" : "#b91c1c";
+      const dc = row.diff_value < 0 ? "#b91c1c" : row.diff_value > 0 ? "#1d4ed8" : "#15803d";
+      const uc = row.diff_units < 0 ? "#b91c1c" : row.diff_units > 0 ? "#1d4ed8" : "#15803d";
+      return `<tr>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;font-weight:800;font-size:10px;">${escapeHTML(row.store_name || row.store_id)}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;font-size:10px;color:#475569;">${escapeHTML(row.auditor_name || "-")}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:10px;">${new Date(row.started_at).toLocaleDateString("es-PE")}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${ec};font-size:10px;">${sEri}%</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:10px;">${row.audited_items}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#15803d;font-size:10px;">${row.ok_items}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#b91c1c;font-size:10px;">${row.missing_items}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#1d4ed8;font-size:10px;">${row.surplus_items}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${uc};font-size:10px;">${row.diff_units > 0 ? "+" : ""}${row.diff_units}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:900;color:${dc};font-size:10px;white-space:nowrap;">${escapeHTML(money(row.diff_value))}</td>
+      </tr>`;
+    }).join("");
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Reporte Auditorias ${escapeHTML(range.label)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f1f5f9; font-family: Arial, sans-serif; color: #0f172a; font-size: 11px; }
+    .shell { max-width: 1180px; margin: 0 auto; background: #fff; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; padding: 22px 28px 18px; background: linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%); }
+    .header h1 { margin: 8px 0 4px; font-size: 22px; color: #fff; }
+    .header .sub { color: #bfdbfe; font-size: 11px; }
+    .header .meta { text-align: right; color: #dbeafe; line-height: 1.6; font-size: 11px; }
+    .content { padding: 16px 28px 20px; }
+    .kpiGrid { display: grid; grid-template-columns: repeat(6,1fr); gap: 7px; margin: 10px 0 10px; }
+    .kpiGrid2 { display: grid; grid-template-columns: repeat(4,1fr); gap: 7px; margin: 0 0 12px; }
+    .kpi { border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; padding: 8px 6px; text-align: center; }
+    .kpiValue { font-size: 17px; font-weight: 900; line-height: 1.1; }
+    .kpiLabel { color: #64748b; font-size: 8px; font-weight: 800; margin-top: 3px; text-transform: uppercase; }
+    .chartGrid { display: grid; grid-template-columns: 1fr 0.75fr; gap: 10px; margin: 0 0 14px; }
+    .chartBox { border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; padding: 12px; }
+    .chartTitle { margin: 0 0 10px; font-size: 10px; font-weight: 900; text-transform: uppercase; color: #0f172a; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #f1f5f9; font-size: 9px; font-weight: 800; padding: 5px 5px; border: 1px solid #cbd5e1; text-transform: uppercase; }
+    td { border: 1px solid #e2e8f0; vertical-align: middle; }
+    .totalsRow td { background: #f1f5f9; font-weight: 900; font-size: 10px; padding: 5px 5px; }
+    .toolbar { padding: 10px 28px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+    .toolbar button { background: #0f172a; color: #fff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 12px; font-weight: 800; cursor: pointer; }
+    .footer { background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 8px 28px; text-align: center; color: #94a3b8; font-size: 10px; }
+    @media print { body { background: #fff; } .toolbar { display: none; } .shell { max-width: 100%; } .chartGrid, .kpiGrid, .kpiGrid2 { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div class="toolbar"><button onclick="window.print()">Imprimir / guardar PDF</button></div>
+  <div class="header">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:1.8px;color:#93c5fd;">RASECORP — AUDITORIA Y CONTROL DE EXISTENCIAS</div>
+      <h1>Reporte de Auditorias</h1>
+      <div class="sub">Periodo: <strong style="color:#fff;">${escapeHTML(range.label)}</strong></div>
+    </div>
+    <div class="meta">
+      <div>Generado: <strong>${escapeHTML(generatedAt)}</strong></div>
+      <div>Sesiones: <strong>${t.sessions}</strong> | Tiendas: <strong>${t.stores}</strong></div>
+    </div>
+  </div>
+  <div class="content">
+    <div class="kpiGrid">
+      <div class="kpi"><div class="kpiValue">${t.sessions}</div><div class="kpiLabel">Sesiones</div></div>
+      <div class="kpi"><div class="kpiValue">${t.stores}</div><div class="kpiLabel">Tiendas</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:${eriColor};">${t.eri}%</div><div class="kpiLabel">ERI promedio</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:${totalDiffColor};font-size:13px;">${escapeHTML(money(t.diffValue))}</div><div class="kpiLabel">Dif. valorizada</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</div><div class="kpiLabel">Dif. unidades</div></div>
+      <div class="kpi"><div class="kpiValue">${t.countRecords}</div><div class="kpiLabel">Registros</div></div>
+    </div>
+    <div class="kpiGrid2">
+      <div class="kpi"><div class="kpiValue" style="color:#15803d;">${t.auditedItems}</div><div class="kpiLabel">Codigos auditados</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:#15803d;">${okTotal}</div><div class="kpiLabel">OK</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:#b91c1c;">${t.missingItems}</div><div class="kpiLabel">Faltantes</div></div>
+      <div class="kpi"><div class="kpiValue" style="color:#1d4ed8;">${t.surplusItems}</div><div class="kpiLabel">Sobrantes</div></div>
+    </div>
+    <div class="chartGrid">
+      <div class="chartBox">
+        <div class="chartTitle">ERI por tienda</div>
+        ${storeChartRows}
+      </div>
+      <div class="chartBox">
+        <div class="chartTitle">Totales del periodo</div>
+        <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:20%;text-align:left;">Tienda</th>
+          <th style="width:14%;text-align:left;">Auditor</th>
+          <th style="width:9%;text-align:center;">Fecha</th>
+          <th style="width:6%;text-align:center;">ERI</th>
+          <th style="width:7%;text-align:center;">Auditados</th>
+          <th style="width:5%;text-align:center;">OK</th>
+          <th style="width:6%;text-align:center;">Falt.</th>
+          <th style="width:6%;text-align:center;">Sobr.</th>
+          <th style="width:7%;text-align:center;">Dif. und.</th>
+          <th style="width:10%;text-align:right;">Dif. valor</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${sessionRows}
+        <tr class="totalsRow">
+          <td colspan="4" style="padding:5px;">TOTALES — ${t.sessions} sesiones, ${t.stores} tiendas</td>
+          <td style="text-align:center;">${t.auditedItems}</td>
+          <td style="text-align:center;color:#15803d;">${okTotal}</td>
+          <td style="text-align:center;color:#b91c1c;">${t.missingItems}</td>
+          <td style="text-align:center;color:#1d4ed8;">${t.surplusItems}</td>
+          <td style="text-align:center;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</td>
+          <td style="text-align:right;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="footer">Generado automaticamente por el Sistema de Auditoria y Control de Existencias — RASECORP</div>
+</div>
+</body>
+</html>`;
+  }
+
+  function generateAdminSummaryPDF() {
+    if (adminSummaryRows.length === 0) {
+      setMessage("No hay sesiones en el resumen. Consulta primero un periodo.");
+      return;
+    }
+    const html = buildAdminSummaryReportHTML();
+    const win = window.open("", "_blank");
+    if (!win) { setMessage("El navegador bloqueó la ventana. Permite ventanas emergentes e intenta de nuevo."); return; }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    setTimeout(() => win.print(), 600);
+  }
+
   function escapeHTML(value: string | number | null | undefined) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -1619,8 +1798,17 @@ export default function AuditoriaPage() {
       ? `<tr><td colspan="8" style="padding:12px;text-align:center;color:#64748b;">Sin sobrantes registrados.</td></tr>`
       : surplusDifferences.map(diffRow).join("");
     const today = new Date().toLocaleString("es-PE");
-    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title></head>
+    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Informe auditoría ${escapeHTML(storeName)}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  .no-print { display: block; }
+  @media print { .no-print { display: none !important; } body { background: #fff !important; } }
+</style>
+</head>
 <body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+  <div class="no-print" style="padding:10px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+    <button onclick="window.print()" style="background:#0f172a;color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:12px;font-weight:800;cursor:pointer;">Imprimir / guardar PDF</button>
+  </div>
   <div style="max-width:920px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
     <div style="background:#0f172a;padding:28px 32px;color:#ffffff;">
       <div style="font-size:12px;font-weight:900;letter-spacing:1.8px;color:#93c5fd;">WMS AUDITORIA DE EXISTENCIAS</div>
@@ -1887,6 +2075,9 @@ export default function AuditoriaPage() {
                     </button>
                     <button onClick={downloadAdminSummaryExcel} disabled={adminSummaryRows.length === 0} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Descargar Excel">
                       <Download size={17} />
+                    </button>
+                    <button onClick={generateAdminSummaryPDF} disabled={adminSummaryRows.length === 0} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Ver / guardar PDF">
+                      <FileText size={17} />
                     </button>
                   </div>
                 </div>
