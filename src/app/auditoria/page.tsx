@@ -1711,7 +1711,8 @@ export default function AuditoriaPage() {
         <div class="chartTitle">ERI por tienda</div>
         ${storeChartRows}
       </div>
-      <div class="chartBox">
+      <div class="chartBox" style="display:flex;flex-direction:column;justify-content:space-between;">
+        <div class="chartTitle">Totales del periodo</div>
         <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
       </div>
     </div>
