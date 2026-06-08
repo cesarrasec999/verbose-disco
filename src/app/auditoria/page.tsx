@@ -1712,8 +1712,7 @@ export default function AuditoriaPage() {
         ${storeChartRows}
       </div>
       <div class="chartBox">
-        <div class="chartTitle">Totales del periodo</div>
-        <img src="${globalChart}" style="max-width:100%;display:block;margin-top:10px;" alt="Grafico"/>
+        <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
       </div>
     </div>
     <table>
