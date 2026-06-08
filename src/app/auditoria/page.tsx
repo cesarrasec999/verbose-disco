@@ -1706,9 +1706,15 @@ export default function AuditoriaPage() {
       <div class="kpi"><div class="kpiValue" style="color:#b91c1c;">${t.missingItems}</div><div class="kpiLabel">Faltantes</div></div>
       <div class="kpi"><div class="kpiValue" style="color:#1d4ed8;">${t.surplusItems}</div><div class="kpiLabel">Sobrantes</div></div>
     </div>
-    <div class="chartBox">
-      <div class="chartTitle">ERI por tienda</div>
-      ${storeChartRows}
+    <div class="chartGrid">
+      <div class="chartBox">
+        <div class="chartTitle">ERI por tienda</div>
+        ${storeChartRows}
+      </div>
+      <div class="chartBox">
+        <div class="chartTitle">Totales del periodo</div>
+        <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
+      </div>
     </div>
     <table>
       <thead>
@@ -1738,10 +1744,6 @@ export default function AuditoriaPage() {
         </tr>
       </tbody>
     </table>
-    <div class="chartBox" style="margin-top:14px;">
-      <div class="chartTitle">Totales del periodo</div>
-      <img src="${globalChart}" style="max-width:75%;display:block;margin:0 auto;" alt="Grafico totales"/>
-    </div>
   </div>
   <div class="footer">Generado automaticamente por el Sistema de Auditoria y Control de Existencias — RASECORP</div>
 </div>
@@ -2131,14 +2133,6 @@ export default function AuditoriaPage() {
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes</div><div className="text-xl font-black text-blue-700">{number2(adminSummaryTotals.surplusItems)}</div></div>
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">OK</div><div className="text-xl font-black text-green-700">{number2(adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0))}</div></div>
             </div>
-
-            <AdminTotalesChart
-              totales={{
-                ok: adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0),
-                sobrantes: adminSummaryTotals.surplusItems,
-                faltantes: adminSummaryTotals.missingItems,
-              }}
-            />
 
             <div className="rounded-2xl border bg-white shadow-sm">
               <div className="border-b px-4 py-3 font-black">Sesiones finalizadas del periodo ({adminSummaryRows.length})</div>
