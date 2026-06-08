@@ -1614,7 +1614,7 @@ export default function AuditoriaPage() {
       </div>`;
     }).join("");
 
-    const globalChart = auditBarChart("Totales del periodo", [
+    const globalChart = auditBarChart("", [
       { label: "OK", value: okTotal, color: "#16a34a" },
       { label: "Faltantes", value: t.missingItems, color: "#dc2626" },
       { label: "Sobrantes", value: t.surplusItems, color: "#2563eb" },
@@ -1711,9 +1711,9 @@ export default function AuditoriaPage() {
         <div class="chartTitle">ERI por tienda</div>
         ${storeChartRows}
       </div>
-      <div class="chartBox" style="display:flex;flex-direction:column;justify-content:space-between;">
+      <div class="chartBox" style="display:flex;flex-direction:column;">
         <div class="chartTitle">Totales del periodo</div>
-        <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
+        <img src="${globalChart}" style="max-width:100%;display:block;margin-top:24px;" alt="Grafico"/>
       </div>
     </div>
     <table>
