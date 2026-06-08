@@ -534,6 +534,7 @@ export default function AuditoriaPage() {
           .from(tableName)
           .select(selectColumns)
           .in("session_id", chunk)
+          .order("id")
           .range(from, to)
       );
       rows.push(...chunkRows);
