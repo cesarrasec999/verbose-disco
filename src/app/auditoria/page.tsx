@@ -1616,10 +1616,10 @@ export default function AuditoriaPage() {
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Reporte Auditorias ${escapeHTML(range.label)}</title>
   <style>
-    @page { size: A4 landscape; margin: 8mm; }
+    @page { size: A4 portrait; margin: 12mm; }
     * { box-sizing: border-box; }
     body { margin: 0; background: #f1f5f9; font-family: Arial, sans-serif; color: #0f172a; font-size: 11px; }
-    .shell { max-width: 1180px; margin: 0 auto; background: #fff; }
+    .shell { max-width: 860px; margin: 0 auto; background: #fff; }
     .header { display: flex; justify-content: space-between; align-items: flex-start; padding: 22px 28px 18px; background: linear-gradient(135deg,#0f172a 0%,#1e3a5f 60%,#1d4ed8 100%); }
     .header h1 { margin: 8px 0 4px; font-size: 22px; color: #fff; }
     .header .sub { color: #bfdbfe; font-size: 11px; }
@@ -1678,7 +1678,6 @@ export default function AuditoriaPage() {
         ${storeChartRows}
       </div>
       <div class="chartBox">
-        <div class="chartTitle">Totales del periodo</div>
         <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
       </div>
     </div>
