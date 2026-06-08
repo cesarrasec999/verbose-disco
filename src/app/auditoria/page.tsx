@@ -1607,18 +1607,38 @@ export default function AuditoriaPage() {
 
     const storeChartRows = storesSorted.map(s => {
       const color = s.eri >= 90 ? "#16a34a" : s.eri >= 70 ? "#ca8a04" : "#dc2626";
-      return `<div style="display:grid;grid-template-columns:160px 1fr 44px;gap:8px;align-items:center;margin:5px 0;">
-        <div style="font-weight:800;font-size:10px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(s.store)}</div>
-        <div style="height:11px;background:#e2e8f0;border-radius:999px;overflow:hidden;"><div style="width:${Math.max(2, s.eri)}%;height:100%;background:${color};border-radius:999px;"></div></div>
-        <div style="text-align:right;font-weight:900;font-size:10px;color:${color};">${s.eri}%</div>
+      return `<div style="display:flex;gap:8px;align-items:center;margin:5px 0;">
+        <div style="flex:0 0 150px;font-weight:800;font-size:10px;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(s.store)}</div>
+        <div style="flex:1;height:11px;background:#e2e8f0;border-radius:999px;overflow:hidden;"><div style="width:${Math.max(2, s.eri)}%;height:100%;background:${color};border-radius:999px;"></div></div>
+        <div style="flex:0 0 36px;text-align:right;font-weight:900;font-size:10px;color:${color};">${s.eri}%</div>
       </div>`;
     }).join("");
 
-    const globalChart = auditBarChart("", [
-      { label: "OK", value: okTotal, color: "#16a34a" },
-      { label: "Faltantes", value: t.missingItems, color: "#dc2626" },
-      { label: "Sobrantes", value: t.surplusItems, color: "#2563eb" },
-    ]);
+    const _maxBarVal = Math.max(1, okTotal, t.missingItems, t.surplusItems);
+    const _bh = (v: number) => Math.max(8, Math.round((v / _maxBarVal) * 140));
+    const globalChartHTML = `
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          <td style="vertical-align:bottom;text-align:center;padding:0 10px;">
+            <div style="font-weight:900;font-size:15px;color:#0f172a;margin-bottom:6px;">${okTotal}</div>
+            <div style="background:#16a34a;height:${_bh(okTotal)}px;border-radius:6px 6px 0 0;"></div>
+          </td>
+          <td style="vertical-align:bottom;text-align:center;padding:0 10px;">
+            <div style="font-weight:900;font-size:15px;color:#b91c1c;margin-bottom:6px;">${t.missingItems}</div>
+            <div style="background:#dc2626;height:${_bh(t.missingItems)}px;border-radius:6px 6px 0 0;"></div>
+          </td>
+          <td style="vertical-align:bottom;text-align:center;padding:0 10px;">
+            <div style="font-weight:900;font-size:15px;color:#1d4ed8;margin-bottom:6px;">${t.surplusItems}</div>
+            <div style="background:#2563eb;height:${_bh(t.surplusItems)}px;border-radius:6px 6px 0 0;"></div>
+          </td>
+        </tr>
+        <tr><td colspan="3" style="height:2px;background:#cbd5e1;padding:0;"></td></tr>
+        <tr>
+          <td style="padding:6px 10px 0;text-align:center;font-size:10px;font-weight:700;color:#475569;">OK</td>
+          <td style="padding:6px 10px 0;text-align:center;font-size:10px;font-weight:700;color:#475569;">Faltantes</td>
+          <td style="padding:6px 10px 0;text-align:center;font-size:10px;font-weight:700;color:#475569;">Sobrantes</td>
+        </tr>
+      </table>`;
 
     const totalDiffColor = t.diffValue < 0 ? "#b91c1c" : t.diffValue > 0 ? "#1d4ed8" : "#15803d";
     const totalUnitsColor = t.diffUnits < 0 ? "#b91c1c" : t.diffUnits > 0 ? "#1d4ed8" : "#15803d";
@@ -1691,61 +1711,67 @@ export default function AuditoriaPage() {
       <div>Sesiones: <strong>${t.sessions}</strong> | Tiendas: <strong>${t.stores}</strong></div>
     </div>
   </div>
-  <div class="content">
-    <div class="kpiGrid">
-      <div class="kpi"><div class="kpiValue">${t.sessions}</div><div class="kpiLabel">Sesiones</div></div>
-      <div class="kpi"><div class="kpiValue">${t.stores}</div><div class="kpiLabel">Tiendas</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:${eriColor};">${t.eri}%</div><div class="kpiLabel">ERI promedio</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:${totalDiffColor};font-size:13px;">${escapeHTML(money(t.diffValue))}</div><div class="kpiLabel">Dif. valorizada</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</div><div class="kpiLabel">Dif. unidades</div></div>
-      <div class="kpi"><div class="kpiValue">${t.countRecords}</div><div class="kpiLabel">Registros</div></div>
-    </div>
-    <div class="kpiGrid2">
-      <div class="kpi"><div class="kpiValue" style="color:#15803d;">${t.auditedItems}</div><div class="kpiLabel">Codigos auditados</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:#15803d;">${okTotal}</div><div class="kpiLabel">OK</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:#b91c1c;">${t.missingItems}</div><div class="kpiLabel">Faltantes</div></div>
-      <div class="kpi"><div class="kpiValue" style="color:#1d4ed8;">${t.surplusItems}</div><div class="kpiLabel">Sobrantes</div></div>
-    </div>
-    <div class="chartGrid">
-      <div class="chartBox">
-        <div class="chartTitle">ERI por tienda</div>
-        ${storeChartRows}
-      </div>
-      <div class="chartBox" style="display:flex;flex-direction:column;">
-        <div class="chartTitle">Totales del periodo</div>
-        <img src="${globalChart}" style="flex:1;min-height:0;width:100%;object-fit:contain;margin-top:12px;" alt="Grafico"/>
-      </div>
-    </div>
-    <table>
+  <div style="padding:16px 28px 20px;">
+    <table style="width:100%;border-collapse:separate;border-spacing:7px;margin:10px 0 3px;">
+      <tr>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;">${t.sessions}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Sesiones</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;">${t.stores}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Tiendas</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:${eriColor};">${t.eri}%</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">ERI promedio</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:13px;font-weight:900;line-height:1.1;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Dif. valorizada</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Dif. unidades</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;">${t.countRecords}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Registros</div></td>
+      </tr>
+    </table>
+    <table style="width:100%;border-collapse:separate;border-spacing:7px;margin:0 0 10px;">
+      <tr>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:#15803d;">${t.auditedItems}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Codigos auditados</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:#15803d;">${okTotal}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">OK</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:#b91c1c;">${t.missingItems}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Faltantes</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:#1d4ed8;">${t.surplusItems}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Sobrantes</div></td>
+      </tr>
+    </table>
+    <table style="width:100%;border-collapse:separate;border-spacing:10px;margin:0 0 14px;">
+      <tr>
+        <td style="width:58%;vertical-align:top;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:12px;">
+          <div style="margin:0 0 10px;font-size:10px;font-weight:900;text-transform:uppercase;color:#0f172a;">ERI por tienda</div>
+          ${storeChartRows}
+        </td>
+        <td style="width:42%;vertical-align:top;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:12px;">
+          <div style="margin:0 0 14px;font-size:10px;font-weight:900;text-transform:uppercase;color:#0f172a;">Totales del periodo</div>
+          ${globalChartHTML}
+        </td>
+      </tr>
+    </table>
+    <table style="width:100%;border-collapse:collapse;">
       <thead>
         <tr>
-          <th style="width:20%;text-align:left;">Tienda</th>
-          <th style="width:14%;text-align:left;">Auditor</th>
-          <th style="width:9%;text-align:center;">Fecha</th>
-          <th style="width:6%;text-align:center;">ERI</th>
-          <th style="width:7%;text-align:center;">Auditados</th>
-          <th style="width:5%;text-align:center;">OK</th>
-          <th style="width:6%;text-align:center;">Falt.</th>
-          <th style="width:6%;text-align:center;">Sobr.</th>
-          <th style="width:7%;text-align:center;">Dif. und.</th>
-          <th style="width:10%;text-align:right;">Dif. valor</th>
+          <th style="width:20%;text-align:left;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Tienda</th>
+          <th style="width:14%;text-align:left;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Auditor</th>
+          <th style="width:9%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Fecha</th>
+          <th style="width:6%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">ERI</th>
+          <th style="width:7%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Auditados</th>
+          <th style="width:5%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">OK</th>
+          <th style="width:6%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Falt.</th>
+          <th style="width:6%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Sobr.</th>
+          <th style="width:7%;text-align:center;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Dif. und.</th>
+          <th style="width:10%;text-align:right;background:#f1f5f9;font-size:9px;font-weight:800;padding:5px;border:1px solid #cbd5e1;text-transform:uppercase;">Dif. valor</th>
         </tr>
       </thead>
       <tbody>
         ${sessionRows}
-        <tr class="totalsRow">
-          <td colspan="4" style="padding:5px;">TOTALES — ${t.sessions} sesiones, ${t.stores} tiendas</td>
-          <td style="text-align:center;">${t.auditedItems}</td>
-          <td style="text-align:center;color:#15803d;">${okTotal}</td>
-          <td style="text-align:center;color:#b91c1c;">${t.missingItems}</td>
-          <td style="text-align:center;color:#1d4ed8;">${t.surplusItems}</td>
-          <td style="text-align:center;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</td>
-          <td style="text-align:right;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</td>
+        <tr>
+          <td colspan="4" style="padding:5px;background:#f1f5f9;font-weight:900;font-size:10px;border:1px solid #e2e8f0;">TOTALES — ${t.sessions} sesiones, ${t.stores} tiendas</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;">${t.auditedItems}</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#15803d;">${okTotal}</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#b91c1c;">${t.missingItems}</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#1d4ed8;">${t.surplusItems}</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</td>
+          <td style="text-align:right;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</td>
         </tr>
       </tbody>
     </table>
   </div>
-  <div class="footer">Generado automaticamente por el Sistema de Auditoria y Control de Existencias — RASECORP</div>
+  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:8px 28px;text-align:center;color:#94a3b8;font-size:10px;">Generado automaticamente por el Sistema de Auditoria y Control de Existencias — RASECORP</div>
 </div>
 </body>
 </html>`;
