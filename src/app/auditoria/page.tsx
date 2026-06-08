@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, Home, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
+import { BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, Home, Loader2, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -291,9 +291,8 @@ export default function AuditoriaPage() {
   const [adminSummaryFrom, setAdminSummaryFrom] = useState(todayISO().slice(0, 7) + "-01");
   const [adminSummaryTo, setAdminSummaryTo] = useState(todayISO());
   const [adminSummaryRows, setAdminSummaryRows] = useState<AuditAdminSummaryRow[]>([]);
-  const [adminSummaryItemData, setAdminSummaryItemData] = useState<any[]>([]);
-  const [adminSummaryCountData, setAdminSummaryCountData] = useState<any[]>([]);
   const [adminSummaryLoading, setAdminSummaryLoading] = useState(false);
+  const [adminSummaryExcelLoading, setAdminSummaryExcelLoading] = useState(false);
   const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
   const [manualProductCodePending, setManualProductCodePending] = useState("");
   const [itemObservationDrafts, setItemObservationDrafts] = useState<Record<string, string>>({});
@@ -611,7 +610,7 @@ export default function AuditoriaPage() {
     let countData: any[] = [];
     try {
       [itemData, countData] = await Promise.all([
-        fetchAuditAdminDetails("audit_session_items", "id,session_id,sku,description,unit,product_id,system_stock,cost_snapshot,observation", sessionIds),
+        fetchAuditAdminDetails("audit_session_items", "id,session_id,system_stock,cost_snapshot", sessionIds),
         fetchAuditAdminDetails("audit_counts", "id,session_id,item_id,quantity", sessionIds),
       ]);
     } catch (error: any) {
@@ -669,8 +668,6 @@ export default function AuditoriaPage() {
     });
 
     setAdminSummaryRows(rows);
-    setAdminSummaryItemData(itemData || []);
-    setAdminSummaryCountData(countData || []);
     setAdminSummaryLoading(false);
   }
 
@@ -1558,9 +1555,30 @@ export default function AuditoriaPage() {
     XLSX.writeFile(workbook, `resumen_por_codigo_${storeName}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
-  function downloadAdminSummaryExcel() {
+  async function downloadAdminSummaryExcel() {
     if (adminSummaryRows.length === 0) {
       setMessage("No hay sesiones en el resumen para descargar.");
+      return;
+    }
+
+    setAdminSummaryExcelLoading(true);
+    const sessionIds = adminSummaryRows.map(r => r.id);
+    let itemData: any[] = [];
+    let countData: any[] = [];
+    try {
+      [itemData, countData] = await Promise.all([
+        fetchAuditAdminDetails("audit_session_items", "id,session_id,system_stock,cost_snapshot,observation,cyclic_products(sku,description,unit)", sessionIds),
+        fetchAuditAdminDetails("audit_counts", "id,session_id,item_id,quantity", sessionIds),
+      ]);
+      itemData = itemData.map((r: any) => ({
+        ...r,
+        sku: r.cyclic_products?.sku ?? "",
+        description: r.cyclic_products?.description ?? "",
+        unit: r.cyclic_products?.unit ?? "",
+      }));
+    } catch (e: any) {
+      setMessage("Error descargando detalle: " + (e?.message || e));
+      setAdminSummaryExcelLoading(false);
       return;
     }
 
@@ -1588,11 +1606,11 @@ export default function AuditoriaPage() {
     ];
 
     const countsByItem = new Map<string, number>();
-    for (const c of adminSummaryCountData) {
+    for (const c of countData) {
       countsByItem.set(c.item_id, (countsByItem.get(c.item_id) || 0) + Number(c.quantity || 0));
     }
 
-    const detailRows = adminSummaryItemData.map(item => {
+    const detailRows = itemData.map(item => {
       const session = sessionMap.get(item.session_id);
       const counted = countsByItem.get(item.id) ?? null;
       const stock = Number(item.system_stock || 0);
@@ -1626,6 +1644,7 @@ export default function AuditoriaPage() {
     XLSX.utils.book_append_sheet(workbook, detailSheet, "Resumen por codigo");
     const range = adminSummaryRange().label.replace(/[\\/:*?"<>| ]+/g, "_");
     XLSX.writeFile(workbook, `resumen_auditorias_${range}.xlsx`);
+    setAdminSummaryExcelLoading(false);
   }
 
   function buildAdminSummaryReportHTML() {
@@ -2175,8 +2194,8 @@ export default function AuditoriaPage() {
                     <button onClick={loadAuditAdminSummary} disabled={adminSummaryLoading} className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40">
                       {adminSummaryLoading ? "Cargando..." : "Consultar"}
                     </button>
-                    <button onClick={downloadAdminSummaryExcel} disabled={adminSummaryRows.length === 0} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Descargar Excel">
-                      <Download size={17} />
+                    <button onClick={downloadAdminSummaryExcel} disabled={adminSummaryRows.length === 0 || adminSummaryExcelLoading} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Descargar Excel">
+                      {adminSummaryExcelLoading ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
                     </button>
                     <button onClick={generateAdminSummaryPDF} disabled={adminSummaryRows.length === 0} className="rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40" title="Ver / guardar PDF">
                       <FileText size={17} />
