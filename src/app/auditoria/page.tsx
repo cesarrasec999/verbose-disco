@@ -1596,9 +1596,10 @@ export default function AuditoriaPage() {
       const session = sessionMap.get(item.session_id);
       const counted = countsByItem.get(item.id) ?? null;
       const stock = Number(item.system_stock || 0);
-      const diff = counted !== null ? counted - stock : null;
-      const value = diff !== null ? diff * Number(item.cost_snapshot || 0) : null;
-      const estado = counted === null ? "No contado" : diff === 0 ? "OK" : diff > 0 ? "Sobrante" : "Faltante";
+      const hasCounted = counted !== null;
+      const diff = hasCounted ? counted - stock : null;
+      const value = hasCounted && diff !== null ? diff * Number(item.cost_snapshot || 0) : null;
+      const estado = !hasCounted ? "No contado" : diff === 0 ? "OK" : (diff ?? 0) > 0 ? "Sobrante" : "Faltante";
       return {
         Tienda: session?.store_name || session?.store_id || item.session_id,
         Inicio: session ? new Date(session.started_at).toLocaleDateString("es-PE") : "",
