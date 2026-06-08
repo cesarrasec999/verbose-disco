@@ -1792,7 +1792,7 @@ export default function AuditoriaPage() {
       const y = 190 - barHeight;
       return `<g><rect x="${x}" y="${y}" width="72" height="${barHeight}" rx="8" fill="${d.color}"/><text x="${x + 36}" y="${y - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${escapeHTML(d.value)}</text><text x="${x + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${escapeHTML(d.label)}</text></g>`;
     }).join("");
-    return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="max-width:100%;display:block;">
+    return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
       <rect x="0.5" y="0.5" width="639" height="259" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
       <text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">${escapeHTML(title)}</text>
       <line x1="48" y1="194" x2="594" y2="194" stroke="#cbd5e1" stroke-width="1"/>
