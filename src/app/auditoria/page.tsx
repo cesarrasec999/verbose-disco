@@ -1713,7 +1713,7 @@ export default function AuditoriaPage() {
       </div>
       <div class="chartBox" style="display:flex;flex-direction:column;">
         <div class="chartTitle">Totales del periodo</div>
-        <img src="${globalChart}" style="max-width:100%;display:block;margin-top:24px;" alt="Grafico"/>
+        <img src="${globalChart}" style="flex:1;min-height:0;width:100%;object-fit:contain;margin-top:12px;" alt="Grafico"/>
       </div>
     </div>
     <table>
