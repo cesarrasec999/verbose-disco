@@ -215,6 +215,39 @@ function canAccessAuditModule(user: CyclicUser) {
   return user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || Boolean(user.can_access_audit);
 }
 
+function AdminTotalesChart({ totales }: { totales: { ok: number; sobrantes: number; faltantes: number } }) {
+  const { ok, sobrantes, faltantes } = totales;
+  const max = Math.max(1, ok, sobrantes, faltantes);
+  const w = 640, h = 260;
+
+  function bar(y: number, h: number, color: string, label: string, value: number) {
+    return `<rect x="${y}" y="${h}" width="72" height="${Math.max(6, (value / max) * 140)}" rx="8" fill="${color}"/>
+      <text x="${y + 36}" y="${h - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${value}</text>
+      <text x="${y + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${label}</text>`;
+  }
+
+  const bars = [
+    bar(70,  190 - Math.max(6, (ok / max) * 140), "#16a34a", "OK", ok),
+    bar(205, 190 - Math.max(6, (sobrantes / max) * 140), "#2563eb", "Sobrantes", sobrantes),
+    bar(340, 190 - Math.max(6, (faltantes / max) * 140), "#dc2626", "Faltantes", faltantes),
+  ].join("");
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="max-width:100%;display:block;">
+    <rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">Totales del periodo</text>
+    <line x1="48" y1="194" x2="${w - 48}" y2="194" stroke="#cbd5e1" stroke-width="1"/>
+    ${bars}
+  </svg>`;
+
+  return (
+    <div className="rounded-2xl border bg-white p-4 shadow-sm">
+      <div className="mx-auto max-w-lg">
+        <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`} alt="Totales del periodo" className="w-full" />
+      </div>
+    </div>
+  );
+}
+
 export default function AuditoriaPage() {
   const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
@@ -2099,6 +2132,14 @@ export default function AuditoriaPage() {
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrantes</div><div className="text-xl font-black text-blue-700">{number2(adminSummaryTotals.surplusItems)}</div></div>
               <div className="rounded-2xl border bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">OK</div><div className="text-xl font-black text-green-700">{number2(adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0))}</div></div>
             </div>
+
+            <AdminTotalesChart
+              totales={{
+                ok: adminSummaryRows.reduce((acc, row) => acc + row.ok_items, 0),
+                sobrantes: adminSummaryTotals.surplusItems,
+                faltantes: adminSummaryTotals.missingItems,
+              }}
+            />
 
             <div className="rounded-2xl border bg-white shadow-sm">
               <div className="border-b px-4 py-3 font-black">Sesiones finalizadas del periodo ({adminSummaryRows.length})</div>
