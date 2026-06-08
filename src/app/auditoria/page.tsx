@@ -1706,14 +1706,9 @@ export default function AuditoriaPage() {
       <div class="kpi"><div class="kpiValue" style="color:#b91c1c;">${t.missingItems}</div><div class="kpiLabel">Faltantes</div></div>
       <div class="kpi"><div class="kpiValue" style="color:#1d4ed8;">${t.surplusItems}</div><div class="kpiLabel">Sobrantes</div></div>
     </div>
-    <div class="chartGrid">
-      <div class="chartBox">
-        <div class="chartTitle">ERI por tienda</div>
-        ${storeChartRows}
-      </div>
-      <div class="chartBox">
-        <img src="${globalChart}" style="max-width:100%;display:block;" alt="Grafico"/>
-      </div>
+    <div class="chartBox">
+      <div class="chartTitle">ERI por tienda</div>
+      ${storeChartRows}
     </div>
     <table>
       <thead>
@@ -1743,6 +1738,10 @@ export default function AuditoriaPage() {
         </tr>
       </tbody>
     </table>
+    <div class="chartBox" style="margin-top:14px;">
+      <div class="chartTitle">Totales del periodo</div>
+      <img src="${globalChart}" style="max-width:75%;display:block;margin:0 auto;" alt="Grafico totales"/>
+    </div>
   </div>
   <div class="footer">Generado automaticamente por el Sistema de Auditoria y Control de Existencias — RASECORP</div>
 </div>
