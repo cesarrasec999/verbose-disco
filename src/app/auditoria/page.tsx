@@ -291,6 +291,8 @@ export default function AuditoriaPage() {
   const [adminSummaryFrom, setAdminSummaryFrom] = useState(todayISO().slice(0, 7) + "-01");
   const [adminSummaryTo, setAdminSummaryTo] = useState(todayISO());
   const [adminSummaryRows, setAdminSummaryRows] = useState<AuditAdminSummaryRow[]>([]);
+  const [adminSummaryItemData, setAdminSummaryItemData] = useState<any[]>([]);
+  const [adminSummaryCountData, setAdminSummaryCountData] = useState<any[]>([]);
   const [adminSummaryLoading, setAdminSummaryLoading] = useState(false);
   const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
   const [manualProductCodePending, setManualProductCodePending] = useState("");
@@ -609,7 +611,7 @@ export default function AuditoriaPage() {
     let countData: any[] = [];
     try {
       [itemData, countData] = await Promise.all([
-        fetchAuditAdminDetails("audit_session_items", "id,session_id,system_stock,cost_snapshot", sessionIds),
+        fetchAuditAdminDetails("audit_session_items", "id,session_id,sku,description,unit,product_id,system_stock,cost_snapshot,observation", sessionIds),
         fetchAuditAdminDetails("audit_counts", "id,session_id,item_id,quantity", sessionIds),
       ]);
     } catch (error: any) {
@@ -667,6 +669,8 @@ export default function AuditoriaPage() {
     });
 
     setAdminSummaryRows(rows);
+    setAdminSummaryItemData(itemData || []);
+    setAdminSummaryCountData(countData || []);
     setAdminSummaryLoading(false);
   }
 
@@ -1559,7 +1563,10 @@ export default function AuditoriaPage() {
       setMessage("No hay sesiones en el resumen para descargar.");
       return;
     }
-    const rows = adminSummaryRows.map(row => ({
+
+    const sessionMap = new Map(adminSummaryRows.map(r => [r.id, r]));
+
+    const summarySheet = XLSX.utils.json_to_sheet(adminSummaryRows.map(row => ({
       Tienda: row.store_name || row.store_id,
       Auditor: row.auditor_name || "",
       Estado: row.status === "finished" ? "Finalizada" : row.status === "cancelled" ? "Cancelada" : "En progreso",
@@ -1573,15 +1580,49 @@ export default function AuditoriaPage() {
       "Dif. unidades": row.diff_units,
       "Dif. valorizada": Number(row.diff_value || 0),
       Observacion: row.observation || "",
-    }));
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    worksheet["!cols"] = [
+    })));
+    summarySheet["!cols"] = [
       { wch: 28 }, { wch: 24 }, { wch: 14 }, { wch: 20 }, { wch: 20 },
       { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 10 },
       { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
     ];
+
+    const countsByItem = new Map<string, number>();
+    for (const c of adminSummaryCountData) {
+      countsByItem.set(c.item_id, (countsByItem.get(c.item_id) || 0) + Number(c.quantity || 0));
+    }
+
+    const detailRows = adminSummaryItemData.map(item => {
+      const session = sessionMap.get(item.session_id);
+      const counted = countsByItem.get(item.id) ?? null;
+      const stock = Number(item.system_stock || 0);
+      const diff = counted !== null ? counted - stock : null;
+      const value = diff !== null ? diff * Number(item.cost_snapshot || 0) : null;
+      const estado = counted === null ? "No contado" : diff === 0 ? "OK" : diff > 0 ? "Sobrante" : "Faltante";
+      return {
+        Tienda: session?.store_name || session?.store_id || item.session_id,
+        Inicio: session ? new Date(session.started_at).toLocaleDateString("es-PE") : "",
+        SKU: item.sku || "",
+        Descripcion: item.description || "",
+        Unidad: item.unit || "",
+        "Stock sistema": stock,
+        Contado: counted ?? "",
+        Diferencia: diff ?? "",
+        Estado: estado,
+        "Valor dif.": value ?? "",
+        Observacion: item.observation || "",
+      };
+    });
+
+    const detailSheet = XLSX.utils.json_to_sheet(detailRows);
+    detailSheet["!cols"] = [
+      { wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 40 }, { wch: 8 },
+      { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 36 },
+    ];
+
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Resumen auditorias");
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Resumen auditorias");
+    XLSX.utils.book_append_sheet(workbook, detailSheet, "Resumen por codigo");
     const range = adminSummaryRange().label.replace(/[\\/:*?"<>| ]+/g, "_");
     XLSX.writeFile(workbook, `resumen_auditorias_${range}.xlsx`);
   }
