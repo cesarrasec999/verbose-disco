@@ -30,9 +30,9 @@ type AggRow = {
   store_name: string;
   product_code: string;
   description: string;
-  qty_ingreso: number;   // motivo 06 — ingresos provisionales (suma de qty positivas)
-  qty_regulariz: number; // motivo 07 — regularizaciones (suma de qty, suelen ser negativas)
-  total_qty: number;     // neto: qty_ingreso + qty_regulariz
+  qty_ajuste: number;    // motivo 06 — ajuste provisional
+  qty_regulariz: number; // motivo 07 — regularización provisional
+  total_qty: number;     // neto
   total_value: number;
   record_count: number;
 };
@@ -176,7 +176,7 @@ export default function AjustesProvisionalesPage() {
     for (const r of filteredRows) {
       const m = detectMotivo(r.reason);
       if (!m) continue;
-      const key = `${r.store_code}||${r.product_code}||${m.code}`;
+      const key = `${r.store_code}||${r.product_code}`;
       const storeName = stores.find(s => s.code === r.store_code)?.name || r.store_code;
       if (!map.has(key)) {
         map.set(key, {
@@ -184,22 +184,23 @@ export default function AjustesProvisionalesPage() {
           store_name:   storeName,
           product_code: r.product_code,
           description:  r.description || r.product_code,
-          motivo_code:  m.code,
-          motivo_label: m.label,
+          qty_ajuste:   0,
+          qty_regulariz: 0,
           total_qty:    0,
           total_value:  0,
           record_count: 0,
         });
       }
       const entry = map.get(key)!;
+      if (m.code === "06") entry.qty_ajuste   += r.quantity;
+      else                  entry.qty_regulariz += r.quantity;
       entry.total_qty   += r.quantity;
       entry.total_value += r.value_total ?? 0;
       entry.record_count += 1;
     }
     return Array.from(map.values()).sort((a, b) =>
       a.store_code.localeCompare(b.store_code) ||
-      a.product_code.localeCompare(b.product_code) ||
-      a.motivo_code.localeCompare(b.motivo_code)
+      a.product_code.localeCompare(b.product_code)
     );
   }, [filteredRows, stores]);
 
@@ -229,18 +230,19 @@ export default function AjustesProvisionalesPage() {
 
   function exportExcel() {
     const sheetData = aggregated.map(r => ({
-      Tienda:       r.store_name,
-      Codigo:       r.product_code,
-      Descripcion:  r.description,
-      Motivo:       r.motivo_label,
-      Cantidad:     r.total_qty,
-      "Valor Total": Number(r.total_value.toFixed(2)),
-      Documentos:   r.record_count,
+      Tienda:                r.store_name,
+      Codigo:                r.product_code,
+      Descripcion:           r.description,
+      "Ajuste Provisional":  r.qty_ajuste,
+      "Regulariz. Provisional": r.qty_regulariz,
+      Neto:                  r.total_qty,
+      "Valor Total":         Number(r.total_value.toFixed(2)),
+      Documentos:            r.record_count,
     }));
     const ws = XLSX.utils.json_to_sheet(sheetData);
     ws["!cols"] = [
       { wch: 22 }, { wch: 18 }, { wch: 40 },
-      { wch: 32 }, { wch: 12 }, { wch: 14 }, { wch: 10 },
+      { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
@@ -405,7 +407,7 @@ export default function AjustesProvisionalesPage() {
                       }
                       <span className="font-black text-sm">{storeName}</span>
                       <span className="text-[11px] bg-white/20 rounded-full px-2 py-0.5 font-semibold">
-                        {storeRows.length} {storeRows.length === 1 ? "línea" : "líneas"}
+                        {storeRows.length} {storeRows.length === 1 ? "producto" : "productos"}
                       </span>
                     </div>
                     <div className="flex items-center gap-4 shrink-0">
@@ -431,8 +433,8 @@ export default function AjustesProvisionalesPage() {
                           <tr className="border-b border-slate-100 bg-slate-50">
                             <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Código</th>
                             <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">Descripción</th>
-                            <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Motivo</th>
-                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Cantidad</th>
+                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-green-600 whitespace-nowrap">Ajuste Prov.</th>
+                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-amber-600 whitespace-nowrap">Regulariz. Prov.</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Valor</th>
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">Docs</th>
                           </tr>
@@ -446,19 +448,11 @@ export default function AjustesProvisionalesPage() {
                               <td className="px-4 py-3 text-slate-600 max-w-[240px]">
                                 <span className="line-clamp-2 leading-snug">{row.description}</span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold border ${
-                                  row.motivo_code === "06"
-                                    ? "bg-green-50 text-green-700 border-green-200"
-                                    : "bg-amber-50 text-amber-700 border-amber-200"
-                                }`}>
-                                  {row.motivo_label}
-                                </span>
+                              <td className="px-4 py-3 text-right font-black tabular-nums whitespace-nowrap text-green-700">
+                                {row.qty_ajuste !== 0 ? `+${fmt(row.qty_ajuste)}` : <span className="text-slate-300">—</span>}
                               </td>
-                              <td className={`px-4 py-3 text-right font-black tabular-nums text-base whitespace-nowrap ${
-                                row.total_qty >= 0 ? "text-green-700" : "text-red-600"
-                              }`}>
-                                {row.total_qty >= 0 ? "+" : ""}{fmt(row.total_qty)}
+                              <td className="px-4 py-3 text-right font-black tabular-nums whitespace-nowrap text-amber-700">
+                                {row.qty_regulariz !== 0 ? fmt(row.qty_regulariz) : <span className="text-slate-300">—</span>}
                               </td>
                               <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-500 whitespace-nowrap">
                                 {fmtMoney(row.total_value)}
@@ -473,13 +467,14 @@ export default function AjustesProvisionalesPage() {
                         {/* Subtotal tienda */}
                         <tfoot>
                           <tr className="border-t-2 border-slate-200 bg-slate-50">
-                            <td colSpan={3} className="px-4 py-2.5 text-xs font-black text-slate-500 uppercase tracking-wide">
+                            <td colSpan={2} className="px-4 py-2.5 text-xs font-black text-slate-500 uppercase tracking-wide">
                               Total {storeName}
                             </td>
-                            <td className={`px-4 py-2.5 text-right font-black tabular-nums text-sm whitespace-nowrap ${
-                              storeTotal >= 0 ? "text-green-700" : "text-red-600"
-                            }`}>
-                              {storeTotal >= 0 ? "+" : ""}{fmt(storeTotal)}
+                            <td className="px-4 py-2.5 text-right font-black tabular-nums text-sm text-green-700 whitespace-nowrap">
+                              +{fmt(storeRows.reduce((s, r) => s + r.qty_ajuste, 0))}
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-black tabular-nums text-sm text-amber-700 whitespace-nowrap">
+                              {fmt(storeRows.reduce((s, r) => s + r.qty_regulariz, 0))}
                             </td>
                             <td className="px-4 py-2.5 text-right font-black text-slate-700 tabular-nums text-sm whitespace-nowrap">
                               {fmtMoney(storeValue)}
