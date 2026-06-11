@@ -322,7 +322,7 @@ export default function AjustesProvisionalesPage() {
               className="flex items-center gap-2 px-6 py-2.5 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-50 active:scale-[0.97] transition-transform"
             >
               <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-              {loading ? "Cargando..." : "Consultar"}
+              {loading ? "Cargando..." : "Actualizar"}
             </button>
             {loaded && aggregated.length > 0 && (
               <button
