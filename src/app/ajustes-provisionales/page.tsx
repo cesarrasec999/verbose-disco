@@ -301,9 +301,11 @@ export default function AjustesProvisionalesPage() {
                 className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
               >
                 <option value="">Todas las tiendas</option>
-                {stores.filter(s => s.is_active).map(s => (
-                  <option key={s.id} value={s.code}>{s.name}</option>
-                ))}
+                {stores
+                  .filter(s => s.is_active && rows.some(r => r.store_code === s.code))
+                  .map(s => (
+                    <option key={s.id} value={s.code}>{s.name}</option>
+                  ))}
               </select>
             </div>
             <div className="flex-1 min-w-[160px]">
