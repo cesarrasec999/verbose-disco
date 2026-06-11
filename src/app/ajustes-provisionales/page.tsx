@@ -36,6 +36,7 @@ type AggRow = {
   total_qty: number;     // suma de ambos motivos
   total_value: number;
   record_count: number;
+  last_date: string;     // fecha del movimiento más reciente
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -181,16 +182,17 @@ export default function AjustesProvisionalesPage() {
       const storeName = stores.find(s => s.code === r.store_code)?.name || r.store_code;
       if (!map.has(key)) {
         map.set(key, {
-          store_code:   r.store_code,
-          store_name:   storeName,
-          product_code: r.product_code,
-          description:  r.description || r.product_code,
-          unit:         r.unit || "",
-          qty_ajuste:   0,
+          store_code:    r.store_code,
+          store_name:    storeName,
+          product_code:  r.product_code,
+          description:   r.description || r.product_code,
+          unit:          r.unit || "",
+          qty_ajuste:    0,
           qty_regulariz: 0,
-          total_qty:    0,
-          total_value:  0,
-          record_count: 0,
+          total_qty:     0,
+          total_value:   0,
+          record_count:  0,
+          last_date:     r.movement_date,
         });
       }
       const entry = map.get(key)!;
@@ -199,9 +201,10 @@ export default function AjustesProvisionalesPage() {
       entry.total_qty   += r.quantity;
       entry.total_value += r.value_total ?? 0;
       entry.record_count += 1;
+      if (r.movement_date > entry.last_date) entry.last_date = r.movement_date;
     }
     return Array.from(map.values()).sort((a, b) =>
-      a.store_code.localeCompare(b.store_code) ||
+      a.store_name.localeCompare(b.store_name, "es") ||
       a.product_code.localeCompare(b.product_code)
     );
   }, [filteredRows, stores]);
@@ -247,6 +250,7 @@ export default function AjustesProvisionalesPage() {
       "Regulariz. Provisional": r.qty_regulariz,
       Suma:                     r.total_qty,
       "Valor Total":            Number(r.total_value.toFixed(2)),
+      "Ultimo Ajuste":          r.last_date.slice(0, 10),
       Documentos:               r.record_count,
     }));
     const ws = XLSX.utils.json_to_sheet(sheetData);
@@ -452,6 +456,7 @@ export default function AjustesProvisionalesPage() {
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-amber-600 whitespace-nowrap">Regulariz. Prov.</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-blue-600 whitespace-nowrap">Suma</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Valor</th>
+                            <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Último ajuste</th>
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">Docs</th>
                           </tr>
                         </thead>
@@ -482,6 +487,9 @@ export default function AjustesProvisionalesPage() {
                               </td>
                               <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-500 whitespace-nowrap">
                                 {fmtMoney(row.total_value)}
+                              </td>
+                              <td className="px-4 py-3 text-center text-slate-500 text-xs font-semibold whitespace-nowrap">
+                                {row.last_date.slice(0, 10)}
                               </td>
                               <td className="px-4 py-3 text-center text-slate-400 text-xs font-bold">
                                 {row.record_count}
@@ -514,6 +522,7 @@ export default function AjustesProvisionalesPage() {
                             <td className="px-4 py-2.5 text-right font-black text-slate-700 tabular-nums text-sm whitespace-nowrap">
                               {fmtMoney(storeValue)}
                             </td>
+                            <td />
                             <td />
                           </tr>
                         </tfoot>
