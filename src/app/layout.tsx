@@ -8,6 +8,7 @@ import PwaQueueSync from "./PwaQueueSync";
 import SingleDeviceSessionGuard from "./SingleDeviceSessionGuard";
 import ErpSyncBanner from "./ErpSyncBanner";
 import ConfirmationsAlert from "./ConfirmationsAlert";
+import { Toaster } from "sonner";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -69,6 +70,7 @@ export default function RootLayout({
         <GlobalNetworkIndicator />
         <ErpSyncBanner />
         <ConfirmationsAlert />
+        <Toaster richColors position="top-center" duration={4000} />
         {children}
       </body>
     </html>

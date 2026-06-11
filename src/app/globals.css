@@ -3,6 +3,23 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* shadcn/ui design tokens */
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --primary: #0f172a;
+  --primary-foreground: #f8fafc;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --destructive: #dc2626;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #0f172a;
+  --radius: 1rem;
 }
 
 @theme inline {
@@ -44,6 +61,28 @@ input,
 select,
 textarea {
   max-width: 100%;
+}
+
+/* A: Tactile press feedback — Emil Kowalski: scale, never bounce */
+/* Tailwind active:scale-* classes override this via class selector specificity */
+button {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button:not(:disabled) {
+  transition: transform 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.97);
+  transition: transform 100ms ease-out;
+}
+
+/* B: Prevent iOS zoom on focus (requires font-size >= 16px) */
+input, select, textarea {
+  font-size: max(16px, 1em);
+  -webkit-tap-highlight-color: transparent;
 }
 
 .app-modal-panel {

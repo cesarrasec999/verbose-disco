@@ -19,7 +19,8 @@ export type ModuleAccessKey =
   | "picking"
   | "packing"
   | "reception"
-  | "confirmations";
+  | "confirmations"
+  | "ajustes_provisionales";
 
 export const CYCLIC_SUBMODULE_KEYS: ModuleAccessKey[] = [
   "cyclic_count_take",
@@ -54,6 +55,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
   { key: "confirmations", label: "Confirmaciones", group: "Modulos" },
   { key: "reception", label: "Recepción", group: "Modulos" },
+  { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
 ];
 
 type AccessUser = {
@@ -78,6 +80,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "picking",
     "packing",
     "confirmations",
+    "ajustes_provisionales",
   ];
   if (role === "Validador") return [
     "cyclic_assign_products",
@@ -94,6 +97,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "picking",
     "packing",
     "confirmations",
+    "ajustes_provisionales",
   ];
   if (role === "Cajero") return ["confirmations"];
   return ["cyclic_count_take", "packing"];

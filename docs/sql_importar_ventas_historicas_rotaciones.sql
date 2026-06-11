@@ -64,7 +64,7 @@ from public.historical_rotation_sales_import
 where nullif(trim(store_code), '') is not null
   and nullif(trim(product_code), '') is not null
   and nullif(trim(document_no), '') is not null
-on conflict (movement_key) do update set
+on conflict (movement_key, movement_date) do update set
   movement_date = excluded.movement_date,
   operation = excluded.operation,
   document_no = excluded.document_no,

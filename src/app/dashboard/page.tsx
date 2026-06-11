@@ -6314,7 +6314,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             ════════════════════════════════════════════════════════ */}
             {activeTab === "operario" && canTakeCount && !showRecount && (
                 <>
-                    <section className="bg-white rounded-2xl p-4 shadow space-y-3 md:rounded-3xl md:p-5">
+                    <section className="bg-white rounded-2xl p-4 shadow-md border border-slate-100 space-y-3 md:rounded-3xl md:p-5">
                         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:flex-wrap">
                             <div className="min-w-0">
                                 <h2 className="text-xl font-bold text-slate-900">Conteos del día</h2>
@@ -6466,7 +6466,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* Lista pendientes */}
                     {pendingAssignments.length > 0 && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                             <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
                                 <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-bold">{pendingAssignments.length}</span>
                                 Pendientes por contar
@@ -6493,7 +6493,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* Lista contados */}
                     {doneAssignments.length > 0 && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                             <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
                                 <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold">{doneAssignments.length}</span>
                                 Ya contados
@@ -6563,7 +6563,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             ════════════════════════════════════════════════════════ */}
             {activeTab === "operario" && canTakeCount && showRecount && (
                 <>
-                    <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                    <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                         <div className="flex items-center justify-between gap-3">
                             <div>
                                 <h2 className="text-xl font-bold text-slate-900">🔄 Reconteo</h2>
@@ -6691,7 +6691,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     </section>
 
                     {/* Lista de productos con diferencia */}
-                    <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                    <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                         <h3 className="font-bold text-slate-900">Productos con diferencia ({difAssignments.length})</h3>
                         <div className="space-y-2">
                             {difAssignments.map(a => {
@@ -6755,7 +6755,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     {valTab === "progreso" && canViewStoreProgress && (
                         <>
                             {/* ── Progreso por tienda hoy ───────────────────── */}
-                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                                 <div className="flex items-center justify-between flex-wrap gap-3">
                                     <div>
                                         <h2 className="text-xl font-bold text-slate-900">🏪 Progreso de conteo por tienda</h2>
@@ -6880,7 +6880,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     {/* ── SUB-TAB: DASHBOARD ───────────────────────────── */}
                     {valTab === "dashboard" && canViewCyclicDashboard && (
                         <>
-                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                                 <div>
                                     <h2 className="text-xl font-bold text-slate-900">📊 Dashboard histórico por tienda</h2>
                                     <p className="text-slate-500 text-sm mt-0.5">Resumen de inventario cíclico por período.</p>
@@ -6959,45 +6959,45 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                             {/* Tarjetas resumen */}
                             {dashSummary && (
                                 <div className={`grid gap-3 ${dashPeriod === "dia" ? "grid-cols-2 md:grid-cols-5" : "grid-cols-2 md:grid-cols-5"}`}>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                    <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                        <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">ERI</div>
                                         <div className="text-3xl font-bold text-slate-900">{dashSummary.avgEri}%</div>
-                                        <div className="text-xs text-slate-500 mt-1">ERI</div>
                                     </div>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                    <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                        <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
                                         <div className="text-3xl font-bold text-green-700">
                                             {dashSummary.total > 0 ? Math.round((dashSummary.cumplidos / dashSummary.total) * 100) : 0}%
                                         </div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "mes" ? "Cumplimiento mes" : dashPeriod === "rango" ? "Cumplimiento rango" : "Cumplimiento día"}</div>
-                                        <div className="text-xs text-slate-400">{dashSummary.cumplidos} de {dashSummary.total}</div>
+                                        <div className="text-[11px] text-slate-400 mt-1">{dashSummary.cumplidos} de {dashSummary.total}</div>
                                     </div>
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                    <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                        <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">{dashPeriod === "dia" ? "Cumplieron" : "Veces cumplidas"}</div>
                                         <div className="text-3xl font-bold text-blue-700">{dashSummary.cumplidos} <span className="text-slate-400 text-xl">/ {dashSummary.total}</span></div>
-                                        <div className="text-xs text-slate-500 mt-1">{dashPeriod === "dia" ? "Cumplieron" : "Veces cumplidas"}</div>
                                     </div>
                                     {dashPeriod !== "dia" && (
-                                        <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                            <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Asignaciones periodo</div>
                                             <div className="text-3xl font-bold text-slate-700">{dashSummary.totalAsignacionesPeriodo}</div>
-                                            <div className="text-xs text-slate-500 mt-1">Asignaciones periodo</div>
                                         </div>
                                     )}
                                     {dashPeriod === "dia" && (
-                                        <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                        <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                            <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Duración</div>
                                             <div className="text-2xl font-bold text-slate-700">{formatDuration(dashSummary.avgDurMin)}</div>
-                                            <div className="text-xs text-slate-500 mt-1">Duración</div>
                                         </div>
                                     )}
-                                    <div className="bg-white rounded-2xl p-4 shadow text-center">
+                                    <div className="bg-white rounded-2xl p-5 shadow-md border border-slate-100 text-center">
+                                        <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Dif. valorizada</div>
                                         <div className={`text-xl font-bold ${(dashSummary.totalDifVal || 0) < 0 ? "text-red-600" : (dashSummary.totalDifVal || 0) > 0 ? "text-blue-700" : "text-green-700"}`}>
                                             {formatMoney(dashSummary.totalDifVal || 0)}
                                         </div>
-                                        <div className="text-xs text-slate-500 mt-1">Dif. valorizada</div>
                                     </div>
                                 </div>
                             )}
 
                             {/* Tabla dashboard */}
                             {filteredDashData.length > 0 ? (
-                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                                     <h3 className="font-bold text-slate-900">
                                         Detalle por tienda
                                         {dashPeriod !== "dia" && (
@@ -7092,7 +7092,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* ── SUB-TAB: RESULTADOS DE CONTEO ───────────────── */}
                     {valTab === "resultados" && canViewResultsReports && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                             <div className="flex flex-wrap gap-3 items-end justify-between">
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Resultados de conteo</h3>
@@ -7182,7 +7182,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* ── SUB-TAB: NO INVENTARIABLES → ruta dedicada /no-inventariables */}
                     {canViewNonInventoryReports && valTab === "no_inventariables" && (
-                        <section className="bg-white rounded-3xl p-5 shadow">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100">
                             <p className="text-slate-500 font-semibold text-sm">
                                 No Inventariables fue movido a su propio módulo.{" "}
                                 <a href="/no-inventariables" className="text-orange-600 underline font-bold">Ir a No Inventariables →</a>
@@ -7192,7 +7192,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {canAssignProducts && valTab === "asignar" && (
                         <>
-                            <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                            <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Asignar productos para contar</h3>
                                     <p className="text-slate-500 text-sm mt-1">Busca un producto del maestro global y asígnalo a la tienda/fecha seleccionada. También puedes cargar masivamente por Excel.</p>
@@ -7339,7 +7339,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                             {/* Lista asignados del día */}
                             {valStoreId === ALL_STORES_VALUE && (
-                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <div>
                                             <h3 className="font-bold text-slate-900">Tienda - codigos asignados ({allStoreAssignmentSummary.length})</h3>
@@ -7413,7 +7413,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                             )}
 
                             {assignments.length > 0 && (
-                                <section className="bg-white rounded-3xl p-5 shadow space-y-3">
+                                <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
                                     <div className="flex items-center justify-between gap-3 flex-wrap">
                                         <h3 className="font-bold text-slate-900">Asignados este día ({assignments.length})</h3>
                                         <div className="flex gap-2 flex-wrap">
@@ -7470,7 +7470,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* ── SUB-TAB: REGISTROS ─────────────────────────── */}
                     {valTab === "registros" && canViewCountRecords && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                             <div className="flex flex-wrap gap-3 items-center justify-between">
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Registros de conteo</h3>
@@ -7565,7 +7565,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* ── SUB-TAB: RESUMEN POR CÓDIGO ─────────────────── */}
                     {valTab === "resumen" && canViewSummaryByCode && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                             {/* Indicador de carga del resumen */}
                             {resumenDbLoading && (
                                 <div className="text-center py-8 text-slate-400 font-semibold text-sm animate-pulse">
@@ -7833,7 +7833,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                     {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
                     {activeTab === "ubicaciones" && (
-                        <section className="bg-white rounded-3xl p-5 shadow space-y-4">
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div>
                                     <h2 className="text-xl font-bold text-slate-900">Ubicaciones de productos</h2>

@@ -5,6 +5,7 @@ import { BarChart3, ClipboardList, Clock, Download, Home, Printer, QrCode, Refre
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
+import { toast } from "sonner";
 
 type CyclicUser = {
   id: string;
@@ -212,18 +213,18 @@ function requesterStoreKey(request: PickingRequest | null | undefined) {
 function DonutCard({ title, done, total, detail }: { title: string; done: number; total: number; detail: string }) {
   const progress = pct(done, total);
   return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <div className="flex items-center gap-4">
+    <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-md">
+      <div className="flex items-center gap-5">
         <div
-          className="grid h-24 w-24 shrink-0 place-items-center rounded-full"
+          className="grid h-28 w-28 shrink-0 place-items-center rounded-full"
           style={{ background: `conic-gradient(#7c3aed ${progress * 3.6}deg, #e2e8f0 0deg)` }}
         >
-          <div className="grid h-16 w-16 place-items-center rounded-full bg-white text-lg font-black">{progress}%</div>
+          <div className="grid h-20 w-20 place-items-center rounded-full bg-white text-xl font-black text-slate-900">{progress}%</div>
         </div>
         <div className="min-w-0">
-          <p className="text-xs font-black uppercase text-slate-500">{title}</p>
-          <p className="mt-1 text-xl font-black text-slate-950">{formatQty(done)} / {formatQty(total)}</p>
-          <p className="mt-1 text-xs font-bold text-slate-500">{detail}</p>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">{title}</p>
+          <p className="mt-1.5 text-2xl font-black text-slate-950">{formatQty(done)} / {formatQty(total)}</p>
+          <p className="mt-1 text-sm font-semibold text-slate-500">{detail}</p>
         </div>
       </div>
     </div>
@@ -233,22 +234,22 @@ function DonutCard({ title, done, total, detail }: { title: string; done: number
 function BarListCard({ title, rows, colorClass }: { title: string; rows: Array<{ label: string; value: number }>; colorClass: string }) {
   const max = Math.max(...rows.map(row => row.value), 0);
   return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center gap-2">
-        <BarChart3 size={18} />
-        <h2 className="font-black">{title}</h2>
+    <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-md">
+      <div className="mb-4 flex items-center gap-2">
+        <BarChart3 size={18} className="text-slate-500" />
+        <h2 className="text-sm font-black text-slate-800">{title}</h2>
       </div>
-      <div className="space-y-3">
+      <div className="space-y-3.5">
         {rows.map(row => {
           const width = max > 0 ? Math.max(3, Math.round((row.value / max) * 100)) : 0;
           return (
             <div key={row.label}>
-              <div className="mb-1 flex justify-between gap-3 text-xs font-black text-slate-500">
+              <div className="mb-1.5 flex justify-between gap-3 text-sm font-semibold text-slate-600">
                 <span className="truncate">{row.label}</span>
-                <span>{formatQty(row.value)}</span>
+                <span className="font-black text-slate-800">{formatQty(row.value)}</span>
               </div>
-              <div className="h-3 rounded-full bg-slate-100">
-                <div className={`h-3 rounded-full ${colorClass}`} style={{ width: `${width}%` }} />
+              <div className="h-2.5 rounded-full bg-slate-100">
+                <div className={`h-2.5 rounded-full transition-all ${colorClass}`} style={{ width: `${width}%` }} />
               </div>
             </div>
           );
@@ -262,7 +263,6 @@ function BarListCard({ title, rows, colorClass }: { title: string; rows: Array<{
 export default function PickingPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
   const [requests, setRequests] = useState<PickingRequest[]>([]);
   const [lines, setLines] = useState<PickingLine[]>([]);
   const [assignments, setAssignments] = useState<PickingAssignment[]>([]);
@@ -838,7 +838,6 @@ export default function PickingPage() {
 
   const loadData = useCallback(async (currentUser: CyclicUser) => {
     setLoading(true);
-    setMessage("");
     const currentUserCanManage = canManagePicking(currentUser);
 
     const [requestsResp, usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
@@ -859,7 +858,7 @@ export default function PickingPage() {
     ]);
 
     if (requestsResp.error) {
-      setMessage("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+      toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
       setLoading(false);
       return;
     }
@@ -926,12 +925,12 @@ export default function PickingPage() {
           : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500)) as unknown as Promise<{ data: PickingScan[] | null; error: { message: string } | null }>,
       ]);
     } catch (error) {
-      setMessage("No se pudo cargar el detalle completo de picking. Refresca o revisa el sync antes de asignar.");
+      toast.error("No se pudo cargar el detalle completo de picking. Refresca o revisa el sync antes de asignar.");
       setLoading(false);
       return;
     }
 
-    if ("error" in scansResp && scansResp.error) setMessage("No pude leer registros: " + (scansResp.error as { message: string }).message);
+    if ("error" in scansResp && scansResp.error) toast.error("No pude leer registros: " + (scansResp.error as { message: string }).message);
 
     setLines(allLines);
     setAssignments(allAssignments);
@@ -1089,7 +1088,7 @@ export default function PickingPage() {
         );
         if (!cancelled) setScannerRunning(true);
       } catch (error) {
-        setMessage("No se pudo abrir el escaner: " + (error instanceof Error ? error.message : String(error)));
+        toast.error("No se pudo abrir el escaner: " + (error instanceof Error ? error.message : String(error)));
         void closeScanner();
       }
     }
@@ -1244,17 +1243,16 @@ export default function PickingPage() {
 
   async function assignSelectedLines() {
     if (!user || !selectedRequest || !selectedPickerId) {
-      setMessage("Selecciona picador y codigos.");
+      toast.warning("Selecciona picador y codigos.");
       return;
     }
     if (!pickingDate) {
-      window.alert("Selecciona una fecha de picking antes de asignar picadores.");
-      setMessage("Selecciona una fecha de picking antes de asignar picadores.");
+      toast.warning("Selecciona una fecha de picking antes de asignar picadores.");
       return;
     }
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
-      setMessage("Selecciona un picador valido.");
+      toast.warning("Selecciona un picador valido.");
       return;
     }
     const rows = sortedVisibleLines
@@ -1267,12 +1265,12 @@ export default function PickingPage() {
       .filter(item => item.pending > 0);
 
     if (rows.length === 0) {
-      setMessage("Los codigos seleccionados no tienen pendiente por asignar.");
+      toast.warning("Los codigos seleccionados no tienen pendiente por asignar.");
       return;
     }
     const invalidRows = rows.filter(item => !item.line.id || !item.line.product_code || !item.line.description);
     if (invalidRows.length > 0) {
-      setMessage(`Hay ${invalidRows.length} codigo(s) sin detalle completo. Refresca la sincronizacion antes de asignar.`);
+      toast.warning(`Hay ${invalidRows.length} codigo(s) sin detalle completo. Refresca la sincronizacion antes de asignar.`);
       return;
     }
 
@@ -1288,11 +1286,11 @@ export default function PickingPage() {
       created_by_name: user.full_name,
     })));
     if (error) {
-      setMessage("No se pudo asignar seleccionados: " + error.message);
+      toast.error("No se pudo asignar seleccionados: " + error.message);
       return;
     }
     setSelectedLineIds(new Set());
-    setMessage(`${rows.length} codigos asignados a ${picker.full_name}.`);
+    toast.success(`${rows.length} codigos asignados a ${picker.full_name}.`);
     await loadData(user);
   }
 
@@ -1300,14 +1298,14 @@ export default function PickingPage() {
     if (!manager || !user) return;
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
-      setMessage("Selecciona el nuevo picador.");
+      toast.warning("Selecciona el nuevo picador.");
       return;
     }
     const rows = selectedLineAssignments.filter(assignment => (
       assignment.picker_id !== picker.id && normalize(assignment.picker_name) !== normalize(picker.full_name)
     ));
     if (rows.length === 0) {
-      setMessage("Selecciona codigos con asignaciones de otro picador.");
+      toast.warning("Selecciona codigos con asignaciones de otro picador.");
       return;
     }
 
@@ -1321,7 +1319,7 @@ export default function PickingPage() {
       .in("id", rows.map(assignment => assignment.id));
 
     if (error) {
-      setMessage("No se pudo reasignar seleccionados: " + error.message);
+      toast.error("No se pudo reasignar seleccionados: " + error.message);
       return;
     }
 
@@ -1329,7 +1327,7 @@ export default function PickingPage() {
     setAssignments(prev => prev.map(item => (
       rowIds.has(item.id) ? { ...item, picker_id: picker.id, picker_name: picker.full_name } : item
     )));
-    setMessage(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} reasignada${rows.length !== 1 ? "s" : ""} a ${picker.full_name}.`);
+    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} reasignada${rows.length !== 1 ? "s" : ""} a ${picker.full_name}.`);
     await loadData(user);
   }
 
@@ -1337,7 +1335,7 @@ export default function PickingPage() {
     if (!manager || !user) return;
     const rows = selectedLineAssignments;
     if (rows.length === 0) {
-      setMessage("Selecciona codigos con asignaciones para quitar.");
+      toast.warning("Selecciona codigos con asignaciones para quitar.");
       return;
     }
     const pickedRows = rows.filter(assignment => num(assignment.picked_qty) > 0);
@@ -1349,20 +1347,20 @@ export default function PickingPage() {
     const ids = rows.map(assignment => assignment.id);
     const { error } = await supabase.from("picking_assignments").delete().in("id", ids);
     if (error) {
-      setMessage("No se pudo quitar la asignacion: " + error.message);
+      toast.error("No se pudo quitar la asignacion: " + error.message);
       return;
     }
 
     const idSet = new Set(ids);
     setAssignments(prev => prev.filter(item => !idSet.has(item.id)));
     setScans(prev => prev.filter(item => !idSet.has(item.assignment_id)));
-    setMessage(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} quitada${rows.length !== 1 ? "s" : ""}. Los codigos vuelven a quedar disponibles.`);
+    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} quitada${rows.length !== 1 ? "s" : ""}. Los codigos vuelven a quedar disponibles.`);
     await loadData(user);
   }
 
   async function forceHideRequest(request: PickingRequest) {
     if (!admin || !user) {
-      setMessage("Solo el administrador puede forzar la eliminacion de requerimientos.");
+      toast.warning("Solo el administrador puede forzar la eliminacion de requerimientos.");
       return;
     }
     const confirmed = window.confirm(`Forzar eliminacion del requerimiento ${request.doc_number || request.inv_request_no}? Ya no aparecera como pendiente en picking.`);
@@ -1380,13 +1378,13 @@ export default function PickingPage() {
       .eq("id", request.id);
 
     if (error) {
-      setMessage("No se pudo ocultar el requerimiento. Ejecuta el SQL actualizado de picking si falta hidden_at: " + error.message);
+      toast.error("No se pudo ocultar el requerimiento. Ejecuta el SQL actualizado de picking si falta hidden_at: " + error.message);
       return;
     }
 
     setRequests(prev => prev.filter(item => item.id !== request.id));
     if (selectedRequestId === request.id) setSelectedRequestId("");
-    setMessage("Requerimiento ocultado por administrador.");
+    toast.success("Requerimiento ocultado por administrador.");
   }
 
   function toggleLine(lineId: string) {
@@ -1454,7 +1452,7 @@ export default function PickingPage() {
       .map(row => ({ location: cleanLocationLabel(row.location), qtyText: row.qty.trim(), qty: num(row.qty) }))
       .filter(row => row.location || row.qtyText);
     if (!scanProduct.trim() || rows.length === 0 || rows.some(row => !row.location || row.qty <= 0)) {
-      setMessage("Escanea producto y completa ubicacion/cantidad en todas las lineas.");
+      toast.warning("Escanea producto y completa ubicacion/cantidad en todas las lineas.");
       return;
     }
     const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
@@ -1482,7 +1480,7 @@ export default function PickingPage() {
       is_match: isMatch,
     })));
     if (scanError) {
-      setMessage("No se pudo guardar el escaneo: " + scanError.message);
+      toast.error("No se pudo guardar el escaneo: " + scanError.message);
       return;
     }
 
@@ -1499,7 +1497,7 @@ export default function PickingPage() {
       .update(updateRow)
       .eq("id", activeAssignment.id);
     if (updateError) {
-      setMessage("Escaneo guardado, pero no se actualizo progreso: " + updateError.message);
+      toast.warning("Escaneo guardado, pero no se actualizo progreso: " + updateError.message);
       return;
     }
 
@@ -1508,7 +1506,7 @@ export default function PickingPage() {
     setAssignments(prev => prev.map(item => (
       item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
-    setMessage("Picking registrado.");
+    toast.success("Picking registrado.");
     await loadData(user);
   }
 
@@ -1522,7 +1520,7 @@ export default function PickingPage() {
     if (!user || !editingScanId) return;
     const qty = num(editScanQty);
     if (!editScanLocation.trim() || qty <= 0) {
-      setMessage("Ingresa ubicacion y cantidad valida.");
+      toast.warning("Ingresa ubicacion y cantidad valida.");
       return;
     }
     const scan = scans.find(item => item.id === editingScanId);
@@ -1539,7 +1537,7 @@ export default function PickingPage() {
       .eq("id", editingScanId)
       .eq("picker_id", user.id);
     if (scanError) {
-      setMessage("No se pudo editar el registro: " + scanError.message);
+      toast.error("No se pudo editar el registro: " + scanError.message);
       return;
     }
 
@@ -1548,7 +1546,7 @@ export default function PickingPage() {
       .update({ picked_qty: pickedNext, status, updated_at: new Date().toISOString(), completed_at: status === "completado" ? new Date().toISOString() : null })
       .eq("id", assignment.id);
     if (assignmentError) {
-      setMessage("Registro editado, pero no se actualizo avance: " + assignmentError.message);
+      toast.warning("Registro editado, pero no se actualizo avance: " + assignmentError.message);
       return;
     }
 
@@ -1558,7 +1556,7 @@ export default function PickingPage() {
     setAssignments(prev => prev.map(item => (
       item.id === assignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
-    setMessage("Registro actualizado.");
+    toast.success("Registro actualizado.");
     await loadData(user);
   }
 
@@ -1566,7 +1564,7 @@ export default function PickingPage() {
     if (!user) return;
     const canDelete = manager || scan.picker_id === user.id || normalize(scan.picker_name) === normalize(user.full_name);
     if (!canDelete) {
-      setMessage("No puedes eliminar un registro de otro picador.");
+      toast.warning("No puedes eliminar un registro de otro picador.");
       return;
     }
     const confirmed = window.confirm(`Eliminar registro de ${scan.location_code} por ${formatQty(num(scan.qty))}? Se actualizara el avance del codigo.`);
@@ -1574,7 +1572,7 @@ export default function PickingPage() {
 
     const assignment = assignments.find(item => item.id === scan.assignment_id);
     if (!assignment) {
-      setMessage("No se encontro la asignacion del registro.");
+      toast.error("No se encontro la asignacion del registro.");
       return;
     }
 
@@ -1582,7 +1580,7 @@ export default function PickingPage() {
     if (!manager) deleteQuery = deleteQuery.eq("picker_id", user.id);
     const { error: deleteError } = await deleteQuery;
     if (deleteError) {
-      setMessage("No se pudo eliminar el registro: " + deleteError.message);
+      toast.error("No se pudo eliminar el registro: " + deleteError.message);
       return;
     }
 
@@ -1591,7 +1589,7 @@ export default function PickingPage() {
       .select("qty")
       .eq("assignment_id", assignment.id);
     if (remainingError) {
-      setMessage("Registro eliminado, pero no se pudo recalcular avance: " + remainingError.message);
+      toast.warning("Registro eliminado, pero no se pudo recalcular avance: " + remainingError.message);
       return;
     }
 
@@ -1607,7 +1605,7 @@ export default function PickingPage() {
       })
       .eq("id", assignment.id);
     if (assignmentError) {
-      setMessage("Registro eliminado, pero no se actualizo avance: " + assignmentError.message);
+      toast.warning("Registro eliminado, pero no se actualizo avance: " + assignmentError.message);
       return;
     }
 
@@ -1616,7 +1614,7 @@ export default function PickingPage() {
       item.id === assignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
     if (editingScanId === scan.id) setEditingScanId("");
-    setMessage("Registro eliminado.");
+    toast.success("Registro eliminado.");
     await loadData(user);
   }
 
@@ -1756,7 +1754,7 @@ export default function PickingPage() {
 
   async function printBatchAssignment(batchAssignments: PickingAssignment[], pickerName: string, batchIndex: number, batchTotal: number) {
     if (batchAssignments.length === 0) {
-      setMessage("Este lote no tiene codigos.");
+      toast.warning("Este lote no tiene codigos.");
       return;
     }
 
@@ -1769,7 +1767,7 @@ export default function PickingPage() {
         .select("*")
         .in("id", missingLineIds);
       if (error) {
-        setMessage("No se pudo completar el detalle del lote: " + error.message);
+        toast.error("No se pudo completar el detalle del lote: " + error.message);
         return;
       }
       const fetched = (data || []) as PickingLine[];
@@ -1784,7 +1782,7 @@ export default function PickingPage() {
     const lineById = new Map(printLines.map(line => [line.id, line]));
     const unresolved = batchAssignments.filter(assignment => !lineById.has(assignment.line_id));
     if (unresolved.length > 0) {
-      setMessage(`No se puede imprimir: ${unresolved.length} asignacion(es) no tienen detalle de producto sincronizado.`);
+      toast.warning(`No se puede imprimir: ${unresolved.length} asignacion(es) no tienen detalle de producto sincronizado.`);
       return;
     }
 
@@ -1941,7 +1939,7 @@ export default function PickingPage() {
 
     const win = window.open("", "_blank");
     if (!win) {
-      setMessage("No se pudo abrir la ventana de impresion. Permite ventanas emergentes.");
+      toast.error("No se pudo abrir la ventana de impresion. Permite ventanas emergentes.");
       return;
     }
     win.document.write(html);
@@ -1980,8 +1978,6 @@ export default function PickingPage() {
       </header>
 
       <section className="mx-auto max-w-7xl p-4">
-        {message && <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>}
-
         {manager && <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
           <div>
             <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Picking</p>

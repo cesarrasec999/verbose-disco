@@ -168,8 +168,9 @@ export default function ConfirmationsAlert() {
   return (
     <a
       href="/confirmaciones"
-      className="fixed bottom-6 right-6 z-[9998] flex animate-bounce items-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-white shadow-2xl hover:animate-none hover:bg-amber-600 transition-colors"
+      className="fixed bottom-6 right-6 z-[9998] flex items-center gap-2 rounded-2xl bg-amber-500 px-4 py-3 text-white shadow-2xl transition-all duration-150 ease-out hover:bg-amber-600 active:scale-[0.97]"
     >
+      <span className="absolute inset-0 -z-10 animate-ping rounded-2xl bg-amber-400 opacity-30" />
       <span className="relative flex h-3 w-3">
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
         <span className="relative inline-flex h-3 w-3 rounded-full bg-white" />

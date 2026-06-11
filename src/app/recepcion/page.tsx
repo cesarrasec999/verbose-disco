@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   CheckCircle2, ChevronLeft, Home, LogOut, Package,
   Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
@@ -295,7 +296,6 @@ export default function RecepcionPage() {
   const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
-  const [message, setMessage]   = useState("");
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
@@ -434,8 +434,7 @@ export default function RecepcionPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showMsg = useCallback((text: string) => {
-    setMessage(text);
-    setTimeout(() => setMessage(""), 4000);
+    toast.error(text);
   }, []);
 
   // ─── Init ──────────────────────────────────────────────────────────────────
@@ -1390,11 +1389,6 @@ export default function RecepcionPage() {
           </div>
         </div>
       </header>
-
-      {/* ── Mensaje ──────────────────────────────────────────────────────────── */}
-      {message && (
-        <div className="mx-4 mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">{message}</div>
-      )}
 
       {/* ══════════════ LISTA ════════════════════════════════════════════════ */}
       {view === "list" && (
