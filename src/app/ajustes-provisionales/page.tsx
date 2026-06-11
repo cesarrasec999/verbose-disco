@@ -41,15 +41,6 @@ type AggRow = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function firstOfMonthISO() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-}
-
 function fmt(n: number) {
   return new Intl.NumberFormat("es-PE", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n);
 }
@@ -81,8 +72,6 @@ function detectMotivo(reason: string | null): { code: "06" | "07"; label: string
 export default function AjustesProvisionalesPage() {
   const [user, setUser]       = useState<CyclicUser | null>(null);
   const [stores, setStores]   = useState<Store[]>([]);
-  const [fromDate, setFromDate] = useState(firstOfMonthISO());
-  const [toDate, setToDate]     = useState(todayISO());
   const [storeFilter, setStoreFilter] = useState("");
   const [codeSearch, setCodeSearch]   = useState("");
   const [rows, setRows]     = useState<ErpMovement[]>([]);
@@ -112,26 +101,16 @@ export default function AjustesProvisionalesPage() {
   // ─── Carga de datos ──────────────────────────────────────────────────────────
 
   const load = useCallback(async () => {
-    if (!fromDate || !toDate) {
-      toast.warning("Selecciona el rango de fechas");
-      return;
-    }
-    if (fromDate > toDate) {
-      toast.warning("La fecha de inicio no puede ser mayor que la de fin");
-      return;
-    }
+    const yearStart = `${new Date().getFullYear()}-01-01`;
     setLoading(true);
     try {
-      // Usa el índice idx_erp_movements_source_date(source_type, movement_date)
-      // El filtro por reason se hace cliente-side para evitar ilike sin índice
       const { data, error } = await supabase
         .from("erp_movements")
         .select("store_code, product_code, description, reason, quantity, value_total, movement_date, document_no, unit, status")
         .eq("source_type", "ADJUSTMENT")
-        .gte("movement_date", fromDate)
-        .lte("movement_date", toDate)
+        .gte("movement_date", yearStart)
         .order("movement_date", { ascending: false })
-        .limit(5000);
+        .limit(10000);
 
       if (error) throw error;
 
@@ -142,19 +121,25 @@ export default function AjustesProvisionalesPage() {
       setRows(filtered);
       setLoaded(true);
 
-      // Expandir todas las tiendas por defecto en primera carga
       const storeCodes = new Set(filtered.map(r => r.store_code));
       setExpandedStores(storeCodes);
 
       if (filtered.length === 0) {
-        toast.info("Sin ajustes provisionales en el período seleccionado");
+        toast.info("Sin ajustes provisionales en lo que va del año");
       }
     } catch (err: any) {
       toast.error(`Error al cargar: ${err?.message || "desconocido"}`);
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate]);
+  }, []);
+
+  // Auto-carga al tener acceso y tiendas listas
+  useEffect(() => {
+    if (canAccess && stores.length > 0 && !loaded && !loading) {
+      load();
+    }
+  }, [canAccess, stores.length, loaded, loading, load]);
 
   // ─── Filtros locales ─────────────────────────────────────────────────────────
 
@@ -260,7 +245,7 @@ export default function AjustesProvisionalesPage() {
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
-    XLSX.writeFile(wb, `ajustes-provisionales-${fromDate}-al-${toDate}.xlsx`);
+    XLSX.writeFile(wb, `ajustes-provisionales-${new Date().getFullYear()}.xlsx`);
   }
 
   // ─── Render: sin acceso / cargando ───────────────────────────────────────────
@@ -299,7 +284,7 @@ export default function AjustesProvisionalesPage() {
         </a>
         <div className="min-w-0 flex-1">
           <h1 className="text-base font-black text-slate-900 leading-tight">Ajustes Provisionales</h1>
-          <p className="text-xs text-slate-500">Motivos 06 y 07 · {user.full_name}</p>
+          <p className="text-xs text-slate-500">Motivos 06 y 07 · {new Date().getFullYear()} · {user.full_name}</p>
         </div>
       </header>
 
@@ -308,24 +293,6 @@ export default function AjustesProvisionalesPage() {
         {/* ── Filtros ── */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4">
           <div className="flex flex-wrap gap-3 items-end">
-            <div>
-              <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Desde</label>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={e => setFromDate(e.target.value)}
-                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Hasta</label>
-              <input
-                type="date"
-                value={toDate}
-                onChange={e => setToDate(e.target.value)}
-                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
-              />
-            </div>
             <div className="flex-1 min-w-[160px]">
               <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Tienda</label>
               <select
@@ -566,15 +533,8 @@ export default function AjustesProvisionalesPage() {
         {/* ── Sin datos ── */}
         {loaded && byStore.size === 0 && (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-12 text-center">
-            <p className="text-slate-600 font-semibold">Sin ajustes provisionales en el período seleccionado</p>
-            <p className="text-xs text-slate-400 mt-1">Ajusta el rango de fechas o los filtros de tienda</p>
-          </div>
-        )}
-
-        {/* ── Estado inicial ── */}
-        {!loaded && !loading && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-12 text-center">
-            <p className="text-slate-500 text-sm">Selecciona el período y presiona <b>Consultar</b></p>
+            <p className="text-slate-600 font-semibold">Sin ajustes provisionales en lo que va del {new Date().getFullYear()}</p>
+            <p className="text-xs text-slate-400 mt-1">Ajusta los filtros de tienda o código</p>
           </div>
         )}
 
