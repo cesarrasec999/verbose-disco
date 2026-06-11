@@ -30,9 +30,10 @@ type AggRow = {
   store_name: string;
   product_code: string;
   description: string;
+  unit: string;
   qty_ajuste: number;    // motivo 06 — ajuste provisional
   qty_regulariz: number; // motivo 07 — regularización provisional
-  total_qty: number;     // neto
+  total_qty: number;     // suma de ambos motivos
   total_value: number;
   record_count: number;
 };
@@ -184,6 +185,7 @@ export default function AjustesProvisionalesPage() {
           store_name:   storeName,
           product_code: r.product_code,
           description:  r.description || r.product_code,
+          unit:         r.unit || "",
           qty_ajuste:   0,
           qty_regulariz: 0,
           total_qty:    0,
@@ -204,44 +206,52 @@ export default function AjustesProvisionalesPage() {
     );
   }, [filteredRows, stores]);
 
-  // ─── Totales globales ─────────────────────────────────────────────────────────
+  // ─── Filas visibles: excluir productos con suma ≤ 0 ──────────────────────────
+  // (regularización que ya cubrió o superó el ajuste provisional)
 
-  const totalIngreso = useMemo(() =>
-    filteredRows.filter(r => r.quantity > 0).reduce((s, r) => s + r.quantity, 0), [filteredRows]);
+  const visibleAggregated = useMemo(() =>
+    aggregated.filter(r => r.total_qty > 0),
+  [aggregated]);
 
-  const totalEgreso = useMemo(() =>
-    filteredRows.filter(r => r.quantity < 0).reduce((s, r) => s + r.quantity, 0), [filteredRows]);
+  // ─── Totales globales (solo sobre filas visibles) ─────────────────────────────
+
+  const totalAjuste = useMemo(() =>
+    visibleAggregated.reduce((s, r) => s + r.qty_ajuste, 0), [visibleAggregated]);
+
+  const totalRegulariz = useMemo(() =>
+    visibleAggregated.reduce((s, r) => s + r.qty_regulariz, 0), [visibleAggregated]);
 
   const totalNeto = useMemo(() =>
-    filteredRows.reduce((s, r) => s + r.quantity, 0), [filteredRows]);
+    visibleAggregated.reduce((s, r) => s + r.total_qty, 0), [visibleAggregated]);
 
   // ─── Agrupado por tienda ─────────────────────────────────────────────────────
 
   const byStore = useMemo(() => {
     const map = new Map<string, AggRow[]>();
-    for (const row of aggregated) {
+    for (const row of visibleAggregated) {
       if (!map.has(row.store_code)) map.set(row.store_code, []);
       map.get(row.store_code)!.push(row);
     }
     return map;
-  }, [aggregated]);
+  }, [visibleAggregated]);
 
   // ─── Exportar Excel ──────────────────────────────────────────────────────────
 
   function exportExcel() {
-    const sheetData = aggregated.map(r => ({
-      Tienda:                r.store_name,
-      Codigo:                r.product_code,
-      Descripcion:           r.description,
-      "Ajuste Provisional":  r.qty_ajuste,
+    const sheetData = visibleAggregated.map(r => ({
+      Tienda:                   r.store_name,
+      Codigo:                   r.product_code,
+      Descripcion:              r.description,
+      Unidad:                   r.unit || "",
+      "Ajuste Provisional":     r.qty_ajuste,
       "Regulariz. Provisional": r.qty_regulariz,
-      Neto:                  r.total_qty,
-      "Valor Total":         Number(r.total_value.toFixed(2)),
-      Documentos:            r.record_count,
+      Suma:                     r.total_qty,
+      "Valor Total":            Number(r.total_value.toFixed(2)),
+      Documentos:               r.record_count,
     }));
     const ws = XLSX.utils.json_to_sheet(sheetData);
     ws["!cols"] = [
-      { wch: 22 }, { wch: 18 }, { wch: 40 },
+      { wch: 22 }, { wch: 18 }, { wch: 40 }, { wch: 10 },
       { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
@@ -359,19 +369,23 @@ export default function AjustesProvisionalesPage() {
         {loaded && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Registros</div>
-              <div className="text-3xl font-black text-slate-900">{filteredRows.length}</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Productos</div>
+              <div className="text-3xl font-black text-slate-900">{visibleAggregated.length}</div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Ingresos 06</div>
-              <div className="text-2xl font-black text-green-700">+{fmt(totalIngreso)}</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Ajuste Prov. 06</div>
+              <div className={`text-2xl font-black ${totalAjuste >= 0 ? "text-green-700" : "text-red-600"}`}>
+                {totalAjuste >= 0 ? "+" : ""}{fmt(totalAjuste)}
+              </div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Salidas 07</div>
-              <div className="text-2xl font-black text-red-600">{fmt(totalEgreso)}</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Regulariz. Prov. 07</div>
+              <div className={`text-2xl font-black ${totalRegulariz >= 0 ? "text-green-700" : "text-amber-600"}`}>
+                {totalRegulariz >= 0 ? "+" : ""}{fmt(totalRegulariz)}
+              </div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Neto</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Suma</div>
               <div className={`text-2xl font-black ${totalNeto >= 0 ? "text-blue-700" : "text-red-600"}`}>
                 {totalNeto >= 0 ? "+" : ""}{fmt(totalNeto)}
               </div>
@@ -433,8 +447,10 @@ export default function AjustesProvisionalesPage() {
                           <tr className="border-b border-slate-100 bg-slate-50">
                             <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Código</th>
                             <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400">Descripción</th>
+                            <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Unidad</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-green-600 whitespace-nowrap">Ajuste Prov.</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-amber-600 whitespace-nowrap">Regulariz. Prov.</th>
+                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-blue-600 whitespace-nowrap">Suma</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Valor</th>
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">Docs</th>
                           </tr>
@@ -448,11 +464,21 @@ export default function AjustesProvisionalesPage() {
                               <td className="px-4 py-3 text-slate-600 max-w-[240px]">
                                 <span className="line-clamp-2 leading-snug">{row.description}</span>
                               </td>
-                              <td className="px-4 py-3 text-right font-black tabular-nums whitespace-nowrap text-green-700">
-                                {row.qty_ajuste !== 0 ? `+${fmt(row.qty_ajuste)}` : <span className="text-slate-300">—</span>}
+                              <td className="px-4 py-3 text-center text-slate-500 text-xs font-semibold whitespace-nowrap">
+                                {row.unit || <span className="text-slate-300">—</span>}
                               </td>
-                              <td className="px-4 py-3 text-right font-black tabular-nums whitespace-nowrap text-amber-700">
-                                {row.qty_regulariz !== 0 ? fmt(row.qty_regulariz) : <span className="text-slate-300">—</span>}
+                              <td className={`px-4 py-3 text-right font-black tabular-nums whitespace-nowrap ${
+                                row.qty_ajuste > 0 ? "text-green-700" : row.qty_ajuste < 0 ? "text-red-600" : "text-slate-300"
+                              }`}>
+                                {row.qty_ajuste !== 0 ? `${row.qty_ajuste > 0 ? "+" : ""}${fmt(row.qty_ajuste)}` : "—"}
+                              </td>
+                              <td className={`px-4 py-3 text-right font-black tabular-nums whitespace-nowrap ${
+                                row.qty_regulariz > 0 ? "text-green-700" : row.qty_regulariz < 0 ? "text-amber-700" : "text-slate-300"
+                              }`}>
+                                {row.qty_regulariz !== 0 ? `${row.qty_regulariz > 0 ? "+" : ""}${fmt(row.qty_regulariz)}` : "—"}
+                              </td>
+                              <td className="px-4 py-3 text-right font-black tabular-nums text-blue-700 whitespace-nowrap">
+                                +{fmt(row.total_qty)}
                               </td>
                               <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-500 whitespace-nowrap">
                                 {fmtMoney(row.total_value)}
@@ -467,14 +493,23 @@ export default function AjustesProvisionalesPage() {
                         {/* Subtotal tienda */}
                         <tfoot>
                           <tr className="border-t-2 border-slate-200 bg-slate-50">
-                            <td colSpan={2} className="px-4 py-2.5 text-xs font-black text-slate-500 uppercase tracking-wide">
+                            <td colSpan={3} className="px-4 py-2.5 text-xs font-black text-slate-500 uppercase tracking-wide">
                               Total {storeName}
                             </td>
-                            <td className="px-4 py-2.5 text-right font-black tabular-nums text-sm text-green-700 whitespace-nowrap">
-                              +{fmt(storeRows.reduce((s, r) => s + r.qty_ajuste, 0))}
-                            </td>
-                            <td className="px-4 py-2.5 text-right font-black tabular-nums text-sm text-amber-700 whitespace-nowrap">
-                              {fmt(storeRows.reduce((s, r) => s + r.qty_regulariz, 0))}
+                            {(() => {
+                              const tAj = storeRows.reduce((s, r) => s + r.qty_ajuste, 0);
+                              const tRe = storeRows.reduce((s, r) => s + r.qty_regulariz, 0);
+                              return (<>
+                                <td className={`px-4 py-2.5 text-right font-black tabular-nums text-sm whitespace-nowrap ${tAj >= 0 ? "text-green-700" : "text-red-600"}`}>
+                                  {tAj >= 0 ? "+" : ""}{fmt(tAj)}
+                                </td>
+                                <td className={`px-4 py-2.5 text-right font-black tabular-nums text-sm whitespace-nowrap ${tRe >= 0 ? "text-green-700" : "text-amber-700"}`}>
+                                  {tRe >= 0 ? "+" : ""}{fmt(tRe)}
+                                </td>
+                              </>);
+                            })()}
+                            <td className="px-4 py-2.5 text-right font-black tabular-nums text-sm text-blue-700 whitespace-nowrap">
+                              +{fmt(storeTotal)}
                             </td>
                             <td className="px-4 py-2.5 text-right font-black text-slate-700 tabular-nums text-sm whitespace-nowrap">
                               {fmtMoney(storeValue)}
@@ -493,21 +528,25 @@ export default function AjustesProvisionalesPage() {
             <div className="bg-slate-900 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Gran total</p>
-                <p className="text-xs text-slate-500">{filteredRows.length} registros · {byStore.size} tiendas</p>
+                <p className="text-xs text-slate-500">{visibleAggregated.length} productos · {byStore.size} tiendas</p>
               </div>
               <div className="flex items-center gap-6">
                 <div className="text-center">
-                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Ingresos</p>
-                  <p className="text-xl font-black text-green-400">+{fmt(totalIngreso)}</p>
+                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Ajuste Prov.</p>
+                  <p className={`text-xl font-black ${totalAjuste >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {totalAjuste >= 0 ? "+" : ""}{fmt(totalAjuste)}
+                  </p>
                 </div>
                 <div className="text-center">
-                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Salidas</p>
-                  <p className="text-xl font-black text-red-400">{fmt(totalEgreso)}</p>
+                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Regulariz. Prov.</p>
+                  <p className={`text-xl font-black ${totalRegulariz >= 0 ? "text-green-400" : "text-amber-400"}`}>
+                    {totalRegulariz >= 0 ? "+" : ""}{fmt(totalRegulariz)}
+                  </p>
                 </div>
                 <div className="text-center">
-                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Neto</p>
-                  <p className={`text-2xl font-black ${totalNeto >= 0 ? "text-blue-400" : "text-red-400"}`}>
-                    {totalNeto >= 0 ? "+" : ""}{fmt(totalNeto)}
+                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Suma</p>
+                  <p className="text-2xl font-black text-blue-400">
+                    +{fmt(totalNeto)}
                   </p>
                 </div>
               </div>
