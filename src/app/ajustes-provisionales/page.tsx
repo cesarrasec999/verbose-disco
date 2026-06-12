@@ -190,7 +190,7 @@ export default function AjustesProvisionalesPage() {
     }
     return Array.from(map.values()).sort((a, b) =>
       a.store_name.localeCompare(b.store_name, "es") ||
-      a.product_code.localeCompare(b.product_code)
+      b.last_date.localeCompare(a.last_date)
     );
   }, [filteredRows, stores]);
 
