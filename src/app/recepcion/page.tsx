@@ -1235,10 +1235,11 @@ export default function RecepcionPage() {
 
   const scopedRequestGroups = useMemo(() => {
     if (!canViewAllStores || storeFilter === "all") return requestGroups;
-    const allowed = new Set(selectedStoreCodes(storeFilter).map(normalize));
-    if (allowed.size === 0) return requestGroups;
-    return requestGroups.filter(req => req.child_requests.some(item => allowed.has(normalize(item.destination_store_code))));
-  }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
+    const target = normalize(storeFilter);
+    return requestGroups.filter(req =>
+      req.child_requests.some(item => normalize(item.destination_store_code) === target)
+    );
+  }, [canViewAllStores, requestGroups, storeFilter]);
 
   const reasonOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -1263,18 +1264,17 @@ export default function RecepcionPage() {
   }), [scopedRequestGroups, filterStatus, reasonFilter, search]);
 
   const destStoreOptions = useMemo(() => {
-    const byCode = new Map<string, string>();
-    for (const store of stores) {
-      const code = store.erp_sede || store.code;
-      if (code) byCode.set(code, store.name || code);
+    const seen = new Map<string, string>();
+    for (const req of requestGroups) {
+      for (const child of req.child_requests) {
+        const code = child.destination_store_code;
+        if (code && !seen.has(code)) seen.set(code, child.destination_store_name || code);
+      }
     }
-    const seen = new Set<string>();
-    const result: { code: string; name: string }[] = [];
-    for (const [code, name] of byCode) {
-      if (!seen.has(name)) { seen.add(name); result.push({ code, name }); }
-    }
-    return result.sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [stores]);
+    return [...seen.entries()]
+      .map(([code, name]) => ({ code, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [requestGroups]);
 
   const summaryRows = useMemo(() => {
     const grouped = new Map<string, {
