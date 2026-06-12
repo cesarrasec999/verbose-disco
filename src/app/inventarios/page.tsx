@@ -6521,7 +6521,7 @@ export default function InventariosPage() {
               </div>
               <div className="space-y-2">
                 <select value={newStoreId} onChange={event => setNewStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm">
-                  {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
                 </select>
                 <input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Nombre de inventario" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm" />
@@ -6784,7 +6784,7 @@ export default function InventariosPage() {
                   </div>
                   <div className="space-y-2">
                     <select value={newStoreId} onChange={event => setNewStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm">
-                      {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                      {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
                     </select>
                     <input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Nombre de inventario" className="w-full rounded-xl border px-3 py-3 text-sm" />
                     <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm" />

@@ -12,31 +12,19 @@ import { toast } from "sonner";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
-type ErpMovement = {
-  store_code: string;
-  product_code: string;
-  description: string | null;
-  reason: string | null;
-  quantity: number;
-  value_total: number | null;
-  movement_date: string;
-  document_no: string | null;
-  unit: string | null;
-  status: string | null;
-};
-
 type AggRow = {
   store_code: string;
   store_name: string;
   product_code: string;
   description: string;
   unit: string;
-  qty_ajuste: number;    // motivo 06 — ajuste provisional
-  qty_regulariz: number; // motivo 07 — regularización provisional
-  total_qty: number;     // suma de ambos motivos
+  qty_ajuste: number;
+  qty_regulariz: number;
+  total_qty: number;
   total_value: number;
   record_count: number;
-  last_date: string;     // fecha del movimiento más reciente
+  last_date: string;
+  total_rows?: number;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -49,24 +37,6 @@ function fmtMoney(n: number) {
   return new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" }).format(n);
 }
 
-function detectMotivo(reason: string | null): { code: "06" | "07"; label: string } | null {
-  if (!reason) return null;
-  const up = reason.toUpperCase();
-
-  // Captura variantes con typos: PROVISIONAL, PROVISINAL, PROVISONAL, PROVISORAL, PROVIS...
-  const hasProvisional = up.includes("PROVIS");
-  // Captura variantes con encoding: REGULARIZACION, REGULARIZACIÓN, REGULARIZACIÃN, REGULARIZA
-  const hasRegulariz = up.includes("REGULARIZ");
-
-  if (!hasProvisional && !hasRegulariz) return null;
-
-  // Si menciona regularización, es motivo 07 (aunque también diga "provisional")
-  if (hasRegulariz) {
-    return { code: "07", label: "Regularización provisional" };
-  }
-  return { code: "06", label: "Ingreso provisional" };
-}
-
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function AjustesProvisionalesPage() {
@@ -74,7 +44,7 @@ export default function AjustesProvisionalesPage() {
   const [stores, setStores]   = useState<Store[]>([]);
   const [storeFilter, setStoreFilter] = useState("");
   const [codeSearch, setCodeSearch]   = useState("");
-  const [rows, setRows]     = useState<ErpMovement[]>([]);
+  const [rows, setRows]     = useState<AggRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded]   = useState(false);
   const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
@@ -104,27 +74,23 @@ export default function AjustesProvisionalesPage() {
     const yearStart = `${new Date().getFullYear()}-01-01`;
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("erp_movements")
-        .select("store_code, product_code, description, reason, quantity, value_total, movement_date, document_no, unit, status")
-        .eq("source_type", "ADJUSTMENT")
-        .gte("movement_date", yearStart)
-        .order("movement_date", { ascending: false })
-        .limit(10000);
+      const { data, error } = await supabase.rpc("get_ajustes_provisionales", {
+        year_start: yearStart,
+        p_store:    storeFilter || null,
+        p_limit:    500,
+        p_offset:   0,
+      });
 
       if (error) throw error;
 
-      const filtered = ((data || []) as ErpMovement[]).filter(
-        r => detectMotivo(r.reason) !== null
-      );
-
-      setRows(filtered);
+      const aggRows = (data || []) as AggRow[];
+      setRows(aggRows);
       setLoaded(true);
 
-      const storeCodes = new Set(filtered.map(r => r.store_code));
+      const storeCodes = new Set(aggRows.map((r: AggRow) => r.store_code));
       setExpandedStores(storeCodes);
 
-      if (filtered.length === 0) {
+      if (aggRows.length === 0) {
         toast.info("Sin ajustes provisionales en lo que va del año");
       }
     } catch (err: any) {
@@ -132,7 +98,7 @@ export default function AjustesProvisionalesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [storeFilter]);
 
   // Auto-carga al tener acceso y tiendas listas
   useEffect(() => {
@@ -141,11 +107,18 @@ export default function AjustesProvisionalesPage() {
     }
   }, [canAccess, stores.length, loaded, loading, load]);
 
-  // ─── Filtros locales ─────────────────────────────────────────────────────────
+  // Recargar cuando cambia el filtro de tienda (el RPC filtra en el servidor)
+  useEffect(() => {
+    if (loaded) {
+      load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeFilter]);
 
-  const filteredRows = useMemo(() => {
+  // ─── Filtros locales (solo búsqueda de código/descripción; tienda ya va al servidor) ───
+
+  const visibleAggregated = useMemo((): AggRow[] => {
     let result = rows;
-    if (storeFilter) result = result.filter(r => r.store_code === storeFilter);
     if (codeSearch.trim()) {
       const q = codeSearch.trim().toLowerCase();
       result = result.filter(r =>
@@ -153,53 +126,16 @@ export default function AjustesProvisionalesPage() {
         (r.description || "").toLowerCase().includes(q)
       );
     }
-    return result;
-  }, [rows, storeFilter, codeSearch]);
-
-  // ─── Agregación ──────────────────────────────────────────────────────────────
-
-  const aggregated = useMemo((): AggRow[] => {
-    const map = new Map<string, AggRow>();
-    for (const r of filteredRows) {
-      const m = detectMotivo(r.reason);
-      if (!m) continue;
-      const key = `${r.store_code}||${r.product_code}`;
-      const storeName = stores.find(s => s.code === r.store_code)?.name || r.store_code;
-      if (!map.has(key)) {
-        map.set(key, {
-          store_code:    r.store_code,
-          store_name:    storeName,
-          product_code:  r.product_code,
-          description:   r.description || r.product_code,
-          unit:          r.unit || "",
-          qty_ajuste:    0,
-          qty_regulariz: 0,
-          total_qty:     0,
-          total_value:   0,
-          record_count:  0,
-          last_date:     r.movement_date,
-        });
-      }
-      const entry = map.get(key)!;
-      if (m.code === "06") entry.qty_ajuste   += r.quantity;
-      else                  entry.qty_regulariz += r.quantity;
-      entry.total_qty   += r.quantity;
-      entry.total_value += r.value_total ?? 0;
-      entry.record_count += 1;
-      if (r.movement_date > entry.last_date) entry.last_date = r.movement_date;
-    }
-    return Array.from(map.values()).sort((a, b) =>
+    return result.map(r => ({
+      ...r,
+      store_name: stores.find(s => s.code === r.store_code)?.name || r.store_code,
+      description: r.description || r.product_code,
+      unit: r.unit || "",
+    })).sort((a, b) =>
       a.store_name.localeCompare(b.store_name, "es") ||
       b.last_date.localeCompare(a.last_date)
     );
-  }, [filteredRows, stores]);
-
-  // ─── Filas visibles: excluir productos con suma ≤ 0 ──────────────────────────
-  // (regularización que ya cubrió o superó el ajuste provisional)
-
-  const visibleAggregated = useMemo(() =>
-    aggregated.filter(r => r.total_qty > 0),
-  [aggregated]);
+  }, [rows, codeSearch, stores]);
 
   // ─── Totales globales (solo sobre filas visibles) ─────────────────────────────
 
@@ -302,9 +238,10 @@ export default function AjustesProvisionalesPage() {
               >
                 <option value="">Todas las tiendas</option>
                 {stores
-                  .filter(s => s.is_active && rows.some(r => r.store_code === s.code))
+                  .filter(s => s.is_active)
+                  .filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i)
                   .map(s => (
-                    <option key={s.id} value={s.code}>{s.name}</option>
+                    <option key={s.code} value={s.code}>{s.name}</option>
                   ))}
               </select>
             </div>
@@ -326,7 +263,7 @@ export default function AjustesProvisionalesPage() {
               <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
               {loading ? "Cargando..." : "Actualizar"}
             </button>
-            {loaded && aggregated.length > 0 && (
+            {loaded && rows.length > 0 && (
               <button
                 onClick={exportExcel}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-2xl border border-slate-200 text-sm font-bold text-slate-700 active:scale-[0.97] transition-transform"
@@ -344,6 +281,9 @@ export default function AjustesProvisionalesPage() {
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
               <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Productos</div>
               <div className="text-3xl font-black text-slate-900">{visibleAggregated.length}</div>
+              {rows[0]?.total_rows !== undefined && rows[0].total_rows > visibleAggregated.length && (
+                <div className="text-[10px] text-slate-400 mt-0.5">de {rows[0].total_rows} total</div>
+              )}
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
               <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Ajuste Prov. 06</div>

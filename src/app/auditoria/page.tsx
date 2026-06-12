@@ -2047,7 +2047,7 @@ export default function AuditoriaPage() {
             disabled={Boolean(user.store_id) && !user.can_access_all_stores}
             className="hidden max-w-xs rounded-xl border bg-white px-3 py-2 text-sm disabled:bg-slate-100 md:block"
           >
-            {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           {(user.role === "Administrador" || user.role === "Supervisor") && (
             <select value="/auditoria" onChange={e => { window.location.href = e.target.value; }} className="hidden rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-700 md:block" title="Cambiar modulo">
@@ -2084,7 +2084,7 @@ export default function AuditoriaPage() {
                   disabled={Boolean(user.store_id) && !user.can_access_all_stores}
                   className="mt-4 w-full rounded-xl border bg-white px-3 py-3 text-sm disabled:bg-slate-100 md:hidden"
                 >
-                  {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
                 {session && (
                   <div className="mt-4 space-y-2 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm">

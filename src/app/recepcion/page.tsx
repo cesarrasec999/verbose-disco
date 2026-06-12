@@ -265,12 +265,23 @@ function consolidateReceptionLines(lines: ReceptionLine[], requestsById: Map<str
 }
 
 function ReasonBadge({ reason }: { reason: string | null }) {
-  const isUrgente = /urgente/i.test(reason || "");
+  if (!reason) return (
+    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">SIN MOTIVO</span>
+  );
+  const isUrgente = /urgente/i.test(reason);
   return (
     <span className={`text-[10px] font-black uppercase tracking-widest ${isUrgente ? "text-amber-600" : "text-teal-600"}`}>
-      {reason || "ABASTECIMIENTO"}
+      {reason}
     </span>
   );
+}
+
+function ErpStatusBadge({ statusCode }: { statusCode: string | null }) {
+  if (statusCode === "R")
+    return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido ERP</span>;
+  if (statusCode === "T")
+    return <span className="rounded-full bg-teal-50 text-teal-600 text-[10px] font-black px-2 py-0.5">En tránsito ERP</span>;
+  return null;
 }
 
 function StatusBadge({ status }: { status: ReceptionRequest["reception_status"] }) {
@@ -305,6 +316,7 @@ export default function RecepcionPage() {
   const [storeFilter, setStoreFilter]   = useState("all");
   const [search, setSearch]             = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
+  const [reasonFilter, setReasonFilter] = useState("all");
 
   // Escaneo
   const [scanProduct, setScanProduct]   = useState("");
@@ -483,7 +495,7 @@ export default function RecepcionPage() {
         let query = supabase
           .from("reception_requests")
           .select("*")
-          .or("status_code.eq.T,reception_status.in.(in_progress,completed)")
+          .or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)")
           .order("creation_date", { ascending: false })
           .range(offset, offset + REQUEST_PAGE_SIZE - 1);
 
@@ -498,12 +510,11 @@ export default function RecepcionPage() {
       }
 
       if (seq !== loadSeq.current) return;
-      const nextRows = rows.filter(req => isSupplyReason(req.reason));
       const syncStatus = await syncStatusPromise;
       if (seq === loadSeq.current) {
-        setLastErpSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || nextRows[0]?.request_date || null);
+        setLastErpSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || rows[0]?.request_date || null);
       }
-      if (nextRows.length === 0) {
+      if (rows.length === 0) {
         scheduleEmptyRetry();
         if (requests.length > 0) return;
         if (fallbackCachedRows.length > 0) {
@@ -516,8 +527,8 @@ export default function RecepcionPage() {
         window.clearTimeout(emptyRetryTimer.current);
         emptyRetryTimer.current = null;
       }
-      applyRequests(nextRows);
-      await loadSummaryScans(nextRows.map(req => req.id));
+      applyRequests(rows);
+      await loadSummaryScans(rows.map(req => req.id));
     } catch (e: any) {
       if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
     }
@@ -1218,7 +1229,7 @@ export default function RecepcionPage() {
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
   const requestGroups = useMemo(
-    () => buildRequestGroups(requests.filter(r => isSupplyReason(r.reason))),
+    () => buildRequestGroups(requests),
     [requests]
   );
 
@@ -1229,21 +1240,40 @@ export default function RecepcionPage() {
     return requestGroups.filter(req => req.child_requests.some(item => allowed.has(normalize(item.destination_store_code))));
   }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
 
+  const reasonOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const req of requestGroups) {
+      const key = req.reason ? normalizeReason(req.reason) : "";
+      if (!seen.has(key)) seen.set(key, req.reason || "");
+    }
+    return [...seen.entries()].map(([key, label]) => ({ key, label: label || "Sin motivo" }))
+      .sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [requestGroups]);
+
   const filteredRequests = useMemo(() => scopedRequestGroups.filter(r => {
     if (!isVisibleReceptionDocument(r)) return false;
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
+    if (reasonFilter !== "all") {
+      const key = r.reason ? normalizeReason(r.reason) : "";
+      if (key !== reasonFilter) return false;
+    }
     if (!search.trim()) return true;
     return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
       .join(" ").toLowerCase().includes(search.toLowerCase());
-  }), [scopedRequestGroups, filterStatus, search]);
+  }), [scopedRequestGroups, filterStatus, reasonFilter, search]);
 
   const destStoreOptions = useMemo(() => {
-    const map = new Map<string, string>();
+    const byCode = new Map<string, string>();
     for (const store of stores) {
       const code = store.erp_sede || store.code;
-      if (code) map.set(code, store.name || code);
+      if (code) byCode.set(code, store.name || code);
     }
-    return [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, "es"));
+    const seen = new Set<string>();
+    const result: { code: string; name: string }[] = [];
+    for (const [code, name] of byCode) {
+      if (!seen.has(name)) { seen.add(name); result.push({ code, name }); }
+    }
+    return result.sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [stores]);
 
   const summaryRows = useMemo(() => {
@@ -1436,6 +1466,13 @@ export default function RecepcionPage() {
                 <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
                   placeholder="Buscar documento, tienda..."
                   value={search} onChange={e => setSearch(e.target.value)} />
+                <select value={reasonFilter} onChange={e => setReasonFilter(e.target.value)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Todos los motivos</option>
+                  {reasonOptions.map(o => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
                 <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
                   <option value="all">Todos</option>
@@ -1590,7 +1627,10 @@ export default function RecepcionPage() {
               className={`w-full text-left rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all hover:border-teal-400 ${req.reception_status === "in_progress" ? "border-teal-200 bg-white" : "bg-white"}`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <ReasonBadge reason={req.reason} />
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <ReasonBadge reason={req.reason} />
+                    <ErpStatusBadge statusCode={req.status_code} />
+                  </div>
                   <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{requestDocumentLabel(req)}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
                 </div>
@@ -1653,7 +1693,10 @@ export default function RecepcionPage() {
           <div className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <ReasonBadge reason={selected.reason} />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ReasonBadge reason={selected.reason} />
+                  <ErpStatusBadge statusCode={selected.status_code} />
+                </div>
                 <h2 className="font-black text-slate-900 text-2xl leading-tight">{requestDocumentLabel(selected)}</h2>
                 <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
               </div>

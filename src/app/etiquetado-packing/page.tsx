@@ -542,7 +542,7 @@ async function searchProducts() {
                 disabled={!user.can_access_all_stores && Boolean(user.store_id)}
               >
                 <option value="">Sin tienda</option>
-                {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
               </select>
 
               {canManagePersonnel(user) && (

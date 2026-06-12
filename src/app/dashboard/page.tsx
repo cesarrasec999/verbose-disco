@@ -6243,7 +6243,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                             >
                                 <option value="">— Tienda —</option>
                                 {((canAssignProducts && valTab === "asignar") || valTab === "resultados") && <option value={ALL_STORES_VALUE}>Todas las tiendas</option>}
-                                {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                             </select>
                             {valTab !== "resultados" && (
                                 <>

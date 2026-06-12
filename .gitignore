@@ -42,3 +42,9 @@ supabase/.temp/
 next-env.d.ts
 outputs/
 src/app/outputs/
+
+# scripts de diagnostico y logs locales
+check_idx.js
+inspect_table.js
+*.sync.log
+ajustes-sync.log
