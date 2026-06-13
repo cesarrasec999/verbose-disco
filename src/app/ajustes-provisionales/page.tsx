@@ -68,15 +68,31 @@ export default function AjustesProvisionalesPage() {
 
   const canAccess = Boolean(user && canAccessModule(user, "ajustes_provisionales"));
 
+  const canViewAllStores = useMemo(() =>
+    user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador" || Boolean(user?.can_access_all_stores),
+    [user]
+  );
+
+  // El store_id del usuario apunta a la entrada de código corto (con erp_sede).
+  // Necesitamos el código numérico ERP (sin erp_sede) para filtrar erp_movements.
+  const userErpStoreCode = useMemo(() => {
+    if (canViewAllStores || !user?.store_id || stores.length === 0) return null;
+    const userStore = stores.find(s => s.id === user.store_id);
+    if (!userStore) return null;
+    const erpEntry = stores.find(s => s.name === userStore.name && !s.erp_sede);
+    return erpEntry?.code ?? userStore.code;
+  }, [canViewAllStores, user, stores]);
+
   // ─── Carga de datos ──────────────────────────────────────────────────────────
 
   const load = useCallback(async () => {
     const yearStart = `${new Date().getFullYear()}-01-01`;
+    const effectiveStore = canViewAllStores ? (storeFilter || null) : (userErpStoreCode || null);
     setLoading(true);
     try {
       const { data, error } = await supabase.rpc("get_ajustes_provisionales", {
         year_start: yearStart,
-        p_store:    storeFilter || null,
+        p_store:    effectiveStore,
         p_limit:    500,
         p_offset:   0,
       });
@@ -98,7 +114,7 @@ export default function AjustesProvisionalesPage() {
     } finally {
       setLoading(false);
     }
-  }, [storeFilter]);
+  }, [storeFilter, canViewAllStores, userErpStoreCode]);
 
   // Auto-carga al tener acceso y tiendas listas
   useEffect(() => {
@@ -229,21 +245,23 @@ export default function AjustesProvisionalesPage() {
         {/* ── Filtros ── */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4">
           <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex-1 min-w-[160px]">
-              <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Tienda</label>
-              <select
-                value={storeFilter}
-                onChange={e => setStoreFilter(e.target.value)}
-                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
-              >
-                <option value="">Todas las tiendas</option>
-                {stores
-                  .filter(s => s.is_active && !s.erp_sede)
-                  .map(s => (
-                    <option key={s.code} value={s.code}>{s.name}</option>
-                  ))}
-              </select>
-            </div>
+            {canViewAllStores && (
+              <div className="flex-1 min-w-[160px]">
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Tienda</label>
+                <select
+                  value={storeFilter}
+                  onChange={e => setStoreFilter(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-900 bg-white focus:border-slate-500 focus:outline-none"
+                >
+                  <option value="">Todas las tiendas</option>
+                  {stores
+                    .filter(s => s.is_active && !s.erp_sede)
+                    .map(s => (
+                      <option key={s.code} value={s.code}>{s.name}</option>
+                    ))}
+                </select>
+              </div>
+            )}
             <div className="flex-1 min-w-[160px]">
               <label className="block text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Código / Descripción</label>
               <input
