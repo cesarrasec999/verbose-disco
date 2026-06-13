@@ -278,7 +278,7 @@ function ReasonBadge({ reason }: { reason: string | null }) {
 }
 
 function ErpStatusBadge({ statusCode }: { statusCode: string | null }) {
-  if (statusCode === "R" || statusCode === "E")
+  if (statusCode === "V" || statusCode === "R" || statusCode === "E")
     return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido en RMS</span>;
   if (statusCode === "T")
     return <span className="rounded-full bg-teal-50 text-teal-600 text-[10px] font-black px-2 py-0.5">En tránsito en RMS</span>;
@@ -1258,8 +1258,8 @@ export default function RecepcionPage() {
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
     if (filterErpStatus !== "all") {
       const es = r.erp_status ?? r.status_code;
-      if (filterErpStatus === "transit"  && es !== "T")                return false;
-      if (filterErpStatus === "received" && es !== "R" && es !== "E")  return false;
+      if (filterErpStatus === "transit"  && es !== "T")                          return false;
+      if (filterErpStatus === "received" && es !== "V" && es !== "R" && es !== "E") return false;
     }
     if (reasonFilter !== "all") {
       const key = r.reason ? normalizeReason(r.reason) : "";
