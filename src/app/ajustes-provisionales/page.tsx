@@ -61,7 +61,7 @@ export default function AjustesProvisionalesPage() {
   useEffect(() => {
     supabase
       .from("stores")
-      .select("id, code, name, is_active")
+      .select("id, code, name, is_active, erp_sede")
       .order("name")
       .then(({ data }) => setStores((data || []) as Store[]));
   }, []);
@@ -238,8 +238,7 @@ export default function AjustesProvisionalesPage() {
               >
                 <option value="">Todas las tiendas</option>
                 {stores
-                  .filter(s => s.is_active)
-                  .filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i)
+                  .filter(s => s.is_active && !s.erp_sede)
                   .map(s => (
                     <option key={s.code} value={s.code}>{s.name}</option>
                   ))}
