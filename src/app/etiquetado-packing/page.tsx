@@ -21,6 +21,7 @@ type Store = {
   id: string;
   name: string;
   code?: string | null;
+  erp_sede?: string | null;
   is_active: boolean;
 };
 
@@ -149,7 +150,7 @@ export default function EtiquetadoPackingPage() {
   );
 
   async function loadInitialData(currentUser: CyclicUser) {
-    const { data } = await supabase.from("stores").select("id,name,code,is_active").eq("is_active", true).order("name");
+    const { data } = await supabase.from("stores").select("id,name,code,erp_sede,is_active").eq("is_active", true).order("name");
     const storeRows = (data || []) as Store[];
     const allowedStores = currentUser.can_access_all_stores
       ? storeRows
@@ -542,7 +543,7 @@ async function searchProducts() {
                 disabled={!user.can_access_all_stores && Boolean(user.store_id)}
               >
                 <option value="">Sin tienda</option>
-                {stores.filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                {stores.filter(s => !!s.erp_sede).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
               </select>
 
               {canManagePersonnel(user) && (

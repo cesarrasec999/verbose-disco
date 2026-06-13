@@ -950,7 +950,7 @@ export default function ConfirmacionesPage() {
                 <input type="date" value={filterDate} onChange={(event) => setFilterDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm font-bold" />
                 <select value={filterStoreId} onChange={(event) => setFilterStoreId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
                   <option value="">Todas las tiendas</option>
-                  {stores.filter((store) => store.is_active).filter((s, i, arr) => arr.findIndex(x => x.name === s.name) === i).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  {stores.filter(s => s.is_active && !!s.erp_sede).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                 </select>
                 <select value={filterUsageStatus} onChange={(event) => setFilterUsageStatus(event.target.value as "todos" | UsageStatus)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold">
                   <option value="todos">Todos los usos</option>
