@@ -511,7 +511,7 @@ export default function ReportesPage() {
     if (rows.length < 2) return [];
     const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
     const knownStores = new Map<string, Store>();
-    for (const store of stores) {
+    for (const store of stores.filter(s => !!s.erp_sede)) {
       for (const key of storeMatchKeys(store)) knownStores.set(key, store);
     }
     const parsed = new Map<string, {

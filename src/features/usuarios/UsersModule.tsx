@@ -233,7 +233,7 @@ export function UsersModule({ stores, showMessage }: Props) {
               <label className="text-xs text-slate-500 block mb-1">Tienda asignada</label>
               <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newUserStoreId} onChange={(e) => setNewUserStoreId(e.target.value)} disabled={newUserAllStores}>
                 <option value="">- Sin asignar -</option>
-                {stores.filter((store) => store.is_active).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                {stores.filter((store) => store.is_active && !!store.erp_sede).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
               </select>
             </div>
             <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
@@ -351,7 +351,7 @@ export function UsersModule({ stores, showMessage }: Props) {
                 <label className="block text-sm font-semibold mb-1 text-slate-900">Tienda asignada</label>
                 <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserStoreId} onChange={(e) => setEditUserStoreId(e.target.value)} disabled={editUserAllStores}>
                   <option value="">- Sin asignar -</option>
-                  {stores.filter((store) => store.is_active).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  {stores.filter((store) => store.is_active && !!store.erp_sede).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                 </select>
               </div>
               <label className="flex items-center gap-3 rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-700">
