@@ -22,6 +22,7 @@ type ReceptionRequest = {
   inv_request_no: string | null;
   doc_number: string | null;
   status_code: string | null;
+  erp_status: string | null;
   request_date: string | null;
   creation_date: string | null;
   destination_store_code: string;
@@ -277,10 +278,10 @@ function ReasonBadge({ reason }: { reason: string | null }) {
 }
 
 function ErpStatusBadge({ statusCode }: { statusCode: string | null }) {
-  if (statusCode === "R")
-    return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido ERP</span>;
+  if (statusCode === "R" || statusCode === "E")
+    return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido en RMS</span>;
   if (statusCode === "T")
-    return <span className="rounded-full bg-teal-50 text-teal-600 text-[10px] font-black px-2 py-0.5">En tránsito ERP</span>;
+    return <span className="rounded-full bg-teal-50 text-teal-600 text-[10px] font-black px-2 py-0.5">En tránsito en RMS</span>;
   return null;
 }
 
@@ -1629,7 +1630,7 @@ export default function RecepcionPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <ReasonBadge reason={req.reason} />
-                    <ErpStatusBadge statusCode={req.status_code} />
+                    <ErpStatusBadge statusCode={req.erp_status ?? req.status_code} />
                   </div>
                   <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{requestDocumentLabel(req)}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
@@ -1695,7 +1696,7 @@ export default function RecepcionPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <ReasonBadge reason={selected.reason} />
-                  <ErpStatusBadge statusCode={selected.status_code} />
+                  <ErpStatusBadge statusCode={selected.erp_status ?? selected.status_code} />
                 </div>
                 <h2 className="font-black text-slate-900 text-2xl leading-tight">{requestDocumentLabel(selected)}</h2>
                 <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
