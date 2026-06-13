@@ -247,7 +247,7 @@ export default function ConsultaStockPage() {
       }
       const nextResults = foundProducts.map(product => {
         const sku = normalizeCode(product.sku);
-        const rows = stores.map(store => {
+        const rows = stores.filter(s => !!s.erp_sede).map(store => {
           const sede = String(store.erp_sede || store.name || "").trim();
           const stockRow = stockBySkuSede.get(`${sku}__${sede}`);
           return { store, stock: Number(stockRow?.stock || 0) };
