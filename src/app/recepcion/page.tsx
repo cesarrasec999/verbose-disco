@@ -317,6 +317,7 @@ export default function RecepcionPage() {
   const [storeFilter, setStoreFilter]   = useState("all");
   const [search, setSearch]             = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
+  const [filterErpStatus, setFilterErpStatus] = useState<"all" | "transit" | "received">("all");
   const [reasonFilter, setReasonFilter] = useState("all");
 
   // Escaneo
@@ -1255,6 +1256,11 @@ export default function RecepcionPage() {
   const filteredRequests = useMemo(() => scopedRequestGroups.filter(r => {
     if (!isVisibleReceptionDocument(r)) return false;
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
+    if (filterErpStatus !== "all") {
+      const es = r.erp_status ?? r.status_code;
+      if (filterErpStatus === "transit"  && es !== "T")                return false;
+      if (filterErpStatus === "received" && es !== "R" && es !== "E")  return false;
+    }
     if (reasonFilter !== "all") {
       const key = r.reason ? normalizeReason(r.reason) : "";
       if (key !== reasonFilter) return false;
@@ -1262,7 +1268,7 @@ export default function RecepcionPage() {
     if (!search.trim()) return true;
     return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
       .join(" ").toLowerCase().includes(search.toLowerCase());
-  }), [scopedRequestGroups, filterStatus, reasonFilter, search]);
+  }), [scopedRequestGroups, filterStatus, filterErpStatus, reasonFilter, search]);
 
   const destStoreOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -1480,6 +1486,12 @@ export default function RecepcionPage() {
                   <option value="pending">Pendiente</option>
                   <option value="in_progress">En proceso</option>
                   <option value="completed">Completados</option>
+                </select>
+                <select value={filterErpStatus} onChange={e => setFilterErpStatus(e.target.value as any)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Estado en RMS</option>
+                  <option value="transit">En tránsito en RMS</option>
+                  <option value="received">Recibido en RMS</option>
                 </select>
               </>
             )}
