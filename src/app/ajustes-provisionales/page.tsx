@@ -37,6 +37,13 @@ function fmtMoney(n: number) {
   return new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" }).format(n);
 }
 
+function formatSync(iso: string) {
+  return new Date(iso).toLocaleString("es-PE", {
+    hour12: false, day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function AjustesProvisionalesPage() {
@@ -48,6 +55,7 @@ export default function AjustesProvisionalesPage() {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded]   = useState(false);
   const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
+  const [lastSync, setLastSync] = useState<string | null>(null);
 
   // Cargar usuario desde localStorage
   useEffect(() => {
@@ -90,12 +98,17 @@ export default function AjustesProvisionalesPage() {
     const effectiveStore = canViewAllStores ? (storeFilter || null) : (userErpStoreCode || null);
     setLoading(true);
     try {
-      const { data, error } = await supabase.rpc("get_ajustes_provisionales", {
-        year_start: yearStart,
-        p_store:    effectiveStore,
-        p_limit:    500,
-        p_offset:   0,
-      });
+      const [{ data, error }, syncRes] = await Promise.all([
+        supabase.rpc("get_ajustes_provisionales", {
+          year_start: yearStart,
+          p_store:    effectiveStore,
+          p_limit:    500,
+          p_offset:   0,
+        }),
+        supabase.from("erp_sync_status").select("synced_at").eq("id", "ajustes_provisionales").maybeSingle(),
+      ]);
+
+      if (syncRes.data?.synced_at) setLastSync(syncRes.data.synced_at as string);
 
       if (error) throw error;
 
@@ -291,6 +304,21 @@ export default function AjustesProvisionalesPage() {
             )}
           </div>
         </div>
+
+        {/* ── Sincronizacion ERP ── */}
+        {(() => {
+          const syncStale = !lastSync || (Date.now() - new Date(lastSync).getTime()) > 15 * 60 * 1000;
+          return (
+            <div className={`rounded-2xl border px-4 py-3 shadow-sm ${syncStale ? "border-red-300 bg-red-50" : "bg-white"}`}>
+              <p className={`text-xs font-black uppercase ${syncStale ? "text-red-600" : "text-slate-500"}`}>
+                {syncStale ? "⚠ Sincronizacion ERP Ajustes detenida" : "Ultima sincronizacion ERP Ajustes"}
+              </p>
+              <p className={`text-sm font-black ${syncStale ? "text-red-700" : "text-slate-900"}`}>
+                {lastSync ? formatSync(lastSync) : "Sin sincronizacion registrada"}
+              </p>
+            </div>
+          );
+        })()}
 
         {/* ── KPI cards ── */}
         {loaded && (
