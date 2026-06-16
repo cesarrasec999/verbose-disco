@@ -114,8 +114,7 @@ function normalize(v: string | null | undefined) { return String(v || "").trim()
 const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
 const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
 const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
-const REQUEST_PAGE_SIZE = 1000;
-const REQUEST_MAX_ROWS = 5000;
+const PAGE_SIZE = 50;
 
 type RequestCachePayload = {
   savedAt: number;
@@ -308,6 +307,8 @@ export default function RecepcionPage() {
   const [ready, setReady]       = useState(false);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
+  const [hasMore, setHasMore]   = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
@@ -339,6 +340,9 @@ export default function RecepcionPage() {
   const scanHandled   = useRef(false);
   const loadSeq       = useRef(0);
   const emptyRetryTimer = useRef<number | null>(null);
+  const mountedRef        = useRef(true);
+  const abortRef          = useRef<AbortController | null>(null);
+  const loadedOffsetRef   = useRef(0);
   const scannerContainerId = "recepcion-scanner";
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -466,17 +470,52 @@ export default function RecepcionPage() {
       });
     return () => {
       cancelled = true;
+      mountedRef.current = false;
+      abortRef.current?.abort();
       if (emptyRetryTimer.current !== null) window.clearTimeout(emptyRetryTimer.current);
     };
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (ready && user && !canViewAllStores) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!ready || !user) return;
+    const t = setTimeout(() => void loadRequests(), 300);
+    return () => clearTimeout(t);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
+  function buildReceptionQuery(signal: AbortSignal, codes: string[], searchText: string, offset: number) {
+    let q = supabase
+      .from("reception_requests")
+      .select("*")
+      .order("creation_date", { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+      .abortSignal(signal);
+    if (searchText) {
+      const escaped = searchText.replace(/%/g, "\\%").replace(/_/g, "\\_");
+      q = q.or([
+        `doc_number.ilike.%${escaped}%`,
+        `inv_request_no.ilike.%${escaped}%`,
+        `destination_store_name.ilike.%${escaped}%`,
+        `source_store_name.ilike.%${escaped}%`,
+        `erp_inv_request_id.ilike.%${escaped}%`,
+      ].join(","));
+    } else {
+      q = q.or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)");
+    }
+    if (codes.length > 0) q = q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+    return q;
+  }
+
   async function loadRequests() {
     const seq = ++loadSeq.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     const scopeKey = requestScopeKey();
     const cachedRows = readRequestCache(scopeKey);
     const fallbackCachedRows = cachedRows.length > 0 ? cachedRows : readAnyRequestCache(user?.id);
@@ -484,45 +523,28 @@ export default function RecepcionPage() {
     else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
-      const syncStatusPromise = supabase
-        .from("erp_sync_status")
-        .select("synced_at,updated_at")
-        .eq("id", "reception_requests")
-        .maybeSingle();
-      const rows: ReceptionRequest[] = [];
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : [];
+      const syncStatusPromise = supabase
+        .from("erp_sync_status").select("synced_at,updated_at")
+        .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
 
-      for (let offset = 0; offset < REQUEST_MAX_ROWS; offset += REQUEST_PAGE_SIZE) {
-        let query = supabase
-          .from("reception_requests")
-          .select("*")
-          .or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)")
-          .order("creation_date", { ascending: false })
-          .range(offset, offset + REQUEST_PAGE_SIZE - 1);
+      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), 0);
+      if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
+      if (error) throw error;
 
-        if (codes.length > 0) {
-          query = query.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
-        }
+      const rows = (data || []) as ReceptionRequest[];
+      loadedOffsetRef.current = rows.length;
+      setHasMore(rows.length === PAGE_SIZE);
 
-        const { data, error } = await query;
-        if (error) throw error;
-        rows.push(...((data || []) as ReceptionRequest[]));
-        if (!data || data.length < REQUEST_PAGE_SIZE) break;
-      }
-
-      if (seq !== loadSeq.current) return;
       const syncStatus = await syncStatusPromise;
-      if (seq === loadSeq.current) {
+      if (seq === loadSeq.current && mountedRef.current) {
         setLastErpSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || rows[0]?.request_date || null);
       }
       if (rows.length === 0) {
         scheduleEmptyRetry();
-        if (requests.length > 0) return;
-        if (fallbackCachedRows.length > 0) {
-          setRequests(fallbackCachedRows);
-          await loadSummaryScans(fallbackCachedRows.map(req => req.id));
-        }
+        if (requests.length > 0) { setHasMore(false); return; }
+        if (fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
         return;
       }
       if (emptyRetryTimer.current !== null) {
@@ -530,12 +552,42 @@ export default function RecepcionPage() {
         emptyRetryTimer.current = null;
       }
       applyRequests(rows);
-      await loadSummaryScans(rows.map(req => req.id));
     } catch (e: any) {
-      if (seq === loadSeq.current) showMsg("Error cargando requerimientos: " + e.message);
+      if (seq === loadSeq.current && mountedRef.current && !signal.aborted) showMsg("Error cargando requerimientos: " + e.message);
     }
     finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current && mountedRef.current) setLoading(false);
+    }
+  }
+
+  // ─── Cargar más ────────────────────────────────────────────────────────────
+
+  async function loadMore() {
+    if (!hasMore || loadingMore || !mountedRef.current) return;
+    setLoadingMore(true);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+    try {
+      const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
+      const codes = store ? storeCodes(store) : [];
+      const offset = loadedOffsetRef.current;
+      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), offset);
+      if (signal.aborted || !mountedRef.current) return;
+      if (error) throw error;
+      const rows = (data || []) as ReceptionRequest[];
+      loadedOffsetRef.current = offset + rows.length;
+      setHasMore(rows.length === PAGE_SIZE);
+      setRequests(prev => {
+        const next = [...prev, ...rows];
+        writeRequestCache(requestScopeKey(), next);
+        return next;
+      });
+    } catch (e: any) {
+      if (!signal.aborted && mountedRef.current) showMsg("Error cargando más: " + e.message);
+    } finally {
+      if (mountedRef.current) setLoadingMore(false);
     }
   }
 
@@ -841,7 +893,6 @@ export default function RecepcionPage() {
       setEditLineInputs({});
       if (selected.reception_status === "completed") await resetCompletedRequestsWithoutScans(requestIdsToUpdate, true);
       await reloadScans(selected.request_ids);
-      await loadSummaryScans(requests.map(req => req.id));
       showMsg("Recepción registrada.");
     } catch (e: any) { showMsg("Error guardando: " + e.message); }
     finally { setSaving(false); }
@@ -1265,10 +1316,8 @@ export default function RecepcionPage() {
       const key = r.reason ? normalizeReason(r.reason) : "";
       if (key !== reasonFilter) return false;
     }
-    if (!search.trim()) return true;
-    return [r.doc_number, r.inv_request_no, r.destination_store_name, r.source_store_name, r.reason, r.erp_inv_request_id]
-      .join(" ").toLowerCase().includes(search.toLowerCase());
-  }), [scopedRequestGroups, filterStatus, filterErpStatus, reasonFilter, search]);
+    return true;
+  }), [scopedRequestGroups, filterStatus, filterErpStatus, reasonFilter]);
 
   const destStoreOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -1398,7 +1447,7 @@ export default function RecepcionPage() {
       <header className="sticky top-0 z-40 bg-white border-b shadow-sm">
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <button onClick={() => window.location.href = "/"} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><Home size={18} /></button>
+            <button onClick={() => { abortRef.current?.abort(); window.location.href = "/"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><Home size={18} /></button>
             {view === "detail" && (
               <button onClick={() => { setView("list"); setSelected(null); setLines([]); setScans([]); setActiveLine(null); }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50"><ChevronLeft size={18} /></button>
             )}
@@ -1454,10 +1503,19 @@ export default function RecepcionPage() {
             </div>
           )}
 
-          <div className="rounded-2xl border bg-white px-4 py-3 shadow-sm">
-            <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Recepcion</p>
-            <p className="text-sm font-black text-slate-900">{formatSync(lastErpSync)}</p>
-          </div>
+          {(() => {
+            const syncStale = !lastErpSync || (Date.now() - new Date(lastErpSync).getTime()) > 15 * 60 * 1000;
+            return (
+              <div className={`rounded-2xl border px-4 py-3 shadow-sm ${syncStale ? "border-red-300 bg-red-50" : "bg-white"}`}>
+                <p className={`text-xs font-black uppercase ${syncStale ? "text-red-600" : "text-slate-500"}`}>
+                  {syncStale ? "⚠ Sincronizacion ERP Recepcion detenida" : "Ultima sincronizacion ERP Recepcion"}
+                </p>
+                <p className={`text-sm font-black ${syncStale ? "text-red-700" : "text-slate-900"}`}>
+                  {lastErpSync ? formatSync(lastErpSync) : "Sin sincronizacion registrada"}
+                </p>
+              </div>
+            );
+          })()}
 
           {/* Filtros */}
           <div className="flex flex-wrap gap-2">
@@ -1695,6 +1753,16 @@ export default function RecepcionPage() {
               )}
             </button>
           ))}
+
+          {!loading && listPanel === "recepcion" && hasMore && (
+            <button
+              onClick={() => void loadMore()}
+              disabled={loadingMore}
+              className="w-full rounded-2xl border bg-white px-4 py-3 text-sm font-black text-slate-600 shadow-sm hover:bg-slate-50 disabled:opacity-40"
+            >
+              {loadingMore ? "Cargando..." : "Cargar más requerimientos"}
+            </button>
+          )}
         </div>
       )}
 

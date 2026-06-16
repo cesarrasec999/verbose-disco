@@ -1467,7 +1467,7 @@ export default function PickingPage() {
     }
     const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
 
-    const { error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
+    const { data: insertedScans, error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
       assignment_id: activeAssignment.id,
       request_id: activeRequest.id,
       line_id: activeLine.id,
@@ -1478,7 +1478,7 @@ export default function PickingPage() {
       scanned_barcode: scanProduct.trim(),
       qty: row.qty,
       is_match: isMatch,
-    })));
+    }))).select();
     if (scanError) {
       toast.error("No se pudo guardar el escaneo: " + scanError.message);
       return;
@@ -1506,8 +1506,8 @@ export default function PickingPage() {
     setAssignments(prev => prev.map(item => (
       item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
+    if (insertedScans?.length) setScans(prev => [...(insertedScans as PickingScan[]), ...prev]);
     toast.success("Picking registrado.");
-    await loadData(user);
   }
 
   function startEditScan(scan: PickingScan) {
@@ -1553,11 +1553,13 @@ export default function PickingPage() {
     setEditingScanId("");
     setEditScanLocation("");
     setEditScanQty("");
+    setScans(prev => prev.map(item => (
+      item.id === editingScanId ? { ...item, location_code: normalize(editScanLocation), qty } : item
+    )));
     setAssignments(prev => prev.map(item => (
       item.id === assignment.id ? { ...item, picked_qty: pickedNext, status } : item
     )));
     toast.success("Registro actualizado.");
-    await loadData(user);
   }
 
   async function deleteScan(scan: PickingScan) {
@@ -1615,7 +1617,6 @@ export default function PickingPage() {
     )));
     if (editingScanId === scan.id) setEditingScanId("");
     toast.success("Registro eliminado.");
-    await loadData(user);
   }
 
   async function downloadReport(scope: "global" | "mine") {

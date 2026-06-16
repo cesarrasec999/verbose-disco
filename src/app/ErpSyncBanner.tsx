@@ -7,8 +7,9 @@ const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 // Umbral por fuente: cuántos minutos puede estar sin actualizar antes de mostrar alerta
 const SOURCE_THRESHOLDS: Record<string, number> = {
-  picking_requests:      15,   // corre cada 5 min → alerta si pasan 15 min
-  stock_general:         15,   // corre continuamente → alerta si pasan 15 min
+  picking_requests:         15,   // corre cada 5 min → alerta si pasan 15 min
+  stock_general:            15,   // corre continuamente → alerta si pasan 15 min
+  reception_requests:       15,   // corre cada 5 min → alerta si pasan 15 min
   erp_store_sales_daily:    26 * 60, // corre una vez al día → alerta si pasan 26 horas
   erp_product_sales_daily:  26 * 60, // corre una vez al día → alerta si pasan 26 horas
 };
@@ -68,12 +69,12 @@ export default function ErpSyncBanner() {
 
   if (!canSeeWarnings || staleSources.length === 0) return null;
 
-  const hasRealtimeIssue = staleSources.some(s => s.id === "picking_requests" || s.id === "stock_general");
+  const hasRealtimeIssue = staleSources.some(s => s.id === "picking_requests" || s.id === "stock_general" || s.id === "reception_requests");
   const hasSalesIssue    = staleSources.some(s => s.id.includes("sales"));
 
   return (
     <div className={`text-white text-sm px-4 py-2 text-center font-medium z-50 ${hasRealtimeIssue ? "bg-red-600" : "bg-amber-500"}`}>
-      {hasRealtimeIssue && "⚠ Sincronización ERP detenida — picking o stock sin actualizar. "}
+      {hasRealtimeIssue && `⚠ Sincronización ERP detenida — ${staleSources.filter(s => s.id === "picking_requests" || s.id === "stock_general" || s.id === "reception_requests").map(s => ({ picking_requests: "picking", stock_general: "stock", reception_requests: "recepción" }[s.id] ?? s.id)).join(", ")} sin actualizar. `}
       {hasSalesIssue && "⚠ Ventas del día anterior aún no sincronizadas."}
     </div>
   );
