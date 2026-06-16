@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, Plus, QrCode, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
+import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LockOpen, Plus, QrCode, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
@@ -231,6 +231,9 @@ export default function InventariosPage() {
   const qtyInputRef = useRef<HTMLInputElement | null>(null);
   const loadedSessionTabsRef = useRef<Set<string>>(new Set());
   const staleSessionTabsRef = useRef<Set<string>>(new Set());
+  const lastSummaryReloadRef = useRef<number>(0);
+  const summaryThrottleTimerRef = useRef<number | null>(null);
+  const sessionLoadGenRef = useRef(0);
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
@@ -1163,6 +1166,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator) return;
+    lastSummaryReloadRef.current = 0;
     localStorage.setItem(SESSION_KEY, selectedSessionId);
     if (validatorTab === "resumen") applyCachedSummary(selectedSessionId);
     if (isSessionTabFresh(selectedSessionId, validatorTab)) return;
@@ -1236,8 +1240,25 @@ export default function InventariosPage() {
           markSessionTabStale(selectedSessionId, "registros");
           markSessionTabStale(selectedSessionId, "productividad");
         }
-        if (validatorTab === "resumen") void loadSummary(selectedSessionId, true);
-        else markSessionTabStale(selectedSessionId, "resumen");
+        if (validatorTab === "resumen") {
+          const THROTTLE_MS = 6_000;
+          const now = Date.now();
+          const elapsed = now - lastSummaryReloadRef.current;
+          if (elapsed >= THROTTLE_MS) {
+            lastSummaryReloadRef.current = now;
+            if (summaryThrottleTimerRef.current !== null) {
+              window.clearTimeout(summaryThrottleTimerRef.current);
+              summaryThrottleTimerRef.current = null;
+            }
+            void loadSummary(selectedSessionId, true);
+          } else if (summaryThrottleTimerRef.current === null) {
+            summaryThrottleTimerRef.current = window.setTimeout(() => {
+              summaryThrottleTimerRef.current = null;
+              lastSummaryReloadRef.current = Date.now();
+              void loadSummary(selectedSessionId, true);
+            }, THROTTLE_MS - elapsed);
+          }
+        } else markSessionTabStale(selectedSessionId, "resumen");
         if (validatorTab === "reconteo") void loadRecountData(selectedSessionId, false);
         else markSessionTabStale(selectedSessionId, "reconteo");
         if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
@@ -1275,6 +1296,10 @@ export default function InventariosPage() {
 
     return () => {
       if (timer) window.clearTimeout(timer);
+      if (summaryThrottleTimerRef.current !== null) {
+        window.clearTimeout(summaryThrottleTimerRef.current);
+        summaryThrottleTimerRef.current = null;
+      }
       supabase.removeChannel(channel);
     };
   }, [selectedSessionId, isValidator, validatorTab, selectedSession?.validation_enabled]);
@@ -1776,6 +1801,7 @@ export default function InventariosPage() {
   }
 
   async function loadSessionData(sessionId: string, tab: ValidatorTab = validatorTab) {
+    const gen = ++sessionLoadGenRef.current;
     if (isValidator) {
       if (tab === "preparacion" && canManageInventory) {
         await loadPreparationData(sessionId);
@@ -1783,7 +1809,7 @@ export default function InventariosPage() {
         return;
       }
       if (tab === "registros") {
-        await loadRecordsData(sessionId);
+        await loadRecordsData(sessionId, null, gen);
         markSessionTabLoaded(sessionId, tab);
         return;
       }
@@ -1807,7 +1833,7 @@ export default function InventariosPage() {
         markSessionTabLoaded(sessionId, "reportes");
         return;
       }
-      await loadSummary(sessionId, summaryHasPendingChanges);
+      await loadSummary(sessionId, summaryHasPendingChanges, gen);
       markSessionTabLoaded(sessionId, "resumen");
       return;
     }
@@ -1818,7 +1844,7 @@ export default function InventariosPage() {
       return;
     }
 
-    await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId, operator.id)]);
+    await Promise.all([loadPreparationData(sessionId), loadRecordsData(sessionId, operator.id, gen)]);
   }
 
   async function loadFinishedGeneralInventoryReport() {
@@ -1898,7 +1924,7 @@ export default function InventariosPage() {
     setCountedLocationCodes([...new Set(countRows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
   }
 
-  async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null) {
+  async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null, gen?: number) {
     if (!isValidator && !operatorId) {
       setCounts([]);
       setOperatorRecordsTotal(0);
@@ -1909,7 +1935,9 @@ export default function InventariosPage() {
       const countRows = !isValidator && operatorId
         ? await loadOperatorCountsPage(sessionId, operatorId, operatorRecordsPage, recordsQuery)
         : await loadAllCounts(sessionId, operatorId);
+      if (gen !== undefined && gen !== sessionLoadGenRef.current) return;
       const pendingRows = await loadPendingOfflineCountRows(sessionId, operatorId);
+      if (gen !== undefined && gen !== sessionLoadGenRef.current) return;
       const rows = mergePendingCounts(countRows, (!isValidator && operatorId && operatorRecordsPage > 1) ? [] : pendingRows);
       setCounts(rows);
       if (!operatorId) setCountedLocationCodes([...new Set(rows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
@@ -2942,7 +2970,8 @@ export default function InventariosPage() {
   }
 
   async function loadSummaryFromRpc(sessionId: string): Promise<SummaryRow[] | null> {
-    return null;
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    return fetchSummaryRowsFromRpc(supabase, { sessionId, session, stores });
   }
 
   function sessionSede(sessionId: string) {
@@ -3032,13 +3061,14 @@ export default function InventariosPage() {
     if (snapshotError) throw snapshotError;
   }
 
-  async function loadSummary(sessionId: string, force = false) {
+  async function loadSummary(sessionId: string, force = false, gen?: number) {
     if (!force && summaryLoadedSessionId === sessionId) return;
     const hadCachedSummary = applyCachedSummary(sessionId);
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
     try {
       const rpcRows = await loadSummaryFromRpc(sessionId);
+      if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
       if (rpcRows) {
         rpcRows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
         cacheSummary(sessionId, rpcRows);
@@ -3065,6 +3095,7 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
       loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
+    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
     const { validationCountRows, validationItemRows } = validationRows;
     const liveStockBySku = useFrozenSnapshot ? new Map<string, StockGeneralRow>() : await loadStockGeneralBySkuForSession(sessionId, [
         ...snapshotRows.map(row => row.sku),
@@ -3248,6 +3279,7 @@ export default function InventariosPage() {
     }
 
     rows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
+    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
     cacheSummary(sessionId, rows);
     setSummary(rows);
     applyObservationDraftsFromServer(sessionId, summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
@@ -3673,7 +3705,90 @@ export default function InventariosPage() {
     setSessions(prev => [row, ...prev]);
     setSelectedSessionId(row.id);
     setNewName("");
-    setMessage("Inventario general creado y abierto.");
+    setLoading(true);
+    setMessage("Cargando stock inicial de la tienda...");
+    await preloadStockForNewSession(row.id, row.store_id);
+    setLoading(false);
+  }
+
+  async function preloadStockForNewSession(sessionId: string, storeId: string) {
+    const store = stores.find(row => row.id === storeId);
+    const sede = store?.erp_sede || store?.name || "";
+    if (!sede) {
+      setMessage("Inventario creado. No se pudo cargar stock inicial: no se encontro la sede ERP de la tienda.");
+      return;
+    }
+
+    const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
+
+    let inserted = 0;
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const stockRes = await supabase
+        .from("stock_general")
+        .select("codsap,stock,costo")
+        .eq("sede", sede)
+        .gt("stock", 0)
+        .order("codsap", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (stockRes.error) {
+        setMessage("Inventario creado, pero no se pudo cargar stock inicial: " + stockRes.error.message);
+        return;
+      }
+
+      const stockRows = (stockRes.data || []) as StockGeneralRow[];
+      if (stockRows.length === 0) break;
+      const stockBySku = new Map<string, StockGeneralRow>();
+      for (const row of stockRows) {
+        const sku = normalizeCode(row.codsap).toUpperCase();
+        if (sku && !nonInventorySkus.has(sku)) stockBySku.set(sku, row);
+      }
+
+      const skus = [...stockBySku.keys()];
+      for (let i = 0; i < skus.length; i += 500) {
+        const chunk = skus.slice(i, i + 500);
+        const productsRes = await supabase
+          .from("cyclic_products")
+          .select("id,sku,description,unit,cost,is_active")
+          .eq("is_active", true)
+          .in("sku", chunk);
+        if (productsRes.error) {
+          setMessage("Inventario creado, pero no se pudo cruzar stock con maestro: " + productsRes.error.message);
+          return;
+        }
+        const rows = ((productsRes.data || []) as Product[]).map(product => {
+          const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
+          return {
+            session_id: sessionId,
+            product_id: product.id,
+            sku: product.sku,
+            description: product.description,
+            unit: product.unit,
+            system_stock: Number(stock?.stock || 0),
+            cost: Number(stock?.costo ?? product.cost ?? 0),
+            frozen_at: new Date().toISOString(),
+          };
+        });
+        if (rows.length > 0) {
+          const upsertRes = await supabase
+            .from("general_inventory_stock_snapshot")
+            .upsert(rows, { onConflict: "session_id,product_id" });
+          if (upsertRes.error) {
+            setMessage("Inventario creado, pero no se pudo guardar stock inicial: " + upsertRes.error.message);
+            return;
+          }
+          inserted += rows.length;
+          setMessage(`Cargando stock inicial... ${inserted} codigos.`);
+        }
+      }
+
+      if (stockRows.length < pageSize) break;
+      from += pageSize;
+    }
+
+    setMessage(`Inventario creado. ${inserted} codigos con stock cargados.`);
   }
 
   async function handleLocationsFileChange(file: File | null) {
@@ -3835,6 +3950,45 @@ export default function InventariosPage() {
       return;
     }
     await saveStockSnapshot("Congelando stock. Este proceso puede tardar varios minutos si es la primera vez.", "Stock congelado");
+  }
+
+  async function unfreezeSession() {
+    if (!canManageInventory || !selectedSessionId || !selectedSession) return;
+    if (selectedSession.status !== "frozen") {
+      setMessage("La sesion no esta congelada.");
+      return;
+    }
+    const confirmed = window.confirm(
+      "Descongelar el stock de este inventario?\n\n" +
+      "El stock de productos con diferencia se actualizara automaticamente desde el ERP al siguiente cambio de stock.\n" +
+      "Los productos ya marcados como OK mantendran su stock congelado."
+    );
+    if (!confirmed) return;
+    setLoading(true);
+    setMessage("Descongelando stock...");
+    const { error } = await supabase
+      .from("general_inventory_sessions")
+      .update({
+        status: "open",
+        stock_frozen_at: null,
+        frozen_by: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", selectedSessionId);
+    if (error) {
+      setMessage("No se pudo descongelar: " + error.message);
+      setLoading(false);
+      return;
+    }
+    setSessions(prev =>
+      prev.map(s =>
+        s.id === selectedSessionId
+          ? { ...s, status: "open" as SessionStatus, stock_frozen_at: null, frozen_by: null }
+          : s
+      )
+    );
+    setMessage("Stock descongelado. Se actualizara en tiempo real cuando el ERP sincronice.");
+    setLoading(false);
   }
 
   async function saveStockSnapshot(progressMessage: string, successLabel: string) {
@@ -4010,6 +4164,7 @@ export default function InventariosPage() {
     let totalValue = 0;
     let from = 0;
     const pageSize = 1000;
+    const upsertedProductIds = new Set<string>();
     while (true) {
       const stockRes = await supabase
         .from("stock_general")
@@ -4066,6 +4221,7 @@ export default function InventariosPage() {
             setMessage("No se pudo guardar stock por lotes: " + upsertRes.error.message);
             return null;
           }
+          for (const row of rows) upsertedProductIds.add(row.product_id);
           inserted += rows.length;
           setMessage(`Actualizando stock por lotes... ${inserted} codigos en foto${protectedProductIds.size > 0 ? ` (${protectedProductIds.size} OK protegidos)` : ""}.`);
         }
@@ -4073,6 +4229,26 @@ export default function InventariosPage() {
 
       if (stockRows.length < pageSize) break;
       from += pageSize;
+    }
+
+    // Limpieza de fantasmas: eliminar filas del snapshot que no tienen stock live
+    // y no son productos protegidos (OK). Cubre casos donde la eliminacion inicial
+    // fue parcial por fallo de red u otro problema transitorio.
+    if (preserveOkProducts) {
+      const postUpsertSnapshot = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
+      const phantomIds = postUpsertSnapshot
+        .filter(row => {
+          const pid = String(row.product_id || "");
+          return pid && !protectedProductIds.has(pid) && !upsertedProductIds.has(pid);
+        })
+        .map(row => String(row.id || ""))
+        .filter(Boolean);
+      for (let i = 0; i < phantomIds.length; i += 500) {
+        const cleanupRes = await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
+        if (cleanupRes.error) {
+          setMessage("Advertencia: no se pudieron eliminar " + phantomIds.length + " codigos sin stock del snapshot: " + cleanupRes.error.message);
+        }
+      }
     }
 
     const finalSnapshotRows = await loadPagedSessionRows("general_inventory_stock_snapshot", "system_stock,cost", sessionId, "product_id");
@@ -4107,6 +4283,10 @@ export default function InventariosPage() {
     }
     const confirmed = window.confirm("Finalizar esta sesion? Los operarios ya no podran entrar y no se podra modificar conteo, reconteo ni stock.");
     if (!confirmed) return;
+    if (!selectedSession?.stock_frozen_at) {
+      const inserted = await saveStockSnapshotInBatches(selectedSessionId, user?.id ?? "", "Stock congelado al finalizar", true);
+      if (inserted === null) return;
+    }
     const { error } = await supabase
       .from("general_inventory_sessions")
       .update({ status: "finished", finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -4639,6 +4819,11 @@ export default function InventariosPage() {
       }
 
       if (!navigator.onLine) {
+        const isPwa = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+        if (!isPwa) {
+          setMessage("Sin conexion. Los conteos desde el navegador web requieren internet. Usa la app instalada para trabajar sin conexion.");
+          return;
+        }
         await keepCountPending("Conteo guardado sin conexion. Se sincronizara cuando vuelva internet.");
         return;
       }
@@ -4661,14 +4846,27 @@ export default function InventariosPage() {
         return;
       }
 
-      if (!editingCountId) {
-        await removeOfflineItem(clientUuid).catch(() => undefined);
-      }
-
-      await protectOkProductSnapshot(selectedSession.id, product).catch(error => {
-        console.warn("No se pudo proteger snapshot OK:", error);
-      });
-      await upsertKnownProductLocation(product, loc.location_code);
+      // Local update inmediato — el realtime sincroniza con el servidor a los 800ms
+      const localRow: CountRow = {
+        id: editingCountId ?? clientUuid,
+        session_id: selectedSession.id,
+        operator_id: operator.id,
+        location_id: loc.id,
+        location_code: loc.location_code,
+        product_id: product.id,
+        sku: product.sku,
+        description: product.description,
+        unit: product.unit,
+        quantity: qty,
+        cost_snapshot: Number(snapshot.data?.cost ?? product.cost ?? 0),
+        counted_at: countedAt,
+        operator_name: operator.full_name,
+      };
+      setCounts(prev => editingCountId
+        ? prev.map(item => item.id === editingCountId ? localRow : item)
+        : [localRow, ...prev]
+      );
+      setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
       setProductCode("");
       setProductCandidates([]);
       setSelectedProduct(null);
@@ -4676,9 +4874,13 @@ export default function InventariosPage() {
       setQuantity("");
       setEditingCountId(null);
       setMessage("Conteo guardado.");
-      setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
-      if (isValidator) await loadSessionData(selectedSession.id, validatorTab);
-      else await loadRecordsData(selectedSession.id, operator.id);
+
+      // Fire-and-forget: no bloquean al operador
+      void removeOfflineItem(clientUuid).catch(() => undefined);
+      void protectOkProductSnapshot(selectedSession.id, product).catch(error => {
+        console.warn("No se pudo proteger snapshot OK:", error);
+      });
+      void upsertKnownProductLocation(product, loc.location_code);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo guardar conteo.");
     } finally {
@@ -5277,6 +5479,8 @@ export default function InventariosPage() {
   async function deleteCount(row: CountRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    const confirmed = window.confirm(`Borrar el registro de ${row.sku} en ${row.location_code || "SIN UBICACION"} (${row.quantity} ${row.unit || "un"})?`);
+    if (!confirmed) return;
     const { error } = await supabase.from("general_inventory_counts").delete().eq("id", row.id);
     if (error) {
       setMessage("No se pudo eliminar: " + error.message);
@@ -6525,8 +6729,8 @@ export default function InventariosPage() {
                 </select>
                 <input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Nombre de inventario" className="w-full rounded-xl border px-3 py-3 text-sm" />
                 <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm" />
-                <button onClick={createSession} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
-                  <Plus size={16} /> Crear inventario
+                <button onClick={createSession} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <Plus size={16} /> {loading ? "Cargando stock..." : "Crear inventario"}
                 </button>
               </div>
             </section>
@@ -6625,9 +6829,11 @@ export default function InventariosPage() {
                   </div>
                 )}
               </div>
-              <button onClick={freezeStock} disabled={loading || isSelectedSessionFinished} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                <FileLock2 size={16} /> Congelar stock
-              </button>
+              {selectedSession?.status === "frozen" && !isSelectedSessionFinished && canManageInventory && (
+                <button onClick={unfreezeSession} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-orange-300 bg-orange-50 px-4 py-3 text-sm font-black text-orange-700 disabled:opacity-40">
+                  <LockOpen size={16} /> Descongelar stock
+                </button>
+              )}
               <button onClick={finishSession} disabled={isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                 Finalizar inventario
               </button>
@@ -6788,8 +6994,8 @@ export default function InventariosPage() {
                     </select>
                     <input value={newName} onChange={event => setNewName(event.target.value)} placeholder="Nombre de inventario" className="w-full rounded-xl border px-3 py-3 text-sm" />
                     <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} className="w-full rounded-xl border px-3 py-3 text-sm" />
-                    <button onClick={createSession} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white">
-                      <Plus size={16} /> Crear inventario
+                    <button onClick={createSession} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                      <Plus size={16} /> {loading ? "Cargando stock..." : "Crear inventario"}
                     </button>
                   </div>
                 </section>
@@ -6816,9 +7022,11 @@ export default function InventariosPage() {
 
                 <section className="space-y-2 rounded-2xl border bg-white p-4 shadow-sm">
                   <h2 className="font-black">Acciones de sesión</h2>
-                  <button onClick={freezeStock} disabled={loading || !selectedSessionId || isSelectedSessionFinished} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                    <FileLock2 size={16} /> Congelar stock
-                  </button>
+                  {selectedSession?.status === "frozen" && !isSelectedSessionFinished && canManageInventory && (
+                    <button onClick={unfreezeSession} disabled={loading} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-orange-300 bg-orange-50 px-4 py-3 text-sm font-black text-orange-700 disabled:opacity-40">
+                      <LockOpen size={16} /> Descongelar stock
+                    </button>
+                  )}
                   <button onClick={finishSession} disabled={!selectedSessionId || isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     Finalizar inventario
                   </button>

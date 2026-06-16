@@ -12,7 +12,8 @@ export type OfflineEntity =
   | "cyclic_counts"
   | "audit_counts"
   | "general_inventory_counts"
-  | "general_inventory_recount_counts";
+  | "general_inventory_recount_counts"
+  | "general_inventory_validation_counts";
 
 export interface OfflineQueueItem<TPayload = unknown> {
   localId: string;
