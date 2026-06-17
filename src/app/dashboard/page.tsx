@@ -1053,16 +1053,26 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             // 2. Codigos completados del ciclo por tienda (cyclic_completed_products)
             // Historico total: no se exige que el producto siga con stock hoy,
             // ya que pudo haberse vendido/ajustado despues de ser contado.
+            // IMPORTANTE: paginar con range() explicito - sin el la API corta en
+            // 1000 filas por defecto y se pierden el resto silenciosamente.
             const activeStoreIds = activeStores.map(store => store.id);
             const completedByStore = new Map<string, Set<string>>();
             for (let i = 0; i < activeStoreIds.length; i += 100) {
-                const { data } = await supabase
-                    .from("cyclic_completed_products")
-                    .select("store_id,product_id")
-                    .in("store_id", activeStoreIds.slice(i, i + 100));
-                for (const row of data || []) {
-                    if (!completedByStore.has(row.store_id)) completedByStore.set(row.store_id, new Set());
-                    completedByStore.get(row.store_id)!.add(row.product_id);
+                const chunk = activeStoreIds.slice(i, i + 100);
+                let from = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_completed_products")
+                        .select("store_id,product_id")
+                        .in("store_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (error) throw error;
+                    for (const row of data || []) {
+                        if (!completedByStore.has(row.store_id)) completedByStore.set(row.store_id, new Set());
+                        completedByStore.get(row.store_id)!.add(row.product_id);
+                    }
+                    if (!data || data.length < PAGE) break;
+                    from += PAGE;
                 }
             }
 
@@ -1092,11 +1102,19 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             let allCountsRaw: any[] = [];
             const CHUNK = 500;
             for (let i = 0; i < asgnIds.length; i += CHUNK) {
-                const { data: cd } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", asgnIds.slice(i, i + CHUNK));
-                if (cd) allCountsRaw = allCountsRaw.concat(cd);
+                const chunk = asgnIds.slice(i, i + CHUNK);
+                let from = 0;
+                while (true) {
+                    const { data: cd, error } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, location")
+                        .in("assignment_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (error) throw error;
+                    if (cd) allCountsRaw = allCountsRaw.concat(cd);
+                    if (!cd || cd.length < PAGE) break;
+                    from += PAGE;
+                }
             }
             const countedAsgns = new Set(allCountsRaw.filter((c: any) => !FLAGS.includes(c.location)).map((c: any) => c.assignment_id));
 
