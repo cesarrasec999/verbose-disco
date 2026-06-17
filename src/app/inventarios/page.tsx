@@ -164,6 +164,7 @@ function summaryQuantityStatusLabel(value: number | null, status: "no" | "assign
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
+  const [sessionsStoreFilter, setSessionsStoreFilter] = useState("");
   const [sessions, setSessions] = useState<InventorySession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [operator, setOperator] = useState<InventoryOperator | null>(null);
@@ -1756,19 +1757,32 @@ export default function InventariosPage() {
     }
   }
 
-  async function loadInitial(preferredSessionId = "") {
-    setLoading(true);
-    const [storesRes, sessionsRes] = await Promise.all([
-      supabase.from("stores").select("*").eq("is_active", true).order("name"),
-      supabase
-        .from("general_inventory_sessions")
-        .select("*, stores(name)")
-        .in("status", ["planned", "open", "frozen", "finished"])
-        .order("created_at", { ascending: false })
-        .limit(80),
-    ]);
+  // Si dos tiendas comparten nombre (mismo nombre, distinto id en stores),
+  // expande la busqueda a ambos ids para no perder sesiones registradas
+  // bajo el id "hermano" del par.
+  function expandStoreIds(id: string, storeList: Store[]): string[] {
+    const target = storeList.find(s => s.id === id);
+    if (!target) return [id];
+    const key = String(target.name || "").trim().toLowerCase();
+    const siblings = storeList.filter(s => String(s.name || "").trim().toLowerCase() === key).map(s => s.id);
+    return siblings.length > 0 ? siblings : [id];
+  }
 
+  async function loadInitial(preferredSessionId = "", storeFilterOverride?: string) {
+    setLoading(true);
+    const filterValue = storeFilterOverride !== undefined ? storeFilterOverride : sessionsStoreFilter;
+    const storesRes = await supabase.from("stores").select("*").eq("is_active", true).order("name");
     const storeRows = (storesRes.data || []) as Store[];
+
+    let sessionsQuery = supabase
+      .from("general_inventory_sessions")
+      .select("*, stores(name)")
+      .in("status", ["planned", "open", "frozen", "finished"])
+      .order("created_at", { ascending: false })
+      .limit(80);
+    if (filterValue) sessionsQuery = sessionsQuery.in("store_id", expandStoreIds(filterValue, storeRows));
+    const sessionsRes = await sessionsQuery;
+
     const sessionRows = (sessionsRes.data || []).map((row: any) => ({
       ...row,
       store_name: row.stores?.name,
@@ -7002,6 +7016,14 @@ export default function InventariosPage() {
 
                 <section className="rounded-2xl border bg-white p-4 shadow-sm">
                   <h2 className="mb-3 font-black">Inventario activo</h2>
+                  <select
+                    value={sessionsStoreFilter}
+                    onChange={event => { const v = event.target.value; setSessionsStoreFilter(v); void loadInitial("", v); }}
+                    className="mb-2 w-full rounded-xl border bg-white px-3 py-2.5 text-xs font-semibold"
+                  >
+                    <option value="">Buscar en: todas las tiendas</option>
+                    {stores.filter(s => !!s.erp_sede).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  </select>
                   <select value={selectedSessionId} onChange={event => setSelectedSessionId(event.target.value)} className="w-full rounded-xl border bg-white px-3 py-3 text-sm">
                     <option value="">Selecciona inventario</option>
                     {sessions.map(session => (

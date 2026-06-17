@@ -69,7 +69,7 @@ export default function AjustesProvisionalesPage() {
   useEffect(() => {
     supabase
       .from("stores")
-      .select("id, code, name, is_active, erp_sede")
+      .select("id, code, name, is_active, erp_sede, erp_store_no")
       .order("name")
       .then(({ data }) => setStores((data || []) as Store[]));
   }, []);
@@ -81,14 +81,13 @@ export default function AjustesProvisionalesPage() {
     [user]
   );
 
-  // El store_id del usuario apunta a la entrada de código corto (con erp_sede).
-  // Necesitamos el código numérico ERP (sin erp_sede) para filtrar erp_movements.
+  // erp_store_no es el codigo numerico ERP que usa erp_movements (distinto
+  // del code corto, que usan Recepcion/Stock/Picking).
   const userErpStoreCode = useMemo(() => {
     if (canViewAllStores || !user?.store_id || stores.length === 0) return null;
     const userStore = stores.find(s => s.id === user.store_id);
     if (!userStore) return null;
-    const erpEntry = stores.find(s => s.name === userStore.name && !s.erp_sede);
-    return erpEntry?.code ?? userStore.code;
+    return userStore.erp_store_no ?? userStore.code;
   }, [canViewAllStores, user, stores]);
 
   // ─── Carga de datos ──────────────────────────────────────────────────────────
@@ -157,7 +156,7 @@ export default function AjustesProvisionalesPage() {
     }
     return result.map(r => ({
       ...r,
-      store_name: stores.find(s => s.code === r.store_code)?.name || r.store_code,
+      store_name: stores.find(s => s.erp_store_no === r.store_code)?.name || r.store_code,
       description: r.description || r.product_code,
       unit: r.unit || "",
     })).sort((a, b) =>
@@ -268,9 +267,9 @@ export default function AjustesProvisionalesPage() {
                 >
                   <option value="">Todas las tiendas</option>
                   {stores
-                    .filter(s => s.is_active && !s.erp_sede)
+                    .filter(s => s.is_active && !!s.erp_store_no)
                     .map(s => (
-                      <option key={s.code} value={s.code}>{s.name}</option>
+                      <option key={s.id} value={s.erp_store_no!}>{s.name}</option>
                     ))}
                 </select>
               </div>

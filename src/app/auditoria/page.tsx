@@ -254,6 +254,7 @@ export default function AuditoriaPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [sessions, setSessions] = useState<AuditSession[]>([]);
   const [storeId, setStoreId] = useState("");
+  const [sessionsStoreFilter, setSessionsStoreFilter] = useState("");
   const [session, setSession] = useState<AuditSession | null>(null);
   const [items, setItems] = useState<AuditItem[]>([]);
   const [counts, setCounts] = useState<AuditCount[]>([]);
@@ -515,7 +516,19 @@ export default function AuditoriaPage() {
     }
   }
 
-  async function loadSessions(activeUser = user) {
+  // Si dos tiendas comparten nombre (mismo nombre, distinto id en stores),
+  // expande la busqueda a ambos ids para no perder sesiones registradas
+  // bajo el id "hermano" del par.
+  function expandStoreIds(id: string): string[] {
+    const target = stores.find(s => s.id === id);
+    if (!target) return [id];
+    const key = String(target.name || "").trim().toLowerCase();
+    const siblings = stores.filter(s => String(s.name || "").trim().toLowerCase() === key).map(s => s.id);
+    return siblings.length > 0 ? siblings : [id];
+  }
+
+  async function loadSessions(activeUser = user, storeFilterOverride?: string) {
+    const filterValue = storeFilterOverride !== undefined ? storeFilterOverride : sessionsStoreFilter;
     let query = supabase
       .from("audit_sessions")
       .select("*, stores(name), cyclic_users(full_name)")
@@ -523,6 +536,8 @@ export default function AuditoriaPage() {
       .limit(50);
     if (activeUser && !activeUser.can_access_all_stores && activeUser.store_id) {
       query = query.eq("store_id", activeUser.store_id);
+    } else if (filterValue) {
+      query = query.in("store_id", expandStoreIds(filterValue));
     }
     const { data } = await query;
     setSessions((data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[]);
@@ -2123,7 +2138,19 @@ export default function AuditoriaPage() {
 
             <section className="space-y-4">
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
-                <h2 className="font-black">Sesiones recientes</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-black">Sesiones recientes</h2>
+                  {user.can_access_all_stores && (
+                    <select
+                      value={sessionsStoreFilter}
+                      onChange={e => { const v = e.target.value; setSessionsStoreFilter(v); void loadSessions(user, v); }}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold"
+                    >
+                      <option value="">Todas las tiendas</option>
+                      {stores.filter(s => !!s.erp_sede).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  )}
+                </div>
                 <div className="mt-3 grid max-h-80 gap-2 overflow-auto md:grid-cols-2">
                   {sessions.map(s => (
                     <div key={s.id} className={`rounded-xl border p-3 text-xs hover:bg-slate-50 ${session?.id === s.id ? "border-blue-600 bg-blue-50" : ""}`}>

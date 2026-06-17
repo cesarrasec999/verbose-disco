@@ -21,6 +21,7 @@ export type Store = {
   code: string;
   name: string;
   erp_sede?: string | null;
+  erp_store_no?: string | null;
   is_active: boolean;
 };
 
