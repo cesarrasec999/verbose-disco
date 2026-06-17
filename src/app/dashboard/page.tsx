@@ -664,7 +664,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     async function loadStores() {
         if (!user) return;
         const { data: all } = await supabase.from("stores").select("*").order("name");
-        const deduped = Array.from(new Map((all || []).map((s: any) => [s.id, s])).values()) as Store[];
+        const deduped = Array.from(new Map((all || []).map((s: any) => [String(s.name || s.id).toLowerCase(), s])).values()) as Store[];
         setAllStores(deduped);
         const active = deduped.filter(s => s.is_active);
         if (user.can_access_all_stores) {
@@ -4192,6 +4192,18 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             }
         }
 
+        // Expandir al conjunto de IDs con el mismo nombre (la tabla stores tiene entradas duplicadas por nombre)
+        const selectedStoreName = locationStoreId ? allStores.find(s => s.id === locationStoreId)?.name : null;
+        const equivalentStoreIds = selectedStoreName
+            ? allStores.filter(s => String(s.name || "").toLowerCase() === selectedStoreName.toLowerCase()).map(s => s.id)
+            : locationStoreId ? [locationStoreId] : [];
+
+        function applyStoreFilter<T extends ReturnType<typeof supabase.from>>(q: any): any {
+            if (equivalentStoreIds.length === 0) return q;
+            const parts = [...equivalentStoreIds.map(id => `store_id.eq.${id}`), "store_id.is.null"].join(",");
+            return q.or(parts);
+        }
+
         const productIds = [...productMap.keys()];
         const byId = new Map<string, ProductLocation>();
         if (productIds.length > 0) {
@@ -4202,7 +4214,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 .in("product_id", cleanIds)
                 .eq("is_active", true)
                 .order("updated_at", { ascending: false });
-            if (locationStoreId) q1 = q1.or(`store_id.eq.${locationStoreId},store_id.is.null`);
+            q1 = applyStoreFilter(q1);
             const { data, error } = await q1;
             if (error) throw error;
             for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
@@ -4216,7 +4228,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             .ilike("location", `%${locationTerm}%`)
             .order("updated_at", { ascending: false })
             .limit(200);
-        if (locationStoreId) q2 = q2.or(`store_id.eq.${locationStoreId},store_id.is.null`);
+        q2 = applyStoreFilter(q2);
         const { data: locationRows, error: locationError } = await q2;
         if (locationError) throw locationError;
         for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
