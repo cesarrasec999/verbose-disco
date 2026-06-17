@@ -1320,7 +1320,21 @@ export default function RecepcionPage() {
   }), [scopedRequestGroups, filterStatus, filterErpStatus, reasonFilter]);
 
   const destStoreOptions = useMemo(() => {
+    // Base: todas las tiendas activas (no solo las que aparecen en la pagina
+    // de solicitudes recientes cargadas, que puede dejar fuera tiendas con
+    // poco volumen de recepcion). Si el nombre esta duplicado entre dos
+    // registros de stores, se prefiere el que tiene erp_sede (el que usa el ERP).
+    const dedupedStores = new Map<string, Store>();
+    for (const s of stores) {
+      const key = String(s.name || "").toLowerCase();
+      const existing = dedupedStores.get(key);
+      if (!existing || (!existing.erp_sede && s.erp_sede)) dedupedStores.set(key, s);
+    }
+
     const seen = new Map<string, string>();
+    for (const s of dedupedStores.values()) {
+      if (s.code) seen.set(s.code, s.name);
+    }
     for (const req of requestGroups) {
       for (const child of req.child_requests) {
         const code = child.destination_store_code;
@@ -1330,7 +1344,7 @@ export default function RecepcionPage() {
     return [...seen.entries()]
       .map(([code, name]) => ({ code, name }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [requestGroups]);
+  }, [stores, requestGroups]);
 
   const summaryRows = useMemo(() => {
     const grouped = new Map<string, {
