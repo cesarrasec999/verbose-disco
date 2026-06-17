@@ -664,8 +664,9 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     async function loadStores() {
         if (!user) return;
         const { data: all } = await supabase.from("stores").select("*").order("name");
-        setAllStores((all || []) as Store[]);
-        const active = (all || []).filter((s: any) => s.is_active) as Store[];
+        const deduped = Array.from(new Map((all || []).map((s: any) => [s.id, s])).values()) as Store[];
+        setAllStores(deduped);
+        const active = deduped.filter(s => s.is_active);
         if (user.can_access_all_stores) {
             setStores(active);
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
