@@ -4196,26 +4196,28 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         const byId = new Map<string, ProductLocation>();
         if (productIds.length > 0) {
             const cleanIds = [...new Set(productIds)].filter(Boolean);
-            const { data, error } = await supabase
+            let q1 = supabase
                 .from("product_locations")
                 .select("*, cyclic_products(sku,description,unit,cost)")
                 .in("product_id", cleanIds)
                 .eq("is_active", true)
-                .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
                 .order("updated_at", { ascending: false });
+            if (locationStoreId) q1 = q1.or(`store_id.eq.${locationStoreId},store_id.is.null`);
+            const { data, error } = await q1;
             if (error) throw error;
             for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
         }
 
         const locationTerm = term.toUpperCase();
-        const { data: locationRows, error: locationError } = await supabase
+        let q2 = supabase
             .from("product_locations")
             .select("*, cyclic_products(sku,description,unit,cost)")
             .eq("is_active", true)
             .ilike("location", `%${locationTerm}%`)
-            .or(locationStoreId ? `store_id.eq.${locationStoreId},store_id.is.null` : "store_id.is.null")
             .order("updated_at", { ascending: false })
             .limit(200);
+        if (locationStoreId) q2 = q2.or(`store_id.eq.${locationStoreId},store_id.is.null`);
+        const { data: locationRows, error: locationError } = await q2;
         if (locationError) throw locationError;
         for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
 
@@ -7850,7 +7852,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                         value={locationStoreId}
                                         onChange={e => { setLocationStoreId(e.target.value); setLocationResults([]); setMultiLocationResults([]); }}
                                     >
-                                        <option value="">Selecciona tienda</option>
+                                        <option value="">Todas las tiendas</option>
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 )}
