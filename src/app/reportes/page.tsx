@@ -163,6 +163,12 @@ function businessDays(startISO: string, endISO: string, holidays: Set<string>) {
   return days;
 }
 
+function errorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  return String(e);
+}
+
 function normalizeRotationStoreKey(value: string | null | undefined) {
   return String(value || "")
     .normalize("NFD")
@@ -559,7 +565,7 @@ export default function ReportesPage() {
       await reloadSnapshots();
       setMessage("FotografÃƒÂ­a eliminada.");
     } catch (error: unknown) {
-      setMessage("Error eliminando fotografÃƒÂ­a: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error eliminando fotografÃƒÂ­a: " + errorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -601,7 +607,7 @@ export default function ReportesPage() {
       setMessage(`Rotaciones recalculadas para ${rotationPeriod}.`);
       await checkRotationCoverage();
     } catch (error: unknown) {
-      setMessage("Error recalculando rotaciones: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error recalculando rotaciones: " + errorMessage(error));
     } finally {
       setRecalculating(false);
     }
@@ -699,7 +705,7 @@ export default function ReportesPage() {
       setProgress("");
       return sortedValuation;
     } catch (error: unknown) {
-      setMessage("Error generando reporte: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error generando reporte: " + errorMessage(error));
       return [];
     } finally {
       setLoading(false);
@@ -914,7 +920,7 @@ export default function ReportesPage() {
       }
       setProgress("");
     } catch (error: unknown) {
-      setMessage("No se pudo leer ventas. Primero ejecuta el SQL y alimenta erp_store_sales_daily desde el sync del servidor. Detalle: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("No se pudo leer ventas. Primero ejecuta el SQL y alimenta erp_store_sales_daily desde el sync del servidor. Detalle: " + errorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -931,9 +937,14 @@ export default function ReportesPage() {
     setMessage("Generando detalle de rotaciones...");
     try {
       const periodDate = `${rotationPeriod}-01`;
-      const { data, error } = await supabase.rpc("get_rotation_report", { p_month: periodDate });
-      if (error) throw error;
-      const rows = (data || []) as {
+      const res = await fetch("/api/admin/rotacion-detalle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period_month: periodDate }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `Error ${res.status}`);
+      const rows = (json.rows || []) as {
         report_store_name: string;
         report_product_code: string;
         report_description: string;
@@ -966,7 +977,7 @@ export default function ReportesPage() {
       XLSX.writeFile(wb, `rotaciones-detalle-${rotationPeriod}.xlsx`);
       setMessage(`${rows.length.toLocaleString("es-PE")} registros exportados.`);
     } catch (e) {
-      setMessage("Error: " + (e instanceof Error ? e.message : String(e)));
+      setMessage("Error: " + errorMessage(e));
     } finally {
       setDownloadingDetail(false);
     }
