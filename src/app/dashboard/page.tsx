@@ -101,6 +101,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     // ─── Datos globales ─────────────────────────────────────
     const [stores, setStores]         = useState<Store[]>([]);
     const [allStores, setAllStores]   = useState<Store[]>([]);
+    const [allStoresRaw, setAllStoresRaw] = useState<Store[]>([]);
     const [products, setProducts]     = useState<Product[]>([]);
 
     // ─── Selector de tienda / fecha ─────────────────────────
@@ -664,7 +665,9 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     async function loadStores() {
         if (!user) return;
         const { data: all } = await supabase.from("stores").select("*").order("name");
-        const deduped = Array.from(new Map((all || []).map((s: any) => [String(s.name || s.id).toLowerCase(), s])).values()) as Store[];
+        const raw = (all || []) as Store[];
+        setAllStoresRaw(raw);
+        const deduped = Array.from(new Map(raw.map((s: any) => [String(s.name || s.id).toLowerCase(), s])).values()) as Store[];
         setAllStores(deduped);
         const active = deduped.filter(s => s.is_active);
         if (user.can_access_all_stores) {
@@ -4192,10 +4195,10 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             }
         }
 
-        // Expandir al conjunto de IDs con el mismo nombre (la tabla stores tiene entradas duplicadas por nombre)
+        // Expandir al conjunto de IDs con el mismo nombre usando el listado raw (sin deduplicar)
         const selectedStoreName = locationStoreId ? allStores.find(s => s.id === locationStoreId)?.name : null;
         const equivalentStoreIds = selectedStoreName
-            ? allStores.filter(s => String(s.name || "").toLowerCase() === selectedStoreName.toLowerCase()).map(s => s.id)
+            ? allStoresRaw.filter(s => String(s.name || "").toLowerCase() === selectedStoreName.toLowerCase()).map(s => s.id)
             : locationStoreId ? [locationStoreId] : [];
 
         function applyStoreFilter<T extends ReturnType<typeof supabase.from>>(q: any): any {
