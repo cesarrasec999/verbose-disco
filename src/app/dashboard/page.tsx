@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
 import * as XLSX from "xlsx";
-import { BarChart3, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
+import { BarChart3, Boxes, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { fetchCyclicDayData } from "@/features/ciclicos/api";
@@ -34,6 +34,7 @@ import type {
     Role,
     StockGeneralRow,
     Store,
+    StoreCoverage,
     StoreProgress,
     TabKey,
     ValTabKey,
@@ -248,6 +249,8 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     const [storeProgressLoading, setStoreProgressLoading] = useState(false);
     const [globalStockProgress, setGlobalStockProgress] = useState<GlobalStockProgress|null>(null);
     const [globalStockProgressLoading, setGlobalStockProgressLoading] = useState(false);
+    const [storeCoverageData, setStoreCoverageData] = useState<StoreCoverage[]>([]);
+    const [storeCoverageLoading, setStoreCoverageLoading] = useState(false);
 
     // ─── Dashboard drill-down: tienda clickeada en vista día ─
     const [dashDrillSource, setDashDrillSource] = useState(false); // true = venimos del dashboard
@@ -667,7 +670,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         const { data: all } = await supabase.from("stores").select("*").order("name");
         const raw = (all || []) as Store[];
         setAllStoresRaw(raw);
-        const deduped = Array.from(new Map(raw.map((s: any) => [String(s.name || s.id).toLowerCase(), s])).values()) as Store[];
+        const dedupedMap = new Map<string, Store>();
+        for (const s of raw) {
+            const key = String(s.name || s.id).toLowerCase();
+            const existing = dedupedMap.get(key);
+            // Si hay tiendas duplicadas por nombre, preferir siempre la que tiene erp_sede
+            // (necesaria para cruzar stock_general); el orden de Postgres para filas con
+            // el mismo nombre no es estable, asi que no se puede confiar en "la ultima".
+            if (!existing || (!existing.erp_sede && s.erp_sede)) dedupedMap.set(key, s);
+        }
+        const deduped = Array.from(dedupedMap.values());
         setAllStores(deduped);
         const active = deduped.filter(s => s.is_active);
         if (user.can_access_all_stores) {
@@ -998,6 +1010,129 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             showMessage("Error cargando avance global: " + (error?.message || error), "error");
         } finally {
             setGlobalStockProgressLoading(false);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  VALIDADOR — COBERTURA POR TIENDA (stock del ciclo + dia)
+    // ════════════════════════════════════════════════════════
+    async function loadStoreCoverage(date: string) {
+        setStoreCoverageLoading(true);
+        try {
+            const activeStores = allStores.filter(store => store.is_active);
+            const sedeToStoreId = new Map<string, string>();
+            for (const store of activeStores) {
+                const sede = String(store.erp_sede || store.name || "").trim();
+                if (sede) sedeToStoreId.set(sede, store.id);
+            }
+
+            // 1. Codigos con stock > 0 por tienda
+            const productBySku = new Map(products.map(product => [fullProductCode(product.sku), product.id]));
+            const stockByStore = new Map<string, Set<string>>();
+            const PAGE = 1000;
+            let page = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from("stock_general")
+                    .select("sede,codsap,stock")
+                    .gt("stock", 0)
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) throw error;
+                for (const row of data || []) {
+                    const storeId = sedeToStoreId.get(String(row.sede || "").trim());
+                    const productId = productBySku.get(fullProductCode(row.codsap));
+                    if (storeId && productId) {
+                        if (!stockByStore.has(storeId)) stockByStore.set(storeId, new Set());
+                        stockByStore.get(storeId)!.add(productId);
+                    }
+                }
+                if (!data || data.length < PAGE) break;
+                page += 1;
+            }
+
+            // 2. Codigos completados del ciclo por tienda (cyclic_completed_products)
+            const storeIdsWithStock = [...stockByStore.keys()];
+            const completedByStore = new Map<string, Set<string>>();
+            for (let i = 0; i < storeIdsWithStock.length; i += 100) {
+                const { data } = await supabase
+                    .from("cyclic_completed_products")
+                    .select("store_id,product_id")
+                    .in("store_id", storeIdsWithStock.slice(i, i + 100));
+                for (const row of data || []) {
+                    if (!stockByStore.get(row.store_id)?.has(row.product_id)) continue;
+                    if (!completedByStore.has(row.store_id)) completedByStore.set(row.store_id, new Set());
+                    completedByStore.get(row.store_id)!.add(row.product_id);
+                }
+            }
+
+            // 3. Asignaciones y conteos del dia, igual que loadStoreProgress
+            let asgnData: any[] = [];
+            page = 0;
+            while (true) {
+                const { data: chunk, error } = await supabase
+                    .from("cyclic_assignments")
+                    .select("id, store_id")
+                    .eq("assigned_date", date)
+                    .range(page * PAGE, (page + 1) * PAGE - 1);
+                if (error) break;
+                if (chunk && chunk.length > 0) asgnData = asgnData.concat(chunk);
+                if (!chunk || chunk.length < PAGE) break;
+                page++;
+            }
+
+            const asgnByStore = new Map<string, string[]>();
+            for (const a of asgnData) {
+                if (!asgnByStore.has(a.store_id)) asgnByStore.set(a.store_id, []);
+                asgnByStore.get(a.store_id)!.push(a.id);
+            }
+
+            const asgnIds = asgnData.map((a: any) => a.id);
+            const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
+            let allCountsRaw: any[] = [];
+            const CHUNK = 500;
+            for (let i = 0; i < asgnIds.length; i += CHUNK) {
+                const { data: cd } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id, location")
+                    .in("assignment_id", asgnIds.slice(i, i + CHUNK));
+                if (cd) allCountsRaw = allCountsRaw.concat(cd);
+            }
+            const countedAsgns = new Set(allCountsRaw.filter((c: any) => !FLAGS.includes(c.location)).map((c: any) => c.assignment_id));
+
+            // 4. Combinar: union de tiendas con stock y tiendas con asignacion del dia
+            const allStoreIds = new Set<string>([...storeIdsWithStock, ...asgnByStore.keys()]);
+            const storeNameMap = new Map(activeStores.map(store => [store.id, store.name]));
+
+            const result: StoreCoverage[] = [];
+            for (const storeId of allStoreIds) {
+                const totalStockCodes = stockByStore.get(storeId)?.size || 0;
+                const completedCodes = completedByStore.get(storeId)?.size || 0;
+                const storeAsgns = asgnByStore.get(storeId) || [];
+                const totalAsignados = storeAsgns.length;
+                const totalContados = storeAsgns.filter(id => countedAsgns.has(id)).length;
+                result.push({
+                    store_id: storeId,
+                    store_name: storeNameMap.get(storeId) || storeId,
+                    total_stock_codes: totalStockCodes,
+                    completed_codes: completedCodes,
+                    pending_codes: Math.max(0, totalStockCodes - completedCodes),
+                    pct_stock: totalStockCodes > 0 ? Math.round((completedCodes / totalStockCodes) * 100) : 0,
+                    total_asignados: totalAsignados,
+                    total_contados: totalContados,
+                    pct_dia: totalAsignados > 0 ? Math.round((totalContados / totalAsignados) * 100) : 0,
+                });
+            }
+
+            result.sort((a, b) => {
+                if (a.pct_stock === 100 && b.pct_stock < 100) return 1;
+                if (b.pct_stock === 100 && a.pct_stock < 100) return -1;
+                return a.store_name.localeCompare(b.store_name);
+            });
+            setStoreCoverageData(result);
+        } catch (e: any) {
+            showMessage("Error cargando cobertura por tienda: " + (e?.message || e), "error");
+        } finally {
+            setStoreCoverageLoading(false);
         }
     }
 
@@ -6016,6 +6151,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                     { key: "registros", icon: ClipboardList, label: "Registros de conteo ciclico", permission: canViewCountRecords },
                                     { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo", permission: canViewSummaryByCode },
                                     { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas", permission: canViewStoreProgress },
+                                    { key: "cobertura", icon: Boxes,         label: "Cobertura por tienda", permission: canViewStoreProgress },
                                     { key: "dashboard", icon: LineChart,     label: "Dashboard", permission: canViewCyclicDashboard },
                                 ] as const).filter(item => item.permission).map(item => (
                                     (() => {
@@ -6032,6 +6168,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                             if (item.key === "registros" && valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "resumen"   && valStoreId && valStoreId !== ALL_STORES_VALUE) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
                                             if (item.key === "progreso")  { loadStoreProgress(dashDate); if (isAdmin) loadGlobalStockProgress(); }
+                                            if (item.key === "cobertura") loadStoreCoverage(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                                             activeTab === "validador" && valTab === item.key
@@ -6233,6 +6370,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                              activeTab === "validador" && valTab === "resumen"   ? "Resumen por codigo" :
                              activeTab === "validador" && valTab === "resultados"? "Resultados de conteo" :
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
+                             activeTab === "validador" && valTab === "cobertura" ? "Cobertura por tienda" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
                              activeTab === "ubicaciones" ? "Ubicaciones" :
                              activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
@@ -6893,6 +7031,70 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                 )}
                             </section>
                         </>
+                    )}
+
+                    {/* ── SUB-TAB: COBERTURA POR TIENDA ────────────────── */}
+                    {valTab === "cobertura" && canViewStoreProgress && (
+                        <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
+                            <div className="flex items-center justify-between flex-wrap gap-3">
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-900">📦 Cobertura por tienda</h2>
+                                    <p className="text-slate-500 text-sm mt-0.5">Códigos contados del ciclo vs. todos los códigos con stock de cada tienda, junto al avance de asignaciones del día.</p>
+                                </div>
+                                <div className="flex items-center gap-3 flex-wrap">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha (avance del día)</label>
+                                        <input type="date" className="border rounded-2xl p-2.5 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
+                                    </div>
+                                    <button
+                                        onClick={() => loadStoreCoverage(dashDate)}
+                                        disabled={storeCoverageLoading}
+                                        className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-50 self-end"
+                                    >
+                                        {storeCoverageLoading ? "Calculando..." : "🔄 Actualizar"}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {storeCoverageLoading ? (
+                                <div className="text-center text-slate-400 py-8">Calculando cobertura...</div>
+                            ) : storeCoverageData.length === 0 ? (
+                                <div className="text-center text-slate-400 py-8">
+                                    Sin datos todavía. Presiona <b>Actualizar</b> para calcular la cobertura.
+                                </div>
+                            ) : (
+                                <div className="overflow-auto">
+                                    <table className="w-full text-sm min-w-[760px]">
+                                        <thead className="bg-slate-100 text-xs text-slate-600">
+                                            <tr>
+                                                <th className="p-2 text-left">Tienda</th>
+                                                <th className="p-2 text-center">Con stock</th>
+                                                <th className="p-2 text-center">Contados (ciclo)</th>
+                                                <th className="p-2 text-center">Pendientes (ciclo)</th>
+                                                <th className="p-2 text-center">% ciclo</th>
+                                                <th className="p-2 text-center">Asignados (día)</th>
+                                                <th className="p-2 text-center">Contados (día)</th>
+                                                <th className="p-2 text-center">% día</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {storeCoverageData.map(sc => (
+                                                <tr key={sc.store_id} className="border-b">
+                                                    <td className="p-2 font-semibold text-slate-900">{sc.store_name}</td>
+                                                    <td className="p-2 text-center">{formatNumber(sc.total_stock_codes)}</td>
+                                                    <td className="p-2 text-center text-emerald-700 font-bold">{formatNumber(sc.completed_codes)}</td>
+                                                    <td className="p-2 text-center text-amber-700">{formatNumber(sc.pending_codes)}</td>
+                                                    <td className={`p-2 text-center font-bold ${sc.pct_stock === 100 ? "text-green-700" : sc.pct_stock > 0 ? "text-amber-600" : "text-slate-400"}`}>{sc.pct_stock}%</td>
+                                                    <td className="p-2 text-center">{formatNumber(sc.total_asignados)}</td>
+                                                    <td className="p-2 text-center">{formatNumber(sc.total_contados)}</td>
+                                                    <td className={`p-2 text-center font-bold ${sc.pct_dia === 100 ? "text-green-700" : sc.pct_dia > 0 ? "text-amber-600" : "text-slate-400"}`}>{sc.pct_dia}%</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </section>
                     )}
 
                     {/* ── SUB-TAB: DASHBOARD ───────────────────────────── */}

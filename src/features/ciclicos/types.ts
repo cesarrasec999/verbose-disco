@@ -1,6 +1,6 @@
 export type Role = "Operario" | "Cajero" | "Validador" | "Supervisor" | "Administrador";
 export type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
-export type ValTabKey = "asignar" | "no_inventariables" | "registros" | "resumen" | "progreso" | "dashboard" | "resultados";
+export type ValTabKey = "asignar" | "no_inventariables" | "registros" | "resumen" | "progreso" | "cobertura" | "dashboard" | "resultados";
 
 export type CyclicUser = {
   id: string;
@@ -146,6 +146,18 @@ export type GlobalStockProgress = {
   completed_codes: number;
   pending_codes: number;
   pct: number;
+};
+
+export type StoreCoverage = {
+  store_id: string;
+  store_name: string;
+  total_stock_codes: number;
+  completed_codes: number;
+  pending_codes: number;
+  pct_stock: number;
+  total_asignados: number;
+  total_contados: number;
+  pct_dia: number;
 };
 
 export type AllStoreAssignmentSummary = {
