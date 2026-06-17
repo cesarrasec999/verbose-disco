@@ -365,12 +365,12 @@ export default function RecepcionPage() {
   const requestScopeKey = useCallback(() => {
     if (!user) return "anonymous";
     if (canViewAllStores) {
-      return `${user.id}:admin:all`;
+      return `${user.id}:admin:${storeFilter || "all"}`;
     }
     const store = stores.find(item => item.id === user.store_id);
     const codes = storeCodes(store);
     return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}`;
-  }, [canViewAllStores, storeCodes, stores, user]);
+  }, [canViewAllStores, storeCodes, stores, user, storeFilter]);
 
   const applyRequests = useCallback((rows: ReceptionRequest[]) => {
     setRequests(rows);
@@ -524,7 +524,7 @@ export default function RecepcionPage() {
     setLoading(true);
     try {
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
-      const codes = store ? storeCodes(store) : [];
+      const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
       const syncStatusPromise = supabase
         .from("erp_sync_status").select("synced_at,updated_at")
         .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
@@ -571,7 +571,7 @@ export default function RecepcionPage() {
     const { signal } = controller;
     try {
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
-      const codes = store ? storeCodes(store) : [];
+      const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
       const offset = loadedOffsetRef.current;
       const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), offset);
       if (signal.aborted || !mountedRef.current) return;
