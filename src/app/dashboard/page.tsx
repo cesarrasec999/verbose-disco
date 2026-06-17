@@ -1051,15 +1051,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             }
 
             // 2. Codigos completados del ciclo por tienda (cyclic_completed_products)
-            const storeIdsWithStock = [...stockByStore.keys()];
+            // Historico total: no se exige que el producto siga con stock hoy,
+            // ya que pudo haberse vendido/ajustado despues de ser contado.
+            const activeStoreIds = activeStores.map(store => store.id);
             const completedByStore = new Map<string, Set<string>>();
-            for (let i = 0; i < storeIdsWithStock.length; i += 100) {
+            for (let i = 0; i < activeStoreIds.length; i += 100) {
                 const { data } = await supabase
                     .from("cyclic_completed_products")
                     .select("store_id,product_id")
-                    .in("store_id", storeIdsWithStock.slice(i, i + 100));
+                    .in("store_id", activeStoreIds.slice(i, i + 100));
                 for (const row of data || []) {
-                    if (!stockByStore.get(row.store_id)?.has(row.product_id)) continue;
                     if (!completedByStore.has(row.store_id)) completedByStore.set(row.store_id, new Set());
                     completedByStore.get(row.store_id)!.add(row.product_id);
                 }
@@ -1099,8 +1100,8 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             }
             const countedAsgns = new Set(allCountsRaw.filter((c: any) => !FLAGS.includes(c.location)).map((c: any) => c.assignment_id));
 
-            // 4. Combinar: union de tiendas con stock y tiendas con asignacion del dia
-            const allStoreIds = new Set<string>([...storeIdsWithStock, ...asgnByStore.keys()]);
+            // 4. Combinar: union de tiendas con stock, con completados, o con asignacion del dia
+            const allStoreIds = new Set<string>([...stockByStore.keys(), ...completedByStore.keys(), ...asgnByStore.keys()]);
             const storeNameMap = new Map(activeStores.map(store => [store.id, store.name]));
 
             const result: StoreCoverage[] = [];
@@ -1116,7 +1117,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     total_stock_codes: totalStockCodes,
                     completed_codes: completedCodes,
                     pending_codes: Math.max(0, totalStockCodes - completedCodes),
-                    pct_stock: totalStockCodes > 0 ? Math.round((completedCodes / totalStockCodes) * 100) : 0,
+                    pct_stock: totalStockCodes > 0 ? Math.min(100, Math.round((completedCodes / totalStockCodes) * 100)) : 0,
                     total_asignados: totalAsignados,
                     total_contados: totalContados,
                     pct_dia: totalAsignados > 0 ? Math.round((totalContados / totalAsignados) * 100) : 0,
