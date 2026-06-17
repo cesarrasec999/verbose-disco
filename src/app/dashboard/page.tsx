@@ -23,7 +23,6 @@ import type {
     CountRecord,
     CyclicUser,
     DashboardRow,
-    GlobalStockProgress,
     LocationEntryProductRow,
     LocationRow,
     NonInventoryProduct,
@@ -247,8 +246,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     // ─── Dashboard en validador: progreso por tienda ─────────
     const [storeProgressData, setStoreProgressData] = useState<StoreProgress[]>([]);
     const [storeProgressLoading, setStoreProgressLoading] = useState(false);
-    const [globalStockProgress, setGlobalStockProgress] = useState<GlobalStockProgress|null>(null);
-    const [globalStockProgressLoading, setGlobalStockProgressLoading] = useState(false);
     const [storeCoverageData, setStoreCoverageData] = useState<StoreCoverage[]>([]);
     const [storeCoverageLoading, setStoreCoverageLoading] = useState(false);
 
@@ -943,73 +940,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             showMessage("Error cargando progreso: " + e.message, "error");
         } finally {
             setStoreProgressLoading(false);
-        }
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  DASHBOARD — CARGA
-    // ════════════════════════════════════════════════════════
-    async function loadGlobalStockProgress() {
-        if (!isAdmin) return;
-        setGlobalStockProgressLoading(true);
-        try {
-            const activeStores = allStores.filter(store => store.is_active);
-            const sedeToStoreId = new Map<string, string>();
-            for (const store of activeStores) {
-                const sede = String(store.erp_sede || store.name || "").trim();
-                if (sede) sedeToStoreId.set(sede, store.id);
-            }
-
-            const productBySku = new Map(products.map(product => [fullProductCode(product.sku), product.id]));
-            const stockPairs = new Set<string>();
-            const PAGE = 1000;
-            let page = 0;
-            while (true) {
-                const { data, error } = await supabase
-                    .from("stock_general")
-                    .select("sede,codsap,stock")
-                    .gt("stock", 0)
-                    .range(page * PAGE, (page + 1) * PAGE - 1);
-                if (error) throw error;
-                for (const row of data || []) {
-                    const storeId = sedeToStoreId.get(String(row.sede || "").trim());
-                    const productId = productBySku.get(fullProductCode(row.codsap));
-                    if (storeId && productId) stockPairs.add(`${storeId}__${productId}`);
-                }
-                if (!data || data.length < PAGE) break;
-                page += 1;
-            }
-
-            const completed = new Set<string>();
-            const stockKeys = [...stockPairs];
-            const storeIds = [...new Set(stockKeys.map(key => key.split("__")[0]))];
-            const productIds = [...new Set(stockKeys.map(key => key.split("__")[1]))];
-            for (let i = 0; i < storeIds.length; i += 100) {
-                for (let j = 0; j < productIds.length; j += 500) {
-                    const { data } = await supabase
-                        .from("cyclic_completed_products")
-                        .select("store_id,product_id")
-                        .in("store_id", storeIds.slice(i, i + 100))
-                        .in("product_id", productIds.slice(j, j + 500));
-                    for (const row of data || []) {
-                        const key = `${row.store_id}__${row.product_id}`;
-                        if (stockPairs.has(key)) completed.add(key);
-                    }
-                }
-            }
-
-            const total = stockPairs.size;
-            const completedCount = completed.size;
-            setGlobalStockProgress({
-                total_stock_codes: total,
-                completed_codes: completedCount,
-                pending_codes: Math.max(0, total - completedCount),
-                pct: total > 0 ? Math.round((completedCount / total) * 100) : 0,
-            });
-        } catch (error: any) {
-            showMessage("Error cargando avance global: " + (error?.message || error), "error");
-        } finally {
-            setGlobalStockProgressLoading(false);
         }
     }
 
@@ -6186,7 +6116,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                             if (item.key !== "resumen") { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); }
                                             if (item.key === "registros" && valStoreId && valStoreId !== ALL_STORES_VALUE) loadValidadorData(valStoreId, valDate);
                                             if (item.key === "resumen"   && valStoreId && valStoreId !== ALL_STORES_VALUE) { setDashDrillSource(false); setResumenOverrides({}); setResumenDraft({}); setResumenEditMode(false); loadValidadorData(valStoreId, valDate); }
-                                            if (item.key === "progreso")  { loadStoreProgress(dashDate); if (isAdmin) loadGlobalStockProgress(); }
+                                            if (item.key === "progreso")  loadStoreProgress(dashDate);
                                             if (item.key === "cobertura") loadStoreCoverage(dashDate);
                                         }}
                                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
@@ -6942,7 +6872,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                             <input type="date" className="border rounded-2xl p-2.5 text-sm text-slate-900 bg-white" value={dashDate} onChange={e => setDashDate(e.target.value)} />
                                         </div>
                                         <button
-                                            onClick={() => { loadStoreProgress(dashDate); if (isAdmin) loadGlobalStockProgress(); }}
+                                            onClick={() => loadStoreProgress(dashDate)}
                                             disabled={storeProgressLoading}
                                             className="px-5 py-2.5 rounded-2xl bg-slate-900 text-white font-semibold text-sm disabled:opacity-50"
                                         >
@@ -6950,40 +6880,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                         </button>
                                     </div>
                                 </div>
-
-                                {isAdmin && (
-                                    <div className="rounded-2xl border bg-slate-50 p-4 space-y-3">
-                                        <div className="flex items-center justify-between gap-3 flex-wrap">
-                                            <div>
-                                                <h3 className="font-bold text-slate-900">Avance contra maestro con stock</h3>
-                                                <p className="text-xs text-slate-500">Codigos ya contados contra todos los codigos con stock de todas las tiendas activas.</p>
-                                            </div>
-                                            <button className="px-4 py-2 rounded-xl border bg-white text-xs font-bold text-slate-700 disabled:opacity-40" disabled={globalStockProgressLoading} onClick={loadGlobalStockProgress}>
-                                                {globalStockProgressLoading ? "Calculando..." : "Actualizar avance"}
-                                            </button>
-                                        </div>
-                                        {globalStockProgress ? (
-                                            <>
-                                                <div className="flex flex-wrap items-end justify-between gap-3">
-                                                    <div className="text-3xl font-black text-slate-900">{globalStockProgress.pct}%</div>
-                                                    <div className="text-sm font-bold text-slate-600">
-                                                        {formatNumber(globalStockProgress.completed_codes)} / {formatNumber(globalStockProgress.total_stock_codes)} auditados
-                                                    </div>
-                                                </div>
-                                                <div className="h-4 overflow-hidden rounded-full bg-slate-200">
-                                                    <div className="h-full rounded-full bg-emerald-600 transition-all" style={{ width: `${globalStockProgress.pct}%` }} />
-                                                </div>
-                                                <div className="grid grid-cols-3 gap-2 text-center text-xs font-bold text-slate-600">
-                                                    <div className="rounded-xl bg-white p-2 border">Con stock: {formatNumber(globalStockProgress.total_stock_codes)}</div>
-                                                    <div className="rounded-xl bg-white p-2 border text-emerald-700">Contados: {formatNumber(globalStockProgress.completed_codes)}</div>
-                                                    <div className="rounded-xl bg-white p-2 border text-amber-700">Pendientes: {formatNumber(globalStockProgress.pending_codes)}</div>
-                                                </div>
-                                            </>
-                                        ) : (
-                                            <div className="rounded-xl border border-dashed bg-white p-4 text-center text-sm font-semibold text-slate-500">Presiona actualizar para calcular el avance global.</div>
-                                        )}
-                                    </div>
-                                )}
 
                                 {storeProgressLoading ? (
                                     <div className="text-center text-slate-400 py-8">Cargando progreso...</div>
