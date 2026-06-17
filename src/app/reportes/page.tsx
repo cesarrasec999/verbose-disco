@@ -1,10 +1,9 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, FileText, RefreshCw, Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Download, FileText, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
-import { readSafeSheetMatrix } from "@/lib/safeExcel";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -164,23 +163,6 @@ function businessDays(startISO: string, endISO: string, holidays: Set<string>) {
   return days;
 }
 
-function cellByHeaders(row: unknown[], headers: string[], names: string[]) {
-  const wanted = names.map(name => name.toLowerCase());
-  const idx = headers.findIndex(header => wanted.some(name => header.includes(name)));
-  return idx >= 0 ? row[idx] : null;
-}
-
-function storeNameFromSnapshotRow(row: unknown[], headers: string[]) {
-  const normalized = headers.map(header => header.trim().toLowerCase());
-  const exactStoreIdx = normalized.findIndex(header => ["tienda", "store", "almacen", "almacÃƒÂ©n", "local", "sede"].includes(header));
-  if (exactStoreIdx >= 0) return String(row[exactStoreIdx] || "").trim();
-  const nameIdx = normalized.findIndex(header =>
-    ["tienda", "store", "almacen", "almacÃƒÂ©n", "local", "sede"].some(name => header.includes(name)) &&
-    !["codigo", "cÃƒÂ³digo", "serie", "cod", "id", "nro", "no"].some(blocked => header.includes(blocked))
-  );
-  return nameIdx >= 0 ? String(row[nameIdx] || "").trim() : "";
-}
-
 function normalizeRotationStoreKey(value: string | null | undefined) {
   return String(value || "")
     .normalize("NFD")
@@ -269,17 +251,16 @@ export default function ReportesPage() {
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [reportDate, setReportDate] = useState(todayISO());
   const [rotationPeriod, setRotationPeriod] = useState(currentRotationPeriod().slice(0, 7));
-  const [rotationFile, setRotationFile] = useState<File | null>(null);
-  const [rotationFileName, setRotationFileName] = useState("");
   const [downloadingDetail, setDownloadingDetail] = useState(false);
   const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
   const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
+  const [rotationCoverage, setRotationCoverage] = useState<{ stores: number; checked: boolean }>({ stores: 0, checked: false });
+  const [recalculating, setRecalculating] = useState(false);
 
   useEffect(() => {
     if (isMobileAccess) window.location.replace("/dashboard");
   }, [isMobileAccess]);
-  const rotationInputRef = useRef<HTMLInputElement | null>(null);
 
   const canView = Boolean(
     user && (
@@ -329,6 +310,12 @@ export default function ReportesPage() {
     if (selectedSnapshotId) void loadSnapshotRows(selectedSnapshotId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStoreIds]);
+
+  useEffect(() => {
+    if (activeTab !== "rotaciones" || !canView) return;
+    void checkRotationCoverage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, canView, rotationPeriod]);
 
   const selectedStores = useMemo(
     () => selectedStoreIds.length === 0 ? [] : stores.filter(store => selectedStoreIds.includes(store.id)),
@@ -507,47 +494,6 @@ export default function ReportesPage() {
     ));
   }
 
-  function parseRotationUploadRows(rows: unknown[][]) {
-    if (rows.length < 2) return [];
-    const headers = rows[0].map(cell => String(cell || "").trim().toLowerCase());
-    const knownStores = new Map<string, Store>();
-    for (const store of stores.filter(s => !!s.erp_sede)) {
-      for (const key of storeMatchKeys(store)) knownStores.set(key, store);
-    }
-    const parsed = new Map<string, {
-      period_month: string;
-      store_key: string;
-      store_name: string;
-      product_code: string;
-      description: string;
-      unit: string;
-      rotation_category: string;
-      source_name: string;
-    }>();
-    const periodMonth = `${rotationPeriod}-01`;
-
-    for (const row of rows.slice(1)) {
-      const rawStore = storeNameFromSnapshotRow(row, headers);
-      const store = knownStores.get(normalizeRotationStoreKey(rawStore));
-      const storeName = store?.name || rawStore;
-      const productCode = fullProductCode(cellByHeaders(row, headers, ["product_code", "producto", "codsap", "cod sap", "codigo", "cÃƒÂ³digo", "sku", "cod.prod", "cod prod"]));
-      const rotation = String(cellByHeaders(row, headers, ["rotation_category", "rotacion", "rotaciÃƒÂ³n", "abc", "clasificacion", "clasificaciÃƒÂ³n", "categoria", "categorÃƒÂ­a"]) || "").trim().toUpperCase();
-      if (!storeName || !productCode || !rotation) continue;
-      const storeKey = rotationStoreKeysForStore(store || { id: "", name: storeName, is_active: true })[0] || normalizeRotationStoreKey(storeName);
-      parsed.set(`${storeKey}__${productCode}`, {
-        period_month: periodMonth,
-        store_key: storeKey,
-        store_name: storeName,
-        product_code: productCode,
-        description: String(cellByHeaders(row, headers, ["descripcion", "descripciÃƒÂ³n", "description", "producto"]) || "").trim(),
-        unit: String(cellByHeaders(row, headers, ["um", "unidad", "unit"]) || "").trim(),
-        rotation_category: rotation,
-        source_name: rotationFileName,
-      });
-    }
-    return [...parsed.values()];
-  }
-
   async function reloadSnapshots(selectId?: string) {
     const { data, error } = await supabase
       .from("inventory_valuation_snapshots")
@@ -619,36 +565,45 @@ export default function ReportesPage() {
     }
   }
 
-  async function uploadMonthlyRotations() {
-    if (!rotationFile) {
-      setMessage("Selecciona el Excel de rotaciones.");
-      return;
+  async function checkRotationCoverage() {
+    if (!rotationPeriod) return;
+    const periodMonth = `${rotationPeriod}-01`;
+    const keys = new Set<string>();
+    const PAGE = 1000;
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("product_rotation_monthly")
+        .select("store_key")
+        .eq("period_month", periodMonth)
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      for (const row of data || []) keys.add(row.store_key);
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
     }
-    setLoading(true);
-    setProgress("Leyendo rotaciones...");
+    setRotationCoverage({ stores: keys.size, checked: true });
+  }
+
+  async function recalculateRotationNow() {
+    if (!rotationPeriod) return;
+    setRecalculating(true);
+    setMessage("");
     try {
-      const rows = await readSafeSheetMatrix(rotationFile, { maxBytes: 25 * 1024 * 1024, maxRows: 120000, maxCols: 40, raw: false });
-      const parsed = parseRotationUploadRows(rows);
-      if (parsed.length === 0) {
-        setMessage("No pude leer rotaciones. Revisa columnas de tienda, codigo y rotacion.");
-        return;
-      }
-      for (let i = 0; i < parsed.length; i += 500) {
-        const { error } = await supabase
-          .from("product_rotation_monthly")
-          .upsert(parsed.slice(i, i + 500), { onConflict: "period_month,store_key,product_code" });
-        if (error) throw error;
-      }
-      setRotationFile(null);
-      setRotationFileName("");
-      if (rotationInputRef.current) rotationInputRef.current.value = "";
-      setMessage(`Rotaciones guardadas para ${rotationPeriod}: ${parsed.length.toLocaleString("es-PE")} cÃƒÂ³digo(s). Los meses anteriores se mantienen.`);
-      if (activeTab === "rotaciones") await loadReport();
+      const periodMonth = `${rotationPeriod}-01`;
+      const res = await fetch("/api/admin/recalcular-rotaciones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period_month: periodMonth }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `Error ${res.status}`);
+      setMessage(`Rotaciones recalculadas para ${rotationPeriod}.`);
+      await checkRotationCoverage();
     } catch (error: unknown) {
-      setMessage("Error guardando rotaciones: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error recalculando rotaciones: " + (error instanceof Error ? error.message : String(error)));
     } finally {
-      setLoading(false);
-      setProgress("");
+      setRecalculating(false);
     }
   }
 
@@ -1278,15 +1233,15 @@ export default function ReportesPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="font-black text-slate-900">Rotaciones mensuales</h2>
-                  <Formula>rotaciones del mes = archivo mensual guardado por periodo; los meses anteriores no se eliminan.</Formula>
-                  <p className="text-xs text-slate-500">Sube el archivo del mes actual para alimentar reportes histÃ³ricos por rotaciÃ³n.</p>
+                  <Formula>rotaciones del mes = calculadas automaticamente cada dia desde ventas y notas de credito (erp_movements); ya no se sube Excel.</Formula>
+                  {rotationCoverage.checked && (
+                    <p className={`mt-1 text-xs font-bold ${rotationCoverage.stores >= 20 ? "text-emerald-700" : "text-amber-700"}`}>
+                      {rotationCoverage.stores >= 20
+                        ? `Periodo ${rotationPeriod}: ${rotationCoverage.stores} tiendas calculadas.`
+                        : `Periodo ${rotationPeriod}: solo ${rotationCoverage.stores} tienda(s) calculadas. Falta el calculo automatico de este mes (corre diariamente en el servidor).`}
+                    </p>
+                  )}
                 </div>
-                  <p className="mt-2 text-xs font-bold text-slate-600">
-                    Columnas obligatorias: Tienda, Codigo o CodSAP, Rotacion. Opcionales: Descripcion y UM.
-                  </p>
-                  <p className="text-[11px] font-semibold text-slate-400">
-                    Tambien acepta nombres como Sede, Store, SKU, Product_Code, ABC, Categoria, Unidad.
-                  </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     className="rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900"
@@ -1294,24 +1249,16 @@ export default function ReportesPage() {
                     value={rotationPeriod}
                     onChange={e => setRotationPeriod(e.target.value)}
                   />
-                  <button className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700" onClick={() => rotationInputRef.current?.click()}>
-                    <Upload className="mr-2 inline" size={16} /> {rotationFileName || "Elegir rotaciones"}
-                  </button>
-                  <input
-                    ref={rotationInputRef}
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={e => {
-                      const file = e.target.files?.[0] || null;
-                      setRotationFile(file);
-                      setRotationFileName(file?.name || "");
-                      e.target.value = "";
-                    }}
-                  />
-                  <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-black text-white disabled:opacity-40" disabled={loading || !rotationFile || !rotationPeriod} onClick={uploadMonthlyRotations}>
-                    Subir rotaciones
-                  </button>
+                  {user?.role === "Administrador" && (
+                    <button
+                      className="rounded-xl border bg-amber-50 px-4 py-2 text-sm font-black text-amber-700 disabled:opacity-40 hover:bg-amber-100"
+                      disabled={recalculating || !rotationPeriod}
+                      onClick={recalculateRotationNow}
+                      title="Forzar el calculo ahora en vez de esperar la revision automatica diaria del servidor"
+                    >
+                      {recalculating ? "Calculando..." : "Calcular ahora"}
+                    </button>
+                  )}
                   <button
                     className="rounded-xl border bg-emerald-50 px-4 py-2 text-sm font-black text-emerald-700 disabled:opacity-40 hover:bg-emerald-100"
                     disabled={downloadingDetail || !rotationPeriod}
