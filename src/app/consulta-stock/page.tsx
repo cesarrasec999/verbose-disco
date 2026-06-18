@@ -127,7 +127,7 @@ export default function ConsultaStockPage() {
         scannerRef.current = scanner;
         await scanner.start(
           { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 260, height: 180 }, aspectRatio: 1.777 },
+          { fps: 10, qrbox: { width: 260, height: 180 } },
           async decodedText => {
             const clean = decodedText.trim();
             if (!clean) return;
