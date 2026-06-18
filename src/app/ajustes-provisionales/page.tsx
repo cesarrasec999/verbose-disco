@@ -44,15 +44,21 @@ function formatSync(iso: string) {
   });
 }
 
-// erp_movements.store_code (lo que usa get_ajustes_provisionales) no es
-// erp_store_no: es "1000 + numero de tienda GPC" (CD-GPC = "1000"), el mismo
-// esquema que usan las funciones SQL de rotaciones. erp_store_no es un id ERP
-// distinto, no sirve para este match.
+// erp_movements.store_code (lo que usa get_ajustes_provisionales) es
+// "1000 + erp_store_no" (verificado contra el maestro de tiendas del ERP).
+// El numero de la etiqueta "GPCxxx" NO siempre coincide con erp_store_no
+// (ej. GPC003 LIM-GRUPO = erp_store_no 5, GPC005 LIM-CORPORATIVO = erp_store_no 3),
+// asi que no se puede derivar del nombre - hay que usar el campo erp_store_no
+// directo. Esto es automatico para tiendas nuevas: solo requiere que el sync
+// de RMS siga llenando erp_store_no correctamente, como ya hace para las
+// demas. Restringido a tiendas GPCxxx/CD-GPC (excluye almacenes especiales
+// como "ALMACEN DE DISCREPANCIAS", que no sigue este esquema).
 function ajusteStoreCode(store: Store): string | null {
   const label = String(store.erp_sede || store.name || "");
-  if (/CD-GPC|CENTRO DISTRIBUCION/i.test(label)) return "1000";
-  const match = label.match(/GPC0*(\d+)/i);
-  return match ? String(1000 + Number(match[1])) : null;
+  if (!/^GPC\d|CD-GPC/i.test(label.trim())) return null;
+  if (store.erp_store_no == null || store.erp_store_no === "") return null;
+  const n = Number(store.erp_store_no);
+  return Number.isFinite(n) ? String(1000 + n) : null;
 }
 
 // ─── Página principal ─────────────────────────────────────────────────────────
@@ -96,7 +102,7 @@ export default function AjustesProvisionalesPage() {
     if (canViewAllStores || !user?.store_id || stores.length === 0) return null;
     const userStore = stores.find(s => s.id === user.store_id);
     if (!userStore) return null;
-    return ajusteStoreCode(userStore) ?? userStore.erp_store_no ?? userStore.code;
+    return ajusteStoreCode(userStore) ?? userStore.code;
   }, [canViewAllStores, user, stores]);
 
   // ─── Carga de datos ──────────────────────────────────────────────────────────
