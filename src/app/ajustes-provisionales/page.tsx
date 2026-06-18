@@ -44,6 +44,17 @@ function formatSync(iso: string) {
   });
 }
 
+// erp_movements.store_code (lo que usa get_ajustes_provisionales) no es
+// erp_store_no: es "1000 + numero de tienda GPC" (CD-GPC = "1000"), el mismo
+// esquema que usan las funciones SQL de rotaciones. erp_store_no es un id ERP
+// distinto, no sirve para este match.
+function ajusteStoreCode(store: Store): string | null {
+  const label = String(store.erp_sede || store.name || "");
+  if (/CD-GPC|CENTRO DISTRIBUCION/i.test(label)) return "1000";
+  const match = label.match(/GPC0*(\d+)/i);
+  return match ? String(1000 + Number(match[1])) : null;
+}
+
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function AjustesProvisionalesPage() {
@@ -81,13 +92,11 @@ export default function AjustesProvisionalesPage() {
     [user]
   );
 
-  // erp_store_no es el codigo numerico ERP que usa erp_movements (distinto
-  // del code corto, que usan Recepcion/Stock/Picking).
   const userErpStoreCode = useMemo(() => {
     if (canViewAllStores || !user?.store_id || stores.length === 0) return null;
     const userStore = stores.find(s => s.id === user.store_id);
     if (!userStore) return null;
-    return userStore.erp_store_no ?? userStore.code;
+    return ajusteStoreCode(userStore) ?? userStore.erp_store_no ?? userStore.code;
   }, [canViewAllStores, user, stores]);
 
   // ─── Carga de datos ──────────────────────────────────────────────────────────
@@ -156,7 +165,7 @@ export default function AjustesProvisionalesPage() {
     }
     return result.map(r => ({
       ...r,
-      store_name: stores.find(s => s.erp_store_no === r.store_code)?.name || r.store_code,
+      store_name: stores.find(s => ajusteStoreCode(s) === r.store_code)?.name || r.store_code,
       description: r.description || r.product_code,
       unit: r.unit || "",
     })).sort((a, b) =>
@@ -267,9 +276,9 @@ export default function AjustesProvisionalesPage() {
                 >
                   <option value="">Todas las tiendas</option>
                   {stores
-                    .filter(s => s.is_active && !!s.erp_store_no)
+                    .filter(s => s.is_active && !!ajusteStoreCode(s))
                     .map(s => (
-                      <option key={s.id} value={s.erp_store_no!}>{s.name}</option>
+                      <option key={s.id} value={ajusteStoreCode(s)!}>{s.name}</option>
                     ))}
                 </select>
               </div>
