@@ -512,10 +512,7 @@ BEGIN
     rg.rg_last_sale_month                              AS last_sale_date,
     rg.rg_sales_total                                  AS sales_qty_total,
     rg.rg_sales_months::numeric(10,2)                  AS sales_months,
-    COALESCE(ROUND(
-      rg.rg_sales_total / NULLIF(rg.rg_sales_months::numeric, 0),
-      6
-    ), 0)                                              AS avg_sales_month,
+    rg.rg_avg_3m                                       AS avg_sales_month,
     rg.rg_rotation_category                            AS rotation_category,
     now()                                              AS calculated_at
   FROM _tmp_rotation_gpc rg
@@ -559,10 +556,7 @@ BEGIN
     rcd.rcd_last_sale_month                             AS last_sale_date,
     rcd.rcd_sales_total                                 AS sales_qty_total,
     rcd.rcd_sales_months::numeric(10,2)                 AS sales_months,
-    COALESCE(ROUND(
-      rcd.rcd_sales_total / NULLIF(rcd.rcd_sales_months::numeric, 0),
-      6
-    ), 0)                                               AS avg_sales_month,
+    rcd.rcd_avg_3m                                      AS avg_sales_month,
     rcd.rcd_rotation_category                           AS rotation_category,
     now()                                               AS calculated_at
   FROM _tmp_rotation_cd rcd
