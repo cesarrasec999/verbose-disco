@@ -155,8 +155,12 @@ BEGIN
       st.id                                                       AS st_id,
       st.name                                                     AS st_name,
       st.erp_sede                                                 AS st_erp_sede,
-      (1000 + SUBSTRING(st.erp_sede FROM 'GPC0*([0-9]+)')::integer)::text
-                                                                  AS st_store_code,
+      -- erp_store_no es el numero real de tienda del ERP; NO siempre coincide
+      -- con el numero de la etiqueta "GPCxxx" (ej. GPC002 LIM-SUMINISTRO tiene
+      -- erp_store_no 4, no 2 - confirmado contra el maestro de tiendas del ERP).
+      -- Usar el numero de la etiqueta cruzaba las ventas entre GPC002/GPC004 y
+      -- entre GPC003/GPC005.
+      (1000 + st.erp_store_no::integer)::text                    AS st_store_code,
       -- store_key = parte luego del último guión, en mayúsculas
       UPPER(TRIM(regexp_replace(st.erp_sede, '^.*-\s*', '')))     AS st_store_key
     FROM public.stores st
@@ -164,6 +168,7 @@ BEGIN
       -- Solo tiendas GPC (excluye CD-GPC)
       AND st.erp_sede ~ 'GPC[0-9]+'
       AND st.erp_sede NOT ILIKE '%CD-GPC%'
+      AND st.erp_store_no IS NOT NULL
   ),
   -- Productos con stock en la sede
   products_with_stock AS (
@@ -687,11 +692,12 @@ AS $$
   store_map AS (
     SELECT
       UPPER(TRIM(regexp_replace(st.erp_sede, '^.*-\s*', '')))                  AS sm_store_key,
-      (1000 + SUBSTRING(st.erp_sede FROM 'GPC0*([0-9]+)')::integer)::text      AS sm_store_code,
+      (1000 + st.erp_store_no::integer)::text                                  AS sm_store_code,
       st.name                                                                   AS sm_store_name
     FROM public.stores st
     WHERE st.is_active IS DISTINCT FROM false
       AND st.erp_sede ~ 'GPC[0-9]+'
+      AND st.erp_store_no IS NOT NULL
       AND st.erp_sede NOT ILIKE '%CD-GPC%'
   ),
   gpc_rows AS (

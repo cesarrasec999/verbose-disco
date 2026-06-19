@@ -246,6 +246,8 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
       const normalizedAlias = normalizeRotationStoreKey(alias);
       if (normalized.includes(normalizedAlias)) keys.add(normalizedAlias);
     }
+    if (normalized.includes("DIAMANTE")) keys.add("CHI. DIAMANTE");
+    if (normalized.includes("LEGUIA")) keys.add("CHI. LEGUIA");
     if (normalized.includes("EVITAMIENTO")) keys.add("AREQUIPA NEW K 21");
     if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) keys.add("AREQUIPA MIRAFLORES");
     if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");

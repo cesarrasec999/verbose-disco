@@ -31,13 +31,16 @@ AS $$
   store_map AS (
     SELECT
       UPPER(TRIM(regexp_replace(st.erp_sede, '^.*-\s*', '')))             AS sm_store_key,
-      (1000 + SUBSTRING(st.erp_sede FROM 'GPC0*([0-9]+)')::integer)::text AS sm_store_code,
+      -- erp_store_no es el numero real de tienda del ERP; el numero de la
+      -- etiqueta "GPCxxx" no siempre coincide (ver supabase_rotation_calculation.sql)
+      (1000 + st.erp_store_no::integer)::text                             AS sm_store_code,
       st.name                                                              AS sm_store_name,
       st.erp_sede                                                          AS sm_sede
     FROM public.stores st
     WHERE st.is_active IS DISTINCT FROM false
       AND st.erp_sede ~ 'GPC[0-9]+'
       AND st.erp_sede NOT ILIKE '%CD-GPC%'
+      AND st.erp_store_no IS NOT NULL
   ),
   gpc_rows AS (
     SELECT
