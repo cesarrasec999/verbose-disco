@@ -80,7 +80,10 @@ begin
     limit 1
   ),
 
-  -- 2. Productos excluidos (asignados hoy + completados + contados en ultimo año)
+  -- 2. Productos excluidos (asignados hoy + completados + contados en ultimo año
+  --    + asignados en los ultimos 3 dias y todavia sin contar - evita que el
+  --    equipo de campo reciba el mismo codigo de nuevo si se atraso 1-2 dias
+  --    en contar la asignacion anterior)
   excluded as materialized (
     select ca0.product_id from public.cyclic_assignments ca0
     where ca0.store_id = p_store_id and ca0.assigned_date = p_assigned_date
@@ -97,6 +100,19 @@ begin
       and cc.location not in (
             '__session_counting__', '__session_finished__',
             '__recount_started__',  '__recount_done__')
+    union
+    select distinct ca2.product_id
+    from public.cyclic_assignments ca2
+    where ca2.store_id = p_store_id
+      and ca2.assigned_date <  p_assigned_date
+      and ca2.assigned_date >= p_assigned_date - interval '3 days'
+      and not exists (
+            select 1 from public.cyclic_counts cc2
+            where cc2.assignment_id = ca2.id
+              and cc2.location not in (
+                    '__session_counting__', '__session_finished__',
+                    '__recount_started__',  '__recount_done__')
+          )
   ),
 
   -- 3. Productos no inventariables (excluir de recomendacion)
