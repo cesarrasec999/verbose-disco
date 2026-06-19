@@ -2883,12 +2883,17 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
                 const result = resultLabel(countRows.length > 0, difference);
                 const notes = [...new Set(countRows.map(count => String(count.note || "").trim()).filter(Boolean))].join(" | ");
+                // assigned_date es solo fecha (sin hora): new Date("YYYY-MM-DD") la
+                // interpreta como medianoche UTC, que en hora Peru se ve como el dia
+                // anterior 7pm. Mostrar la hora real del conteo cuando exista.
+                const latestCountedAt = countRows.reduce((latest: string | null, count) =>
+                    !latest || count.counted_at > latest ? count.counted_at : latest, null as string | null);
                 return {
                     assignment_id: row.id as string,
                     source: "ciclico" as const,
                     source_label: "Ciclico",
                     store_name: store?.name || row.store_id,
-                    assigned_date: row.assigned_date,
+                    assigned_date: latestCountedAt || row.assigned_date,
                     sku: productRow?.sku || product.sku,
                     description: productRow?.description || product.description,
                     unit: productRow?.unit || product.unit,
@@ -2983,12 +2988,17 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 const sobrante = countRows.length > 0 && difference > 0 ? difference : 0;
                 const result = resultLabel(countRows.length > 0, difference);
                 const notes = [...new Set(countRows.map(count => String(count.note || "").trim()).filter(Boolean))].join(" | ");
+                // assigned_date es solo fecha (sin hora): new Date("YYYY-MM-DD") la
+                // interpreta como medianoche UTC, que en hora Peru se ve como el dia
+                // anterior 7pm. Mostrar la hora real del conteo cuando exista.
+                const latestCountedAt = countRows.reduce((latest: string | null, count) =>
+                    !latest || count.counted_at > latest ? count.counted_at : latest, null as string | null);
                 return {
                     assignment_id: row.id as string,
                     source: "ciclico" as const,
                     source_label: "Ciclico",
                     store_name: store?.name || row.store_id,
-                    assigned_date: row.assigned_date,
+                    assigned_date: latestCountedAt || row.assigned_date,
                     sku: productRow?.sku || product?.sku || row.product_id,
                     description: productRow?.description || product?.description || "",
                     unit: productRow?.unit || product?.unit || "",
