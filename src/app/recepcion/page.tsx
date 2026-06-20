@@ -312,6 +312,12 @@ export default function RecepcionPage() {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
+  const [diffDateFrom, setDiffDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [diffDateTo, setDiffDateTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
 
   // Filtros lista
@@ -1199,15 +1205,44 @@ export default function RecepcionPage() {
 
   async function loadDifferencesReport() {
     if (!canViewSummary) return;
-    const completedGroups = scopedRequestGroups.filter(req => req.reception_status === "completed");
-    const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
-    if (requestIds.length === 0) {
-      setDifferenceRows([]);
-      return;
-    }
-
     setLoadingDifferences(true);
     try {
+      // El reporte de diferencias depende de recepciones completadas dentro
+      // del rango de fechas elegido, no de lo que este cargado en la lista
+      // principal (que solo trae una pagina reciente) - por eso se consulta
+      // directo a la BD con su propio rango y paginacion.
+      const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
+      const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+      const fromIso = `${diffDateFrom}T00:00:00`;
+      const toIso = `${diffDateTo}T23:59:59`;
+      const PAGE = 1000;
+      let completedRows: ReceptionRequest[] = [];
+      let page = 0;
+      while (true) {
+        let q = supabase
+          .from("reception_requests")
+          .select("*")
+          .eq("reception_status", "completed")
+          .gte("completed_at", fromIso)
+          .lte("completed_at", toIso)
+          .order("completed_at", { ascending: false })
+          .range(page * PAGE, (page + 1) * PAGE - 1);
+        if (codes.length > 0) q = q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+        const { data, error } = await q;
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        completedRows = completedRows.concat(data as ReceptionRequest[]);
+        if (data.length < PAGE) break;
+        page++;
+      }
+
+      const completedGroups = buildRequestGroups(completedRows).filter(req => req.reception_status === "completed");
+      const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
+      if (requestIds.length === 0) {
+        setDifferenceRows([]);
+        return;
+      }
+
       const chunks: string[][] = [];
       for (let i = 0; i < requestIds.length; i += 200) chunks.push(requestIds.slice(i, i + 200));
 
@@ -1614,13 +1649,33 @@ export default function RecepcionPage() {
                   <p className="text-xs font-black uppercase text-slate-500">Reporte validador</p>
                   <h2 className="text-xl font-black text-slate-950">Diferencias de recepcion</h2>
                 </div>
-                <button
-                  onClick={() => void loadDifferencesReport()}
-                  disabled={loadingDifferences}
-                  className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                >
-                  {loadingDifferences ? "Cargando..." : "Actualizar"}
-                </button>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div>
+                    <label className="block text-[11px] font-black uppercase text-slate-400">Desde</label>
+                    <input
+                      type="date"
+                      value={diffDateFrom}
+                      onChange={e => setDiffDateFrom(e.target.value)}
+                      className="rounded-xl border px-3 py-2 text-xs font-bold text-slate-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-black uppercase text-slate-400">Hasta</label>
+                    <input
+                      type="date"
+                      value={diffDateTo}
+                      onChange={e => setDiffDateTo(e.target.value)}
+                      className="rounded-xl border px-3 py-2 text-xs font-bold text-slate-700"
+                    />
+                  </div>
+                  <button
+                    onClick={() => void loadDifferencesReport()}
+                    disabled={loadingDifferences}
+                    className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    {loadingDifferences ? "Cargando..." : "Actualizar"}
+                  </button>
+                </div>
               </div>
 
               <div className="mb-4 grid grid-cols-2 gap-2 text-center text-xs font-black sm:grid-cols-4">
