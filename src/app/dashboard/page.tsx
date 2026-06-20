@@ -900,11 +900,18 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             let allCountsRaw: any[] = [];
             const CHUNK = 500;
             for (let i = 0; i < asgnIds.length; i += CHUNK) {
-                const { data: cd } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, store_id, location")
-                    .in("assignment_id", asgnIds.slice(i, i + CHUNK));
-                if (cd) allCountsRaw = allCountsRaw.concat(cd);
+                const chunk = asgnIds.slice(i, i + CHUNK);
+                let from = 0;
+                while (true) {
+                    const { data: cd } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, store_id, location")
+                        .in("assignment_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (cd) allCountsRaw = allCountsRaw.concat(cd);
+                    if (!cd || cd.length < PAGE) break;
+                    from += PAGE;
+                }
             }
 
             // Filtrar flags internos
@@ -1152,13 +1159,21 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             // ── Paso 3: traer counts por assignment_id del período ─────────
             const asgnIds = asgnData.map((a: any) => a.id);
             const asgnIdSet = new Set<string>(asgnIds);
+            const COUNTS_PAGE = 1000;
             let cntAll: CountRecord[] = [];
             for (let i = 0; i < asgnIds.length; i += 500) {
-                const { data: cChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", asgnIds.slice(i, i + 500));
-                if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
+                const chunk = asgnIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data: cChunk } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(from, from + COUNTS_PAGE - 1);
+                    if (cChunk) cntAll = cntAll.concat(cChunk as CountRecord[]);
+                    if (!cChunk || cChunk.length < COUNTS_PAGE) break;
+                    from += COUNTS_PAGE;
+                }
             }
 
             // ── Paso 3b: separar flags de conteos reales y construir storeDateFlags ──
@@ -1862,13 +1877,20 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const assignmentIds = rowsRaw.map(row => row.id as string);
             const countedIds = new Set<string>();
             for (let i = 0; i < assignmentIds.length; i += 500) {
-                const { data, error } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", assignmentIds.slice(i, i + 500));
-                if (error) throw error;
-                for (const row of data || []) {
-                    if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
+                const chunk = assignmentIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, location")
+                        .in("assignment_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (error) throw error;
+                    for (const row of data || []) {
+                        if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
+                    }
+                    if (!data || data.length < PAGE) break;
+                    from += PAGE;
                 }
             }
 
@@ -1952,14 +1974,22 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             }
 
             const countedIds = new Set<string>();
+            const COUNTS_PAGE = 1000;
             for (let i = 0; i < assignmentIds.length; i += 500) {
-                const { data, error } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", assignmentIds.slice(i, i + 500));
-                if (error) throw error;
-                for (const row of data || []) {
-                    if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
+                const chunk = assignmentIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, location")
+                        .in("assignment_id", chunk)
+                        .range(from, from + COUNTS_PAGE - 1);
+                    if (error) throw error;
+                    for (const row of data || []) {
+                        if (!isSessionFlagLocation(row.location)) countedIds.add(row.assignment_id);
+                    }
+                    if (!data || data.length < COUNTS_PAGE) break;
+                    from += COUNTS_PAGE;
                 }
             }
 
@@ -2859,15 +2889,22 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const assignmentIds = assignmentRows.map(row => row.id as string);
             const countMap = new Map<string, CountRecord[]>();
             for (let i = 0; i < assignmentIds.length; i += 500) {
-                const { data, error } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", assignmentIds.slice(i, i + 500));
-                if (error) throw error;
-                for (const count of (data || []) as CountRecord[]) {
-                    if (isSessionFlagLocation(count.location)) continue;
-                    if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
-                    countMap.get(count.assignment_id)!.push(count);
+                const chunk = assignmentIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (error) throw error;
+                    for (const count of (data || []) as CountRecord[]) {
+                        if (isSessionFlagLocation(count.location)) continue;
+                        if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
+                        countMap.get(count.assignment_id)!.push(count);
+                    }
+                    if (!data || data.length < PAGE) break;
+                    from += PAGE;
                 }
             }
 
@@ -2963,15 +3000,22 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const assignmentIds = assignmentRows.map(row => row.id as string);
             const countMap = new Map<string, CountRecord[]>();
             for (let i = 0; i < assignmentIds.length; i += 500) {
-                const { data, error } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", assignmentIds.slice(i, i + 500));
-                if (error) throw error;
-                for (const count of (data || []) as CountRecord[]) {
-                    if (isSessionFlagLocation(count.location)) continue;
-                    if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
-                    countMap.get(count.assignment_id)!.push(count);
+                const chunk = assignmentIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data, error } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(from, from + PAGE - 1);
+                    if (error) throw error;
+                    for (const count of (data || []) as CountRecord[]) {
+                        if (isSessionFlagLocation(count.location)) continue;
+                        if (!countMap.has(count.assignment_id)) countMap.set(count.assignment_id, []);
+                        countMap.get(count.assignment_id)!.push(count);
+                    }
+                    if (!data || data.length < PAGE) break;
+                    from += PAGE;
                 }
             }
 
@@ -3313,24 +3357,38 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
 
                         const dayCountedIds = new Set<string>();
                         for (let m = 0; m < dayAssignmentIds.length; m += 500) {
-                            const { data: dayCounts } = await supabase
-                                .from("cyclic_counts")
-                                .select("assignment_id,location")
-                                .in("assignment_id", dayAssignmentIds.slice(m, m + 500));
-                            for (const count of dayCounts || []) {
-                                if (!FLAGS.includes(count.location)) dayCountedIds.add(count.assignment_id);
+                            const dayChunk = dayAssignmentIds.slice(m, m + 500);
+                            let dayFrom = 0;
+                            while (true) {
+                                const { data: dayCounts } = await supabase
+                                    .from("cyclic_counts")
+                                    .select("assignment_id,location")
+                                    .in("assignment_id", dayChunk)
+                                    .range(dayFrom, dayFrom + 1000 - 1);
+                                for (const count of dayCounts || []) {
+                                    if (!FLAGS.includes(count.location)) dayCountedIds.add(count.assignment_id);
+                                }
+                                if (!dayCounts || dayCounts.length < 1000) break;
+                                dayFrom += 1000;
                             }
                         }
                         if (dayAssignmentIds.every(id => dayCountedIds.has(id))) fulfilledDayKeys.add(dayKey);
                     }
 
                     for (let k = 0; k < asgnRows.length; k += 500) {
-                        const { data: countRows } = await supabase
-                            .from("cyclic_counts")
-                            .select("assignment_id,location")
-                            .in("assignment_id", asgnRows.slice(k, k + 500).map((row: any) => row.id));
-                        for (const count of countRows || []) {
-                            if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+                        const kChunk = asgnRows.slice(k, k + 500).map((row: any) => row.id);
+                        let kFrom = 0;
+                        while (true) {
+                            const { data: countRows } = await supabase
+                                .from("cyclic_counts")
+                                .select("assignment_id,location")
+                                .in("assignment_id", kChunk)
+                                .range(kFrom, kFrom + 1000 - 1);
+                            for (const count of countRows || []) {
+                                if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+                            }
+                            if (!countRows || countRows.length < 1000) break;
+                            kFrom += 1000;
                         }
                     }
 
@@ -3376,12 +3434,19 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         const countedIds = new Set<string>();
         const FLAGS = ["__session_counting__","__session_finished__","__recount_started__","__recount_done__"];
         for (let i = 0; i < assignmentIds.length; i += 500) {
-            const { data: countRows } = await supabase
-                .from("cyclic_counts")
-                .select("assignment_id,location")
-                .in("assignment_id", assignmentIds.slice(i, i + 500));
-            for (const count of countRows || []) {
-                if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+            const chunk = assignmentIds.slice(i, i + 500);
+            let from = 0;
+            while (true) {
+                const { data: countRows } = await supabase
+                    .from("cyclic_counts")
+                    .select("assignment_id,location")
+                    .in("assignment_id", chunk)
+                    .range(from, from + 1000 - 1);
+                for (const count of countRows || []) {
+                    if (!FLAGS.includes(count.location)) countedIds.add(count.assignment_id);
+                }
+                if (!countRows || countRows.length < 1000) break;
+                from += 1000;
             }
         }
 
@@ -3533,14 +3598,20 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const cyclicQuantityMap = new Map<string, number>();
             for (let i = 0; i < currentAssignmentIds.length; i += 500) {
                 const chunk = currentAssignmentIds.slice(i, i + 500);
-                const { data } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id,product_id,location,counted_quantity")
-                    .in("assignment_id", chunk);
-                for (const row of (data || []) as any[]) {
-                    if (isSessionFlagLocation(row.location)) continue;
-                    const key = locationQuantityKey(row.product_id, row.location);
-                    cyclicQuantityMap.set(key, (cyclicQuantityMap.get(key) || 0) + Number(row.counted_quantity || 0));
+                let from = 0;
+                while (true) {
+                    const { data } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id,product_id,location,counted_quantity")
+                        .in("assignment_id", chunk)
+                        .range(from, from + 1000 - 1);
+                    for (const row of (data || []) as any[]) {
+                        if (isSessionFlagLocation(row.location)) continue;
+                        const key = locationQuantityKey(row.product_id, row.location);
+                        cyclicQuantityMap.set(key, (cyclicQuantityMap.get(key) || 0) + Number(row.counted_quantity || 0));
+                    }
+                    if (!data || data.length < 1000) break;
+                    from += 1000;
                 }
             }
 
@@ -5039,11 +5110,18 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 let cntRows: any[] = [];
                 const CHUNK = 500;
                 for (let i = 0; i < asgnIds.length; i += CHUNK) {
-                    const { data: cc } = await supabase
-                        .from("cyclic_counts")
-                        .select("assignment_id, counted_quantity, location, status")
-                        .in("assignment_id", asgnIds.slice(i, i + CHUNK));
-                    if (cc) cntRows = cntRows.concat(cc);
+                    const chunk = asgnIds.slice(i, i + CHUNK);
+                    let from = 0;
+                    while (true) {
+                        const { data: cc } = await supabase
+                            .from("cyclic_counts")
+                            .select("assignment_id, counted_quantity, location, status")
+                            .in("assignment_id", chunk)
+                            .range(from, from + 1000 - 1);
+                        if (cc) cntRows = cntRows.concat(cc);
+                        if (!cc || cc.length < 1000) break;
+                        from += 1000;
+                    }
                 }
                 // Filtrar flags internos
                 cntRows = cntRows.filter((c: any) => !isSessionFlagLocation(c.location));
@@ -5577,11 +5655,18 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const asgnIdSetExp = new Set<string>(asgnIds);
             let allCounts: CountRecord[] = [];
             for (let i = 0; i < asgnIds.length; i += 500) {
-                const { data: cData } = await supabase
-                    .from("cyclic_counts")
-                    .select("*")
-                    .in("assignment_id", asgnIds.slice(i, i + 500));
-                if (cData) allCounts = allCounts.concat(cData as CountRecord[]);
+                const chunk = asgnIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data: cData } = await supabase
+                        .from("cyclic_counts")
+                        .select("*")
+                        .in("assignment_id", chunk)
+                        .range(from, from + 1000 - 1);
+                    if (cData) allCounts = allCounts.concat(cData as CountRecord[]);
+                    if (!cData || cData.length < 1000) break;
+                    from += 1000;
+                }
             }
 
             const SESSION_FLAGS_EXP = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
@@ -5598,17 +5683,24 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const recountDoneKeys2 = new Set<string>();
             const sessionFinishedKeys2 = new Set<string>();
             for (let i = 0; i < asgnIds.length; i += 500) {
-                const { data: flagChunk2 } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", asgnIds.slice(i, i + 500))
-                    .in("location", ["__recount_done__", "__session_finished__"]);
-                for (const flag of flagChunk2 || []) {
-                    const asg2 = expAsgnById2.get(flag.assignment_id);
-                    if (!asg2) continue;
-                    const dk = `${asg2.store_id}__${asg2.assigned_date}`;
-                    if (flag.location === "__recount_done__") recountDoneKeys2.add(dk);
-                    if (flag.location === "__session_finished__") sessionFinishedKeys2.add(dk);
+                const chunk = asgnIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data: flagChunk2 } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, location")
+                        .in("assignment_id", chunk)
+                        .in("location", ["__recount_done__", "__session_finished__"])
+                        .range(from, from + 1000 - 1);
+                    for (const flag of flagChunk2 || []) {
+                        const asg2 = expAsgnById2.get(flag.assignment_id);
+                        if (!asg2) continue;
+                        const dk = `${asg2.store_id}__${asg2.assigned_date}`;
+                        if (flag.location === "__recount_done__") recountDoneKeys2.add(dk);
+                        if (flag.location === "__session_finished__") sessionFinishedKeys2.add(dk);
+                    }
+                    if (!flagChunk2 || flagChunk2.length < 1000) break;
+                    from += 1000;
                 }
             }
             // Determinar si cada tienda-día cumplió: contó todos sus productos O tiene flag recount_done
@@ -5716,17 +5808,24 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             const recountDoneDayKeys = new Set<string>();
             const sessionFinishedDayKeys = new Set<string>();
             for (let i = 0; i < asgnIds.length; i += 500) {
-                const { data: flagChunk } = await supabase
-                    .from("cyclic_counts")
-                    .select("assignment_id, location")
-                    .in("assignment_id", asgnIds.slice(i, i + 500))
-                    .in("location", ["__recount_done__", "__session_finished__"]);
-                for (const flag of flagChunk || []) {
-                    const asg = expAsgnById.get(flag.assignment_id);
-                    if (!asg) continue;
-                    const dayKey = `${asg.store_id}__${asg.assigned_date}`;
-                    if (flag.location === "__recount_done__") recountDoneDayKeys.add(dayKey);
-                    if (flag.location === "__session_finished__") sessionFinishedDayKeys.add(dayKey);
+                const chunk = asgnIds.slice(i, i + 500);
+                let from = 0;
+                while (true) {
+                    const { data: flagChunk } = await supabase
+                        .from("cyclic_counts")
+                        .select("assignment_id, location")
+                        .in("assignment_id", chunk)
+                        .in("location", ["__recount_done__", "__session_finished__"])
+                        .range(from, from + 1000 - 1);
+                    for (const flag of flagChunk || []) {
+                        const asg = expAsgnById.get(flag.assignment_id);
+                        if (!asg) continue;
+                        const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+                        if (flag.location === "__recount_done__") recountDoneDayKeys.add(dayKey);
+                        if (flag.location === "__session_finished__") sessionFinishedDayKeys.add(dayKey);
+                    }
+                    if (!flagChunk || flagChunk.length < 1000) break;
+                    from += 1000;
                 }
             }
 
