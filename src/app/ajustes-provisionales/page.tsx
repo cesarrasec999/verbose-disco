@@ -45,20 +45,25 @@ function formatSync(iso: string) {
 }
 
 // erp_movements.store_code (lo que usa get_ajustes_provisionales) es
-// "1000 + erp_store_no" (verificado contra el maestro de tiendas del ERP).
-// El numero de la etiqueta "GPCxxx" NO siempre coincide con erp_store_no
-// (ej. GPC003 LIM-GRUPO = erp_store_no 5, GPC005 LIM-CORPORATIVO = erp_store_no 3),
-// asi que no se puede derivar del nombre - hay que usar el campo erp_store_no
-// directo. Esto es automatico para tiendas nuevas: solo requiere que el sync
-// de RMS siga llenando erp_store_no correctamente, como ya hace para las
-// demas. Restringido a tiendas GPCxxx/CD-GPC (excluye almacenes especiales
-// como "ALMACEN DE DISCREPANCIAS", que no sigue este esquema).
+// "1000 + numero real de tienda del ERP". Para casi todas las tiendas ese
+// numero coincide con el de la etiqueta "GPCxxx", excepto 4 que estan
+// cruzadas (confirmado contra el maestro de tiendas del ERP, no contra
+// erp_store_no: ese campo lo repuebla un sync externo y ya se vio que puede
+// volver a quedar mal sin avisar, asi que no se usa aqui).
+const GPC_STORE_NUMBER_OVERRIDES: Record<number, number> = {
+  2: 4, // GPC002 LIM-SUMINISTRO
+  3: 5, // GPC003 LIM-GRUPO
+  4: 2, // GPC004 LIM-TIENDA VIRTUAL
+  5: 3, // GPC005 LIM-CORPORATIVO
+};
 function ajusteStoreCode(store: Store): string | null {
   const label = String(store.erp_sede || store.name || "");
-  if (!/^GPC\d|CD-GPC/i.test(label.trim())) return null;
-  if (store.erp_store_no == null || store.erp_store_no === "") return null;
-  const n = Number(store.erp_store_no);
-  return Number.isFinite(n) ? String(1000 + n) : null;
+  if (/CD-GPC|CENTRO DISTRIBUCION/i.test(label)) return "1000";
+  const match = label.match(/^GPC0*(\d+)/i);
+  if (!match) return null;
+  const labelNumber = Number(match[1]);
+  const realNumber = GPC_STORE_NUMBER_OVERRIDES[labelNumber] ?? labelNumber;
+  return String(1000 + realNumber);
 }
 
 // ─── Página principal ─────────────────────────────────────────────────────────
