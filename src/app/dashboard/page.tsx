@@ -8855,7 +8855,15 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                                     className="px-5 py-2.5 rounded-2xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-100 transition-colors"
                                     onClick={() => {
                                         const w = window.open("", "_blank");
-                                        if (w) { w.document.write(emailHTML); w.document.close(); w.print(); }
+                                        if (w) {
+                                            w.document.write(emailHTML);
+                                            w.document.close();
+                                            w.focus();
+                                            // Esperar a que las imagenes base64 de los graficos (ERI,
+                                            // cumplimiento) terminen de decodificarse antes de imprimir;
+                                            // sin esto salen en blanco en el PDF.
+                                            setTimeout(() => w.print(), 500);
+                                        }
                                     }}
                                 >
                                     🖨️ Imprimir / PDF
