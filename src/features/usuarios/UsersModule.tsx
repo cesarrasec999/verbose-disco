@@ -223,7 +223,6 @@ export function UsersModule({ stores, showMessage }: Props) {
               <label className="text-xs text-slate-500 block mb-1">Rol</label>
               <select className="w-full border rounded-2xl p-3 text-sm bg-white text-slate-900" value={newRole} onChange={(e) => { const role = e.target.value as Role; setNewRole(role); setNewUserModuleAccess(legacyModuleAccessForRole(role, newUserAuditAccess)); if (role === "Administrador" || role === "Supervisor" || role === "Validador") setNewUserAllStores(true); }}>
                 <option value="Operario">Operario</option>
-                <option value="Cajero">Cajero</option>
                 <option value="Validador">Validador</option>
                 <option value="Supervisor">Supervisor lectura</option>
                 <option value="Administrador">Administrador</option>
@@ -341,7 +340,6 @@ export function UsersModule({ stores, showMessage }: Props) {
                 <label className="block text-sm font-semibold mb-1 text-slate-900">Rol</label>
                 <select className="w-full border rounded-2xl p-3 text-slate-900 bg-white" value={editUserRole} onChange={(e) => { const role = e.target.value as Role; setEditUserRole(role); setEditUserModuleAccess(legacyModuleAccessForRole(role, editUserAuditAccess)); if (role === "Administrador" || role === "Supervisor" || role === "Validador") setEditUserAllStores(true); }}>
                   <option value="Operario">Operario</option>
-                  <option value="Cajero">Cajero</option>
                   <option value="Validador">Validador</option>
                   <option value="Supervisor">Supervisor lectura</option>
                   <option value="Administrador">Administrador</option>
