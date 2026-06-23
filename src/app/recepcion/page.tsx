@@ -359,7 +359,7 @@ export default function RecepcionPage() {
   const canDeleteRequests = user?.role === "Administrador";
 
   const storeCodes = useCallback((store: Store | null | undefined) => {
-    return [...new Set([store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim()))];
+    return [...new Set([store?.code, store?.erp_sede, store?.erp_store_no].filter(Boolean).map(code => String(code).trim()))];
   }, []);
 
   const selectedStoreCodes = useCallback((value: string) => {
@@ -468,7 +468,7 @@ export default function RecepcionPage() {
     const stored = readStoredUser<CyclicUser>();
     if (!stored || !canAccessModule(stored, "reception")) { window.location.replace("/"); return; }
     Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
-    supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
+    supabase.from("stores").select("id,code,name,erp_sede,erp_store_no,is_active").eq("is_active", true).order("name")
       .then(({ data }) => {
         if (cancelled) return;
         setStores((data || []) as Store[]);
@@ -1368,7 +1368,9 @@ export default function RecepcionPage() {
 
     const seen = new Map<string, string>();
     for (const s of dedupedStores.values()) {
-      if (s.code) seen.set(s.code, s.name);
+      for (const alias of [s.code, s.erp_store_no]) {
+        if (alias) seen.set(String(alias).trim(), s.name);
+      }
     }
     for (const req of requestGroups) {
       for (const child of req.child_requests) {

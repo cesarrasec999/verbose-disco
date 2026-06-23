@@ -21,9 +21,8 @@ end $$;
 drop policy if exists payment_confirmations_public_read on storage.objects;
 drop policy if exists payment_confirmations_public_insert on storage.objects;
 
--- 3. Objetos y bucket de storage (por si no se borraron ya via la Storage API)
-delete from storage.objects where bucket_id = 'payment-confirmations';
-delete from storage.buckets where id = 'payment-confirmations';
+-- 3. Objetos y bucket de storage ya se borraron via la Storage API (no se
+-- puede hacer DELETE directo sobre storage.objects/storage.buckets por SQL)
 
 -- 4. Trigger y funcion de updated_at
 drop trigger if exists trg_payment_confirmations_updated_at on public.payment_confirmations;
