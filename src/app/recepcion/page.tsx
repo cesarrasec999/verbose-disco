@@ -115,6 +115,10 @@ const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
 const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
 const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
 const PAGE_SIZE = 50;
+// Con un filtro de tienda especifico el universo ya es acotado (la tienda con
+// mas volumen, CD-GPC, tiene ~270 registros como destino): se carga todo de
+// una vez para no esconder "en transito" antiguos detras de "Cargar mas".
+const FILTERED_PAGE_SIZE = 1000;
 
 type RequestCachePayload = {
   savedAt: number;
@@ -236,7 +240,10 @@ function requestDocumentLabel(req: ReceptionRequest | ReceptionRequestGroup | nu
 }
 function isVisibleReceptionDocument(req: ReceptionRequest | ReceptionRequestGroup) {
   if (req.reception_status === "completed") return true;
-  return textValue(req.doc_number).toUpperCase().startsWith("T200-");
+  // Cada tienda emite sus guias con su propio correlativo (T200- = CD-GPC,
+  // T201- = GPC001, T204- = GPC002, etc. = "T2" + 200+codigo de tienda).
+  // No solo CD-GPC emite guias validas, por eso se acepta cualquier T2XX-.
+  return /^T2\d{2}-/.test(textValue(req.doc_number).toUpperCase());
 }
 function consolidateReceptionLines(lines: ReceptionLine[], requestsById: Map<string, ReceptionRequest>): ConsolidatedReceptionLine[] {
   const grouped = new Map<string, ReceptionLine[]>();
@@ -359,7 +366,7 @@ export default function RecepcionPage() {
   const canDeleteRequests = user?.role === "Administrador";
 
   const storeCodes = useCallback((store: Store | null | undefined) => {
-    return [...new Set([store?.code, store?.erp_sede, store?.erp_store_no].filter(Boolean).map(code => String(code).trim()))];
+    return [...new Set([store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim()))];
   }, []);
 
   const selectedStoreCodes = useCallback((value: string) => {
@@ -468,7 +475,7 @@ export default function RecepcionPage() {
     const stored = readStoredUser<CyclicUser>();
     if (!stored || !canAccessModule(stored, "reception")) { window.location.replace("/"); return; }
     Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
-    supabase.from("stores").select("id,code,name,erp_sede,erp_store_no,is_active").eq("is_active", true).order("name")
+    supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
       .then(({ data }) => {
         if (cancelled) return;
         setStores((data || []) as Store[]);
@@ -492,12 +499,12 @@ export default function RecepcionPage() {
 
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
-  function buildReceptionQuery(signal: AbortSignal, codes: string[], searchText: string, offset: number) {
+  function buildReceptionQuery(signal: AbortSignal, codes: string[], searchText: string, offset: number, pageSize: number) {
     let q = supabase
       .from("reception_requests")
       .select("*")
       .order("creation_date", { ascending: false })
-      .range(offset, offset + PAGE_SIZE - 1)
+      .range(offset, offset + pageSize - 1)
       .abortSignal(signal);
     if (searchText) {
       const escaped = searchText.replace(/%/g, "\\%").replace(/_/g, "\\_");
@@ -531,17 +538,18 @@ export default function RecepcionPage() {
     try {
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+      const pageSize = codes.length > 0 ? FILTERED_PAGE_SIZE : PAGE_SIZE;
       const syncStatusPromise = supabase
         .from("erp_sync_status").select("synced_at,updated_at")
         .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
 
-      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), 0);
+      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), 0, pageSize);
       if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
       if (error) throw error;
 
       const rows = (data || []) as ReceptionRequest[];
       loadedOffsetRef.current = rows.length;
-      setHasMore(rows.length === PAGE_SIZE);
+      setHasMore(rows.length === pageSize);
 
       const syncStatus = await syncStatusPromise;
       if (seq === loadSeq.current && mountedRef.current) {
@@ -578,13 +586,14 @@ export default function RecepcionPage() {
     try {
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+      const pageSize = codes.length > 0 ? FILTERED_PAGE_SIZE : PAGE_SIZE;
       const offset = loadedOffsetRef.current;
-      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), offset);
+      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), offset, pageSize);
       if (signal.aborted || !mountedRef.current) return;
       if (error) throw error;
       const rows = (data || []) as ReceptionRequest[];
       loadedOffsetRef.current = offset + rows.length;
-      setHasMore(rows.length === PAGE_SIZE);
+      setHasMore(rows.length === pageSize);
       setRequests(prev => {
         const next = [...prev, ...rows];
         writeRequestCache(requestScopeKey(), next);
@@ -1368,9 +1377,7 @@ export default function RecepcionPage() {
 
     const seen = new Map<string, string>();
     for (const s of dedupedStores.values()) {
-      for (const alias of [s.code, s.erp_store_no]) {
-        if (alias) seen.set(String(alias).trim(), s.name);
-      }
+      if (s.code) seen.set(s.code, s.name);
     }
     for (const req of requestGroups) {
       for (const child of req.child_requests) {
