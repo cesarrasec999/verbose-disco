@@ -434,7 +434,13 @@ export default function RecepcionPage() {
   const canDeleteRequests = user?.role === "Administrador";
 
   const storeCodes = useCallback((store: Store | null | undefined) => {
-    return [...new Set([store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim()))];
+    const codes = [store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim());
+    // CD-GPC es la unica tienda cuyo "code" es una etiqueta ("CD-GPC") en vez
+    // del StoreNo real de RMS. reception_requests siempre usa el StoreNo
+    // crudo ("0" para CD-GPC), asi que se agrega ese alias para que el
+    // filtrado por tienda (proveedora/receptora) funcione para este almacen.
+    if (store?.code === "CD-GPC") codes.push("0");
+    return [...new Set(codes)];
   }, []);
 
   const selectedStoreCodes = useCallback((value: string) => {
@@ -1470,36 +1476,9 @@ export default function RecepcionPage() {
         regMap.set(reg.diff_key, reg);
       }
 
-      // Auto-regularizacion: si una diferencia esta "atendida" con un N° de
-      // requerimiento, y ese requerimiento ya salio como recibido en RMS
-      // (erp_status V/R/E), se cierra sola como "regularizado".
-      const attended = [...regMap.values()].filter(reg => reg.status === "atendido" && reg.requirement_ref?.trim());
-      if (attended.length > 0) {
-        const refs = [...new Set(attended.map(reg => reg.requirement_ref!.trim()))];
-        const { data: matchedRequests, error: matchError } = await supabase
-          .from("reception_requests")
-          .select("inv_request_no,doc_number,erp_status,status_code")
-          .or(refs.map(ref => `inv_request_no.eq.${ref}`).concat(refs.map(ref => `doc_number.eq.${ref}`)).join(","));
-        if (!matchError) {
-          const receivedRefs = new Set(
-            (matchedRequests || [])
-              .filter(r => ["V", "R", "E"].includes(String(r.erp_status ?? r.status_code)))
-              .flatMap(r => [r.inv_request_no, r.doc_number].filter(Boolean) as string[])
-          );
-          for (const reg of attended) {
-            if (!receivedRefs.has(reg.requirement_ref!.trim())) continue;
-            const regularizedAt = new Date().toISOString();
-            const { data: updated, error: updateError } = await supabase
-              .from("reception_difference_regularizations")
-              .update({ status: "regularizado", regularized_at: regularizedAt, updated_at: regularizedAt })
-              .eq("id", reg.id)
-              .select("*")
-              .single();
-            if (!updateError && updated) regMap.set(reg.diff_key, updated as DifferenceRegularization);
-          }
-        }
-      }
-
+      // El paso de "atendido" a "regularizado" lo hace un sync del lado del
+      // servidor (sync-regularizaciones.js, cada 5 min) que verifica el N° de
+      // requerimiento directo contra RMS. Aqui solo se lee el estado actual.
       setRegularizations(regMap);
     } catch (e: any) {
       showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
