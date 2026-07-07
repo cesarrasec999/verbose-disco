@@ -2,11 +2,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Camera, CheckCircle2, ChevronLeft, Home, LogOut, Package,
-  Pencil, Plus, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
+  Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
@@ -77,33 +77,46 @@ type ConsolidatedReceptionLine = ReceptionLine & {
   source_lines: ReceptionLine[];
 };
 
+type DifferenceKind = "faltante" | "sobrante" | "desmedro";
+
 type ReceptionDifferenceRow = {
   key: string;
   diffKey: string;
-  kind: "faltante" | "sobrante" | "desmedro";
+  kind: DifferenceKind;
   document: string;
   destinationStore: string;
   destinationStoreCode: string;
   sourceStore: string;
   sourceStoreCode: string;
-  completedAt: string | null;
-  completedByName: string | null;
+  deliveredAt: string | null;
+  deliveredByName: string | null;
+  reportedAt: string;
+  reportedByName: string | null;
   productCode: string;
   description: string | null;
   unit: string | null;
-  requestedQty: number;
-  receivedQty: number;
-  difference: number;
+  qtySent: number | null;
+  qtyReceived: number | null;
+  qty: number;
   notes: string;
   photoUrl?: string | null;
 };
 
-type ReceptionDamageReport = {
+// Reporte explicito de una diferencia (faltante/sobrante/desmedro), cargado
+// por el operario de la tienda receptora. Nada se calcula ni aparece
+// automaticamente: solo lo que se reporta aqui (ya sea con el boton
+// "Reportar diferencias" - que reporta en bloque los faltantes/sobrantes
+// detectados por cantidad - o con "Reportar desmedro" - manual, por codigo).
+type ReceptionDifferenceReport = {
   id: string;
   request_id: string;
   line_id: string;
+  kind: DifferenceKind;
   product_code: string;
   description: string | null;
+  unit: string | null;
+  qty_sent: number | null;
+  qty_received: number | null;
   qty: number;
   notes: string | null;
   photo_url: string | null;
@@ -112,40 +125,27 @@ type ReceptionDamageReport = {
   created_at: string;
 };
 
-type RegularizationStatus = "pendiente" | "solicitado" | "regularizado";
+type RegularizationStatus = "pendiente" | "atendido" | "regularizado";
 
 type DifferenceRegularization = {
   id: string;
   diff_key: string;
-  kind: "faltante" | "sobrante" | "desmedro";
+  kind: DifferenceKind;
   destination_store_code: string;
   source_store_code: string;
   product_code: string;
   description: string | null;
-  difference: number | null;
   status: RegularizationStatus;
-  provider_requirement_ref: string | null;
-  provider_notes: string | null;
-  provider_action_by: string | null;
-  provider_action_by_name: string | null;
-  provider_action_at: string | null;
-  receiver_requirement_ref: string | null;
-  receiver_notes: string | null;
-  receiver_action_by: string | null;
-  receiver_action_by_name: string | null;
-  receiver_action_at: string | null;
+  requirement_ref: string | null;
+  notes: string | null;
+  attended_by: string | null;
+  attended_by_name: string | null;
+  attended_at: string | null;
+  regularized_at: string | null;
   created_at: string;
   updated_at: string;
 };
 
-type DamageDraft = {
-  localId: string;
-  line: ConsolidatedReceptionLine;
-  qty: string;
-  notes: string;
-  photoFile: File | null;
-  photoPreviewUrl: string;
-};
 
 type ProductLookup = {
   sku: string;
@@ -383,12 +383,17 @@ export default function RecepcionPage() {
   const [regularizations, setRegularizations] = useState<Map<string, DifferenceRegularization>>(new Map());
   const [savingRegularizationKey, setSavingRegularizationKey] = useState<string | null>(null);
   const [regFormInputs, setRegFormInputs] = useState<Record<string, { ref: string; notes: string }>>({});
+  const [expandedDiffKey, setExpandedDiffKey] = useState<string | null>(null);
 
-  // Reporte de desmedro al completar recepcion
-  const [showDamageStep, setShowDamageStep] = useState(false);
-  const [damageDrafts, setDamageDrafts] = useState<DamageDraft[]>([]);
-  const [damageDraftLine, setDamageDraftLine] = useState("");
-  const [savingDamageStep, setSavingDamageStep] = useState(false);
+  // Reporte de diferencias (faltante/sobrante) en bloque y de desmedro (manual)
+  const [savingAutoDiffReport, setSavingAutoDiffReport] = useState(false);
+  const [autoDiffReportedRequestIds, setAutoDiffReportedRequestIds] = useState<Set<string>>(new Set());
+  const [desmedroLineId, setDesmedroLineId] = useState("");
+  const [desmedroQty, setDesmedroQty] = useState("1");
+  const [desmedroNotes, setDesmedroNotes] = useState("");
+  const [desmedroPhotoFile, setDesmedroPhotoFile] = useState<File | null>(null);
+  const [desmedroPhotoPreview, setDesmedroPhotoPreview] = useState("");
+  const [savingDesmedroReport, setSavingDesmedroReport] = useState(false);
 
   // Filtros lista
   const [storeFilter, setStoreFilter]   = useState("all");
@@ -1108,96 +1113,16 @@ export default function RecepcionPage() {
       return;
     }
 
-    const differenceLines = progressLines.map(line => {
-      const received = consolidatedScanTotal(line);
-      const requested = num(line.qty_requested);
-      return { line, received, requested, difference: received - requested };
-    });
-    const faltantes = differenceLines.filter(row => row.difference < 0);
-    if (faltantes.length > 0) {
-      const detail = faltantes.slice(0, 12).map(row => {
-        const docs = row.line.source_lines
-          .map(sourceLine => requestDocumentLabel(selectedRequestsById.get(sourceLine.request_id)))
-          .filter(Boolean)
-          .join(" / ");
-        return `${docs}: ${row.line.product_code}, falta ${fmt(Math.abs(row.difference))}`;
-      }).join("\n");
-      const more = faltantes.length > 12 ? `\n... y ${faltantes.length - 12} faltante(s) mas.` : "";
-      if (!window.confirm(`Hay faltantes antes de completar:\n\n${detail}${more}\n\nDeseas guardar el requerimiento como completado de todas formas?`)) return;
-    } else if (!window.confirm("Marcar este requerimiento como completado?")) return;
+    const diffLines = consolidatedLines.filter(line => consolidatedScanTotal(line) - num(line.qty_requested) !== 0);
+    if (diffLines.length > 0 && autoDiffReportedRequestIds.has(selected.id)) {
+      // ya se reportaron las diferencias para este requerimiento
+    } else if (diffLines.length > 0) {
+      if (!window.confirm(`Hay ${diffLines.length} codigo(s) con diferencia de cantidad sin reportar.\n\nUsa el boton "Reportar diferencias" antes de completar si quieres dejarlas registradas.\n\nDeseas completar de todas formas?`)) return;
+    }
+    if (!window.confirm("Marcar este requerimiento como completado?")) return;
 
-    setDamageDrafts([]);
-    setDamageDraftLine("");
-    setShowDamageStep(true);
-  }
-
-  function addDamageDraft() {
-    const line = progressLines.find(item => item.id === damageDraftLine);
-    if (!line) { showMsg("Selecciona un codigo."); return; }
-    setDamageDrafts(prev => [...prev, {
-      localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      line,
-      qty: "1",
-      notes: "",
-      photoFile: null,
-      photoPreviewUrl: "",
-    }]);
-    setDamageDraftLine("");
-  }
-
-  function removeDamageDraft(localId: string) {
-    setDamageDrafts(prev => {
-      const draft = prev.find(item => item.localId === localId);
-      if (draft?.photoPreviewUrl) URL.revokeObjectURL(draft.photoPreviewUrl);
-      return prev.filter(item => item.localId !== localId);
-    });
-  }
-
-  function updateDamageDraft(localId: string, patch: Partial<Pick<DamageDraft, "qty" | "notes">>) {
-    setDamageDrafts(prev => prev.map(item => item.localId === localId ? { ...item, ...patch } : item));
-  }
-
-  function setDamageDraftPhoto(localId: string, file: File | null) {
-    setDamageDrafts(prev => prev.map(item => {
-      if (item.localId !== localId) return item;
-      if (item.photoPreviewUrl) URL.revokeObjectURL(item.photoPreviewUrl);
-      return { ...item, photoFile: file, photoPreviewUrl: file ? URL.createObjectURL(file) : "" };
-    }));
-  }
-
-  async function finalizeCompletion() {
-    if (!selected || !user) return;
-    setSavingDamageStep(true);
+    setSaving(true);
     try {
-      for (const draft of damageDrafts) {
-        const qty = num(draft.qty);
-        if (qty <= 0) continue;
-        let photoUrl: string | null = null;
-        if (draft.photoFile) {
-          const path = `${selected.request_ids[0]}/${crypto.randomUUID()}.jpg`;
-          const { error: uploadError } = await supabase.storage
-            .from("reception-damage-photos")
-            .upload(path, draft.photoFile);
-          if (uploadError) throw uploadError;
-          const { data: pub } = supabase.storage.from("reception-damage-photos").getPublicUrl(path);
-          photoUrl = pub.publicUrl;
-        }
-        const sourceLine = draft.line.source_lines[0] || draft.line;
-        const { error: insertError } = await supabase.from("reception_damage_reports").insert({
-          request_id: sourceLine.request_id,
-          line_id: sourceLine.id,
-          product_code: draft.line.product_code,
-          description: draft.line.description,
-          qty,
-          notes: draft.notes.trim() || null,
-          photo_url: photoUrl,
-          operator_id: user.id,
-          operator_name: user.full_name,
-        });
-        if (insertError) throw insertError;
-      }
-
-      setSaving(true);
       const completedAt = new Date().toISOString();
       const { data, error } = await supabase.from("reception_requests").update({
         reception_status:  "completed",
@@ -1224,13 +1149,102 @@ export default function RecepcionPage() {
         ? { ...r, reception_status: "completed", completed_at: completedAt, completed_by_name: user.full_name }
         : r
       ));
-      setShowDamageStep(false);
-      for (const draft of damageDrafts) if (draft.photoPreviewUrl) URL.revokeObjectURL(draft.photoPreviewUrl);
-      setDamageDrafts([]);
-      showMsg("Requerimiento completado. Las diferencias quedan disponibles en el reporte de validadores.");
+      showMsg("Requerimiento completado.");
       if (listPanel === "diferencias") void loadDifferencesReport();
     } catch (e: any) { showMsg("Error: " + e.message); }
-    finally { setSaving(false); setSavingDamageStep(false); }
+    finally { setSaving(false); }
+  }
+
+  async function reportarDiferenciasAutomaticas() {
+    if (!selected || !user) return;
+    if (diffSuggestions.length === 0) { showMsg("No hay diferencias de cantidad para reportar."); return; }
+    setSavingAutoDiffReport(true);
+    try {
+      const rows = diffSuggestions.map(({ line, difference }) => {
+        const sourceLine = line.source_lines[0] || line;
+        const requested = num(line.qty_requested);
+        const received = consolidatedScanTotal(line);
+        return {
+          request_id: sourceLine.request_id,
+          line_id: sourceLine.id,
+          kind: (difference > 0 ? "sobrante" : "faltante") as DifferenceKind,
+          product_code: line.product_code,
+          description: line.description,
+          unit: line.unit,
+          qty_sent: requested,
+          qty_received: received,
+          qty: Math.abs(difference),
+          operator_id: user.id,
+          operator_name: user.full_name,
+        };
+      });
+      const { error } = await supabase.from("reception_difference_reports").insert(rows);
+      if (error) throw error;
+      setAutoDiffReportedRequestIds(prev => new Set(prev).add(selected.id));
+      showMsg(`${rows.length} diferencia(s) reportada(s).`);
+      if (listPanel === "diferencias") void loadDifferencesReport();
+    } catch (e: any) {
+      showMsg("Error al reportar diferencias: " + e.message);
+    } finally {
+      setSavingAutoDiffReport(false);
+    }
+  }
+
+  function setDesmedroPhoto(file: File | null) {
+    setDesmedroPhotoPreview(prev => { if (prev) URL.revokeObjectURL(prev); return file ? URL.createObjectURL(file) : ""; });
+    setDesmedroPhotoFile(file);
+  }
+
+  function resetDesmedroForm() {
+    setDesmedroLineId("");
+    setDesmedroQty("1");
+    setDesmedroNotes("");
+    setDesmedroPhoto(null);
+  }
+
+  async function reportarDesmedro() {
+    if (!selected || !user) return;
+    const line = consolidatedLines.find(item => item.id === desmedroLineId);
+    if (!line) { showMsg("Selecciona un codigo."); return; }
+    const qty = num(desmedroQty);
+    if (qty <= 0) { showMsg("Ingresa una cantidad valida."); return; }
+    setSavingDesmedroReport(true);
+    try {
+      let photoUrl: string | null = null;
+      if (desmedroPhotoFile) {
+        const path = `${selected.request_ids[0]}/${crypto.randomUUID()}.jpg`;
+        const { error: uploadError } = await supabase.storage
+          .from("reception-damage-photos")
+          .upload(path, desmedroPhotoFile);
+        if (uploadError) throw uploadError;
+        const { data: pub } = supabase.storage.from("reception-damage-photos").getPublicUrl(path);
+        photoUrl = pub.publicUrl;
+      }
+      const sourceLine = line.source_lines[0] || line;
+      const { error: insertError } = await supabase.from("reception_difference_reports").insert({
+        request_id: sourceLine.request_id,
+        line_id: sourceLine.id,
+        kind: "desmedro",
+        product_code: line.product_code,
+        description: line.description,
+        unit: line.unit,
+        qty_sent: null,
+        qty_received: null,
+        qty,
+        notes: desmedroNotes.trim() || null,
+        photo_url: photoUrl,
+        operator_id: user.id,
+        operator_name: user.full_name,
+      });
+      if (insertError) throw insertError;
+      resetDesmedroForm();
+      showMsg("Desmedro reportado.");
+      if (listPanel === "diferencias") void loadDifferencesReport();
+    } catch (e: any) {
+      showMsg("Error al reportar desmedro: " + e.message);
+    } finally {
+      setSavingDesmedroReport(false);
+    }
   }
 
   async function deleteRequestGroup(req: ReceptionRequestGroup) {
@@ -1363,150 +1377,82 @@ export default function RecepcionPage() {
     if (!canViewSummary && !canViewDifferences) return;
     setLoadingDifferences(true);
     try {
-      // El reporte de diferencias depende de recepciones completadas dentro
-      // del rango de fechas elegido, no de lo que este cargado en la lista
-      // principal (que solo trae una pagina reciente) - por eso se consulta
-      // directo a la BD con su propio rango y paginacion.
-      const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
-      const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+      // Solo se muestra lo que el operario reporto explicitamente al
+      // completar la recepcion (tabla reception_difference_reports) - nada
+      // se calcula ni aparece solo. El filtro de fecha aplica sobre la fecha
+      // del reporte, no de la recepcion.
       const fromIso = `${diffDateFrom}T00:00:00`;
       const toIso = `${diffDateTo}T23:59:59`;
-      const PAGE = 1000;
-      let completedRows: ReceptionRequest[] = [];
-      let page = 0;
-      while (true) {
-        let q = supabase
-          .from("reception_requests")
-          .select("*")
-          .eq("reception_status", "completed")
-          .gte("completed_at", fromIso)
-          .lte("completed_at", toIso)
-          .order("completed_at", { ascending: false })
-          .range(page * PAGE, (page + 1) * PAGE - 1);
-        if (codes.length > 0) {
-          // Un usuario con acceso a todas las tiendas filtra solo por tienda
-          // destino (para acotar el reporte a una tienda elegida). Un
-          // usuario de una tienda especifica puede ser tienda proveedora o
-          // receptora de la diferencia, asi que se busca en ambos lados.
-          q = canViewAllStores
-            ? q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","))
-            : q.or([
-                ...codes.map(code => `destination_store_code.eq.${code}`),
-                ...codes.map(code => `source_store_code.eq.${code}`),
-              ].join(","));
-        }
-        const { data, error } = await q;
-        if (error) throw error;
-        if (!data || data.length === 0) break;
-        completedRows = completedRows.concat(data as ReceptionRequest[]);
-        if (data.length < PAGE) break;
-        page++;
-      }
-
-      const completedGroups = buildRequestGroups(completedRows).filter(req => req.reception_status === "completed");
-      const requestIds = [...new Set(completedGroups.flatMap(req => req.request_ids))];
-      if (requestIds.length === 0) {
+      const { data: reportsData, error: reportsError } = await supabase
+        .from("reception_difference_reports")
+        .select("*")
+        .gte("created_at", fromIso)
+        .lte("created_at", toIso)
+        .order("created_at", { ascending: false });
+      if (reportsError) throw reportsError;
+      const reports = (reportsData || []) as ReceptionDifferenceReport[];
+      if (reports.length === 0) {
         setDifferenceRows([]);
         setRegularizations(new Map());
         return;
       }
 
+      const requestIds = [...new Set(reports.map(report => report.request_id))];
       const chunks: string[][] = [];
       for (let i = 0; i < requestIds.length; i += 200) chunks.push(requestIds.slice(i, i + 200));
-
-      const [lineResults, scanResults, damageResults] = await Promise.all([
-        Promise.all(chunks.map(ids =>
-          supabase.from("reception_request_lines").select("*").in("request_id", ids).order("line_id")
-        )),
-        Promise.all(chunks.map(ids =>
-          supabase.from("reception_scans").select("*").in("request_id", ids).order("created_at")
-        )),
-        Promise.all(chunks.map(ids =>
-          supabase.from("reception_damage_reports").select("*").in("request_id", ids).order("created_at")
-        )),
-      ]);
-
-      const lineError = lineResults.find(result => result.error)?.error;
-      const scanError = scanResults.find(result => result.error)?.error;
-      const damageError = damageResults.find(result => result.error)?.error;
-      if (lineError) throw lineError;
-      if (scanError) throw scanError;
-      if (damageError) throw damageError;
-
-      const reportRequests = new Map<string, ReceptionRequest>();
-      for (const group of completedGroups) {
-        for (const child of group.child_requests) reportRequests.set(child.id, child);
+      const requestResults = await Promise.all(chunks.map(ids =>
+        supabase.from("reception_requests").select("*").in("id", ids)
+      ));
+      const requestsError = requestResults.find(result => result.error)?.error;
+      if (requestsError) throw requestsError;
+      const requestsById = new Map<string, ReceptionRequest>();
+      for (const req of requestResults.flatMap(result => (result.data || []) as ReceptionRequest[])) {
+        requestsById.set(req.id, req);
       }
 
-      const scansByLineReport = new Map<string, ReceptionScan[]>();
-      for (const scan of scanResults.flatMap(result => (result.data || []) as ReceptionScan[])) {
-        if (!scansByLineReport.has(scan.line_id)) scansByLineReport.set(scan.line_id, []);
-        scansByLineReport.get(scan.line_id)!.push(scan);
-      }
+      // Alcance: un usuario con acceso a todas las tiendas puede acotar por
+      // tienda destino (filtro de la lista); un usuario de una tienda
+      // especifica ve solo donde su tienda es proveedora o receptora.
+      const myStore = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
+      const myCodes = myStore ? storeCodes(myStore) : [];
+      const filterCodes = canViewAllStores ? selectedStoreCodes(storeFilter) : myCodes;
 
       const rows: ReceptionDifferenceRow[] = [];
-      const linesByRequest = lineResults.flatMap(result => (result.data || []) as ReceptionLine[]);
-      const requestsById = reportRequests;
-      const consolidatedReportLines = consolidateReceptionLines(linesByRequest, requestsById);
-      for (const line of consolidatedReportLines) {
-        const lineIdSet = new Set(line.line_ids);
-        const lineScans = [...lineIdSet].flatMap(lineId => scansByLineReport.get(lineId) || []);
-        const receivedQty = lineScans.reduce((sum, scan) => sum + num(scan.qty), 0);
-        const requestedQty = num(line.qty_requested);
-        const difference = receivedQty - requestedQty;
-        if (difference === 0) continue;
-
-        const req = reportRequests.get(line.request_id);
+      for (const report of reports) {
+        const req = requestsById.get(report.request_id);
         if (!req) continue;
+        if (filterCodes.length > 0) {
+          const matches = canViewAllStores
+            ? filterCodes.includes(req.destination_store_code)
+            : filterCodes.includes(req.destination_store_code) || filterCodes.includes(req.source_store_code);
+          if (!matches) continue;
+        }
         rows.push({
-          key: `qty:${line.id}`,
-          diffKey: `qty:${line.id}`,
-          kind: difference > 0 ? "sobrante" : "faltante",
-          document: line.request_detail || requestDocumentLabel(req),
-          destinationStore: req.destination_store_name || req.destination_store_code,
-          destinationStoreCode: req.destination_store_code,
-          sourceStore: req.source_store_name || req.source_store_code,
-          sourceStoreCode: req.source_store_code,
-          completedAt: req.completed_at,
-          completedByName: req.completed_by_name,
-          productCode: line.product_code,
-          description: line.description,
-          unit: line.unit,
-          requestedQty,
-          receivedQty,
-          difference,
-          notes: [...new Set(lineScans.map(scan => scan.notes?.trim()).filter(Boolean))].join(" | "),
-        });
-      }
-
-      const damageReports = damageResults.flatMap(result => (result.data || []) as ReceptionDamageReport[]);
-      for (const report of damageReports) {
-        const req = reportRequests.get(report.request_id);
-        if (!req) continue;
-        rows.push({
-          key: `dmg:${report.id}`,
-          diffKey: `dmg:${report.id}`,
-          kind: "desmedro",
+          key: report.id,
+          diffKey: report.id,
+          kind: report.kind,
           document: requestDocumentLabel(req),
           destinationStore: req.destination_store_name || req.destination_store_code,
           destinationStoreCode: req.destination_store_code,
           sourceStore: req.source_store_name || req.source_store_code,
           sourceStoreCode: req.source_store_code,
-          completedAt: req.completed_at,
-          completedByName: req.completed_by_name,
+          deliveredAt: req.completed_at,
+          deliveredByName: req.completed_by_name,
+          reportedAt: report.created_at,
+          reportedByName: report.operator_name,
           productCode: report.product_code,
           description: report.description,
-          unit: null,
-          requestedQty: num(report.qty),
-          receivedQty: num(report.qty),
-          difference: -num(report.qty),
+          unit: report.unit,
+          qtySent: report.qty_sent,
+          qtyReceived: report.qty_received,
+          qty: num(report.qty),
           notes: report.notes?.trim() || "",
           photoUrl: report.photo_url,
         });
       }
 
       setDifferenceRows(rows.sort((a, b) =>
-        String(b.completedAt || "").localeCompare(String(a.completedAt || "")) ||
+        String(b.reportedAt || "").localeCompare(String(a.reportedAt || "")) ||
         a.destinationStore.localeCompare(b.destinationStore, "es") ||
         a.document.localeCompare(b.document, "es")
       ));
@@ -1523,6 +1469,37 @@ export default function RecepcionPage() {
       for (const reg of regResults.flatMap(result => (result.data || []) as DifferenceRegularization[])) {
         regMap.set(reg.diff_key, reg);
       }
+
+      // Auto-regularizacion: si una diferencia esta "atendida" con un N° de
+      // requerimiento, y ese requerimiento ya salio como recibido en RMS
+      // (erp_status V/R/E), se cierra sola como "regularizado".
+      const attended = [...regMap.values()].filter(reg => reg.status === "atendido" && reg.requirement_ref?.trim());
+      if (attended.length > 0) {
+        const refs = [...new Set(attended.map(reg => reg.requirement_ref!.trim()))];
+        const { data: matchedRequests, error: matchError } = await supabase
+          .from("reception_requests")
+          .select("inv_request_no,doc_number,erp_status,status_code")
+          .or(refs.map(ref => `inv_request_no.eq.${ref}`).concat(refs.map(ref => `doc_number.eq.${ref}`)).join(","));
+        if (!matchError) {
+          const receivedRefs = new Set(
+            (matchedRequests || [])
+              .filter(r => ["V", "R", "E"].includes(String(r.erp_status ?? r.status_code)))
+              .flatMap(r => [r.inv_request_no, r.doc_number].filter(Boolean) as string[])
+          );
+          for (const reg of attended) {
+            if (!receivedRefs.has(reg.requirement_ref!.trim())) continue;
+            const regularizedAt = new Date().toISOString();
+            const { data: updated, error: updateError } = await supabase
+              .from("reception_difference_regularizations")
+              .update({ status: "regularizado", regularized_at: regularizedAt, updated_at: regularizedAt })
+              .eq("id", reg.id)
+              .select("*")
+              .single();
+            if (!updateError && updated) regMap.set(reg.diff_key, updated as DifferenceRegularization);
+          }
+        }
+      }
+
       setRegularizations(regMap);
     } catch (e: any) {
       showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
@@ -1540,18 +1517,13 @@ export default function RecepcionPage() {
       source_store_code: row.sourceStoreCode,
       product_code: row.productCode,
       description: row.description,
-      difference: row.difference,
       status: existing?.status || "pendiente",
-      provider_requirement_ref: existing?.provider_requirement_ref ?? null,
-      provider_notes: existing?.provider_notes ?? null,
-      provider_action_by: existing?.provider_action_by ?? null,
-      provider_action_by_name: existing?.provider_action_by_name ?? null,
-      provider_action_at: existing?.provider_action_at ?? null,
-      receiver_requirement_ref: existing?.receiver_requirement_ref ?? null,
-      receiver_notes: existing?.receiver_notes ?? null,
-      receiver_action_by: existing?.receiver_action_by ?? null,
-      receiver_action_by_name: existing?.receiver_action_by_name ?? null,
-      receiver_action_at: existing?.receiver_action_at ?? null,
+      requirement_ref: existing?.requirement_ref ?? null,
+      notes: existing?.notes ?? null,
+      attended_by: existing?.attended_by ?? null,
+      attended_by_name: existing?.attended_by_name ?? null,
+      attended_at: existing?.attended_at ?? null,
+      regularized_at: existing?.regularized_at ?? null,
       updated_at: new Date().toISOString(),
     };
   }
@@ -1576,40 +1548,19 @@ export default function RecepcionPage() {
     }
   }
 
-  function regularizarFaltanteODesmedro(row: ReceptionDifferenceRow) {
+  // Tienda proveedora: coloca el N° de requerimiento de regularizacion y lo
+  // marca atendido. El paso a "regularizado" es automatico (ver
+  // loadDifferencesReport) cuando ese requerimiento sale recibido en RMS.
+  function marcarAtendido(row: ReceptionDifferenceRow) {
     const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
     if (!inputs.ref.trim()) { showMsg("Ingresa el numero de requerimiento."); return; }
     void saveRegularization(row, {
-      status: "regularizado",
-      provider_requirement_ref: inputs.ref.trim(),
-      provider_notes: inputs.notes.trim() || null,
-      provider_action_by: user!.id,
-      provider_action_by_name: user!.full_name,
-      provider_action_at: new Date().toISOString(),
-    });
-  }
-
-  function solicitarRequerimientoReceptora(row: ReceptionDifferenceRow) {
-    const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
-    void saveRegularization(row, {
-      status: "solicitado",
-      provider_notes: inputs.notes.trim() || null,
-      provider_action_by: user!.id,
-      provider_action_by_name: user!.full_name,
-      provider_action_at: new Date().toISOString(),
-    });
-  }
-
-  function regularizarSobranteComoReceptora(row: ReceptionDifferenceRow) {
-    const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
-    if (!inputs.ref.trim()) { showMsg("Ingresa el numero de requerimiento."); return; }
-    void saveRegularization(row, {
-      status: "regularizado",
-      receiver_requirement_ref: inputs.ref.trim(),
-      receiver_notes: inputs.notes.trim() || null,
-      receiver_action_by: user!.id,
-      receiver_action_by_name: user!.full_name,
-      receiver_action_at: new Date().toISOString(),
+      status: "atendido",
+      requirement_ref: inputs.ref.trim(),
+      notes: inputs.notes.trim() || null,
+      attended_by: user!.id,
+      attended_by_name: user!.full_name,
+      attended_at: new Date().toISOString(),
     });
   }
 
@@ -1748,7 +1699,7 @@ export default function RecepcionPage() {
     const faltantes = differenceRows.filter(row => row.kind === "faltante").length;
     const sobrantes = differenceRows.filter(row => row.kind === "sobrante").length;
     const desmedros = differenceRows.filter(row => row.kind === "desmedro").length;
-    const netUnits = differenceRows.reduce((sum, row) => sum + row.difference, 0);
+    const netUnits = differenceRows.reduce((sum, row) => sum + (row.kind === "sobrante" ? row.qty : -row.qty), 0);
     const stores = new Set(differenceRows.map(row => row.destinationStore)).size;
     return { faltantes, sobrantes, desmedros, netUnits, stores };
   }, [differenceRows]);
@@ -1792,6 +1743,15 @@ export default function RecepcionPage() {
     () => consolidatedLines.filter(line => num(line.qty_requested) > 0),
     [consolidatedLines]
   );
+
+  // Diferencias de cantidad detectadas (recibido vs pedido), incluyendo
+  // codigos extra escaneados que no estaban en el pedido original (posibles
+  // sobrantes). Solo informativo hasta que se reporten con el boton.
+  const diffSuggestions = useMemo(() => {
+    return consolidatedLines
+      .map(line => ({ line, difference: consolidatedScanTotal(line) - num(line.qty_requested) }))
+      .filter(row => row.difference !== 0);
+  }, [consolidatedLines, consolidatedScanTotal]);
 
   const prepareLineInputs = useCallback((line: ReceptionLine, defaultNotes = "") => {
     const group = consolidatedLines.find(item => item.line_ids.includes(line.id));
@@ -2029,173 +1989,151 @@ export default function RecepcionPage() {
 
               {loadingDifferences && <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando diferencias...</p>}
               {!loadingDifferences && differenceRows.length === 0 && (
-                <p className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias en recepciones completadas.</p>
+                <p className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias reportadas en este rango.</p>
               )}
               {!loadingDifferences && differenceRows.length > 0 && (
-                <div className="space-y-2">
-                  {differenceRows.map(row => {
-                    const isProviderForRow = canViewAllStores || myStoreCodes.includes(row.sourceStoreCode);
-                    const isReceiverForRow = canViewAllStores || myStoreCodes.includes(row.destinationStoreCode);
-                    const reg = regularizations.get(row.diffKey);
-                    const status: RegularizationStatus = reg?.status || "pendiente";
-                    const formInputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
-                    const setFormInputs = (patch: Partial<{ ref: string; notes: string }>) =>
-                      setRegFormInputs(prev => ({ ...prev, [row.diffKey]: { ...(prev[row.diffKey] || { ref: "", notes: "" }), ...patch } }));
-                    const kindBadge = row.kind === "sobrante"
-                      ? { label: diffLabel(row.difference), cls: "bg-blue-100 text-blue-700" }
-                      : row.kind === "desmedro"
-                        ? { label: `Desmedro ${fmt(Math.abs(row.difference))}`, cls: "bg-amber-100 text-amber-700" }
-                        : { label: diffLabel(row.difference), cls: "bg-red-100 text-red-700" };
-                    const statusBadge = status === "regularizado"
-                      ? { label: "Regularizado", cls: "bg-emerald-100 text-emerald-700" }
-                      : status === "solicitado"
-                        ? { label: "Solicitado a receptora", cls: "bg-amber-100 text-amber-700" }
-                        : { label: "Pendiente", cls: "bg-slate-200 text-slate-600" };
-                    const saving = savingRegularizationKey === row.diffKey;
-                    return (
-                      <div key={row.key} className="rounded-xl border bg-slate-50 p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[11px] font-black uppercase text-slate-400">{row.destinationStore} · {row.document}</p>
-                            <p className="truncate text-sm font-black text-slate-950">{row.productCode}</p>
-                            <p className="text-xs font-semibold text-slate-600">{row.description || "Sin descripcion"}</p>
-                          </div>
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-black ${kindBadge.cls}`}>{kindBadge.label}</span>
-                            <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${statusBadge.cls}`}>{statusBadge.label}</span>
-                          </div>
-                        </div>
+                <div className="overflow-x-auto rounded-xl border">
+                  <table className="w-full min-w-[980px] text-left text-[11px]">
+                    <thead>
+                      <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-400">
+                        <th className="p-2">Tienda / Doc.</th>
+                        <th className="p-2">Entrega</th>
+                        <th className="p-2">Código</th>
+                        <th className="p-2">Tipo</th>
+                        <th className="p-2 text-right">Enviado</th>
+                        <th className="p-2 text-right">Recibido</th>
+                        <th className="p-2 text-right">Dif.</th>
+                        <th className="p-2">Reportado</th>
+                        <th className="p-2">Estado</th>
+                        <th className="p-2">N° Req.</th>
+                        <th className="p-2">Regularizado</th>
+                        <th className="p-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {differenceRows.map(row => {
+                        const isProviderForRow = canViewAllStores || myStoreCodes.includes(row.sourceStoreCode);
+                        const reg = regularizations.get(row.diffKey);
+                        const status: RegularizationStatus = reg?.status || "pendiente";
+                        const formInputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
+                        const setFormInputs = (patch: Partial<{ ref: string; notes: string }>) =>
+                          setRegFormInputs(prev => ({ ...prev, [row.diffKey]: { ...(prev[row.diffKey] || { ref: "", notes: "" }), ...patch } }));
+                        const kindBadge = row.kind === "sobrante"
+                          ? { label: "Sobrante", cls: "bg-blue-100 text-blue-700" }
+                          : row.kind === "desmedro"
+                            ? { label: "Desmedro", cls: "bg-amber-100 text-amber-700" }
+                            : { label: "Faltante", cls: "bg-red-100 text-red-700" };
+                        const statusBadge = status === "regularizado"
+                          ? { label: "Regularizado", cls: "bg-emerald-100 text-emerald-700" }
+                          : status === "atendido"
+                            ? { label: "Atendido", cls: "bg-amber-100 text-amber-700" }
+                            : { label: "Pendiente", cls: "bg-slate-200 text-slate-600" };
+                        const saving = savingRegularizationKey === row.diffKey;
+                        const isOpen = expandedDiffKey === row.diffKey;
+                        const diffQty = row.kind === "desmedro" ? null : (row.kind === "sobrante" ? row.qty : -row.qty);
+                        return (
+                          <Fragment key={row.key}>
+                            <tr
+                              className="cursor-pointer border-b last:border-0 hover:bg-slate-50"
+                              onClick={() => setExpandedDiffKey(isOpen ? null : row.diffKey)}
+                            >
+                              <td className="p-2">
+                                <p className="font-black text-slate-900">{row.destinationStore}</p>
+                                <p className="text-slate-400">{row.document}</p>
+                              </td>
+                              <td className="p-2">
+                                <p className="font-bold text-slate-700">{timeShort(row.deliveredAt)}</p>
+                                {row.deliveredByName && <p className="text-slate-400">{row.deliveredByName}</p>}
+                              </td>
+                              <td className="p-2">
+                                <p className="font-black text-slate-900">{row.productCode}</p>
+                                <p className="max-w-[160px] truncate text-slate-400">{row.description || "Sin descripcion"} {row.unit ? `· ${row.unit}` : ""}</p>
+                              </td>
+                              <td className="p-2">
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${kindBadge.cls}`}>{kindBadge.label}</span>
+                              </td>
+                              <td className="p-2 text-right font-black text-slate-900">{row.qtySent !== null ? fmt(row.qtySent) : "-"}</td>
+                              <td className="p-2 text-right font-black text-slate-900">{row.qtyReceived !== null ? fmt(row.qtyReceived) : "-"}</td>
+                              <td className="p-2 text-right font-black text-slate-900">{diffQty !== null ? diffLabel(diffQty) : `-${fmt(row.qty)}`}</td>
+                              <td className="p-2">
+                                <p className="font-bold text-slate-700">{timeShort(row.reportedAt)}</p>
+                                {row.reportedByName && <p className="text-slate-400">{row.reportedByName}</p>}
+                              </td>
+                              <td className="p-2">
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusBadge.cls}`}>{statusBadge.label}</span>
+                              </td>
+                              <td className="p-2 font-bold text-slate-700">{reg?.requirement_ref || "-"}</td>
+                              <td className="p-2">
+                                {reg?.regularized_at ? (
+                                  <p className="font-bold text-emerald-700">{timeShort(reg.regularized_at)}</p>
+                                ) : <span className="text-slate-300">-</span>}
+                              </td>
+                              <td className="p-2 text-slate-400">{isOpen ? "▲" : "▼"}</td>
+                            </tr>
+                            {isOpen && (
+                              <tr className="border-b bg-slate-50/70 last:border-0">
+                                <td colSpan={12} className="p-3">
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-400">
+                                    <span>Origen: <b className="text-slate-600">{row.sourceStore}</b></span>
+                                    {reg?.attended_at && <span>Atendido: <b className="text-slate-600">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
+                                  </div>
+                                  {row.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs: {row.notes}</p>}
+                                  {reg?.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs. proveedora: {reg.notes}</p>}
+                                  {row.kind === "desmedro" && (
+                                    row.photoUrl ? (
+                                      <a href={row.photoUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block">
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img src={row.photoUrl} alt="Evidencia de desmedro" className="h-16 w-16 rounded-md border object-cover" />
+                                      </a>
+                                    ) : <p className="mt-1 text-[11px] font-bold text-slate-400">Sin foto adjunta</p>
+                                  )}
 
-                        {row.kind === "desmedro" ? (
-                          <div className="mt-2 flex items-center gap-3 rounded-lg border bg-white p-2">
-                            {row.photoUrl && (
-                              <a href={row.photoUrl} target="_blank" rel="noreferrer" className="shrink-0">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img src={row.photoUrl} alt="Evidencia de desmedro" className="h-14 w-14 rounded-md object-cover" />
-                              </a>
+                                  {/* ── Workflow: proveedora coloca N° de requerimiento; el paso a
+                                      "regularizado" es automatico cuando ese requerimiento sale
+                                      recibido en RMS. ── */}
+                                  {status !== "regularizado" && isProviderForRow && (
+                                    <div className="mt-2 max-w-sm space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
+                                      <p className="text-[10px] font-black uppercase text-slate-400">Tienda proveedora</p>
+                                      <input
+                                        placeholder="N° de requerimiento (ej. 1010-3200)"
+                                        value={formInputs.ref || reg?.requirement_ref || ""}
+                                        onChange={e => setFormInputs({ ref: e.target.value })}
+                                        className="w-full rounded-lg border px-2 py-1.5 text-xs font-bold"
+                                      />
+                                      <input
+                                        placeholder="Notas (opcional)"
+                                        value={formInputs.notes}
+                                        onChange={e => setFormInputs({ notes: e.target.value })}
+                                        className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
+                                      />
+                                      <button
+                                        onClick={() => marcarAtendido(row)}
+                                        disabled={saving}
+                                        className="w-full rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
+                                      >
+                                        {saving ? "Guardando..." : status === "atendido" ? "Actualizar requerimiento" : "Marcar atendido"}
+                                      </button>
+                                    </div>
+                                  )}
+                                  {status === "pendiente" && !isProviderForRow && (
+                                    <p className="mt-2 text-[11px] font-bold text-slate-400">Pendiente de atencion por la tienda proveedora.</p>
+                                  )}
+                                  {status === "atendido" && !isProviderForRow && (
+                                    <p className="mt-2 text-[11px] font-bold text-amber-600">Atendido con requerimiento {reg?.requirement_ref} · en espera de confirmacion en RMS.</p>
+                                  )}
+                                  {status === "regularizado" && (
+                                    <div className="mt-2 max-w-sm rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700">
+                                      Regularizado · Req. {reg?.requirement_ref} recibido en RMS
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
                             )}
-                            <div className="text-[11px] font-black text-slate-500">
-                              <p>Cantidad dañada: <span className="text-slate-950">{fmt(Math.abs(row.difference))}</span></p>
-                              {!row.photoUrl && <p className="text-slate-400">Sin foto adjunta</p>}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-lg border bg-white text-center text-[11px] font-black">
-                            <div className="border-r p-1.5"><p className="text-slate-400">Enviado</p><p>{fmt(row.requestedQty)}</p></div>
-                            <div className="border-r p-1.5"><p className="text-slate-400">Recibido</p><p>{fmt(row.receivedQty)}</p></div>
-                            <div className="p-1.5"><p className="text-slate-400">UM</p><p>{row.unit || "-"}</p></div>
-                          </div>
-                        )}
-
-                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-bold text-slate-400">
-                          <span>Origen: <b className="text-slate-600">{row.sourceStore}</b></span>
-                          <span>Cierre: <b className="text-slate-600">{timeShort(row.completedAt)}</b></span>
-                          {row.completedByName && <span>Por: <b className="text-slate-600">{row.completedByName}</b></span>}
-                        </div>
-                        {row.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs: {row.notes}</p>}
-
-                        {/* ── Workflow de regularizacion ── */}
-                        {(row.kind === "faltante" || row.kind === "desmedro") && (
-                          <>
-                            {status === "pendiente" && isProviderForRow && (
-                              <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
-                                <p className="text-[10px] font-black uppercase text-slate-400">Tienda proveedora: regularizar</p>
-                                <input
-                                  placeholder="N° de requerimiento"
-                                  value={formInputs.ref}
-                                  onChange={e => setFormInputs({ ref: e.target.value })}
-                                  className="w-full rounded-lg border px-2 py-1.5 text-xs font-bold"
-                                />
-                                <input
-                                  placeholder="Notas (opcional)"
-                                  value={formInputs.notes}
-                                  onChange={e => setFormInputs({ notes: e.target.value })}
-                                  className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
-                                />
-                                <button
-                                  onClick={() => regularizarFaltanteODesmedro(row)}
-                                  disabled={saving}
-                                  className="w-full rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
-                                >
-                                  {saving ? "Guardando..." : "Marcar regularizado"}
-                                </button>
-                              </div>
-                            )}
-                            {status === "pendiente" && !isProviderForRow && (
-                              <p className="mt-2 text-[11px] font-bold text-slate-400">Pendiente de regularización por la tienda proveedora.</p>
-                            )}
-                            {status === "regularizado" && (
-                              <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700">
-                                <p>Regularizado · Req. {reg?.provider_requirement_ref}</p>
-                                <p className="text-emerald-600">{reg?.provider_action_by_name} · {timeShort(reg?.provider_action_at || null)}</p>
-                                {reg?.provider_notes && <p className="text-emerald-600">Obs: {reg.provider_notes}</p>}
-                              </div>
-                            )}
-                          </>
-                        )}
-
-                        {row.kind === "sobrante" && (
-                          <>
-                            {status === "pendiente" && isProviderForRow && (
-                              <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
-                                <p className="text-[10px] font-black uppercase text-slate-400">Tienda proveedora</p>
-                                <input
-                                  placeholder="Notas (opcional)"
-                                  value={formInputs.notes}
-                                  onChange={e => setFormInputs({ notes: e.target.value })}
-                                  className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
-                                />
-                                <button
-                                  onClick={() => solicitarRequerimientoReceptora(row)}
-                                  disabled={saving}
-                                  className="w-full rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
-                                >
-                                  {saving ? "Guardando..." : "Solicitar requerimiento a tienda receptora"}
-                                </button>
-                              </div>
-                            )}
-                            {status === "pendiente" && !isProviderForRow && (
-                              <p className="mt-2 text-[11px] font-bold text-slate-400">Pendiente de solicitud por la tienda proveedora.</p>
-                            )}
-                            {status === "solicitado" && isReceiverForRow && (
-                              <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
-                                <p className="text-[10px] font-black uppercase text-slate-400">Tienda receptora: coloca tu requerimiento</p>
-                                <input
-                                  placeholder="N° de requerimiento"
-                                  value={formInputs.ref}
-                                  onChange={e => setFormInputs({ ref: e.target.value })}
-                                  className="w-full rounded-lg border px-2 py-1.5 text-xs font-bold"
-                                />
-                                <input
-                                  placeholder="Notas (opcional)"
-                                  value={formInputs.notes}
-                                  onChange={e => setFormInputs({ notes: e.target.value })}
-                                  className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
-                                />
-                                <button
-                                  onClick={() => regularizarSobranteComoReceptora(row)}
-                                  disabled={saving}
-                                  className="w-full rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
-                                >
-                                  {saving ? "Guardando..." : "Marcar regularizado"}
-                                </button>
-                              </div>
-                            )}
-                            {status === "solicitado" && !isReceiverForRow && (
-                              <p className="mt-2 text-[11px] font-bold text-amber-600">Solicitado a tienda receptora · {timeShort(reg?.provider_action_at || null)}</p>
-                            )}
-                            {status === "regularizado" && (
-                              <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700">
-                                <p>Regularizado · Req. {reg?.receiver_requirement_ref} (tienda receptora)</p>
-                                <p className="text-emerald-600">{reg?.receiver_action_by_name} · {timeShort(reg?.receiver_action_at || null)}</p>
-                                {reg?.receiver_notes && <p className="text-emerald-600">Obs: {reg.receiver_notes}</p>}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -2349,110 +2287,81 @@ export default function RecepcionPage() {
             </div>
           )}
 
-          {showDamageStep && selected && (
-            <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
-              <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-4 shadow-xl sm:rounded-3xl">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-black uppercase text-slate-500">Antes de completar</p>
-                    <h3 className="text-lg font-black text-slate-950">Reportar diferencias</h3>
-                  </div>
-                  <button onClick={() => setShowDamageStep(false)} className="rounded-xl border p-2 text-slate-500 hover:bg-slate-50">
-                    <X size={16} />
-                  </button>
-                </div>
+          {/* Reportar diferencias / desmedro - disponible mientras se recepciona */}
+          {!loading && consolidatedLines.length > 0 && (
+            <div className="rounded-2xl border bg-white p-3 shadow-sm space-y-3">
+              <p className="text-xs font-black uppercase text-slate-500">Reportar diferencias</p>
 
-                <p className="mb-2 text-xs font-bold text-slate-500">
-                  Los faltantes y sobrantes se calculan automáticamente. Si algún código llegó dañado, agrégalo aquí como desmedro.
+              <div>
+                <p className="mb-1.5 text-xs font-semibold text-slate-500">
+                  {diffSuggestions.length > 0
+                    ? `${diffSuggestions.length} código(s) con diferencia de cantidad detectada (recibido vs pedido).`
+                    : "No hay diferencias de cantidad detectadas por ahora."}
                 </p>
+                <button
+                  onClick={() => void reportarDiferenciasAutomaticas()}
+                  disabled={savingAutoDiffReport || diffSuggestions.length === 0 || autoDiffReportedRequestIds.has(selected.id)}
+                  className="w-full rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-black text-white disabled:opacity-40"
+                >
+                  {savingAutoDiffReport
+                    ? "Reportando..."
+                    : autoDiffReportedRequestIds.has(selected.id)
+                      ? "Diferencias ya reportadas"
+                      : "Reportar diferencias"}
+                </button>
+              </div>
 
-                <div className="mb-3 flex gap-2">
+              <div className="border-t pt-3">
+                <p className="mb-1.5 text-xs font-black uppercase text-amber-700">Reportar desmedro</p>
+                <div className="space-y-1.5">
                   <select
-                    value={damageDraftLine}
-                    onChange={e => setDamageDraftLine(e.target.value)}
-                    className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-xs font-bold text-slate-700"
+                    value={desmedroLineId}
+                    onChange={e => setDesmedroLineId(e.target.value)}
+                    className="w-full rounded-xl border px-3 py-2 text-xs font-bold text-slate-700"
                   >
-                    <option value="">Selecciona un código...</option>
-                    {progressLines.map(line => (
+                    <option value="">Selecciona un código recepcionado...</option>
+                    {consolidatedLines.map(line => (
                       <option key={line.id} value={line.id}>{line.product_code} · {line.description || "Sin descripcion"}</option>
                     ))}
                   </select>
-                  <button
-                    onClick={addDamageDraft}
-                    className="flex shrink-0 items-center gap-1 rounded-xl bg-amber-600 px-3 py-2 text-xs font-black text-white"
-                  >
-                    <Plus size={14} /> Desmedro
-                  </button>
-                </div>
-
-                {damageDrafts.length > 0 && (
-                  <div className="mb-3 space-y-2">
-                    {damageDrafts.map(draft => (
-                      <div key={draft.localId} className="rounded-xl border bg-amber-50 p-2.5">
-                        <div className="mb-1.5 flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-black text-slate-950">{draft.line.product_code}</p>
-                            <p className="truncate text-[11px] font-semibold text-slate-600">{draft.line.description || "Sin descripcion"}</p>
-                          </div>
-                          <button onClick={() => removeDamageDraft(draft.localId)} className="shrink-0 rounded-lg border p-1.5 text-red-500 hover:bg-red-50">
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                        <div className="flex gap-2">
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={draft.qty}
-                            onChange={e => updateDamageDraft(draft.localId, { qty: e.target.value })}
-                            placeholder="Cantidad dañada"
-                            className="w-28 rounded-lg border px-2 py-1.5 text-xs font-bold"
-                          />
-                          <input
-                            value={draft.notes}
-                            onChange={e => updateDamageDraft(draft.localId, { notes: e.target.value })}
-                            placeholder="Notas (estado del producto)"
-                            className="min-w-0 flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold"
-                          />
-                        </div>
-                        <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[11px] font-black text-amber-700">
-                          <Camera size={14} />
-                          {draft.photoFile ? "Cambiar foto" : "Adjuntar foto"}
-                          <input
-                            type="file"
-                            accept="image/*"
-                            capture="environment"
-                            className="hidden"
-                            onChange={e => setDamageDraftPhoto(draft.localId, e.target.files?.[0] || null)}
-                          />
-                        </label>
-                        {draft.photoPreviewUrl && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={draft.photoPreviewUrl} alt="Evidencia" className="mt-1.5 h-16 w-16 rounded-lg object-cover" />
-                        )}
-                      </div>
-                    ))}
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={desmedroQty}
+                      onChange={e => setDesmedroQty(e.target.value)}
+                      placeholder="Cantidad dañada"
+                      className="w-28 rounded-lg border px-2 py-1.5 text-xs font-bold"
+                    />
+                    <input
+                      value={desmedroNotes}
+                      onChange={e => setDesmedroNotes(e.target.value)}
+                      placeholder="Notas (estado del producto)"
+                      className="min-w-0 flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold"
+                    />
                   </div>
-                )}
-
-                <div className="flex gap-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-[11px] font-black text-amber-700">
+                    <Camera size={14} />
+                    {desmedroPhotoFile ? "Cambiar foto" : "Adjuntar foto"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={e => setDesmedroPhoto(e.target.files?.[0] || null)}
+                    />
+                  </label>
+                  {desmedroPhotoPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={desmedroPhotoPreview} alt="Evidencia" className="h-16 w-16 rounded-lg border object-cover" />
+                  )}
                   <button
-                    onClick={() => {
-                      for (const draft of damageDrafts) if (draft.photoPreviewUrl) URL.revokeObjectURL(draft.photoPreviewUrl);
-                      setDamageDrafts([]);
-                      setShowDamageStep(false);
-                    }}
-                    disabled={savingDamageStep}
-                    className="flex-1 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-600 disabled:opacity-40"
+                    onClick={() => void reportarDesmedro()}
+                    disabled={savingDesmedroReport}
+                    className="w-full rounded-xl bg-amber-600 px-3 py-2.5 text-xs font-black text-white disabled:opacity-40"
                   >
-                    Cancelar
-                  </button>
-                  <button
-                    onClick={() => void finalizeCompletion()}
-                    disabled={savingDamageStep}
-                    className="flex-1 rounded-xl bg-slate-950 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40"
-                  >
-                    {savingDamageStep ? "Guardando..." : damageDrafts.length > 0 ? "Guardar y completar" : "Completar sin desmedros"}
+                    {savingDesmedroReport ? "Reportando..." : "Reportar desmedro"}
                   </button>
                 </div>
               </div>
