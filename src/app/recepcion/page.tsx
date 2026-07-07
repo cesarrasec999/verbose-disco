@@ -1811,7 +1811,7 @@ export default function RecepcionPage() {
 
       {/* ══════════════ LISTA ════════════════════════════════════════════════ */}
       {view === "list" && (
-        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
+        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3 lg:max-w-6xl xl:max-w-7xl">
 
           {(canViewSummary || canViewDifferences) && (
             <div className={`grid gap-2 rounded-2xl border bg-white p-1 shadow-sm ${canViewSummary ? "grid-cols-3" : "grid-cols-2"}`}>
@@ -1995,7 +1995,7 @@ export default function RecepcionPage() {
                 <div className="overflow-x-auto rounded-xl border">
                   <table className="w-full min-w-[980px] text-left text-[11px]">
                     <thead>
-                      <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-400">
+                      <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                         <th className="p-2">Tienda / Doc.</th>
                         <th className="p-2">Entrega</th>
                         <th className="p-2">Código</th>
@@ -2039,15 +2039,15 @@ export default function RecepcionPage() {
                             >
                               <td className="p-2">
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
-                                <p className="text-slate-400">{row.document}</p>
+                                <p className="text-slate-500">{row.document}</p>
                               </td>
                               <td className="p-2">
                                 <p className="font-bold text-slate-700">{timeShort(row.deliveredAt)}</p>
-                                {row.deliveredByName && <p className="text-slate-400">{row.deliveredByName}</p>}
+                                {row.deliveredByName && <p className="text-slate-500">{row.deliveredByName}</p>}
                               </td>
                               <td className="p-2">
                                 <p className="font-black text-slate-900">{row.productCode}</p>
-                                <p className="max-w-[160px] truncate text-slate-400">{row.description || "Sin descripcion"} {row.unit ? `· ${row.unit}` : ""}</p>
+                                <p className="max-w-[160px] truncate text-slate-500">{row.description || "Sin descripcion"} {row.unit ? `· ${row.unit}` : ""}</p>
                               </td>
                               <td className="p-2">
                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${kindBadge.cls}`}>{kindBadge.label}</span>
@@ -2057,7 +2057,7 @@ export default function RecepcionPage() {
                               <td className="p-2 text-right font-black text-slate-900">{diffQty !== null ? diffLabel(diffQty) : `-${fmt(row.qty)}`}</td>
                               <td className="p-2">
                                 <p className="font-bold text-slate-700">{timeShort(row.reportedAt)}</p>
-                                {row.reportedByName && <p className="text-slate-400">{row.reportedByName}</p>}
+                                {row.reportedByName && <p className="text-slate-500">{row.reportedByName}</p>}
                               </td>
                               <td className="p-2">
                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusBadge.cls}`}>{statusBadge.label}</span>
@@ -2066,26 +2066,26 @@ export default function RecepcionPage() {
                               <td className="p-2">
                                 {reg?.regularized_at ? (
                                   <p className="font-bold text-emerald-700">{timeShort(reg.regularized_at)}</p>
-                                ) : <span className="text-slate-300">-</span>}
+                                ) : <span className="text-slate-400">-</span>}
                               </td>
-                              <td className="p-2 text-slate-400">{isOpen ? "▲" : "▼"}</td>
+                              <td className="p-2 text-slate-500">{isOpen ? "▲" : "▼"}</td>
                             </tr>
                             {isOpen && (
                               <tr className="border-b bg-slate-50/70 last:border-0">
                                 <td colSpan={12} className="p-3">
-                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-400">
-                                    <span>Origen: <b className="text-slate-600">{row.sourceStore}</b></span>
-                                    {reg?.attended_at && <span>Atendido: <b className="text-slate-600">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-500">
+                                    <span>Origen: <b className="text-slate-700">{row.sourceStore}</b></span>
+                                    {reg?.attended_at && <span>Atendido: <b className="text-slate-700">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
                                   </div>
-                                  {row.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs: {row.notes}</p>}
-                                  {reg?.notes && <p className="mt-1 text-xs font-semibold text-slate-500">Obs. proveedora: {reg.notes}</p>}
+                                  {row.notes && <p className="mt-1 text-xs font-semibold text-slate-600">Obs: {row.notes}</p>}
+                                  {reg?.notes && <p className="mt-1 text-xs font-semibold text-slate-600">Obs. proveedora: {reg.notes}</p>}
                                   {row.kind === "desmedro" && (
                                     row.photoUrl ? (
                                       <a href={row.photoUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block">
                                         {/* eslint-disable-next-line @next/next/no-img-element */}
                                         <img src={row.photoUrl} alt="Evidencia de desmedro" className="h-16 w-16 rounded-md border object-cover" />
                                       </a>
-                                    ) : <p className="mt-1 text-[11px] font-bold text-slate-400">Sin foto adjunta</p>
+                                    ) : <p className="mt-1 text-[11px] font-bold text-slate-500">Sin foto adjunta</p>
                                   )}
 
                                   {/* ── Workflow: proveedora coloca N° de requerimiento; el paso a
@@ -2093,7 +2093,7 @@ export default function RecepcionPage() {
                                       recibido en RMS. ── */}
                                   {status !== "regularizado" && isProviderForRow && (
                                     <div className="mt-2 max-w-sm space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
-                                      <p className="text-[10px] font-black uppercase text-slate-400">Tienda proveedora</p>
+                                      <p className="text-[10px] font-black uppercase text-slate-500">Tienda proveedora</p>
                                       <input
                                         placeholder="N° de requerimiento (ej. 1010-3200)"
                                         value={formInputs.ref || reg?.requirement_ref || ""}
@@ -2116,7 +2116,7 @@ export default function RecepcionPage() {
                                     </div>
                                   )}
                                   {status === "pendiente" && !isProviderForRow && (
-                                    <p className="mt-2 text-[11px] font-bold text-slate-400">Pendiente de atencion por la tienda proveedora.</p>
+                                    <p className="mt-2 text-[11px] font-bold text-slate-500">Pendiente de atencion por la tienda proveedora.</p>
                                   )}
                                   {status === "atendido" && !isProviderForRow && (
                                     <p className="mt-2 text-[11px] font-bold text-amber-600">Atendido con requerimiento {reg?.requirement_ref} · en espera de confirmacion en RMS.</p>
@@ -2243,7 +2243,7 @@ export default function RecepcionPage() {
 
       {/* ══════════════ DETALLE ══════════════════════════════════════════════ */}
       {view === "detail" && selected && (
-        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3">
+        <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3 lg:max-w-4xl">
 
           {/* Info cabecera */}
           <div className="rounded-2xl border bg-white p-4 shadow-sm">
