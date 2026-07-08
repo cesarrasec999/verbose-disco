@@ -208,6 +208,15 @@ function number2(value: number | string | null | undefined) {
   return n.toLocaleString("es-PE", { maximumFractionDigits: 2 });
 }
 
+// Redondea a 2 decimales antes de exportar a Excel - sin esto, restas/
+// multiplicaciones de punto flotante (ej. contado - stock) quedan con
+// arrastre de decimales (13.229999999999999) que Excel muestra tal cual.
+function r2(value: number | string | null | undefined) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 function canAccessAuditModule(user: CyclicUser) {
   if (Array.isArray(user.module_access) && user.module_access.length > 0) {
     return user.module_access.includes("audit") || user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador" || Boolean(user.can_access_audit);
@@ -1545,10 +1554,10 @@ export default function AuditoriaPage() {
       Codigo: r.item.sku,
       Descripcion: r.item.description || "",
       UM: r.item.unit || "N/D",
-      "Stock foto": Number(r.item.system_stock || 0),
-      Contado: r.total,
-      "Dif.": r.diff,
-      Valor: Number(r.value || 0),
+      "Stock foto": r2(r.item.system_stock),
+      Contado: r2(r.total),
+      "Dif.": r2(r.diff),
+      Valor: r2(r.value),
       Estado: `${r.item.source === "extra" ? "Extra - " : ""}${r.status}`,
       Observacion: itemObservationDrafts[r.item.id] ?? r.item.observation ?? "",
     }));
@@ -1610,8 +1619,8 @@ export default function AuditoriaPage() {
       OK: row.ok_items,
       Faltantes: row.missing_items,
       Sobrantes: row.surplus_items,
-      "Dif. unidades": row.diff_units,
-      "Dif. valorizada": Number(row.diff_value || 0),
+      "Dif. unidades": r2(row.diff_units),
+      "Dif. valorizada": r2(row.diff_value),
       Observacion: row.observation || "",
     })));
     summarySheet["!cols"] = [
@@ -1639,11 +1648,11 @@ export default function AuditoriaPage() {
         SKU: item.sku || "",
         Descripcion: item.description || "",
         Unidad: item.unit || "",
-        "Stock sistema": stock,
-        Contado: counted ?? "",
-        Diferencia: diff ?? "",
+        "Stock sistema": r2(stock),
+        Contado: counted !== null ? r2(counted) : "",
+        Diferencia: diff !== null ? r2(diff) : "",
         Estado: estado,
-        "Valor dif.": value ?? "",
+        "Valor dif.": value !== null ? r2(value) : "",
         Observacion: item.observation || "",
       };
     });
@@ -1886,16 +1895,18 @@ export default function AuditoriaPage() {
 
   function auditBarChart(title: string, data: { label: string; value: number; color: string }[]) {
     const width = 640;
-    const height = 260;
+    const height = 280;
     const max = Math.max(1, ...data.map(d => Math.abs(d.value)));
+    const total = Math.max(1, data.reduce((acc, d) => acc + Math.abs(d.value), 0));
     const bars = data.map((d, index) => {
       const x = 70 + index * 135;
       const barHeight = Math.max(6, Math.round((Math.abs(d.value) / max) * 140));
       const y = 190 - barHeight;
-      return `<g><rect x="${x}" y="${y}" width="72" height="${barHeight}" rx="8" fill="${d.color}"/><text x="${x + 36}" y="${y - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${escapeHTML(d.value)}</text><text x="${x + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${escapeHTML(d.label)}</text></g>`;
+      const pct = Math.round((Math.abs(d.value) / total) * 100);
+      return `<g><rect x="${x}" y="${y}" width="72" height="${barHeight}" rx="8" fill="${d.color}"/><text x="${x + 36}" y="${y - 10}" text-anchor="middle" font-size="18" font-weight="800" fill="#0f172a">${escapeHTML(d.value)}</text><text x="${x + 36}" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#475569">${escapeHTML(d.label)}</text><text x="${x + 36}" y="240" text-anchor="middle" font-size="12" font-weight="900" fill="${d.color}">${pct}%</text></g>`;
     }).join("");
     return svgDataUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
-      <rect x="0.5" y="0.5" width="639" height="259" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+      <rect x="0.5" y="0.5" width="639" height="279" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
       <text x="28" y="34" font-size="17" font-weight="900" fill="#0f172a">${escapeHTML(title)}</text>
       <line x1="48" y1="194" x2="594" y2="194" stroke="#cbd5e1" stroke-width="1"/>
       ${bars}
