@@ -1701,6 +1701,8 @@ export default function AuditoriaPage() {
 
     const _maxBarVal = Math.max(1, okTotal, t.missingItems, t.surplusItems);
     const _bh = (v: number) => Math.max(8, Math.round((v / _maxBarVal) * 140));
+    const _totalBarVal = Math.max(1, okTotal + t.missingItems + t.surplusItems);
+    const _pct = (v: number) => Math.round((v / _totalBarVal) * 100);
     const globalChartHTML = `
       <table style="width:100%;border-collapse:collapse;">
         <tr>
@@ -1723,6 +1725,11 @@ export default function AuditoriaPage() {
           <td style="padding:6px 10px 0;text-align:center;font-size:10px;font-weight:700;color:#475569;">Faltantes</td>
           <td style="padding:6px 10px 0;text-align:center;font-size:10px;font-weight:700;color:#475569;">Sobrantes</td>
         </tr>
+        <tr>
+          <td style="padding:1px 10px 0;text-align:center;font-size:11px;font-weight:900;color:#16a34a;">${_pct(okTotal)}%</td>
+          <td style="padding:1px 10px 0;text-align:center;font-size:11px;font-weight:900;color:#dc2626;">${_pct(t.missingItems)}%</td>
+          <td style="padding:1px 10px 0;text-align:center;font-size:11px;font-weight:900;color:#2563eb;">${_pct(t.surplusItems)}%</td>
+        </tr>
       </table>`;
 
     const totalDiffColor = t.diffValue < 0 ? "#b91c1c" : t.diffValue > 0 ? "#1d4ed8" : "#15803d";
@@ -1743,7 +1750,7 @@ export default function AuditoriaPage() {
         <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#15803d;font-size:10px;">${row.ok_items}</td>
         <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#b91c1c;font-size:10px;">${row.missing_items}</td>
         <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:800;color:#1d4ed8;font-size:10px;">${row.surplus_items}</td>
-        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${uc};font-size:10px;">${row.diff_units > 0 ? "+" : ""}${row.diff_units}</td>
+        <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:center;font-weight:900;color:${uc};font-size:10px;">${row.diff_units > 0 ? "+" : ""}${escapeHTML(number2(row.diff_units))}</td>
         <td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:900;color:${dc};font-size:10px;white-space:nowrap;">${escapeHTML(money(row.diff_value))}</td>
       </tr>`;
     }).join("");
@@ -1803,7 +1810,7 @@ export default function AuditoriaPage() {
         <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;">${t.stores}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Tiendas</div></td>
         <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:${eriColor};">${t.eri}%</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">ERI promedio</div></td>
         <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:13px;font-weight:900;line-height:1.1;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Dif. valorizada</div></td>
-        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Dif. unidades</div></td>
+        <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${escapeHTML(number2(t.diffUnits))}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Dif. unidades</div></td>
         <td style="border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:8px 6px;text-align:center;"><div style="font-size:17px;font-weight:900;line-height:1.1;">${t.countRecords}</div><div style="color:#64748b;font-size:8px;font-weight:800;margin-top:3px;text-transform:uppercase;">Registros</div></td>
       </tr>
     </table>
@@ -1850,7 +1857,7 @@ export default function AuditoriaPage() {
           <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#15803d;">${okTotal}</td>
           <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#b91c1c;">${t.missingItems}</td>
           <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:#1d4ed8;">${t.surplusItems}</td>
-          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${t.diffUnits}</td>
+          <td style="text-align:center;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:${totalUnitsColor};">${t.diffUnits > 0 ? "+" : ""}${escapeHTML(number2(t.diffUnits))}</td>
           <td style="text-align:right;background:#f1f5f9;font-weight:900;font-size:10px;padding:5px;border:1px solid #e2e8f0;color:${totalDiffColor};">${escapeHTML(money(t.diffValue))}</td>
         </tr>
       </tbody>
