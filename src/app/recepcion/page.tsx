@@ -392,7 +392,10 @@ export default function RecepcionPage() {
 
   // Reporte de diferencias (faltante/sobrante) en bloque y de desmedro (manual)
   const [savingAutoDiffReport, setSavingAutoDiffReport] = useState(false);
-  const [autoDiffReportedRequestIds, setAutoDiffReportedRequestIds] = useState<Set<string>>(new Set());
+  // Pares "line_id::kind" ya reportados para el requerimiento abierto (leido
+  // de la base, no solo de esta sesion) - evita reportar la misma diferencia
+  // dos veces, incluso si se recarga la pagina o se reabre el requerimiento.
+  const [reportedDiffPairs, setReportedDiffPairs] = useState<Set<string>>(new Set());
   const [desmedroLineId, setDesmedroLineId] = useState("");
   const [desmedroQty, setDesmedroQty] = useState("1");
   const [desmedroNotes, setDesmedroNotes] = useState("");
@@ -701,20 +704,31 @@ export default function RecepcionPage() {
 
   // ─── Abrir requerimiento ───────────────────────────────────────────────────
 
+  async function fetchReportedDiffPairs(requestIds: string[]): Promise<Set<string>> {
+    const { data } = await supabase
+      .from("reception_difference_reports")
+      .select("line_id,kind")
+      .in("request_id", requestIds);
+    return new Set((data || []).map(row => `${row.line_id}::${row.kind}`));
+  }
+
   async function openRequest(req: ReceptionRequestGroup) {
     setSelected(req);
     setView("detail");
     setActiveLine(null);
     setScanProduct("");
     setLoading(true);
+    setReportedDiffPairs(new Set());
     try {
-      const [{ data: lineData, error: lineErr }, { data: scanData }] = await Promise.all([
+      const [{ data: lineData, error: lineErr }, { data: scanData }, reportedPairs] = await Promise.all([
         supabase.from("reception_request_lines").select("*").in("request_id", req.request_ids).order("line_id"),
         supabase.from("reception_scans").select("*").in("request_id", req.request_ids).order("created_at"),
+        fetchReportedDiffPairs(req.request_ids),
       ]);
       if (lineErr) throw lineErr;
       setLines((lineData || []) as ReceptionLine[]);
       setScans((scanData || []) as ReceptionScan[]);
+      setReportedDiffPairs(reportedPairs);
     } catch (e: any) { showMsg("Error cargando líneas: " + e.message); }
     finally { setLoading(false); }
   }
@@ -1127,11 +1141,8 @@ export default function RecepcionPage() {
       return;
     }
 
-    const diffLines = consolidatedLines.filter(line => consolidatedScanTotal(line) - num(line.qty_requested) !== 0);
-    if (diffLines.length > 0 && autoDiffReportedRequestIds.has(selected.id)) {
-      // ya se reportaron las diferencias para este requerimiento
-    } else if (diffLines.length > 0) {
-      if (!window.confirm(`Hay ${diffLines.length} codigo(s) con diferencia de cantidad sin reportar.\n\nUsa el boton "Reportar diferencias" antes de completar si quieres dejarlas registradas.\n\nDeseas completar de todas formas?`)) return;
+    if (diffSuggestions.length > 0) {
+      if (!window.confirm(`Hay ${diffSuggestions.length} codigo(s) con diferencia de cantidad detectada.\n\nPodras reportarlas con el boton "Reportar diferencias" una vez completado el requerimiento.\n\nDeseas completar de todas formas?`)) return;
     }
     if (!window.confirm("Marcar este requerimiento como completado?")) return;
 
@@ -1194,8 +1205,19 @@ export default function RecepcionPage() {
         };
       });
       const { error } = await supabase.from("reception_difference_reports").insert(rows);
-      if (error) throw error;
-      setAutoDiffReportedRequestIds(prev => new Set(prev).add(selected.id));
+      if (error) {
+        if (error.code === "23505") {
+          showMsg("Alguna de estas diferencias ya habia sido reportada. Se actualizo la lista.");
+          setReportedDiffPairs(await fetchReportedDiffPairs(selected.request_ids));
+          return;
+        }
+        throw error;
+      }
+      setReportedDiffPairs(prev => {
+        const next = new Set(prev);
+        for (const row of rows) next.add(`${row.line_id}::${row.kind}`);
+        return next;
+      });
       showMsg(`${rows.length} diferencia(s) reportada(s).`);
       if (listPanel === "diferencias") void loadDifferencesReport();
     } catch (e: any) {
@@ -1222,6 +1244,11 @@ export default function RecepcionPage() {
     if (selected.reception_status !== "completed") { showMsg("Marca el requerimiento como completado antes de reportar un desmedro."); return; }
     const line = consolidatedLines.find(item => item.id === desmedroLineId);
     if (!line) { showMsg("Selecciona un codigo."); return; }
+    const sourceLine = line.source_lines[0] || line;
+    if (reportedDiffPairs.has(`${sourceLine.id}::desmedro`)) {
+      showMsg("Ya se reporto un desmedro para este codigo.");
+      return;
+    }
     const qty = num(desmedroQty);
     if (qty <= 0) { showMsg("Ingresa una cantidad valida."); return; }
     setSavingDesmedroReport(true);
@@ -1236,7 +1263,6 @@ export default function RecepcionPage() {
         const { data: pub } = supabase.storage.from("reception-damage-photos").getPublicUrl(path);
         photoUrl = pub.publicUrl;
       }
-      const sourceLine = line.source_lines[0] || line;
       const { error: insertError } = await supabase.from("reception_difference_reports").insert({
         request_id: sourceLine.request_id,
         line_id: sourceLine.id,
@@ -1252,7 +1278,15 @@ export default function RecepcionPage() {
         operator_id: user.id,
         operator_name: user.full_name,
       });
-      if (insertError) throw insertError;
+      if (insertError) {
+        if (insertError.code === "23505") {
+          showMsg("Ya se reporto un desmedro para este codigo. Se actualizo la lista.");
+          setReportedDiffPairs(await fetchReportedDiffPairs(selected.request_ids));
+          return;
+        }
+        throw insertError;
+      }
+      setReportedDiffPairs(prev => new Set(prev).add(`${sourceLine.id}::desmedro`));
       resetDesmedroForm();
       showMsg("Desmedro reportado.");
       if (listPanel === "diferencias") void loadDifferencesReport();
@@ -1833,11 +1867,21 @@ export default function RecepcionPage() {
   // Diferencias de cantidad detectadas (recibido vs pedido), incluyendo
   // codigos extra escaneados que no estaban en el pedido original (posibles
   // sobrantes). Solo informativo hasta que se reporten con el boton.
-  const diffSuggestions = useMemo(() => {
+  const detectedDiffLines = useMemo(() => {
     return consolidatedLines
       .map(line => ({ line, difference: consolidatedScanTotal(line) - num(line.qty_requested) }))
       .filter(row => row.difference !== 0);
   }, [consolidatedLines, consolidatedScanTotal]);
+
+  // Igual que detectedDiffLines pero sin las que ya fueron reportadas -
+  // esto es lo que realmente se puede volver a reportar.
+  const diffSuggestions = useMemo(() => {
+    return detectedDiffLines.filter(row => {
+      const sourceLine = row.line.source_lines[0] || row.line;
+      const kind: DifferenceKind = row.difference > 0 ? "sobrante" : "faltante";
+      return !reportedDiffPairs.has(`${sourceLine.id}::${kind}`);
+    });
+  }, [detectedDiffLines, reportedDiffPairs]);
 
   const prepareLineInputs = useCallback((line: ReceptionLine, defaultNotes = "") => {
     const group = consolidatedLines.find(item => item.line_ids.includes(line.id));
@@ -2462,16 +2506,18 @@ export default function RecepcionPage() {
                 <p className="mb-1.5 text-xs font-semibold text-slate-500">
                   {diffSuggestions.length > 0
                     ? `${diffSuggestions.length} código(s) con diferencia de cantidad detectada (recibido vs pedido).`
-                    : "No hay diferencias de cantidad detectadas por ahora."}
+                    : detectedDiffLines.length > 0
+                      ? "Todas las diferencias detectadas ya fueron reportadas."
+                      : "No hay diferencias de cantidad detectadas por ahora."}
                 </p>
                 <button
                   onClick={() => void reportarDiferenciasAutomaticas()}
-                  disabled={savingAutoDiffReport || diffSuggestions.length === 0 || autoDiffReportedRequestIds.has(selected.id)}
+                  disabled={savingAutoDiffReport || diffSuggestions.length === 0}
                   className="w-full rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-black text-white disabled:opacity-40"
                 >
                   {savingAutoDiffReport
                     ? "Reportando..."
-                    : autoDiffReportedRequestIds.has(selected.id)
+                    : diffSuggestions.length === 0 && detectedDiffLines.length > 0
                       ? "Diferencias ya reportadas"
                       : "Reportar diferencias"}
                 </button>
@@ -2486,9 +2532,15 @@ export default function RecepcionPage() {
                     className="w-full rounded-xl border px-3 py-2 text-xs font-bold text-slate-700"
                   >
                     <option value="">Selecciona un código recepcionado...</option>
-                    {consolidatedLines.map(line => (
-                      <option key={line.id} value={line.id}>{line.product_code} · {line.description || "Sin descripcion"}</option>
-                    ))}
+                    {consolidatedLines.map(line => {
+                      const sourceLine = line.source_lines[0] || line;
+                      const alreadyReported = reportedDiffPairs.has(`${sourceLine.id}::desmedro`);
+                      return (
+                        <option key={line.id} value={line.id}>
+                          {line.product_code} · {line.description || "Sin descripcion"}{alreadyReported ? " (ya reportado)" : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                   <div className="flex gap-2">
                     <input
