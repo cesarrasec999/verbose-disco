@@ -125,7 +125,7 @@ type ReceptionDifferenceReport = {
   created_at: string;
 };
 
-type RegularizationStatus = "pendiente" | "atendido" | "regularizado";
+type RegularizationStatus = "pendiente" | "atendido" | "regularizado" | "rechazado";
 
 type DifferenceRegularization = {
   id: string;
@@ -1544,6 +1544,23 @@ export default function RecepcionPage() {
     });
   }
 
+  // Tienda proveedora: rechaza la diferencia reportada (ej. no corresponde,
+  // ya fue entregada, etc.). A diferencia de "atendido", las notas son
+  // obligatorias para dejar constancia del motivo. Es un estado terminal:
+  // no pasa a "regularizado" automaticamente.
+  function marcarRechazado(row: ReceptionDifferenceRow) {
+    const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
+    if (!inputs.notes.trim()) { showMsg("Ingresa el motivo del rechazo en notas."); return; }
+    void saveRegularization(row, {
+      status: "rechazado",
+      requirement_ref: inputs.ref.trim() || null,
+      notes: inputs.notes.trim(),
+      attended_by: user!.id,
+      attended_by_name: user!.full_name,
+      attended_at: new Date().toISOString(),
+    });
+  }
+
   // Eliminar un reporte de diferencia (faltante/sobrante/desmedro), solo
   // disponible para el rol Administrador. Tambien limpia su regularizacion
   // asociada (si existe) para no dejar registros huerfanos.
@@ -2037,7 +2054,9 @@ export default function RecepcionPage() {
                           ? { label: "Regularizado", cls: "bg-emerald-100 text-emerald-700" }
                           : status === "atendido"
                             ? { label: "Atendido", cls: "bg-amber-100 text-amber-700" }
-                            : { label: "Pendiente", cls: "bg-slate-200 text-slate-600" };
+                            : status === "rechazado"
+                              ? { label: "Rechazado", cls: "bg-red-100 text-red-700" }
+                              : { label: "Pendiente", cls: "bg-slate-200 text-slate-600" };
                         const saving = savingRegularizationKey === row.diffKey;
                         const isOpen = expandedDiffKey === row.diffKey;
                         const diffQty = row.kind === "desmedro" ? null : (row.kind === "sobrante" ? row.qty : -row.qty);
@@ -2101,7 +2120,7 @@ export default function RecepcionPage() {
                                   {/* ── Workflow: proveedora coloca N° de requerimiento; el paso a
                                       "regularizado" es automatico cuando ese requerimiento sale
                                       recibido en RMS. ── */}
-                                  {status !== "regularizado" && isProviderForRow && (
+                                  {status !== "regularizado" && status !== "rechazado" && isProviderForRow && (
                                     <div className="mt-2 max-w-sm space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
                                       <p className="text-[10px] font-black uppercase text-slate-500">Tienda proveedora</p>
                                       <input
@@ -2111,18 +2130,27 @@ export default function RecepcionPage() {
                                         className="w-full rounded-lg border px-2 py-1.5 text-xs font-bold"
                                       />
                                       <input
-                                        placeholder="Notas (opcional)"
+                                        placeholder="Notas (opcional para atender, obligatorio para rechazar)"
                                         value={formInputs.notes}
                                         onChange={e => setFormInputs({ notes: e.target.value })}
                                         className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
                                       />
-                                      <button
-                                        onClick={() => marcarAtendido(row)}
-                                        disabled={saving}
-                                        className="w-full rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
-                                      >
-                                        {saving ? "Guardando..." : status === "atendido" ? "Actualizar requerimiento" : "Marcar atendido"}
-                                      </button>
+                                      <div className="flex gap-1.5">
+                                        <button
+                                          onClick={() => marcarAtendido(row)}
+                                          disabled={saving}
+                                          className="flex-1 rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
+                                        >
+                                          {saving ? "Guardando..." : status === "atendido" ? "Actualizar requerimiento" : "Marcar atendido"}
+                                        </button>
+                                        <button
+                                          onClick={() => marcarRechazado(row)}
+                                          disabled={saving}
+                                          className="flex-1 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                        >
+                                          {saving ? "Guardando..." : "Rechazar"}
+                                        </button>
+                                      </div>
                                     </div>
                                   )}
                                   {status === "pendiente" && !isProviderForRow && (
@@ -2134,6 +2162,11 @@ export default function RecepcionPage() {
                                   {status === "regularizado" && (
                                     <div className="mt-2 max-w-sm rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700">
                                       Regularizado · Req. {reg?.requirement_ref} recibido en RMS
+                                    </div>
+                                  )}
+                                  {status === "rechazado" && (
+                                    <div className="mt-2 max-w-sm rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] font-bold text-red-700">
+                                      Rechazado por {reg?.attended_by_name || "tienda proveedora"} · {reg?.notes || "Sin motivo especificado"}
                                     </div>
                                   )}
                                   {canDeleteRequests && (
