@@ -31,7 +31,7 @@ type ReceptionRequest = {
   source_store_name: string | null;
   reason: string | null;
   notes: string | null;
-  dispatched_by_name: string | null;
+  requested_by_name: string | null;
   line_count: number;
   qty_requested_total: number;
   qty_pending_total: number;
@@ -91,7 +91,7 @@ type ReceptionDifferenceRow = {
   sourceStoreCode: string;
   deliveredAt: string | null;
   deliveredByName: string | null;
-  dispatchedByName: string | null;
+  requestedByName: string | null;
   reportedAt: string;
   reportedByName: string | null;
   productCode: string;
@@ -1447,7 +1447,7 @@ export default function RecepcionPage() {
           sourceStoreCode: req.source_store_code,
           deliveredAt: req.completed_at,
           deliveredByName: req.completed_by_name,
-          dispatchedByName: req.dispatched_by_name,
+          requestedByName: req.requested_by_name,
           reportedAt: report.created_at,
           reportedByName: report.operator_name,
           productCode: report.product_code,
@@ -2027,8 +2027,8 @@ export default function RecepcionPage() {
                     <thead>
                       <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                         <th className="p-2">Tienda / Doc.</th>
-                        <th className="p-2">Generó guía</th>
-                        <th className="p-2">Entrega</th>
+                        <th className="p-2">Generó requerimiento</th>
+                        <th className="p-2">Recep. completada</th>
                         <th className="p-2">Código</th>
                         <th className="p-2">Tipo</th>
                         <th className="p-2 text-right">Enviado</th>
@@ -2074,10 +2074,14 @@ export default function RecepcionPage() {
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
                                 <p className="text-slate-500">{row.document}</p>
                               </td>
-                              <td className="p-2 font-bold text-slate-700">{row.dispatchedByName || "-"}</td>
+                              <td className="p-2 font-bold text-slate-700">{row.requestedByName || "-"}</td>
                               <td className="p-2">
-                                <p className="font-bold text-slate-700">{timeShort(row.deliveredAt)}</p>
-                                {row.deliveredByName && <p className="text-slate-500">{row.deliveredByName}</p>}
+                                {row.deliveredAt ? (
+                                  <>
+                                    <p className="font-bold text-slate-700">{timeShort(row.deliveredAt)}</p>
+                                    {row.deliveredByName && <p className="text-slate-500">{row.deliveredByName}</p>}
+                                  </>
+                                ) : <span className="text-slate-400">Aún sin completar</span>}
                               </td>
                               <td className="p-2">
                                 <p className="font-black text-slate-900">{row.productCode}</p>
