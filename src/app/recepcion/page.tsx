@@ -31,6 +31,7 @@ type ReceptionRequest = {
   source_store_name: string | null;
   reason: string | null;
   notes: string | null;
+  dispatched_by_name: string | null;
   line_count: number;
   qty_requested_total: number;
   qty_pending_total: number;
@@ -90,6 +91,7 @@ type ReceptionDifferenceRow = {
   sourceStoreCode: string;
   deliveredAt: string | null;
   deliveredByName: string | null;
+  dispatchedByName: string | null;
   reportedAt: string;
   reportedByName: string | null;
   productCode: string;
@@ -1445,6 +1447,7 @@ export default function RecepcionPage() {
           sourceStoreCode: req.source_store_code,
           deliveredAt: req.completed_at,
           deliveredByName: req.completed_by_name,
+          dispatchedByName: req.dispatched_by_name,
           reportedAt: report.created_at,
           reportedByName: report.operator_name,
           productCode: report.product_code,
@@ -2024,6 +2027,7 @@ export default function RecepcionPage() {
                     <thead>
                       <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                         <th className="p-2">Tienda / Doc.</th>
+                        <th className="p-2">Generó guía</th>
                         <th className="p-2">Entrega</th>
                         <th className="p-2">Código</th>
                         <th className="p-2">Tipo</th>
@@ -2070,6 +2074,7 @@ export default function RecepcionPage() {
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
                                 <p className="text-slate-500">{row.document}</p>
                               </td>
+                              <td className="p-2 font-bold text-slate-700">{row.dispatchedByName || "-"}</td>
                               <td className="p-2">
                                 <p className="font-bold text-slate-700">{timeShort(row.deliveredAt)}</p>
                                 {row.deliveredByName && <p className="text-slate-500">{row.deliveredByName}</p>}
@@ -2101,7 +2106,7 @@ export default function RecepcionPage() {
                             </tr>
                             {isOpen && (
                               <tr className="border-b bg-slate-50/70 last:border-0">
-                                <td colSpan={12} className="p-3">
+                                <td colSpan={13} className="p-3">
                                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-500">
                                     <span>Origen: <b className="text-slate-700">{row.sourceStore}</b></span>
                                     {reg?.attended_at && <span>Atendido: <b className="text-slate-700">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
