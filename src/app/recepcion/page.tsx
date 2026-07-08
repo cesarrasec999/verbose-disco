@@ -387,6 +387,8 @@ export default function RecepcionPage() {
   const [regFormInputs, setRegFormInputs] = useState<Record<string, { ref: string; notes: string }>>({});
   const [expandedDiffKey, setExpandedDiffKey] = useState<string | null>(null);
   const [deletingDiffKey, setDeletingDiffKey] = useState<string | null>(null);
+  const [selectedDiffKeys, setSelectedDiffKeys] = useState<Set<string>>(new Set());
+  const [deletingSelectedDiffs, setDeletingSelectedDiffs] = useState(false);
 
   // Reporte de diferencias (faltante/sobrante) en bloque y de desmedro (manual)
   const [savingAutoDiffReport, setSavingAutoDiffReport] = useState(false);
@@ -579,6 +581,9 @@ export default function RecepcionPage() {
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (ready && user && listPanel === "diferencias") void loadDifferencesReport();
+  }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!ready || !user) return;
     const t = setTimeout(() => void loadRequests(), 300);
@@ -1387,6 +1392,7 @@ export default function RecepcionPage() {
   async function loadDifferencesReport() {
     if (!canViewSummary && !canViewDifferences) return;
     setLoadingDifferences(true);
+    setSelectedDiffKeys(new Set());
     try {
       // Solo se muestra lo que el operario reporto explicitamente al
       // completar la recepcion (tabla reception_difference_reports) - nada
@@ -1593,6 +1599,54 @@ export default function RecepcionPage() {
       showMsg("Error eliminando el reporte: " + e.message);
     } finally {
       setDeletingDiffKey(null);
+    }
+  }
+
+  function toggleDiffRowSelection(diffKey: string) {
+    setSelectedDiffKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(diffKey)) next.delete(diffKey);
+      else next.add(diffKey);
+      return next;
+    });
+  }
+
+  function toggleSelectAllDiffRows() {
+    setSelectedDiffKeys(prev => {
+      const allKeys = differenceRows.map(row => row.diffKey);
+      const allSelected = allKeys.length > 0 && allKeys.every(key => prev.has(key));
+      return allSelected ? new Set() : new Set(allKeys);
+    });
+  }
+
+  // Eliminar en bloque los reportes de diferencia seleccionados (o todos,
+  // si se marcaron todos con el checkbox del encabezado). Solo Administrador.
+  async function deleteSelectedDifferenceReports() {
+    if (!canDeleteRequests) return;
+    const keys = [...selectedDiffKeys];
+    if (keys.length === 0) return;
+    const confirmed = window.confirm(
+      `¿Eliminar ${keys.length} reporte(s) de diferencia seleccionados? Esta accion no se puede deshacer.`
+    );
+    if (!confirmed) return;
+    setDeletingSelectedDiffs(true);
+    try {
+      await supabase.from("reception_difference_regularizations").delete().in("diff_key", keys);
+      const { error } = await supabase.from("reception_difference_reports").delete().in("id", keys);
+      if (error) throw error;
+      setDifferenceRows(prev => prev.filter(item => !keys.includes(item.diffKey)));
+      setRegularizations(prev => {
+        const next = new Map(prev);
+        for (const key of keys) next.delete(key);
+        return next;
+      });
+      if (expandedDiffKey && keys.includes(expandedDiffKey)) setExpandedDiffKey(null);
+      setSelectedDiffKeys(new Set());
+      showMsg(`${keys.length} reporte(s) de diferencia eliminado(s).`);
+    } catch (e: any) {
+      showMsg("Error eliminando los reportes: " + e.message);
+    } finally {
+      setDeletingSelectedDiffs(false);
     }
   }
 
@@ -2023,11 +2077,44 @@ export default function RecepcionPage() {
               {!loadingDifferences && differenceRows.length === 0 && (
                 <p className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias reportadas en este rango.</p>
               )}
+              {!loadingDifferences && differenceRows.length > 0 && canDeleteRequests && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border bg-white p-3 shadow-sm">
+                  <p className="text-xs font-bold text-slate-500">
+                    {selectedDiffKeys.size > 0 ? `${selectedDiffKeys.size} seleccionado${selectedDiffKeys.size !== 1 ? "s" : ""}` : "Selecciona reportes para eliminarlos en bloque"}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleSelectAllDiffRows}
+                      className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600"
+                    >
+                      {differenceRows.every(row => selectedDiffKeys.has(row.diffKey)) ? "Deseleccionar todos" : "Seleccionar todos"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteSelectedDifferenceReports()}
+                      disabled={selectedDiffKeys.size === 0 || deletingSelectedDiffs}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                    >
+                      <Trash2 size={14} /> {deletingSelectedDiffs ? "Eliminando..." : "Eliminar seleccionados"}
+                    </button>
+                  </div>
+                </div>
+              )}
               {!loadingDifferences && differenceRows.length > 0 && (
                 <div className="overflow-x-auto rounded-xl border">
                   <table className="w-full min-w-[980px] text-left text-[11px]">
                     <thead>
                       <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
+                        {canDeleteRequests && (
+                          <th className="p-2 w-8">
+                            <input
+                              type="checkbox"
+                              checked={differenceRows.length > 0 && differenceRows.every(row => selectedDiffKeys.has(row.diffKey))}
+                              onChange={toggleSelectAllDiffRows}
+                            />
+                          </th>
+                        )}
                         <th className="p-2">Tienda / Doc.</th>
                         <th className="p-2">Entregó guía</th>
                         <th className="p-2">Recep. completada</th>
@@ -2072,6 +2159,15 @@ export default function RecepcionPage() {
                               className="cursor-pointer border-b last:border-0 hover:bg-slate-50"
                               onClick={() => setExpandedDiffKey(isOpen ? null : row.diffKey)}
                             >
+                              {canDeleteRequests && (
+                                <td className="p-2" onClick={event => event.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedDiffKeys.has(row.diffKey)}
+                                    onChange={() => toggleDiffRowSelection(row.diffKey)}
+                                  />
+                                </td>
+                              )}
                               <td className="p-2">
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
                                 <p className="text-slate-500">{row.document}</p>
@@ -2112,7 +2208,7 @@ export default function RecepcionPage() {
                             </tr>
                             {isOpen && (
                               <tr className="border-b bg-slate-50/70 last:border-0">
-                                <td colSpan={13} className="p-3">
+                                <td colSpan={canDeleteRequests ? 14 : 13} className="p-3">
                                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-500">
                                     <span>Origen: <b className="text-slate-700">{row.sourceStore}</b></span>
                                     {reg?.attended_at && <span>Atendido: <b className="text-slate-700">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
