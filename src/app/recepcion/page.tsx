@@ -384,6 +384,7 @@ export default function RecepcionPage() {
   const [savingRegularizationKey, setSavingRegularizationKey] = useState<string | null>(null);
   const [regFormInputs, setRegFormInputs] = useState<Record<string, { ref: string; notes: string }>>({});
   const [expandedDiffKey, setExpandedDiffKey] = useState<string | null>(null);
+  const [deletingDiffKey, setDeletingDiffKey] = useState<string | null>(null);
 
   // Reporte de diferencias (faltante/sobrante) en bloque y de desmedro (manual)
   const [savingAutoDiffReport, setSavingAutoDiffReport] = useState(false);
@@ -1543,6 +1544,36 @@ export default function RecepcionPage() {
     });
   }
 
+  // Eliminar un reporte de diferencia (faltante/sobrante/desmedro), solo
+  // disponible para el rol Administrador. Tambien limpia su regularizacion
+  // asociada (si existe) para no dejar registros huerfanos.
+  async function deleteDifferenceReport(row: ReceptionDifferenceRow) {
+    if (!canDeleteRequests) return;
+    const confirmed = window.confirm(
+      `¿Eliminar este reporte de ${row.kind} (${row.productCode})? Esta accion no se puede deshacer.`
+    );
+    if (!confirmed) return;
+    setDeletingDiffKey(row.diffKey);
+    try {
+      await supabase.from("reception_difference_regularizations").delete().eq("diff_key", row.diffKey);
+      const { error } = await supabase.from("reception_difference_reports").delete().eq("id", row.diffKey);
+      if (error) throw error;
+      setDifferenceRows(prev => prev.filter(item => item.diffKey !== row.diffKey));
+      setRegularizations(prev => {
+        if (!prev.has(row.diffKey)) return prev;
+        const next = new Map(prev);
+        next.delete(row.diffKey);
+        return next;
+      });
+      if (expandedDiffKey === row.diffKey) setExpandedDiffKey(null);
+      showMsg("Reporte de diferencia eliminado.");
+    } catch (e: any) {
+      showMsg("Error eliminando el reporte: " + e.message);
+    } finally {
+      setDeletingDiffKey(null);
+    }
+  }
+
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
   const requestGroups = useMemo(
@@ -2104,6 +2135,16 @@ export default function RecepcionPage() {
                                     <div className="mt-2 max-w-sm rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700">
                                       Regularizado · Req. {reg?.requirement_ref} recibido en RMS
                                     </div>
+                                  )}
+                                  {canDeleteRequests && (
+                                    <button
+                                      type="button"
+                                      onClick={event => { event.stopPropagation(); void deleteDifferenceReport(row); }}
+                                      disabled={deletingDiffKey === row.diffKey}
+                                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                    >
+                                      <Trash2 size={14} /> {deletingDiffKey === row.diffKey ? "Eliminando..." : "Eliminar reporte"}
+                                    </button>
                                   )}
                                 </td>
                               </tr>
