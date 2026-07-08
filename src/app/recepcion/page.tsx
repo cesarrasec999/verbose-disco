@@ -31,7 +31,7 @@ type ReceptionRequest = {
   source_store_name: string | null;
   reason: string | null;
   notes: string | null;
-  requested_by_name: string | null;
+  dispatched_by_name: string | null;
   line_count: number;
   qty_requested_total: number;
   qty_pending_total: number;
@@ -91,7 +91,7 @@ type ReceptionDifferenceRow = {
   sourceStoreCode: string;
   deliveredAt: string | null;
   deliveredByName: string | null;
-  requestedByName: string | null;
+  dispatchedByName: string | null;
   reportedAt: string;
   reportedByName: string | null;
   productCode: string;
@@ -1166,6 +1166,7 @@ export default function RecepcionPage() {
 
   async function reportarDiferenciasAutomaticas() {
     if (!selected || !user) return;
+    if (selected.reception_status !== "completed") { showMsg("Marca el requerimiento como completado antes de reportar diferencias."); return; }
     if (diffSuggestions.length === 0) { showMsg("No hay diferencias de cantidad para reportar."); return; }
     setSavingAutoDiffReport(true);
     try {
@@ -1213,6 +1214,7 @@ export default function RecepcionPage() {
 
   async function reportarDesmedro() {
     if (!selected || !user) return;
+    if (selected.reception_status !== "completed") { showMsg("Marca el requerimiento como completado antes de reportar un desmedro."); return; }
     const line = consolidatedLines.find(item => item.id === desmedroLineId);
     if (!line) { showMsg("Selecciona un codigo."); return; }
     const qty = num(desmedroQty);
@@ -1447,7 +1449,7 @@ export default function RecepcionPage() {
           sourceStoreCode: req.source_store_code,
           deliveredAt: req.completed_at,
           deliveredByName: req.completed_by_name,
-          requestedByName: req.requested_by_name,
+          dispatchedByName: req.dispatched_by_name,
           reportedAt: report.created_at,
           reportedByName: report.operator_name,
           productCode: report.product_code,
@@ -2027,7 +2029,7 @@ export default function RecepcionPage() {
                     <thead>
                       <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                         <th className="p-2">Tienda / Doc.</th>
-                        <th className="p-2">Generó requerimiento</th>
+                        <th className="p-2">Entregó guía</th>
                         <th className="p-2">Recep. completada</th>
                         <th className="p-2">Código</th>
                         <th className="p-2">Tipo</th>
@@ -2074,7 +2076,7 @@ export default function RecepcionPage() {
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
                                 <p className="text-slate-500">{row.document}</p>
                               </td>
-                              <td className="p-2 font-bold text-slate-700">{row.requestedByName || "-"}</td>
+                              <td className="p-2 font-bold text-slate-700">{row.dispatchedByName || "-"}</td>
                               <td className="p-2">
                                 {row.deliveredAt ? (
                                   <>
@@ -2349,8 +2351,14 @@ export default function RecepcionPage() {
             </div>
           )}
 
-          {/* Reportar diferencias / desmedro - disponible mientras se recepciona */}
-          {!loading && consolidatedLines.length > 0 && (
+          {/* Reportar diferencias / desmedro - solo una vez que el operario
+              revisó todo y marcó el requerimiento como completado */}
+          {!loading && consolidatedLines.length > 0 && selected.reception_status !== "completed" && (
+            <div className="rounded-2xl border border-dashed bg-slate-50 p-3 text-center text-xs font-bold text-slate-500">
+              Marca el requerimiento como completado para poder reportar diferencias o desmedros.
+            </div>
+          )}
+          {!loading && consolidatedLines.length > 0 && selected.reception_status === "completed" && (
             <div className="rounded-2xl border bg-white p-3 shadow-sm space-y-3">
               <p className="text-xs font-black uppercase text-slate-500">Reportar diferencias</p>
 
