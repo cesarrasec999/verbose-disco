@@ -171,6 +171,14 @@ function normalize(value: string | null | undefined) {
   return String(value || "").trim().toUpperCase();
 }
 
+function reasonBadgeClass(reason: string | null | undefined) {
+  const value = normalize(reason);
+  if (value.includes("URGENTE")) return "text-amber-600";
+  if (value.includes("IMPORTACION")) return "text-blue-600";
+  if (!value) return "text-slate-400";
+  return "text-violet-600";
+}
+
 function formatSync(value: string | null) {
   if (!value) return "Sin sincronizacion registrada";
   return new Date(value).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" });
@@ -270,6 +278,8 @@ export default function PickingPage() {
   const [pickers, setPickers] = useState<CyclicUser[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
+  const selectedRequestIdRef = useRef(selectedRequestId);
+  useEffect(() => { selectedRequestIdRef.current = selectedRequestId; }, [selectedRequestId]);
   const [selectedPickerId, setSelectedPickerId] = useState("");
   const [pickerMenuOpen, setPickerMenuOpen] = useState(false);
   const [selectedAssignedPicker, setSelectedAssignedPicker] = useState("all");
@@ -282,6 +292,7 @@ export default function PickingPage() {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [panel, setPanel] = useState<PickingPanel>("asignacion");
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
+  const [selectedReasonFilter, setSelectedReasonFilter] = useState("all");
   const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
   const [selectedReportPicker, setSelectedReportPicker] = useState("all");
   const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
@@ -318,6 +329,16 @@ export default function PickingPage() {
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
   }, [requests]);
 
+  const reasonOptions = useMemo(() => {
+    const grouped = new Map<string, string>();
+    for (const request of requests) {
+      const key = normalize(request.reason);
+      if (!key) continue;
+      grouped.set(key, request.reason || key);
+    }
+    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [requests]);
+
   const sourceFilteredRequests = useMemo(
     () => selectedSourceStore === "all"
       ? requests
@@ -325,9 +346,16 @@ export default function PickingPage() {
     [requests, selectedSourceStore]
   );
 
+  const reasonFilteredRequests = useMemo(
+    () => selectedReasonFilter === "all"
+      ? sourceFilteredRequests
+      : sourceFilteredRequests.filter(request => normalize(request.reason) === selectedReasonFilter),
+    [sourceFilteredRequests, selectedReasonFilter]
+  );
+
   const filteredRequests = useMemo(
-    () => sourceFilteredRequests.filter(request => sameDate(request.creation_date, assignmentDate)),
-    [assignmentDate, sourceFilteredRequests]
+    () => reasonFilteredRequests.filter(request => sameDate(request.creation_date, assignmentDate)),
+    [assignmentDate, reasonFilteredRequests]
   );
 
   const selectedRequest = useMemo(
@@ -866,7 +894,7 @@ export default function PickingPage() {
     const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
     setRequests(requestRows);
     setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
-    if (!selectedRequestId && requestRows[0]) setSelectedRequestId(requestRows[0].id);
+    if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
     setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => item.role === "Operario" && canAccessModule(item, "picking")));
     setStores((storesResp.data || []) as StoreRow[]);
 
@@ -936,7 +964,7 @@ export default function PickingPage() {
     setAssignments(allAssignments);
     setScans(("data" in scansResp ? scansResp.data || [] : []) as PickingScan[]);
     setLoading(false);
-  }, [selectedRequestId]);
+  }, []);
 
   useEffect(() => {
     if (!selectedRequest || selectedRequestId === selectedRequest.id) return;
@@ -1997,6 +2025,17 @@ export default function PickingPage() {
                   <option key={option.key} value={option.key}>{option.label}</option>
                 ))}
               </select>
+              <label className="text-xs font-black uppercase text-slate-500">Motivo</label>
+              <select
+                value={selectedReasonFilter}
+                onChange={event => setSelectedReasonFilter(event.target.value)}
+                className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
+              >
+                <option value="all">Todos los motivos</option>
+                {reasonOptions.map(option => (
+                  <option key={option.key} value={option.key}>{option.label}</option>
+                ))}
+              </select>
               {panel === "productividad" ? (
                 <>
                   <label className="text-xs font-black uppercase text-slate-500">Desde</label>
@@ -2185,6 +2224,7 @@ export default function PickingPage() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
+                          <p className={`text-[10px] font-black uppercase tracking-wide ${reasonBadgeClass(request.reason)}`}>{request.reason || "Sin motivo"}</p>
                           <p className="font-black">{request.doc_number || request.inv_request_no}</p>
                           <p className="text-xs font-bold text-slate-500">{request.source_store_name || request.source_store_code}</p>
                         </div>
@@ -2480,6 +2520,7 @@ export default function PickingPage() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
+                        <p className={`text-[10px] font-black uppercase tracking-wide ${reasonBadgeClass(row.request.reason)}`}>{row.request.reason || "Sin motivo"}</p>
                         <p className="font-black">{row.request.doc_number || row.request.inv_request_no}</p>
                         <p className="text-xs font-bold text-slate-500">Solicita: {requesterStoreLabel(row.request)}</p>
                         <p className="text-xs font-bold text-slate-500">Entrega: {storeLabel(row.request)}</p>
