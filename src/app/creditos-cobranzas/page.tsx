@@ -34,7 +34,10 @@ type VentaCredito = {
   observacion: string | null;
   fecha_recepcion: string | null;
   cumple_documentacion: boolean;
+  nc_documento_referencia: string | null;
 };
+
+type SubTab = "ventas" | "notas_credito";
 
 const REGISTRO_OPTIONS = ["Plataforma", "Virtual", "Presencial"];
 
@@ -64,6 +67,7 @@ export default function CreditosCobranzasPage() {
   const [loaded, setLoaded] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
 
+  const [subTab, setSubTab] = useState<SubTab>("ventas");
   const [storeFilter, setStoreFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "A" | "C">("all");
   const [dateFrom, setDateFrom] = useState(monthStartISO());
@@ -133,11 +137,15 @@ export default function CreditosCobranzasPage() {
     }
   }
 
+  const ventasRows = useMemo(() => rows.filter(r => r.sales_code !== "R"), [rows]);
+  const notasCreditoRows = useMemo(() => rows.filter(r => r.sales_code === "R"), [rows]);
+  const visibleRows = subTab === "ventas" ? ventasRows : notasCreditoRows;
+
   const totals = useMemo(() => {
-    const importeTotal = rows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
-    const cumplen = rows.filter(r => r.cumple_documentacion).length;
-    return { count: rows.length, importeTotal, cumplen, pendientes: rows.length - cumplen };
-  }, [rows]);
+    const importeTotal = visibleRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
+    const cumplen = visibleRows.filter(r => r.cumple_documentacion).length;
+    return { count: visibleRows.length, importeTotal, cumplen, pendientes: visibleRows.length - cumplen };
+  }, [visibleRows]);
 
   if (!user) {
     return (
@@ -176,6 +184,23 @@ export default function CreditosCobranzasPage() {
       </header>
 
       <main className="mx-auto max-w-[1400px] space-y-4 p-4">
+        <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-100 bg-white p-1 shadow-md sm:inline-flex sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setSubTab("ventas")}
+            className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "ventas" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+          >
+            Ventas a Crédito {ventasRows.length > 0 ? `(${ventasRows.length})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab("notas_credito")}
+            className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "notas_credito" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+          >
+            Notas de Crédito {notasCreditoRows.length > 0 ? `(${notasCreditoRows.length})` : ""}
+          </button>
+        </div>
+
         <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-md">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[180px] flex-1">
@@ -239,6 +264,7 @@ export default function CreditosCobranzasPage() {
             <thead>
               <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                 <th className="p-2">Documento</th>
+                {subTab === "notas_credito" && <th className="p-2">Documento de Referencia</th>}
                 <th className="p-2">Serie</th>
                 <th className="p-2">N° Factura</th>
                 <th className="p-2">RUC</th>
@@ -257,9 +283,12 @@ export default function CreditosCobranzasPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(row => (
+              {visibleRows.map(row => (
                 <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50/80">
                   <td className="p-2 font-black text-slate-900">{row.document_type || "-"}</td>
+                  {subTab === "notas_credito" && (
+                    <td className="p-2 font-bold text-blue-700">{row.nc_documento_referencia || "-"}</td>
+                  )}
                   <td className="p-2 font-bold text-slate-700">{row.serie || "-"}</td>
                   <td className="p-2 font-bold text-slate-700">{row.numero_documento || "-"}</td>
                   <td className="p-2 font-bold text-slate-700">{row.ruc || "-"}</td>
@@ -324,8 +353,10 @@ export default function CreditosCobranzasPage() {
               ))}
             </tbody>
           </table>
-          {loaded && rows.length === 0 && (
-            <p className="p-8 text-center text-sm font-bold text-slate-400">Sin ventas a crédito para estos filtros.</p>
+          {loaded && visibleRows.length === 0 && (
+            <p className="p-8 text-center text-sm font-bold text-slate-400">
+              {subTab === "notas_credito" ? "Sin notas de crédito para estos filtros." : "Sin ventas a crédito para estos filtros."}
+            </p>
           )}
         </div>
       </main>
