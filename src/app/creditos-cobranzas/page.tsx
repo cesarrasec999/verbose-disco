@@ -39,6 +39,23 @@ type VentaCredito = {
 
 type SubTab = "ventas" | "notas_credito";
 
+type ColumnFilterKey =
+  | "document_type"
+  | "nc_documento_referencia"
+  | "serie"
+  | "numero_documento"
+  | "ruc"
+  | "razon_social"
+  | "fecha_emision"
+  | "condicion"
+  | "asesora_nombre"
+  | "asesora_dni"
+  | "registro"
+  | "legajo"
+  | "status_label"
+  | "observacion"
+  | "fecha_recepcion";
+
 const REGISTRO_OPTIONS = ["Plataforma", "Virtual", "Presencial"];
 
 function fmtMoney(n: number) {
@@ -59,6 +76,27 @@ function formatSync(iso: string | null) {
   return new Date(iso).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" });
 }
 
+function ColumnFilterCell({
+  filterKey,
+  columnFilters,
+  setColumnFilter,
+}: {
+  filterKey: ColumnFilterKey;
+  columnFilters: Partial<Record<ColumnFilterKey, string>>;
+  setColumnFilter: (key: ColumnFilterKey, value: string) => void;
+}) {
+  return (
+    <th className="p-1">
+      <input
+        value={columnFilters[filterKey] || ""}
+        onChange={e => setColumnFilter(filterKey, e.target.value)}
+        placeholder="Buscar..."
+        className="w-full rounded-md border border-slate-200 px-1.5 py-1 text-[10px] font-semibold text-slate-700 placeholder:text-slate-300"
+      />
+    </th>
+  );
+}
+
 export default function CreditosCobranzasPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -73,6 +111,11 @@ export default function CreditosCobranzasPage() {
   const [dateFrom, setDateFrom] = useState(monthStartISO());
   const [dateTo, setDateTo] = useState(todayISO());
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [columnFilters, setColumnFilters] = useState<Partial<Record<ColumnFilterKey, string>>>({});
+
+  function setColumnFilter(key: ColumnFilterKey, value: string) {
+    setColumnFilters(prev => ({ ...prev, [key]: value }));
+  }
 
   useEffect(() => {
     try {
@@ -91,22 +134,35 @@ export default function CreditosCobranzasPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      let query = supabase
-        .from("ventas_credito")
-        .select("*")
-        .gte("fecha_emision", dateFrom)
-        .lte("fecha_emision", dateTo)
-        .order("fecha_emision", { ascending: false })
-        .limit(1000);
-      if (storeFilter) query = query.eq("store_code", storeFilter);
-      if (statusFilter !== "all") query = query.eq("status_code", statusFilter);
+      function buildQuery(from: number, to: number) {
+        let query = supabase
+          .from("ventas_credito")
+          .select("*")
+          .gte("fecha_emision", dateFrom)
+          .lte("fecha_emision", dateTo)
+          .order("fecha_emision", { ascending: false })
+          .range(from, to);
+        if (storeFilter) query = query.eq("store_code", storeFilter);
+        if (statusFilter !== "all") query = query.eq("status_code", statusFilter);
+        return query;
+      }
 
-      const [{ data, error }, syncRes] = await Promise.all([
-        query,
-        supabase.from("erp_sync_status").select("synced_at").eq("id", "ventas_credito").maybeSingle(),
-      ]);
-      if (error) throw error;
-      setRows((data || []) as VentaCredito[]);
+      // Trae TODAS las filas paginando - un mes ya puede superar los 1000
+      // registros, asi que un solo .limit() se quedaba cortando tiendas.
+      const PAGE = 1000;
+      const all: VentaCredito[] = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await buildQuery(from, from + PAGE - 1);
+        if (error) throw error;
+        const chunk = (data || []) as VentaCredito[];
+        all.push(...chunk);
+        if (chunk.length < PAGE) break;
+        from += PAGE;
+      }
+
+      const syncRes = await supabase.from("erp_sync_status").select("synced_at").eq("id", "ventas_credito").maybeSingle();
+      setRows(all);
       setLastSync(syncRes.data?.synced_at || null);
       setLoaded(true);
     } catch (err: any) {
@@ -141,11 +197,26 @@ export default function CreditosCobranzasPage() {
   const notasCreditoRows = useMemo(() => rows.filter(r => r.sales_code === "R"), [rows]);
   const visibleRows = subTab === "ventas" ? ventasRows : notasCreditoRows;
 
+  const activeColumnFilters = useMemo(
+    () => (Object.entries(columnFilters) as [ColumnFilterKey, string | undefined][])
+      .filter((entry): entry is [ColumnFilterKey, string] => !!entry[1]?.trim()),
+    [columnFilters]
+  );
+
+  const filteredRows = useMemo(() => {
+    if (activeColumnFilters.length === 0) return visibleRows;
+    return visibleRows.filter(row =>
+      activeColumnFilters.every(([key, value]) =>
+        String(row[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())
+      )
+    );
+  }, [visibleRows, activeColumnFilters]);
+
   const totals = useMemo(() => {
-    const importeTotal = visibleRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
-    const cumplen = visibleRows.filter(r => r.cumple_documentacion).length;
-    return { count: visibleRows.length, importeTotal, cumplen, pendientes: visibleRows.length - cumplen };
-  }, [visibleRows]);
+    const importeTotal = filteredRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
+    const cumplen = filteredRows.filter(r => r.cumple_documentacion).length;
+    return { count: filteredRows.length, importeTotal, cumplen, pendientes: filteredRows.length - cumplen };
+  }, [filteredRows]);
 
   if (!user) {
     return (
@@ -187,14 +258,14 @@ export default function CreditosCobranzasPage() {
         <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-100 bg-white p-1 shadow-md sm:inline-flex sm:w-auto">
           <button
             type="button"
-            onClick={() => setSubTab("ventas")}
+            onClick={() => { setSubTab("ventas"); setColumnFilters({}); }}
             className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "ventas" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
           >
             Ventas a Crédito {ventasRows.length > 0 ? `(${ventasRows.length})` : ""}
           </button>
           <button
             type="button"
-            onClick={() => setSubTab("notas_credito")}
+            onClick={() => { setSubTab("notas_credito"); setColumnFilters({}); }}
             className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "notas_credito" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
           >
             Notas de Crédito {notasCreditoRows.length > 0 ? `(${notasCreditoRows.length})` : ""}
@@ -281,9 +352,30 @@ export default function CreditosCobranzasPage() {
                 <th className="p-2">Fecha de Recepción</th>
                 <th className="p-2 text-center">Cumple Doc.</th>
               </tr>
+              <tr className="border-b bg-white">
+                <ColumnFilterCell filterKey="document_type" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                {subTab === "notas_credito" && (
+                  <ColumnFilterCell filterKey="nc_documento_referencia" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                )}
+                <ColumnFilterCell filterKey="serie" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="numero_documento" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="ruc" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="razon_social" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="fecha_emision" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <th className="p-1"></th>
+                <ColumnFilterCell filterKey="condicion" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="asesora_nombre" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="asesora_dni" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="registro" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="legajo" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="status_label" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="observacion" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <ColumnFilterCell filterKey="fecha_recepcion" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
+                <th className="p-1"></th>
+              </tr>
             </thead>
             <tbody>
-              {visibleRows.map(row => (
+              {filteredRows.map(row => (
                 <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50/80">
                   <td className="p-2 font-black text-slate-900">{row.document_type || "-"}</td>
                   {subTab === "notas_credito" && (
@@ -353,7 +445,7 @@ export default function CreditosCobranzasPage() {
               ))}
             </tbody>
           </table>
-          {loaded && visibleRows.length === 0 && (
+          {loaded && filteredRows.length === 0 && (
             <p className="p-8 text-center text-sm font-bold text-slate-400">
               {subTab === "notas_credito" ? "Sin notas de crédito para estos filtros." : "Sin ventas a crédito para estos filtros."}
             </p>
