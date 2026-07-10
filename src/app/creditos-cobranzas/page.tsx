@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Home, RefreshCw } from "lucide-react";
+import { Home, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
@@ -29,7 +29,7 @@ type VentaCredito = {
   asesora_dni: string | null;
   status_code: string | null;
   status_label: string | null;
-  registro: string | null;
+  registro: string[] | null;
   legajo: string | null;
   observacion: string | null;
   fecha_recepcion: string | null;
@@ -42,6 +42,7 @@ type SubTab = "ventas" | "notas_credito";
 type ColumnFilterKey =
   | "document_type"
   | "nc_documento_referencia"
+  | "store_name"
   | "serie"
   | "numero_documento"
   | "ruc"
@@ -57,6 +58,63 @@ type ColumnFilterKey =
   | "fecha_recepcion";
 
 const REGISTRO_OPTIONS = ["Plataforma", "Virtual", "Presencial"];
+const PAGE_SIZE = 50;
+
+// Columnas que necesitan un cast explicito para poder filtrarse con ilike
+// (fechas y el arreglo "registro" no son texto nativo en la base).
+const FILTER_EXPR: Record<ColumnFilterKey, string> = {
+  document_type: "document_type",
+  nc_documento_referencia: "nc_documento_referencia",
+  store_name: "store_name",
+  serie: "serie",
+  numero_documento: "numero_documento",
+  ruc: "ruc",
+  razon_social: "razon_social",
+  fecha_emision: "fecha_emision::text",
+  condicion: "condicion",
+  asesora_nombre: "asesora_nombre",
+  asesora_dni: "asesora_dni",
+  registro: "registro::text",
+  legajo: "legajo",
+  status_label: "status_label",
+  observacion: "observacion",
+  fecha_recepcion: "fecha_recepcion::text",
+};
+
+function applyBaseFilters(query: any, opts: { dateFrom: string; dateTo: string; storeFilter: string; statusFilter: string; subTab: SubTab }) {
+  let q = query.gte("fecha_emision", opts.dateFrom).lte("fecha_emision", opts.dateTo);
+  if (opts.storeFilter) q = q.eq("store_code", opts.storeFilter);
+  if (opts.statusFilter !== "all") q = q.eq("status_code", opts.statusFilter);
+  q = opts.subTab === "notas_credito" ? q.eq("sales_code", "R") : q.neq("sales_code", "R");
+  return q;
+}
+
+function applyColumnFilters(query: any, filters: Partial<Record<ColumnFilterKey, string>>) {
+  let q = query;
+  for (const [key, value] of Object.entries(filters) as [ColumnFilterKey, string][]) {
+    if (!value?.trim()) continue;
+    q = q.filter(FILTER_EXPR[key], "ilike", `%${value.trim()}%`);
+  }
+  return q;
+}
+
+// Trae TODAS las filas que matchean paginando de a 1000 (el default de
+// PostgREST corta en 1000 y ya nos mordio una vez). Se usa solo para
+// consultas livianas (pocas columnas), nunca para llenar la tabla visible.
+async function fetchAllPages<T>(build: (from: number, to: number) => any): Promise<T[]> {
+  const PAGE = 1000;
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) throw error;
+    const chunk = (data || []) as T[];
+    all.push(...chunk);
+    if (chunk.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
 
 function fmtMoney(n: number) {
   return new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN" }).format(n);
@@ -97,6 +155,33 @@ function ColumnFilterCell({
   );
 }
 
+function RegistroCell({
+  row,
+  disabled,
+  onToggle,
+}: {
+  row: VentaCredito;
+  disabled: boolean;
+  onToggle: (opt: string, checked: boolean) => void;
+}) {
+  const selected = row.registro || [];
+  return (
+    <div className="flex flex-col gap-0.5">
+      {REGISTRO_OPTIONS.map(opt => (
+        <label key={opt} className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+          <input
+            type="checkbox"
+            checked={selected.includes(opt)}
+            disabled={disabled}
+            onChange={e => onToggle(opt, e.target.checked)}
+          />
+          {opt}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export default function CreditosCobranzasPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -104,6 +189,7 @@ export default function CreditosCobranzasPage() {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [legajoMap, setLegajoMap] = useState<Map<string, string>>(new Map());
 
   const [subTab, setSubTab] = useState<SubTab>("ventas");
   const [storeFilter, setStoreFilter] = useState("");
@@ -112,6 +198,12 @@ export default function CreditosCobranzasPage() {
   const [dateTo, setDateTo] = useState(todayISO());
   const [savingId, setSavingId] = useState<string | null>(null);
   const [columnFilters, setColumnFilters] = useState<Partial<Record<ColumnFilterKey, string>>>({});
+  const [debouncedColumnFilters, setDebouncedColumnFilters] = useState<Partial<Record<ColumnFilterKey, string>>>({});
+
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [aggregates, setAggregates] = useState({ importeTotal: 0, cumplen: 0 });
+  const [tabCounts, setTabCounts] = useState({ ventas: 0, notas: 0 });
 
   function setColumnFilter(key: ColumnFilterKey, value: string) {
     setColumnFilters(prev => ({ ...prev, [key]: value }));
@@ -129,40 +221,57 @@ export default function CreditosCobranzasPage() {
       .then(({ data }) => setStores((data || []) as Store[]));
   }, []);
 
+  useEffect(() => {
+    fetchAllPages<{ ruc: string; legajo_abreviatura: string | null }>((from, to) =>
+      supabase.from("credito_clientes_legajo").select("ruc,legajo_abreviatura").range(from, to)
+    ).then(data => {
+      const m = new Map<string, string>();
+      for (const r of data) if (r.legajo_abreviatura) m.set(r.ruc, r.legajo_abreviatura);
+      setLegajoMap(m);
+    }).catch(() => setLegajoMap(new Map()));
+  }, []);
+
+  // Debounce de los filtros de columna: evita disparar un query por cada
+  // tecla escrita. Al asentarse, resetea la pagina a 0.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedColumnFilters(columnFilters);
+      setPage(0);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [columnFilters]);
+
   const canAccess = Boolean(user && canAccessModule(user, "credit_sales"));
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      function buildQuery(from: number, to: number) {
-        let query = supabase
-          .from("ventas_credito")
-          .select("*")
-          .gte("fecha_emision", dateFrom)
-          .lte("fecha_emision", dateTo)
-          .order("fecha_emision", { ascending: false })
-          .range(from, to);
-        if (storeFilter) query = query.eq("store_code", storeFilter);
-        if (statusFilter !== "all") query = query.eq("status_code", statusFilter);
-        return query;
-      }
+      const base = { dateFrom, dateTo, storeFilter, statusFilter, subTab };
 
-      // Trae TODAS las filas paginando - un mes ya puede superar los 1000
-      // registros, asi que un solo .limit() se quedaba cortando tiendas.
-      const PAGE = 1000;
-      const all: VentaCredito[] = [];
-      let from = 0;
-      while (true) {
-        const { data, error } = await buildQuery(from, from + PAGE - 1);
-        if (error) throw error;
-        const chunk = (data || []) as VentaCredito[];
-        all.push(...chunk);
-        if (chunk.length < PAGE) break;
-        from += PAGE;
-      }
+      let mainQuery = supabase.from("ventas_credito").select("*", { count: "exact" }).order("fecha_emision", { ascending: false });
+      mainQuery = applyBaseFilters(mainQuery, base);
+      mainQuery = applyColumnFilters(mainQuery, debouncedColumnFilters);
+      mainQuery = mainQuery.range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+      const { data, error, count } = await mainQuery;
+      if (error) throw error;
+
+      // Totales exactos: solo 2 columnas angostas, paginadas para no
+      // toparse con el limite de 1000 filas, sin cargar toda la tabla
+      // visible (eso es justamente lo que la paginacion evita).
+      const aggRows = await fetchAllPages<{ importe_total: number; cumple_documentacion: boolean }>((from, to) => {
+        let q = supabase.from("ventas_credito").select("importe_total,cumple_documentacion");
+        q = applyBaseFilters(q, base);
+        q = applyColumnFilters(q, debouncedColumnFilters);
+        return q.range(from, to);
+      });
+      const importeTotal = aggRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
+      const cumplen = aggRows.filter(r => r.cumple_documentacion).length;
 
       const syncRes = await supabase.from("erp_sync_status").select("synced_at").eq("id", "ventas_credito").maybeSingle();
-      setRows(all);
+
+      setRows((data || []) as VentaCredito[]);
+      setTotalCount(count ?? 0);
+      setAggregates({ importeTotal, cumplen });
       setLastSync(syncRes.data?.synced_at || null);
       setLoaded(true);
     } catch (err: any) {
@@ -170,10 +279,28 @@ export default function CreditosCobranzasPage() {
     } finally {
       setLoading(false);
     }
+  }, [dateFrom, dateTo, storeFilter, statusFilter, subTab, debouncedColumnFilters, page]);
+
+  const loadTabCounts = useCallback(async () => {
+    try {
+      const base = { dateFrom, dateTo, storeFilter, statusFilter };
+      const [ventasRes, notasRes] = await Promise.all([
+        applyBaseFilters(supabase.from("ventas_credito").select("id", { count: "exact", head: true }), { ...base, subTab: "ventas" as SubTab }),
+        applyBaseFilters(supabase.from("ventas_credito").select("id", { count: "exact", head: true }), { ...base, subTab: "notas_credito" as SubTab }),
+      ]);
+      setTabCounts({ ventas: ventasRes.count || 0, notas: notasRes.count || 0 });
+    } catch {
+      // Solo afecta el contador de las pestañas, no es critico.
+    }
   }, [dateFrom, dateTo, storeFilter, statusFilter]);
 
   useEffect(() => {
     if (canAccess) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canAccess, dateFrom, dateTo, storeFilter, statusFilter, subTab, debouncedColumnFilters, page]);
+
+  useEffect(() => {
+    if (canAccess) void loadTabCounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAccess, dateFrom, dateTo, storeFilter, statusFilter]);
 
@@ -193,30 +320,21 @@ export default function CreditosCobranzasPage() {
     }
   }
 
-  const ventasRows = useMemo(() => rows.filter(r => r.sales_code !== "R"), [rows]);
-  const notasCreditoRows = useMemo(() => rows.filter(r => r.sales_code === "R"), [rows]);
-  const visibleRows = subTab === "ventas" ? ventasRows : notasCreditoRows;
+  const totals = useMemo(() => ({
+    count: totalCount,
+    importeTotal: aggregates.importeTotal,
+    cumplen: aggregates.cumplen,
+    pendientes: totalCount - aggregates.cumplen,
+  }), [totalCount, aggregates]);
 
-  const activeColumnFilters = useMemo(
-    () => (Object.entries(columnFilters) as [ColumnFilterKey, string | undefined][])
-      .filter((entry): entry is [ColumnFilterKey, string] => !!entry[1]?.trim()),
-    [columnFilters]
-  );
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  const filteredRows = useMemo(() => {
-    if (activeColumnFilters.length === 0) return visibleRows;
-    return visibleRows.filter(row =>
-      activeColumnFilters.every(([key, value]) =>
-        String(row[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())
-      )
-    );
-  }, [visibleRows, activeColumnFilters]);
-
-  const totals = useMemo(() => {
-    const importeTotal = filteredRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
-    const cumplen = filteredRows.filter(r => r.cumple_documentacion).length;
-    return { count: filteredRows.length, importeTotal, cumplen, pendientes: filteredRows.length - cumplen };
-  }, [filteredRows]);
+  function goToTab(tab: SubTab) {
+    setSubTab(tab);
+    setColumnFilters({});
+    setDebouncedColumnFilters({});
+    setPage(0);
+  }
 
   if (!user) {
     return (
@@ -258,17 +376,17 @@ export default function CreditosCobranzasPage() {
         <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-100 bg-white p-1 shadow-md sm:inline-flex sm:w-auto">
           <button
             type="button"
-            onClick={() => { setSubTab("ventas"); setColumnFilters({}); }}
+            onClick={() => goToTab("ventas")}
             className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "ventas" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
           >
-            Ventas a Crédito {ventasRows.length > 0 ? `(${ventasRows.length})` : ""}
+            Ventas a Crédito {tabCounts.ventas > 0 ? `(${tabCounts.ventas})` : ""}
           </button>
           <button
             type="button"
-            onClick={() => { setSubTab("notas_credito"); setColumnFilters({}); }}
+            onClick={() => goToTab("notas_credito")}
             className={`rounded-xl px-4 py-2 text-sm font-black ${subTab === "notas_credito" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
           >
-            Notas de Crédito {notasCreditoRows.length > 0 ? `(${notasCreditoRows.length})` : ""}
+            Notas de Crédito {tabCounts.notas > 0 ? `(${tabCounts.notas})` : ""}
           </button>
         </div>
 
@@ -276,7 +394,7 @@ export default function CreditosCobranzasPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[180px] flex-1">
               <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-slate-400">Tienda</label>
-              <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900">
+              <select value={storeFilter} onChange={e => { setStoreFilter(e.target.value); setPage(0); }} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900">
                 <option value="">Todas las tiendas</option>
                 {stores.filter(s => s.is_active && s.erp_store_no).map(s => (
                   <option key={s.id} value={s.erp_store_no!}>{s.name}</option>
@@ -285,7 +403,7 @@ export default function CreditosCobranzasPage() {
             </div>
             <div className="min-w-[150px]">
               <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-slate-400">Estado</label>
-              <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as any)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900">
+              <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value as any); setPage(0); }} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900">
                 <option value="all">Todos</option>
                 <option value="A">Activo</option>
                 <option value="C">Anulado</option>
@@ -293,11 +411,11 @@ export default function CreditosCobranzasPage() {
             </div>
             <div>
               <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-slate-400">Desde</label>
-              <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" />
+              <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(0); }} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" />
             </div>
             <div>
               <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-slate-400">Hasta</label>
-              <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" />
+              <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(0); }} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" />
             </div>
           </div>
         </div>
@@ -331,11 +449,12 @@ export default function CreditosCobranzasPage() {
         )}
 
         <div className="overflow-x-auto rounded-2xl border border-slate-100 bg-white shadow-md">
-          <table className="w-full min-w-[1700px] text-left text-[11px]">
+          <table className="w-full min-w-[1800px] text-left text-[11px]">
             <thead>
               <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                 <th className="p-2">Documento</th>
                 {subTab === "notas_credito" && <th className="p-2">Documento de Referencia</th>}
+                <th className="p-2">Tienda</th>
                 <th className="p-2">Serie</th>
                 <th className="p-2">N° Factura</th>
                 <th className="p-2">RUC</th>
@@ -357,6 +476,7 @@ export default function CreditosCobranzasPage() {
                 {subTab === "notas_credito" && (
                   <ColumnFilterCell filterKey="nc_documento_referencia" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
                 )}
+                <ColumnFilterCell filterKey="store_name" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
                 <ColumnFilterCell filterKey="serie" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
                 <ColumnFilterCell filterKey="numero_documento" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
                 <ColumnFilterCell filterKey="ruc" columnFilters={columnFilters} setColumnFilter={setColumnFilter} />
@@ -375,80 +495,111 @@ export default function CreditosCobranzasPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map(row => (
-                <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50/80">
-                  <td className="p-2 font-black text-slate-900">{row.document_type || "-"}</td>
-                  {subTab === "notas_credito" && (
-                    <td className="p-2 font-bold text-blue-700">{row.nc_documento_referencia || "-"}</td>
-                  )}
-                  <td className="p-2 font-bold text-slate-700">{row.serie || "-"}</td>
-                  <td className="p-2 font-bold text-slate-700">{row.numero_documento || "-"}</td>
-                  <td className="p-2 font-bold text-slate-700">{row.ruc || "-"}</td>
-                  <td className="p-2 max-w-[220px] truncate text-slate-700" title={row.razon_social || ""}>{row.razon_social || "-"}</td>
-                  <td className="p-2 text-slate-700">{row.fecha_emision || "-"}</td>
-                  <td className={`p-2 text-right font-black tabular-nums ${Number(row.importe_total) < 0 ? "text-red-600" : "text-slate-900"}`}>
-                    {fmtMoney(Number(row.importe_total || 0))}
-                  </td>
-                  <td className="p-2 text-slate-700">{row.condicion || "-"}</td>
-                  <td className="p-2 max-w-[180px] truncate text-slate-700" title={row.asesora_nombre || ""}>{row.asesora_nombre || "-"}</td>
-                  <td className="p-2 text-slate-700">{row.asesora_dni || "-"}</td>
-                  <td className="p-2">
-                    <select
-                      value={row.registro || ""}
-                      onChange={e => void saveField(row, { registro: e.target.value || null })}
-                      disabled={savingId === row.id}
-                      className="rounded-lg border px-2 py-1 text-[11px] font-bold"
-                    >
-                      <option value="">-</option>
-                      {REGISTRO_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                    </select>
-                  </td>
-                  <td className="p-2">
-                    <input
-                      defaultValue={row.legajo || ""}
-                      onBlur={e => { if (e.target.value !== (row.legajo || "")) void saveField(row, { legajo: e.target.value.trim() || null }); }}
-                      disabled={savingId === row.id}
-                      className="w-24 rounded-lg border px-2 py-1 text-[11px] font-bold"
-                    />
-                  </td>
-                  <td className="p-2">
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.status_code === "A" ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
-                      {row.status_label || row.status_code || "-"}
-                    </span>
-                  </td>
-                  <td className="p-2">
-                    <input
-                      defaultValue={row.observacion || ""}
-                      onBlur={e => { if (e.target.value !== (row.observacion || "")) void saveField(row, { observacion: e.target.value.trim() || null }); }}
-                      disabled={savingId === row.id}
-                      className="w-32 rounded-lg border px-2 py-1 text-[11px] font-semibold"
-                    />
-                  </td>
-                  <td className="p-2">
-                    <input
-                      type="date"
-                      defaultValue={row.fecha_recepcion || ""}
-                      onBlur={e => { if (e.target.value !== (row.fecha_recepcion || "")) void saveField(row, { fecha_recepcion: e.target.value || null }); }}
-                      disabled={savingId === row.id}
-                      className="rounded-lg border px-2 py-1 text-[11px] font-bold"
-                    />
-                  </td>
-                  <td className="p-2 text-center">
-                    <input
-                      type="checkbox"
-                      checked={row.cumple_documentacion}
-                      onChange={e => void saveField(row, { cumple_documentacion: e.target.checked })}
-                      disabled={savingId === row.id}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {rows.map(row => {
+                const legajoFallback = row.ruc ? legajoMap.get(row.ruc) || null : null;
+                return (
+                  <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50/80">
+                    <td className="p-2 font-black text-slate-900">{row.document_type || "-"}</td>
+                    {subTab === "notas_credito" && (
+                      <td className="p-2 font-bold text-blue-700">{row.nc_documento_referencia || "-"}</td>
+                    )}
+                    <td className="p-2 max-w-[160px] truncate text-slate-700" title={row.store_name || ""}>{row.store_name || "-"}</td>
+                    <td className="p-2 font-bold text-slate-700">{row.serie || "-"}</td>
+                    <td className="p-2 font-bold text-slate-700">{row.numero_documento || "-"}</td>
+                    <td className="p-2 font-bold text-slate-700">{row.ruc || "-"}</td>
+                    <td className="p-2 max-w-[220px] truncate text-slate-700" title={row.razon_social || ""}>{row.razon_social || "-"}</td>
+                    <td className="p-2 text-slate-700">{row.fecha_emision || "-"}</td>
+                    <td className={`p-2 text-right font-black tabular-nums ${Number(row.importe_total) < 0 ? "text-red-600" : "text-slate-900"}`}>
+                      {fmtMoney(Number(row.importe_total || 0))}
+                    </td>
+                    <td className="p-2 text-slate-700">{row.condicion || "-"}</td>
+                    <td className="p-2 max-w-[180px] truncate text-slate-700" title={row.asesora_nombre || ""}>{row.asesora_nombre || "-"}</td>
+                    <td className="p-2 text-slate-700">{row.asesora_dni || "-"}</td>
+                    <td className="p-2">
+                      <RegistroCell
+                        row={row}
+                        disabled={savingId === row.id}
+                        onToggle={(opt, checked) => {
+                          const current = row.registro || [];
+                          const next = checked ? Array.from(new Set([...current, opt])) : current.filter(o => o !== opt);
+                          void saveField(row, { registro: next.length ? next : null });
+                        }}
+                      />
+                    </td>
+                    <td className="p-2">
+                      <input
+                        defaultValue={row.legajo || legajoFallback || ""}
+                        onBlur={e => { if (e.target.value !== (row.legajo || "")) void saveField(row, { legajo: e.target.value.trim() || null }); }}
+                        disabled={savingId === row.id}
+                        title={!row.legajo && legajoFallback ? "Sugerido desde el legajo de clientes" : undefined}
+                        className={`w-24 rounded-lg border px-2 py-1 text-[11px] font-bold ${!row.legajo && legajoFallback ? "italic text-slate-400" : ""}`}
+                      />
+                    </td>
+                    <td className="p-2">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.status_code === "A" ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                        {row.status_label || row.status_code || "-"}
+                      </span>
+                    </td>
+                    <td className="p-2">
+                      <input
+                        defaultValue={row.observacion || ""}
+                        onBlur={e => { if (e.target.value !== (row.observacion || "")) void saveField(row, { observacion: e.target.value.trim() || null }); }}
+                        disabled={savingId === row.id}
+                        className="w-32 rounded-lg border px-2 py-1 text-[11px] font-semibold"
+                      />
+                    </td>
+                    <td className="p-2">
+                      <input
+                        type="date"
+                        defaultValue={row.fecha_recepcion || ""}
+                        onBlur={e => { if (e.target.value !== (row.fecha_recepcion || "")) void saveField(row, { fecha_recepcion: e.target.value || null }); }}
+                        disabled={savingId === row.id}
+                        className="rounded-lg border px-2 py-1 text-[11px] font-bold"
+                      />
+                    </td>
+                    <td className="p-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={row.cumple_documentacion}
+                        onChange={e => void saveField(row, { cumple_documentacion: e.target.checked })}
+                        disabled={savingId === row.id}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-          {loaded && filteredRows.length === 0 && (
+          {loaded && rows.length === 0 && (
             <p className="p-8 text-center text-sm font-bold text-slate-400">
               {subTab === "notas_credito" ? "Sin notas de crédito para estos filtros." : "Sin ventas a crédito para estos filtros."}
             </p>
+          )}
+          {loaded && totalCount > 0 && (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
+              <p className="text-[11px] font-bold text-slate-500">
+                Mostrando {Math.min(page * PAGE_SIZE + 1, totalCount)}–{Math.min((page + 1) * PAGE_SIZE, totalCount)} de {totalCount}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage(p => Math.max(0, p - 1))}
+                  disabled={page === 0 || loading}
+                  className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  <ChevronLeft size={14} /> Anterior
+                </button>
+                <span className="text-[11px] font-bold text-slate-500">Página {page + 1} de {totalPages}</span>
+                <button
+                  type="button"
+                  onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                  disabled={page + 1 >= totalPages || loading}
+                  className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Siguiente <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </main>
