@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, FileText, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, CreditCard, FileText, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -57,7 +57,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/ventas-credito";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -81,6 +81,7 @@ const MODULES: Array<{
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
   { label: "Ajustes Provisionales", description: "Ingresos y regularizaciones provisionales del ERP", destination: "/ajustes-provisionales", icon: TrendingUp, accent: "bg-indigo-600" },
+  { label: "Ventas a Credito", description: "Control de documentacion de ventas a credito y notas de credito", destination: "/ventas-credito", icon: CreditCard, accent: "bg-rose-600" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
@@ -96,6 +97,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/usuarios": "users",
   "/recepcion": "reception",
   "/ajustes-provisionales": "ajustes_provisionales",
+  "/ventas-credito": "credit_sales",
 };
 
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
@@ -141,7 +143,7 @@ export default function LoginPage() {
   function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
     const moduleKey = DESTINATION_MODULE[targetDestination];
     // Módulos con acceso directo por clave — sin lógica de roles adicional
-    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales") {
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales" || targetDestination === "/ventas-credito") {
       return userModuleAccess(user).includes(moduleKey);
     }
     if (targetDestination === "/dashboard") {

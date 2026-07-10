@@ -19,7 +19,8 @@ export type ModuleAccessKey =
   | "picking"
   | "packing"
   | "reception"
-  | "ajustes_provisionales";
+  | "ajustes_provisionales"
+  | "credit_sales";
 
 export const CYCLIC_SUBMODULE_KEYS: ModuleAccessKey[] = [
   "cyclic_count_take",
@@ -54,6 +55,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
   { key: "reception", label: "Recepción", group: "Modulos" },
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
+  { key: "credit_sales", label: "Ventas a Credito", group: "Modulos" },
 ];
 
 type AccessUser = {
