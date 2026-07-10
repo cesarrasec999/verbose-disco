@@ -55,7 +55,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
   { key: "reception", label: "Recepción", group: "Modulos" },
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
-  { key: "credit_sales", label: "Ventas a Credito", group: "Modulos" },
+  { key: "credit_sales", label: "Creditos y Cobranzas", group: "Modulos" },
 ];
 
 type AccessUser = {

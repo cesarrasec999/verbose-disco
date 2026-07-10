@@ -56,7 +56,7 @@ function formatSync(iso: string | null) {
   return new Date(iso).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" });
 }
 
-export default function VentasCreditoPage() {
+export default function CreditosCobranzasPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [rows, setRows] = useState<VentaCredito[]>([]);
@@ -167,8 +167,8 @@ export default function VentasCreditoPage() {
           <Home size={16} />
         </a>
         <div className="min-w-0 flex-1">
-          <h1 className="text-base font-black leading-tight text-slate-900">Ventas a Crédito</h1>
-          <p className="text-xs text-slate-500">Control de documentación · {user.full_name}</p>
+          <h1 className="text-base font-black leading-tight text-slate-900">Créditos y Cobranzas</h1>
+          <p className="text-xs text-slate-500">Control de documentación de ventas a crédito · {user.full_name}</p>
         </div>
         <button onClick={() => void load()} disabled={loading} className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> {loading ? "Cargando..." : "Actualizar"}
@@ -208,7 +208,7 @@ export default function VentasCreditoPage() {
 
         <div className={`rounded-2xl border px-4 py-3 shadow-sm ${syncStale ? "border-red-300 bg-red-50" : "bg-white"}`}>
           <p className={`text-xs font-black uppercase ${syncStale ? "text-red-600" : "text-slate-500"}`}>
-            {syncStale ? "⚠ Sincronización ERP Ventas a Crédito detenida" : "Última sincronización ERP Ventas a Crédito"}
+            {syncStale ? "⚠ Sincronización ERP Créditos y Cobranzas detenida" : "Última sincronización ERP Créditos y Cobranzas"}
           </p>
           <p className={`text-sm font-black ${syncStale ? "text-red-700" : "text-slate-900"}`}>{formatSync(lastSync)}</p>
         </div>
