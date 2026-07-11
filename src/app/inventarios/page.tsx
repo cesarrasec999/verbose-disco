@@ -3004,41 +3004,68 @@ export default function InventariosPage() {
     const sede = sessionSede(sessionId);
     if (!sede) return;
 
-    const skus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    if (skus.length === 0) return;
+    const allSkus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
+    if (allSkus.length === 0) return;
 
-    const [stockRes, productsRes, nonInventoryRows] = await Promise.all([
-      supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", skus),
-      supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", skus),
-      loadInventoryNonInventoryRows(sessionId),
-    ]);
-    if (stockRes.error) throw stockRes.error;
-    if (productsRes.error) throw productsRes.error;
-
+    const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const stockBySku = new Map((stockRes.data || []).map(row => [normalizeCode(row.codsap).toUpperCase(), row]));
     const now = new Date().toISOString();
-    const rows = ((productsRes.data || []) as Product[])
-      .filter(product => !nonInventorySkus.has(normalizeCode(product.sku).toUpperCase()))
-      .map(product => {
-        const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
-        return {
-          session_id: sessionId,
-          product_id: product.id,
-          sku: product.sku,
-          description: product.description,
-          unit: product.unit,
-          system_stock: Number(stock?.stock || 0),
-          cost: Number(stock?.costo ?? product.cost ?? 0),
-          frozen_at: now,
-        };
-      });
 
-    if (rows.length === 0) return;
-    const { error } = await supabase
-      .from("general_inventory_stock_snapshot")
-      .upsert(rows, { onConflict: "session_id,product_id" });
-    if (error) throw error;
+    // Se procesa en lotes de 500 SKUs: evita depender de una sola consulta
+    // que traiga de una todos los productos (Supabase corta resultados en
+    // 1000 filas por default) y mantiene los upserts en tamaños manejables.
+    const CHUNK = 500;
+    for (let i = 0; i < allSkus.length; i += CHUNK) {
+      const skus = allSkus.slice(i, i + CHUNK);
+      const [stockRes, productsRes] = await Promise.all([
+        supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", skus),
+        supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", skus),
+      ]);
+      if (stockRes.error) throw stockRes.error;
+      if (productsRes.error) throw productsRes.error;
+
+      const stockBySku = new Map((stockRes.data || []).map(row => [normalizeCode(row.codsap).toUpperCase(), row]));
+      const rows = ((productsRes.data || []) as Product[])
+        .filter(product => !nonInventorySkus.has(normalizeCode(product.sku).toUpperCase()))
+        .map(product => {
+          const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
+          return {
+            session_id: sessionId,
+            product_id: product.id,
+            sku: product.sku,
+            description: product.description,
+            unit: product.unit,
+            system_stock: Number(stock?.stock || 0),
+            cost: Number(stock?.costo ?? product.cost ?? 0),
+            frozen_at: now,
+          };
+        });
+
+      if (rows.length === 0) continue;
+      const { error } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .upsert(rows, { onConflict: "session_id,product_id" });
+      if (error) throw error;
+    }
+  }
+
+  async function fetchAllSnapshotSkus(sessionId: string): Promise<string[]> {
+    const PAGE = 1000;
+    const all: string[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .select("sku")
+        .eq("session_id", sessionId)
+        .range(from, from + PAGE - 1);
+      if (error) throw error;
+      const chunk = (data || []).map((r: any) => String(r.sku || "")).filter(Boolean);
+      all.push(...chunk);
+      if (chunk.length < PAGE) break;
+      from += PAGE;
+    }
+    return all;
   }
 
   async function forceRefreshNonOkStock() {
@@ -3046,12 +3073,7 @@ export default function InventariosPage() {
     setRefreshingNonOkStock(true);
     setMessage("Sincronizando stock del inventario con ERP...");
     try {
-      const { data: snapRows, error: snapError } = await supabase
-        .from("general_inventory_stock_snapshot")
-        .select("sku")
-        .eq("session_id", selectedSessionId);
-      if (snapError) throw snapError;
-      const skus = (snapRows || []).map((r: any) => String(r.sku || "")).filter(Boolean);
+      const skus = await fetchAllSnapshotSkus(selectedSessionId);
       if (skus.length === 0) { setMessage("No hay productos en el snapshot de este inventario."); return; }
       lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
       await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
@@ -3111,11 +3133,7 @@ export default function InventariosPage() {
         if (Date.now() - lastRefresh > 55000) {
           lastFrozenRefreshBySessionRef.current.set(sessionId, Date.now());
           try {
-            const { data: snapRows } = await supabase
-              .from("general_inventory_stock_snapshot")
-              .select("sku")
-              .eq("session_id", sessionId);
-            const skus = (snapRows || []).map((r: any) => String(r.sku || "")).filter(Boolean);
+            const skus = await fetchAllSnapshotSkus(sessionId);
             if (skus.length > 0) await refreshUnlockedSnapshotsForSkus(sessionId, skus);
           } catch { /* continua con snapshot existente si falla */ }
         }
