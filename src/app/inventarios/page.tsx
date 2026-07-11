@@ -3054,13 +3054,13 @@ export default function InventariosPage() {
     return allSkus.length;
   }
 
-  async function fetchAllSnapshotSkus(sessionId: string): Promise<string[]> {
+  async function fetchAllSkusFromTable(sessionId: string, table: string): Promise<string[]> {
     const PAGE = 1000;
     const all: string[] = [];
     let from = 0;
     while (true) {
       const { data, error } = await supabase
-        .from("general_inventory_stock_snapshot")
+        .from(table)
         .select("sku")
         .eq("session_id", sessionId)
         .range(from, from + PAGE - 1);
@@ -3073,13 +3073,31 @@ export default function InventariosPage() {
     return all;
   }
 
+  async function fetchAllSnapshotSkus(sessionId: string): Promise<string[]> {
+    return fetchAllSkusFromTable(sessionId, "general_inventory_stock_snapshot");
+  }
+
+  // Union de SKUs ya snapshoteados + SKUs ya contados en la sesion. Un
+  // producto contado en una sesion abierta (sin congelar) no tiene fila en
+  // el snapshot todavia -- get_general_inventory_summary() solo lee
+  // system_stock de ahi, asi que sin esta union se queda mostrando 0/una
+  // diferencia falsa aunque el stock real (mismo que consulta-stock) ya
+  // coincida con lo contado.
+  async function fetchAllRelevantSessionSkus(sessionId: string): Promise<string[]> {
+    const [snapshotSkus, countedSkus] = await Promise.all([
+      fetchAllSkusFromTable(sessionId, "general_inventory_stock_snapshot"),
+      fetchAllSkusFromTable(sessionId, "general_inventory_counts"),
+    ]);
+    return [...new Set([...snapshotSkus, ...countedSkus])];
+  }
+
   async function forceRefreshNonOkStock() {
     if (!selectedSessionId || user?.role !== "Administrador") return;
     setRefreshingNonOkStock(true);
     setMessage("Sincronizando stock del inventario con ERP...");
     try {
-      const skus = await fetchAllSnapshotSkus(selectedSessionId);
-      if (skus.length === 0) { setMessage("No hay productos en el snapshot de este inventario."); return; }
+      const skus = await fetchAllRelevantSessionSkus(selectedSessionId);
+      if (skus.length === 0) { setMessage("No hay productos en el snapshot ni contados en este inventario."); return; }
       lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
       const updatedCount = await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
       await loadSummary(selectedSessionId, true);
@@ -3129,16 +3147,20 @@ export default function InventariosPage() {
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
     try {
-      // Para sesiones congeladas: refrescar snapshot de productos no-OK desde stock_general vivo.
-      // Permite que ventas del ERP se reflejen en el modulo para productos aun no contados OK.
+      // Refrescar snapshot de productos no-OK desde stock_general vivo, tanto
+      // en sesiones abiertas como congeladas (antes solo corria si la sesion
+      // estaba congelada -- una sesion abierta con productos ya contados se
+      // quedaba mostrando system_stock=0/diferencias falsas para siempre,
+      // porque get_general_inventory_summary() solo lee system_stock del
+      // snapshot, nunca de stock_general directamente).
       // isSummaryRowStockProtected garantiza que los productos con conteo OK no se modifican.
-      const frozenSession = sessions.find(s => s.id === sessionId) || selectedSession;
-      if (frozenSession?.stock_frozen_at && frozenSession.status !== "finished" && frozenSession.status !== "cancelled") {
+      const activeSession = sessions.find(s => s.id === sessionId) || selectedSession;
+      if (activeSession && activeSession.status !== "finished" && activeSession.status !== "cancelled") {
         const lastRefresh = lastFrozenRefreshBySessionRef.current.get(sessionId) || 0;
         if (Date.now() - lastRefresh > 55000) {
           lastFrozenRefreshBySessionRef.current.set(sessionId, Date.now());
           try {
-            const skus = await fetchAllSnapshotSkus(sessionId);
+            const skus = await fetchAllRelevantSessionSkus(sessionId);
             if (skus.length > 0) await refreshUnlockedSnapshotsForSkus(sessionId, skus);
           } catch { /* continua con snapshot existente si falla */ }
         }
