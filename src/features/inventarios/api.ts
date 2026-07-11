@@ -36,6 +36,25 @@ export async function fetchPagedSessionRows(
   return rows;
 }
 
+async function fetchAllActiveNonInventorySkus(supabase: SupabaseLike): Promise<Array<{ sku: string }>> {
+  const rows: Array<{ sku: string }> = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("cyclic_non_inventory_products")
+      .select("sku")
+      .eq("is_active", true)
+      .order("sku", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
 export async function fetchAllInventoryCounts(
   supabase: SupabaseLike,
   params: {
@@ -120,16 +139,15 @@ export async function fetchInventoryNonInventoryRows(
       sessionId,
       orderColumn: "sku",
     }),
-    supabase.from("cyclic_non_inventory_products").select("sku").eq("is_active", true).order("sku"),
+    fetchAllActiveNonInventorySkus(supabase),
   ]);
-  if (globalRows.error) throw globalRows.error;
 
   const skus = new Set<string>();
   for (const row of sessionRows) {
     const sku = normalizeCode(row.sku).toUpperCase();
     if (sku) skus.add(sku);
   }
-  for (const row of globalRows.data || []) {
+  for (const row of globalRows) {
     const sku = normalizeCode(row.sku).toUpperCase();
     if (sku) skus.add(sku);
   }
