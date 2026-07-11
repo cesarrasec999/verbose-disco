@@ -235,10 +235,12 @@ export default function InventariosPage() {
   const lastSummaryReloadRef = useRef<number>(0);
   const summaryThrottleTimerRef = useRef<number | null>(null);
   const sessionLoadGenRef = useRef(0);
+  const lastFrozenRefreshBySessionRef = useRef<Map<string, number>>(new Map());
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [refreshingNonOkStock, setRefreshingNonOkStock] = useState(false);
   const [summaryHasPendingChanges, setSummaryHasPendingChanges] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
   const [summaryPage, setSummaryPage] = useState(1);
@@ -1325,7 +1327,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     if (!selectedSessionId || !isValidator || validatorTab !== "resumen") return;
-    if (selectedSession?.stock_frozen_at || selectedSession?.status === "finished") return;
+    if (selectedSession?.status === "finished" || selectedSession?.status === "cancelled") return;
     const sede = sessionSede(selectedSessionId);
     if (!sede) return;
 
@@ -3003,15 +3005,11 @@ export default function InventariosPage() {
     if (!sede) return;
 
     const skus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    const unlockedSkus = skus.filter(sku => {
-      const row = summaryRef.current.find(item => normalizeCode(item.sku).toUpperCase() === sku);
-      return !isSummaryRowStockProtected(row);
-    });
-    if (unlockedSkus.length === 0) return;
+    if (skus.length === 0) return;
 
     const [stockRes, productsRes, nonInventoryRows] = await Promise.all([
-      supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", unlockedSkus),
-      supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", unlockedSkus),
+      supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", skus),
+      supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", skus),
       loadInventoryNonInventoryRows(sessionId),
     ]);
     if (stockRes.error) throw stockRes.error;
@@ -3041,6 +3039,29 @@ export default function InventariosPage() {
       .from("general_inventory_stock_snapshot")
       .upsert(rows, { onConflict: "session_id,product_id" });
     if (error) throw error;
+  }
+
+  async function forceRefreshNonOkStock() {
+    if (!selectedSessionId || user?.role !== "Administrador") return;
+    setRefreshingNonOkStock(true);
+    setMessage("Sincronizando stock del inventario con ERP...");
+    try {
+      const { data: snapRows, error: snapError } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .select("sku")
+        .eq("session_id", selectedSessionId);
+      if (snapError) throw snapError;
+      const skus = (snapRows || []).map((r: any) => String(r.sku || "")).filter(Boolean);
+      if (skus.length === 0) { setMessage("No hay productos en el snapshot de este inventario."); return; }
+      lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
+      await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
+      await loadSummary(selectedSessionId, true);
+      setMessage(`Stock sincronizado: ${skus.length} productos actualizados desde ERP.`);
+    } catch (error) {
+      setMessage("Error al sincronizar stock: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setRefreshingNonOkStock(false);
+    }
   }
 
   async function protectOkProductSnapshot(sessionId: string, product: Product) {
@@ -3081,6 +3102,24 @@ export default function InventariosPage() {
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
     try {
+      // Para sesiones congeladas: refrescar snapshot de productos no-OK desde stock_general vivo.
+      // Permite que ventas del ERP se reflejen en el modulo para productos aun no contados OK.
+      // isSummaryRowStockProtected garantiza que los productos con conteo OK no se modifican.
+      const frozenSession = sessions.find(s => s.id === sessionId) || selectedSession;
+      if (frozenSession?.stock_frozen_at && frozenSession.status !== "finished" && frozenSession.status !== "cancelled") {
+        const lastRefresh = lastFrozenRefreshBySessionRef.current.get(sessionId) || 0;
+        if (Date.now() - lastRefresh > 55000) {
+          lastFrozenRefreshBySessionRef.current.set(sessionId, Date.now());
+          try {
+            const { data: snapRows } = await supabase
+              .from("general_inventory_stock_snapshot")
+              .select("sku")
+              .eq("session_id", sessionId);
+            const skus = (snapRows || []).map((r: any) => String(r.sku || "")).filter(Boolean);
+            if (skus.length > 0) await refreshUnlockedSnapshotsForSkus(sessionId, skus);
+          } catch { /* continua con snapshot existente si falla */ }
+        }
+      }
       const rpcRows = await loadSummaryFromRpc(sessionId);
       if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
       if (rpcRows) {
@@ -3974,8 +4013,8 @@ export default function InventariosPage() {
     }
     const confirmed = window.confirm(
       "Descongelar el stock de este inventario?\n\n" +
-      "El stock de productos con diferencia se actualizara automaticamente desde el ERP al siguiente cambio de stock.\n" +
-      "Los productos ya marcados como OK mantendran su stock congelado."
+      "Esto borra la fotografia de stock. Usa esta opcion solo si necesitas tomar una nueva foto desde cero.\n" +
+      "Nota: el stock de productos no-OK ya se actualiza automaticamente desde el ERP incluso con el stock congelado."
     );
     if (!confirmed) return;
     setLoading(true);
@@ -8414,6 +8453,9 @@ export default function InventariosPage() {
               onSaveObservation={saveObservation}
               onMarkSummaryAsNonInventory={markSummaryAsNonInventory}
               summaryQuantityStatusLabel={summaryQuantityStatusLabel}
+              canForceRefreshStock={user?.role === "Administrador" && !isSelectedSessionFinished}
+              refreshingNonOkStock={refreshingNonOkStock}
+              onForceRefreshNonOkStock={forceRefreshNonOkStock}
             />
           )}
       </section>

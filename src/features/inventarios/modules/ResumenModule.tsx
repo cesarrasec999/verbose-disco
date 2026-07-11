@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, PackageSearch, RefreshCw } from "lucide-react";
+import { Download, PackageSearch, RefreshCw, RotateCcw } from "lucide-react";
 import type { SummaryRow, SummarySortKey, SortState } from "@/features/inventarios/types";
 import { DonutKpi, Kpi, SortHeader, ValueBarKpi } from "@/features/inventarios/components/InventoryUi";
 import { money, number2, summaryStatus } from "@/features/inventarios/utils";
@@ -51,6 +51,9 @@ type ResumenModuleProps = {
   onSaveObservation: (row: SummaryRow) => void;
   onMarkSummaryAsNonInventory: (row: SummaryRow) => void;
   summaryQuantityStatusLabel: (value: number | null, status: "no" | "assigned" | "counted" | undefined) => string;
+  canForceRefreshStock?: boolean;
+  refreshingNonOkStock?: boolean;
+  onForceRefreshNonOkStock?: () => void;
 };
 
 export function ResumenModule({
@@ -80,6 +83,9 @@ export function ResumenModule({
   onSaveObservation,
   onMarkSummaryAsNonInventory,
   summaryQuantityStatusLabel,
+  canForceRefreshStock,
+  refreshingNonOkStock,
+  onForceRefreshNonOkStock,
 }: ResumenModuleProps) {
   const okCount = summary.filter(row => row.diff === 0 && row.counted > 0).length;
   const maxDifferenceValue = Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1);
@@ -93,6 +99,17 @@ export function ResumenModule({
           <h2 className="font-black">{title}</h2>
           <div className="flex flex-wrap gap-2">
             {summaryLoading && <span className="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-black text-slate-500"><RefreshCw size={14} /> Actualizando...</span>}
+            {canForceRefreshStock && (
+              <button
+                onClick={onForceRefreshNonOkStock}
+                disabled={refreshingNonOkStock}
+                title="Fuerza la actualización del stock desde el ERP para todos los productos que aún no están OK"
+                className="inline-flex items-center gap-1 rounded-xl bg-orange-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+              >
+                <RotateCcw size={14} className={refreshingNonOkStock ? "animate-spin" : ""} />
+                {refreshingNonOkStock ? "Actualizando..." : "Actualizar stock ERP"}
+              </button>
+            )}
             <button onClick={onGenerateGeneralInventoryReport} className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Informe PDF</button>
             <button onClick={onGenerateInventoryCategoryReport} className="inline-flex items-center gap-1 rounded-xl bg-indigo-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Reporte IG</button>
             <button onClick={onExportSummary} className="inline-flex items-center gap-1 rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white"><Download size={15} /> Resumen</button>
