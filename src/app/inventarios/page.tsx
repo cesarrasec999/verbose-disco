@@ -3000,12 +3000,16 @@ export default function InventariosPage() {
     return Boolean(row && row.counted > 0 && row.diff === 0);
   }
 
-  async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]) {
+  async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]): Promise<number> {
     const sede = sessionSede(sessionId);
-    if (!sede) return;
+    if (!sede) return 0;
 
-    const allSkus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-    if (allSkus.length === 0) return;
+    const allSkus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))]
+      .filter(sku => {
+        const row = summaryRef.current.find(item => normalizeCode(item.sku).toUpperCase() === sku);
+        return !isSummaryRowStockProtected(row);
+      });
+    if (allSkus.length === 0) return 0;
 
     const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
@@ -3047,6 +3051,7 @@ export default function InventariosPage() {
         .upsert(rows, { onConflict: "session_id,product_id" });
       if (error) throw error;
     }
+    return allSkus.length;
   }
 
   async function fetchAllSnapshotSkus(sessionId: string): Promise<string[]> {
@@ -3076,9 +3081,9 @@ export default function InventariosPage() {
       const skus = await fetchAllSnapshotSkus(selectedSessionId);
       if (skus.length === 0) { setMessage("No hay productos en el snapshot de este inventario."); return; }
       lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
-      await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
+      const updatedCount = await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
       await loadSummary(selectedSessionId, true);
-      setMessage(`Stock sincronizado: ${skus.length} productos actualizados desde ERP.`);
+      setMessage(`Stock sincronizado: ${updatedCount} de ${skus.length} productos actualizados desde ERP (los ya contados OK no se tocan).`);
     } catch (error) {
       setMessage("Error al sincronizar stock: " + (error instanceof Error ? error.message : String(error)));
     } finally {
