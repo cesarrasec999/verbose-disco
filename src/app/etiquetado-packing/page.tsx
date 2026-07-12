@@ -232,7 +232,7 @@ export default function EtiquetadoPackingPage() {
       .from("cyclic_products")
       .select("id,sku,description,unit")
       .eq("is_active", true)
-      .eq("sku", clean)
+      .or(`sku.eq.${clean},erp_sku.eq.${clean}`)
       .limit(1);
     if (directError) throw directError;
     const directProduct = ((directRows || []) as Product[])[0];
@@ -268,7 +268,7 @@ async function searchProducts() {
         .from("cyclic_products")
         .select("id,sku,description,unit")
         .eq("is_active", true)
-        .or(`sku.ilike.%${clean}%,barcode.ilike.%${clean}%,description.ilike.%${clean}%`)
+        .or(`sku.ilike.%${clean}%,barcode.ilike.%${clean}%,description.ilike.%${clean}%,erp_sku.eq.${clean}`)
         .order("sku", { ascending: true })
         .limit(30);
       if (error) throw error;

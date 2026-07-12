@@ -2060,7 +2060,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%`);
+            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%,erp_sku.eq.${code}`);
 
         if (error) {
             showMessage("Error buscando codigo manual: " + error.message, "error");
@@ -2134,6 +2134,16 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             .maybeSingle();
         if (byProductBarcode) {
             return byProductBarcode as Product;
+        }
+
+        const { data: byErpSku } = await supabase
+            .from("cyclic_products")
+            .select("*")
+            .eq("erp_sku", raw)
+            .eq("is_active", true)
+            .maybeSingle();
+        if (byErpSku) {
+            return byErpSku as Product;
         }
 
         return null;
@@ -2631,7 +2641,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%`)
+            .or(`sku.ilike.%${code}%,barcode.ilike.%${code}%,erp_sku.eq.${code}`)
             .limit(Math.max(limit, 200));
 
         const rawMatches = preferFullCodsapProducts((data || []) as Product[]);
@@ -4481,7 +4491,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             .from("cyclic_products")
             .select("*")
             .eq("is_active", true)
-            .or(`sku.in.(${fullCandidates.join(",")}),barcode.in.(${candidates.join(",")})`)
+            .or(`sku.in.(${fullCandidates.join(",")}),barcode.in.(${candidates.join(",")}),erp_sku.in.(${candidates.join(",")})`)
             .limit(5);
         if ((byDirect || []).length === 1) return byDirect![0] as Product;
 

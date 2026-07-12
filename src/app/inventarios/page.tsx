@@ -4556,11 +4556,12 @@ export default function InventariosPage() {
       const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
       const candidateSkus = [...new Set([...variants, ...mapped])];
 
-      const [bySku, byBarcode] = await Promise.all([
+      const [bySku, byBarcode, byErpSku] = await Promise.all([
         supabase.from("cyclic_products").select("*").in("sku", variants).eq("is_active", true).limit(50),
         supabase.from("cyclic_products").select("*").in("barcode", variants).eq("is_active", true).limit(50),
+        supabase.from("cyclic_products").select("*").in("erp_sku", variants).eq("is_active", true).limit(50),
       ]);
-      for (const product of ([...(bySku.data || []), ...(byBarcode.data || [])] as Product[])) productMap.set(product.sku, product);
+      for (const product of ([...(bySku.data || []), ...(byBarcode.data || []), ...(byErpSku.data || [])] as Product[])) productMap.set(product.sku, product);
 
       if (candidateSkus.length > 0) {
         const { data: mappedProducts } = await supabase
@@ -4585,13 +4586,11 @@ export default function InventariosPage() {
       const mapped = [...(byUpc.data || []), ...(byAlu.data || [])].map(row => row.codsap).filter(Boolean);
       const candidateSkus = [...new Set([...variants, ...mapped])];
 
-      const { data } = await supabase
-        .from("cyclic_products")
-        .select("*")
-        .in("sku", candidateSkus)
-        .eq("is_active", true)
-        .limit(20);
-      for (const product of (data || []) as Product[]) productMap.set(product.sku, product);
+      const [{ data }, { data: byErpSku }] = await Promise.all([
+        supabase.from("cyclic_products").select("*").in("sku", candidateSkus).eq("is_active", true).limit(20),
+        supabase.from("cyclic_products").select("*").in("erp_sku", variants).eq("is_active", true).limit(20),
+      ]);
+      for (const product of ([...(data || []), ...(byErpSku || [])]) as Product[]) productMap.set(product.sku, product);
 
       if (raw.length >= 4) {
         const suffix = raw.slice(-5);

@@ -921,16 +921,15 @@ export default function AuditoriaPage() {
 
   async function searchProductsByTypedCode(text: string, limit = 120): Promise<Product[]> {
     const code = fullProductCode(text);
+    const raw = String(text || "").trim();
     if (code.length < 3) return [];
 
-    const { data } = await supabase
-      .from("cyclic_products")
-      .select("*")
-      .eq("is_active", true)
-      .ilike("sku", `%${code}%`)
-      .limit(limit);
+    const [{ data }, { data: byErpSku }] = await Promise.all([
+      supabase.from("cyclic_products").select("*").eq("is_active", true).ilike("sku", `%${code}%`).limit(limit),
+      supabase.from("cyclic_products").select("*").eq("is_active", true).eq("erp_sku", raw).limit(limit),
+    ]);
 
-    return filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]));
+    return filterProductsInStoreStock(preferFullCodsapProducts([...(data || []), ...(byErpSku || [])] as Product[]));
   }
 
   async function searchFamily() {
@@ -1069,18 +1068,24 @@ export default function AuditoriaPage() {
       if (productsInStore.length === 1) return productsInStore[0];
     }
 
+    const { data: byErpSku } = await supabase.from("cyclic_products").select("*").eq("erp_sku", raw).eq("is_active", true).maybeSingle();
+    if (byErpSku) {
+      const productsInStore = await filterProductsInStoreStock([byErpSku as Product]);
+      if (productsInStore.length === 1) return productsInStore[0];
+    }
+
     return null;
   }
 
   async function findManualProductCandidates(codeValue: string): Promise<Product[]> {
     const code = fullProductCode(codeValue);
+    const raw = String(codeValue || "").trim();
     if (!code) return [];
-    const { data } = await supabase
-      .from("cyclic_products")
-      .select("*")
-      .eq("is_active", true)
-      .ilike("sku", `%${code}%`);
-    const candidates = await filterProductsInStoreStock(preferFullCodsapProducts((data || []) as Product[]));
+    const [{ data }, { data: byErpSku }] = await Promise.all([
+      supabase.from("cyclic_products").select("*").eq("is_active", true).ilike("sku", `%${code}%`),
+      supabase.from("cyclic_products").select("*").eq("is_active", true).eq("erp_sku", raw),
+    ]);
+    const candidates = await filterProductsInStoreStock(preferFullCodsapProducts([...(data || []), ...(byErpSku || [])] as Product[]));
     const stockMap = await getStockMap(candidates);
     return candidates.map(product => ({ ...product, system_stock: stockMap.get(fullProductCode(product.sku)) || 0 }));
   }

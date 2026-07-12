@@ -1462,12 +1462,15 @@ export default function PickingPage() {
     if (candidates.some(candidate => expected.includes(candidate))) return true;
 
     try {
-      const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
+      const [{ data: byUpc }, { data: byAlu }, { data: byErpSku }] = await Promise.all([
         supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).not("codsap", "is", null).limit(20),
         supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).not("codsap", "is", null).limit(20),
+        supabase.from("cyclic_products").select("sku").in("erp_sku", candidates).eq("is_active", true).limit(20),
       ]);
       const mappedCodes = [...new Set([...(byUpc || []), ...(byAlu || [])].flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)).map(normalize))];
-      return mappedCodes.some(code => expected.includes(code));
+      if (mappedCodes.some(code => expected.includes(code))) return true;
+      const erpSkuCodes = [...new Set((byErpSku || []).map(row => normalize(row.sku)))];
+      return erpSkuCodes.some(code => expected.includes(code));
     } catch (error) {
       console.warn("No se pudo validar UPC/ALU en picking:", error);
       return false;

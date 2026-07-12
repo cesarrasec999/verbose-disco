@@ -172,7 +172,7 @@ export default function ConsultaStockPage() {
       .from("cyclic_products")
       .select("id,sku,barcode,description,unit,cost")
       .eq("is_active", true)
-      .or(`sku.eq.${code},barcode.eq.${raw}`)
+      .or(`sku.eq.${code},barcode.eq.${raw},erp_sku.eq.${raw}`)
       .limit(20);
     (direct || []).forEach(row => products.set(row.id, row as Product));
 

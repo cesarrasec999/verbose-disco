@@ -53,9 +53,13 @@ export async function saveNonInventoryCodes(
   const productsBySku = new Map<string, Product>();
   for (let i = 0; i < uniqueCodes.length; i += 500) {
     const chunk = uniqueCodes.slice(i, i + 500);
-    const { data, error } = await supabase.from("cyclic_products").select("id, sku, barcode, description, unit, cost, is_active").in("sku", chunk).eq("is_active", true);
+    const [{ data, error }, { data: byErpSku, error: erpSkuError }] = await Promise.all([
+      supabase.from("cyclic_products").select("id, sku, barcode, description, unit, cost, is_active").in("sku", chunk).eq("is_active", true),
+      supabase.from("cyclic_products").select("id, sku, barcode, description, unit, cost, is_active").in("erp_sku", chunk).eq("is_active", true),
+    ]);
     if (error) throw error;
-    for (const product of data || []) productsBySku.set(fullProductCode(product.sku), product as Product);
+    if (erpSkuError) throw erpSkuError;
+    for (const product of [...(data || []), ...(byErpSku || [])]) productsBySku.set(fullProductCode(product.sku), product as Product);
   }
 
   const rows = uniqueCodes.map((code) => {

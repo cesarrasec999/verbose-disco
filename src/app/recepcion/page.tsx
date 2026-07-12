@@ -834,11 +834,12 @@ export default function RecepcionPage() {
     ].filter(Boolean).map(v => v.trim().toUpperCase()))];
 
     try {
-      const [{ data: bySku }, { data: byBarcode }] = await Promise.all([
+      const [{ data: bySku }, { data: byBarcode }, { data: byErpSku }] = await Promise.all([
         supabase.from("cyclic_products").select("sku,barcode,description,unit").in("sku", candidates).eq("is_active", true).limit(1),
         supabase.from("cyclic_products").select("sku,barcode,description,unit").in("barcode", candidates).eq("is_active", true).limit(1),
+        supabase.from("cyclic_products").select("sku,barcode,description,unit").in("erp_sku", candidates).eq("is_active", true).limit(1),
       ]);
-      const direct = ((bySku || [])[0] || (byBarcode || [])[0]) as ProductLookup | undefined;
+      const direct = ((bySku || [])[0] || (byBarcode || [])[0] || (byErpSku || [])[0]) as ProductLookup | undefined;
       if (direct) return direct;
 
       const [{ data: byUpc }, { data: byAlu }] = await Promise.all([
