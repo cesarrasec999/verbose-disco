@@ -88,17 +88,23 @@ ALTER TABLE reception_requests       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reception_request_lines  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reception_records        ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "anon_read_reception_requests"
-  ON reception_requests FOR SELECT TO anon, authenticated USING (true);
-CREATE POLICY "anon_write_reception_requests"
-  ON reception_requests FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "anon_read_reception_requests"  ON reception_requests       FOR SELECT TO anon, authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_write_reception_requests" ON reception_requests       FOR ALL    TO anon, authenticated USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE POLICY "anon_read_reception_lines"
-  ON reception_request_lines FOR SELECT TO anon, authenticated USING (true);
-CREATE POLICY "anon_write_reception_lines"
-  ON reception_request_lines FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "anon_read_reception_lines"     ON reception_request_lines  FOR SELECT TO anon, authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_write_reception_lines"    ON reception_request_lines  FOR ALL    TO anon, authenticated USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE POLICY "anon_read_reception_records"
-  ON reception_records FOR SELECT TO anon, authenticated USING (true);
-CREATE POLICY "anon_write_reception_records"
-  ON reception_records FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "anon_read_reception_records"   ON reception_records        FOR SELECT TO anon, authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_write_reception_records"  ON reception_records        FOR ALL    TO anon, authenticated USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

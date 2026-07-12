@@ -18,7 +18,9 @@ CREATE INDEX IF NOT EXISTS idx_reception_scans_line    ON reception_scans (line_
 
 ALTER TABLE reception_scans ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "anon_read_reception_scans"
-  ON reception_scans FOR SELECT TO anon, authenticated USING (true);
-CREATE POLICY "anon_write_reception_scans"
-  ON reception_scans FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "anon_read_reception_scans"  ON reception_scans FOR SELECT TO anon, authenticated USING (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_write_reception_scans" ON reception_scans FOR ALL    TO anon, authenticated USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
