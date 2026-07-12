@@ -48,3 +48,7 @@ check_idx.js
 inspect_table.js
 *.sync.log
 ajustes-sync.log
+
+# log de acciones + contexto del proyecto (contiene credenciales reales,
+# nunca debe subirse a git)
+LOG_PROYECTO.md

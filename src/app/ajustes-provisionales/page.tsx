@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
@@ -247,7 +248,7 @@ export default function AjustesProvisionalesPage() {
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center space-y-2">
           <p className="text-slate-800 font-bold">Sin acceso a este módulo</p>
-          <a href="/" className="text-blue-600 text-sm underline">Volver al inicio</a>
+          <Link href="/" className="text-blue-600 text-sm underline">Volver al inicio</Link>
         </div>
       </div>
     );
@@ -260,12 +261,12 @@ export default function AjustesProvisionalesPage() {
 
       {/* ── Header ── */}
       <header className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 shadow-sm">
-        <a
+        <Link
           href="/"
           className="shrink-0 flex items-center justify-center w-8 h-8 rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
         >
           <Home size={16} />
-        </a>
+        </Link>
         <div className="min-w-0 flex-1">
           <h1 className="text-base font-black text-slate-900 leading-tight">Ajustes Provisionales</h1>
           <p className="text-xs text-slate-500">Motivos 06 y 07 · {new Date().getFullYear()} · {user.full_name}</p>

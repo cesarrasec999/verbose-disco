@@ -1,10 +1,10 @@
 import { Suspense } from "react";
 import CreditosCobranzasModule from "@/features/creditos-cobranzas/CreditosCobranzasModule";
 
-export default function CreditosCobranzasPage() {
+export default function NotasCreditoPage() {
   return (
     <Suspense>
-      <CreditosCobranzasModule subTab="ventas" />
+      <CreditosCobranzasModule subTab="notas_credito" />
     </Suspense>
   );
 }
