@@ -1,10 +1,10 @@
 import { Suspense } from "react";
 import RecepcionModule from "@/features/recepcion/RecepcionModule";
 
-export default function RecepcionPage() {
+export default function RecepcionDiferenciasPage() {
   return (
     <Suspense>
-      <RecepcionModule listPanel="recepcion" />
+      <RecepcionModule listPanel="diferencias" />
     </Suspense>
   );
 }
