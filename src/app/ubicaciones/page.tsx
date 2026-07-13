@@ -1,7 +1,12 @@
 "use client";
 
-import DashboardPage from "@/app/dashboard/page";
+import { Suspense } from "react";
+import CiclicosShell from "@/features/conteos-ciclicos/CiclicosShell";
 
 export default function UbicacionesPage() {
-  return <DashboardPage forcedTab="ubicaciones" />;
+  return (
+    <Suspense>
+      <CiclicosShell forcedTab="ubicaciones" />
+    </Suspense>
+  );
 }

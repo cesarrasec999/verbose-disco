@@ -3,10 +3,10 @@
 import { Suspense } from "react";
 import CiclicosShell from "@/features/conteos-ciclicos/CiclicosShell";
 
-export default function DashboardPage() {
+export default function ConteosCiclicosCoberturaPage() {
   return (
     <Suspense>
-      <CiclicosShell />
+      <CiclicosShell forcedTab="validador" forcedValTab="cobertura" />
     </Suspense>
   );
 }
