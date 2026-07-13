@@ -3054,6 +3054,104 @@ export default function InventariosPage() {
     return allSkus.length;
   }
 
+  // Barrido completo de stock_general (todo lo que tenga stock>0 en la sede,
+  // no solo los SKUs ya conocidos por la sesion) para que un codigo que gana
+  // stock mientras la sesion sigue abierta entre al resumen para su revision,
+  // sin esperar a que alguien lo cuente o a que se finalice. A diferencia de
+  // saveStockSnapshotInBatches, esta funcion NO cambia el estado de la sesion
+  // (no congela/finaliza nada) - se usa para mantener la foto al dia mientras
+  // la sesion sigue activa (refresco automatico cada 55s y el boton manual
+  // "Actualizar stock ERP"). Los productos ya OK (contado = sistema) nunca se
+  // tocan.
+  async function refreshFullSessionSnapshotFromErp(sessionId: string): Promise<number | null> {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const store = stores.find(row => row.id === session?.store_id);
+    const sede = store?.erp_sede || store?.name || session?.store_name || "";
+    if (!sede) return null;
+
+    const protectedProductIds = await loadProtectedOkProductIdsForStockUpdate(sessionId);
+    const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
+    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
+    const deleteError = await deleteUnprotectedSnapshotRows(sessionId, protectedProductIds);
+    if (deleteError) return null;
+
+    let inserted = protectedProductIds.size;
+    let from = 0;
+    const pageSize = 1000;
+    const upsertedProductIds = new Set<string>();
+    while (true) {
+      const stockRes = await supabase
+        .from("stock_general")
+        .select("codsap,stock,costo")
+        .eq("sede", sede)
+        .gt("stock", 0)
+        .order("codsap", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (stockRes.error) return null;
+
+      const stockRows = (stockRes.data || []) as StockGeneralRow[];
+      if (stockRows.length === 0) break;
+      const stockBySku = new Map<string, StockGeneralRow>();
+      for (const row of stockRows) {
+        const sku = normalizeCode(row.codsap).toUpperCase();
+        if (sku && !nonInventorySkus.has(sku)) stockBySku.set(sku, row);
+      }
+
+      const skus = [...stockBySku.keys()];
+      for (let i = 0; i < skus.length; i += 500) {
+        const chunk = skus.slice(i, i + 500);
+        const productsRes = await supabase
+          .from("cyclic_products")
+          .select("id,sku,description,unit,cost,is_active")
+          .eq("is_active", true)
+          .in("sku", chunk);
+        if (productsRes.error) return null;
+        const rows = ((productsRes.data || []) as Product[]).filter(product => !protectedProductIds.has(product.id)).map(product => {
+          const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
+          const systemStock = Number(stock?.stock || 0);
+          const cost = Number(stock?.costo ?? product.cost ?? 0);
+          return {
+            session_id: sessionId,
+            product_id: product.id,
+            sku: product.sku,
+            description: product.description,
+            unit: product.unit,
+            system_stock: systemStock,
+            cost,
+            frozen_at: new Date().toISOString(),
+          };
+        });
+        if (rows.length > 0) {
+          const upsertRes = await supabase
+            .from("general_inventory_stock_snapshot")
+            .upsert(rows, { onConflict: "session_id,product_id" });
+          if (upsertRes.error) return null;
+          for (const row of rows) upsertedProductIds.add(row.product_id);
+          inserted += rows.length;
+        }
+      }
+
+      if (stockRows.length < pageSize) break;
+      from += pageSize;
+    }
+
+    // Limpieza de fantasmas: productos que quedaron en el snapshot pero ya
+    // no tienen stock live (y no estan protegidos por estar OK).
+    const postUpsertSnapshot = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
+    const phantomIds = postUpsertSnapshot
+      .filter(row => {
+        const pid = String(row.product_id || "");
+        return pid && !protectedProductIds.has(pid) && !upsertedProductIds.has(pid);
+      })
+      .map(row => String(row.id || ""))
+      .filter(Boolean);
+    for (let i = 0; i < phantomIds.length; i += 500) {
+      await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
+    }
+
+    return inserted;
+  }
+
   async function fetchAllSkusFromTable(sessionId: string, table: string): Promise<string[]> {
     const PAGE = 1000;
     const all: string[] = [];
@@ -3077,31 +3175,18 @@ export default function InventariosPage() {
     return fetchAllSkusFromTable(sessionId, "general_inventory_stock_snapshot");
   }
 
-  // Union de SKUs ya snapshoteados + SKUs ya contados en la sesion. Un
-  // producto contado en una sesion abierta (sin congelar) no tiene fila en
-  // el snapshot todavia -- get_general_inventory_summary() solo lee
-  // system_stock de ahi, asi que sin esta union se queda mostrando 0/una
-  // diferencia falsa aunque el stock real (mismo que consulta-stock) ya
-  // coincida con lo contado.
-  async function fetchAllRelevantSessionSkus(sessionId: string): Promise<string[]> {
-    const [snapshotSkus, countedSkus] = await Promise.all([
-      fetchAllSkusFromTable(sessionId, "general_inventory_stock_snapshot"),
-      fetchAllSkusFromTable(sessionId, "general_inventory_counts"),
-    ]);
-    return [...new Set([...snapshotSkus, ...countedSkus])];
-  }
-
   async function forceRefreshNonOkStock() {
     if (!selectedSessionId || user?.role !== "Administrador") return;
     setRefreshingNonOkStock(true);
     setMessage("Sincronizando stock del inventario con ERP...");
     try {
-      const skus = await fetchAllRelevantSessionSkus(selectedSessionId);
-      if (skus.length === 0) { setMessage("No hay productos en el snapshot ni contados en este inventario."); return; }
       lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
-      const updatedCount = await refreshUnlockedSnapshotsForSkus(selectedSessionId, skus);
+      // Barrido completo (no solo SKUs ya conocidos): tambien trae codigos
+      // nuevos que ganaron stock en el ERP y todavia no estaban en la sesion.
+      const updatedCount = await refreshFullSessionSnapshotFromErp(selectedSessionId);
+      if (updatedCount === null) { setMessage("No se pudo sincronizar stock: no se encontro la sede ERP del inventario."); return; }
       await loadSummary(selectedSessionId, true);
-      setMessage(`Stock sincronizado: ${updatedCount} de ${skus.length} productos actualizados desde ERP (los ya contados OK no se tocan).`);
+      setMessage(`Stock sincronizado: ${updatedCount} codigos en la foto (los ya contados OK no se tocan).`);
     } catch (error) {
       setMessage("Error al sincronizar stock: " + (error instanceof Error ? error.message : String(error)));
     } finally {
@@ -3160,8 +3245,10 @@ export default function InventariosPage() {
         if (Date.now() - lastRefresh > 55000) {
           lastFrozenRefreshBySessionRef.current.set(sessionId, Date.now());
           try {
-            const skus = await fetchAllRelevantSessionSkus(sessionId);
-            if (skus.length > 0) await refreshUnlockedSnapshotsForSkus(sessionId, skus);
+            // Barrido completo (no solo SKUs ya conocidos): un codigo que
+            // gano stock en el ERP mientras la sesion estaba abierta entra
+            // al resumen aca, sin esperar a que se finalice.
+            await refreshFullSessionSnapshotFromErp(sessionId);
           } catch { /* continua con snapshot existente si falla */ }
         }
       }
@@ -4395,6 +4482,10 @@ export default function InventariosPage() {
     }
     setMessage("Inventario finalizado. Los operadores ya no podran entrar.");
     await loadInitial(selectedSessionId);
+    // Sin esto, la pantalla se quedaba mostrando el resumen de antes de
+    // finalizar (loadInitial solo recarga la lista de sesiones, no el
+    // resumen) — mismo fix que ya usa saveStockSnapshot() al congelar.
+    await loadSummary(selectedSessionId, true);
   }
 
   async function unfinishSession() {
