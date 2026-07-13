@@ -16,7 +16,6 @@ import {
     canAccessModule,
 } from "@/features/access/moduleAccess";
 import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
-import { AdminTab } from "./components/AdminTab";
 import type {
     AllStoreAssignmentSummary,
     Assignment,
@@ -180,11 +179,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
     const [editStatus, setEditStatus]       = useState<CountRecord["status"]>("Pendiente");
     const [editNote, setEditNote]           = useState("");
 
-    // ─── Admin: navegación de sub-tabs (necesario para la barra lateral) ─
-    const [adminTab, setAdminTab] = useState<"productos"|"tiendas"|"usuarios">("usuarios");
-
-    // ─── Admin: usuarios ─────────────────────────────────────
-
     // ─── WhatsApp masivo post-carga ──────────────────────────
     const [showBulkWspModal, setShowBulkWspModal] = useState(false);
     const [bulkWspStores, setBulkWspStores] = useState<{ id: string; name: string; count: number; operario: { full_name: string; whatsapp: string; username: string; password: string } | null }[]>([]);
@@ -286,27 +280,21 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     const isValid =
                         (savedTab === "operario" && u.role === "Operario") ||
                         (!isMobileAccess && savedTab === "validador" && (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador")) ||
-                        savedTab === "ubicaciones" ||
-                        (!isMobileAccess && savedTab === "admin" && u.role === "Administrador");
+                        savedTab === "ubicaciones";
                     if (isValid) { setActiveTab(savedTab); }
                     else {
                         if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
-                        else if (u.role === "Administrador") setActiveTab("admin");
-                        else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
+                        else if (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador") setActiveTab("validador");
                         else setActiveTab("operario");
                     }
                 } else {
                     if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
-                    else if (u.role === "Administrador") setActiveTab("admin");
-                    else if (u.role === "Validador" || u.role === "Supervisor") setActiveTab("validador");
+                    else if (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador") setActiveTab("validador");
                     else setActiveTab("operario");
                 }
 
                 const savedValTab = sessionStorage.getItem("cyclic_val_tab") as ValTabKey | null;
                 if (savedValTab) setValTab(u.role === "Supervisor" && (savedValTab === "asignar" || savedValTab === "no_inventariables") ? "registros" : savedValTab);
-
-                const savedAdminTab = sessionStorage.getItem("cyclic_admin_tab") as "productos"|"tiendas"|"usuarios" | null;
-                if (savedAdminTab === "usuarios") setAdminTab(savedAdminTab);
 
                 const savedValStoreId = sessionStorage.getItem("cyclic_val_store");
                 const savedValDate    = sessionStorage.getItem("cyclic_val_date");
@@ -324,8 +312,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 setUser(parsed);
                 if (forcedTab) setActiveTab(forcedTab);
                 else if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
-                else if (parsed.role === "Administrador") setActiveTab("admin");
-                else if (parsed.role === "Validador" || parsed.role === "Supervisor") setActiveTab("validador");
+                else if (parsed.role === "Validador" || parsed.role === "Supervisor" || parsed.role === "Administrador") setActiveTab("validador");
                 else setActiveTab("operario");
             }
         })();
@@ -393,10 +380,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             if (firstStoreId && (valTab === "registros" || valTab === "resumen")) loadValidadorData(firstStoreId, valDate);
         }
     }, [valTab]);
-
-    useEffect(() => {
-        if (adminTab) sessionStorage.setItem("cyclic_admin_tab", adminTab);
-    }, [adminTab]);
 
     useEffect(() => {
         if (user && !user.can_access_all_stores && user.store_id && locationStoreId !== user.store_id) {
@@ -4319,9 +4302,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         loadValidadorData(valStoreId, valDate);
     }
 
-    // Admin: uploadMaster, uploadBarcodes, saveEditProduct, createStore, toggleStoreActive
-    // → movidas a src/app/dashboard/components/AdminTab.tsx
-
     async function buildLocationSearchResults(queryText: string): Promise<ProductLocation[]> {
         const term = queryText.trim();
         if (!term) return [];
@@ -6053,8 +6033,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
         return { total, contados, pendientes, conDif, valorizadaDif };
     }, [resumenPorCodigo, resumenConOverrides, resumenEditMode, counts]);
 
-    // filteredProducts → movido a AdminTab.tsx
-
     const filteredDashData = useMemo(() => {
         if (!dashStoreFilter) return dashData;
         return dashData.filter(r => r.store_id === dashStoreFilter);
@@ -6188,7 +6166,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                 <nav className="flex-1 py-3 overflow-y-auto">
 
                     {/* CICLICOS — TOMA DE CONTEO */}
-                    {canTakeCount && activeTab !== "ubicaciones" && activeTab !== "admin" && (
+                    {canTakeCount && activeTab !== "ubicaciones" && (
                         <div className="px-3 mb-1">
                             <button
                                 onClick={() => {
@@ -6213,7 +6191,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                     )}
 
                     {/* SUBMODULOS CICLICOS */}
-                    {(canTakeCount || hasCyclicSubmodules) && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && !(activeTab === "validador" && valTab === "no_inventariables") && (
+                    {(canTakeCount || hasCyclicSubmodules) && !isMobileAccess && activeTab !== "ubicaciones" && !(activeTab === "validador" && valTab === "no_inventariables") && (
                         <>
                             {/* Header de sección */}
                             <div className="px-5 pt-3 pb-1">
@@ -6276,7 +6254,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                         </div>
                     )}
 
-                    {(isAdmin || isSupervisor) && !isMobileAccess && (activeTab === "admin" || activeTab === "ubicaciones") && (
+                    {(isAdmin || isSupervisor) && !isMobileAccess && activeTab === "ubicaciones" && (
                         <>
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Modulos</p>
@@ -6335,7 +6313,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                         </>
                     )}
 
-                    {hasReportSubmodules && !isMobileAccess && activeTab !== "ubicaciones" && activeTab !== "admin" && (
+                    {hasReportSubmodules && !isMobileAccess && activeTab !== "ubicaciones" && (
                         <>
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Reportes</p>
@@ -6371,34 +6349,21 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                         </>
                     )}
 
-                    {/* MÓDULO ADMIN */}
-                    {isAdmin && !isMobileAccess && (
+                    {/* MÓDULO ADMIN — solo Usuarios queda; productos/tiendas se eliminaron
+                        porque ahora se sincronizan automaticamente desde el ERP */}
+                    {isAdmin && !isMobileAccess && canUseUsersModule && (
                         <>
                             <div className="px-5 pt-4 pb-1">
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Administración</p>
                             </div>
                             <div className="px-3 space-y-0.5">
-                                {([
-                                    { key: "usuarios",  icon: Users,     label: "Usuarios"           },
-                                ] as const).filter(() => canUseUsersModule).map(item => (
-                                    (() => {
-                                        const Icon = item.icon;
-                                        return (
-                                    <button
-                                        key={item.key}
-                                        onClick={() => { setActiveTab("admin"); setAdminTab(item.key); setSidebarOpen(false); }}
-                                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                                            activeTab === "admin" && adminTab === item.key
-                                                ? "bg-purple-600 text-white shadow-lg"
-                                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
-                                        }`}
-                                    >
-                                        <Icon size={16} />
-                                        <span className="truncate">{item.label}</span>
-                                    </button>
-                                        );
-                                    })()
-                                ))}
+                                <button
+                                    onClick={() => { window.location.href = "/usuarios"; setSidebarOpen(false); }}
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    <Users size={16} />
+                                    <span className="truncate">Usuarios</span>
+                                </button>
                             </div>
                         </>
                     )}
@@ -6446,8 +6411,7 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                              activeTab === "validador" && valTab === "progreso"  ? "Progreso tiendas" :
                              activeTab === "validador" && valTab === "cobertura" ? "Cobertura por tienda" :
                              activeTab === "validador" && valTab === "dashboard" ? "Dashboard" :
-                             activeTab === "ubicaciones" ? "Ubicaciones" :
-                             activeTab === "admin"     && adminTab === "usuarios"  ? "Usuarios" : "Ciclicos"}
+                             activeTab === "ubicaciones" ? "Ubicaciones" : "Ciclicos"}
                         </h1>
                         <p className="text-xs text-slate-400 leading-none mt-0.5">
                             {activeTab === "validador" && valTab !== "dashboard" && valStoreId
@@ -8072,27 +8036,9 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
             )}
 
             {/* ════════════════════════════════════════════════════════
-                TAB ADMIN
+                TAB UBICACIONES
             ════════════════════════════════════════════════════════ */}
-            {((activeTab === "admin" && isAdmin && !isMobileAccess) || activeTab === "ubicaciones") && (
-                <>
-                    {/* ── ADMIN: tabs de productos/tiendas/usuarios → AdminTab ── */}
-                    {activeTab === "admin" && isAdmin && !isMobileAccess && (
-                        <AdminTab
-                            adminTab={adminTab}
-                            user={user}
-                            allStores={allStores}
-                            products={products}
-                            showMessage={showMessage}
-                            loadProducts={loadProducts}
-                            loadStores={loadStores}
-                            canManageLocations={canManageLocations}
-                        />
-                    )}
-
-
-                    {/* ── ADMIN: USUARIOS ───────────────────────────────── */}
-                    {activeTab === "ubicaciones" && (
+            {activeTab === "ubicaciones" && (
                         <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div>
@@ -8342,9 +8288,6 @@ export default function DashboardPage({ forcedTab }: DashboardPageProps = {}) {
                             )}
                         </section>
                     )}
-
-                </>
-            )}
 
             </div>{/* end content space-y-4 */}
 

@@ -1,5 +1,5 @@
 export type Role = "Operario" | "Cajero" | "Validador" | "Supervisor" | "Administrador";
-export type TabKey = "operario" | "validador" | "ubicaciones" | "admin";
+export type TabKey = "operario" | "validador" | "ubicaciones";
 export type ValTabKey = "asignar" | "no_inventariables" | "registros" | "resumen" | "progreso" | "cobertura" | "dashboard" | "resultados";
 
 export type CyclicUser = {
