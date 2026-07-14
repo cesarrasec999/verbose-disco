@@ -538,14 +538,14 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [assignments, filteredRequests, lines]);
 
   const summaryAssignments = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const requestIds = new Set(reasonFilteredRequests.map(request => request.id));
     return assignments.filter(assignment => requestIds.has(assignment.request_id) && sameDate(assignmentEffectiveDate(assignment), reportDate));
-  }, [assignmentEffectiveDate, assignments, reportDate, sourceFilteredRequests]);
+  }, [assignmentEffectiveDate, assignments, reportDate, reasonFilteredRequests]);
 
   const summaryRequests = useMemo(() => {
     const requestIds = new Set(summaryAssignments.map(assignment => assignment.request_id));
-    return sourceFilteredRequests.filter(request => requestIds.has(request.id));
-  }, [sourceFilteredRequests, summaryAssignments]);
+    return reasonFilteredRequests.filter(request => requestIds.has(request.id));
+  }, [reasonFilteredRequests, summaryAssignments]);
 
   const assignmentMatrix = useMemo(() => {
     const requestIds = new Set(summaryRequests.map(request => request.id));
@@ -598,16 +598,16 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [assignmentMatrix.rows]);
 
   const reportAssignments = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const requestIds = new Set(reasonFilteredRequests.map(request => request.id));
     return assignments.filter(assignment => {
       if (!requestIds.has(assignment.request_id)) return false;
       if (!sameDate(assignmentEffectiveDate(assignment), reportDate)) return false;
       return selectedReportPicker === "all" || normalize(assignment.picker_id || assignment.picker_name) === selectedReportPicker;
     });
-  }, [assignmentEffectiveDate, assignments, reportDate, selectedReportPicker, sourceFilteredRequests]);
+  }, [assignmentEffectiveDate, assignments, reportDate, selectedReportPicker, reasonFilteredRequests]);
 
   const reportPickerOptions = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const requestIds = new Set(reasonFilteredRequests.map(request => request.id));
     const grouped = new Map<string, string>();
     for (const assignment of assignments) {
       if (!requestIds.has(assignment.request_id)) continue;
@@ -617,7 +617,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       grouped.set(key, assignmentPickerName(assignment));
     }
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
-  }, [assignmentEffectiveDate, assignmentPickerName, assignments, reportDate, sourceFilteredRequests]);
+  }, [assignmentEffectiveDate, assignmentPickerName, assignments, reportDate, reasonFilteredRequests]);
 
   const reportScansByAssignment = useMemo(() => {
     const assignmentIds = new Set(reportAssignments.map(assignment => assignment.id));
@@ -675,7 +675,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [reportCodeRows]);
 
   const reportRequests = useMemo(() => {
-    return sourceFilteredRequests
+    return reasonFilteredRequests
       .map(request => {
         const rows = reportCodeRows.filter(row => row.request?.id === request.id);
         const total = rows.reduce((sum, row) => sum + row.total, 0);
@@ -690,7 +690,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         if (a.status !== "En proceso" && b.status === "En proceso") return 1;
         return (b.request.creation_date || "").localeCompare(a.request.creation_date || "");
       });
-  }, [reportCodeRows, sourceFilteredRequests]);
+  }, [reportCodeRows, reasonFilteredRequests]);
 
     const reportByPicker = useMemo(() => {
     const grouped = new Map<string, { label: string; total: number; done: number }>();
@@ -725,13 +725,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [reportCodeRows, selectedReportRequest]);
 
   const allScanRows = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const requestIds = new Set(reasonFilteredRequests.map(request => request.id));
     return scans.filter(scan => requestIds.has(scan.request_id) && sameDate(scan.created_at, registryDate)).map(scan => {
       const line = lines.find(item => item.id === scan.line_id);
       const request = requests.find(item => item.id === scan.request_id);
       return { scan, line, request };
     });
-  }, [lines, registryDate, requests, scans, sourceFilteredRequests]);
+  }, [lines, registryDate, requests, scans, reasonFilteredRequests]);
 
   const registryPickerOptions = useMemo(() => {
     const grouped = new Map<string, string>();
@@ -764,7 +764,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [allScanRows, selectedRegistryPicker, selectedRegistryRequesterStore]);
 
   const productivityScanRows = useMemo(() => {
-    const requestIds = new Set(sourceFilteredRequests.map(request => request.id));
+    const requestIds = new Set(reasonFilteredRequests.map(request => request.id));
     return scans
       .filter(scan => requestIds.has(scan.request_id) && inDateRange(scan.created_at, productivityDateFrom, productivityDateTo))
       .map(scan => {
@@ -772,7 +772,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         const request = requests.find(item => item.id === scan.request_id);
         return { scan, line, request };
       });
-  }, [lines, productivityDateFrom, productivityDateTo, requests, scans, sourceFilteredRequests]);
+  }, [lines, productivityDateFrom, productivityDateTo, requests, scans, reasonFilteredRequests]);
 
   const productivityRows = useMemo(() => {
     const grouped = new Map<string, { label: string; codes: Set<string>; units: number; locations: Set<string> }>();
