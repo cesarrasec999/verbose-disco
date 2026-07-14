@@ -267,6 +267,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [storeId, setStoreId] = useState("");
   const [sessionsStoreFilter, setSessionsStoreFilter] = useState("");
   const [session, setSession] = useState<AuditSession | null>(null);
+  // true hasta que se resuelve si hay una sesion guardada en sessionStorage
+  // para restaurar. Evita que el guard de "sin sesion -> volver a sesiones"
+  // dispare antes de que loadSavedSession() (asincrona) termine de cargarla.
+  const [sessionRestorePending, setSessionRestorePending] = useState(true);
   const [items, setItems] = useState<AuditItem[]>([]);
   const [counts, setCounts] = useState<AuditCount[]>([]);
   const [query, setQuery] = useState("");
@@ -340,7 +344,8 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       writeStoredUser(currentUser);
       void loadSessions(currentUser);
       const savedSessionId = sessionStorage.getItem(AUDIT_SESSION_ID_KEY);
-      if (savedSessionId) void loadSavedSession(savedSessionId, currentUser);
+      if (savedSessionId) void loadSavedSession(savedSessionId, currentUser).finally(() => setSessionRestorePending(false));
+      else setSessionRestorePending(false);
     });
 
     supabase.from("stores").select("*").eq("is_active", true).order("name").then(({ data }) => {
@@ -361,10 +366,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       if (mainTab !== "register" || registerTab !== "count") router.replace("/auditoria/registro");
       return;
     }
-    if (!session && (user.role === "Administrador" || user.role === "Supervisor") && mainTab === "register") {
+    if (!session && !sessionRestorePending && (user.role === "Administrador" || user.role === "Supervisor") && mainTab === "register") {
       router.replace("/auditoria/sesiones");
     }
-  }, [isMobileAccess, user, mainTab, registerTab, session, router]);
+  }, [isMobileAccess, user, mainTab, registerTab, session, sessionRestorePending, router]);
 
   useEffect(() => {
     if (isReadOnlySupervisor && registerTab === "count") router.replace("/auditoria/registro/registros");
