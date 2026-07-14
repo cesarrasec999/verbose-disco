@@ -954,23 +954,45 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         setScans((scansResp.data || []) as PickingScan[]);
       } else {
         // Operario: no necesita los 500 requerimientos activos del sistema, solo lo
-        // que tiene asignado. Trae primero SUS asignaciones (liviano, ya viene
-        // filtrado por picker) y con eso arma un set chico de request_id/line_id para
-        // pedir solo esas lineas/requerimientos, en vez de escanear las lineas de
-        // TODOS los requerimientos activos como hacia antes (esto era el cuello de
-        // botella real: miles de lineas de otras tiendas que el operario ni ve).
+        // que tiene asignado. Primero trae solo los IDs de los requerimientos
+        // activos (liviano, misma cota de 500 que ya usa el manager) para acotar
+        // sus asignaciones a esos — cuentas de picking masivo (ej. "Picking 1 CD")
+        // acumulan miles de asignaciones no canceladas a lo largo del tiempo, y sin
+        // esta cota su fetch de asignaciones crece sin limite mes a mes.
+        const activeRequestIdsResp = await supabase
+          .from("picking_requests")
+          .select("id")
+          .eq("status_code", "A")
+          .order("creation_date", { ascending: false })
+          .limit(500);
+        const activeRequestIds = (activeRequestIdsResp.data || []).map(row => (row as { id: string }).id);
+
+        if (activeRequestIds.length === 0) {
+          setRequests([]);
+          setLines([]);
+          setAssignments([]);
+          setScans([]);
+          setLoading(false);
+          return;
+        }
+
         const myAssignments = await fetchAll<PickingAssignment>((from, to) =>
           supabase
             .from("picking_assignments")
             .select("*")
+            .in("request_id", activeRequestIds)
             .or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`)
             .neq("status", "cancelado")
             .order("created_at", { ascending: false })
             .range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
         );
 
+        // Set chico de request_id realmente usados por sus asignaciones (subconjunto
+        // de activeRequestIds, tipicamente muy por debajo de 500) — con eso se piden
+        // solo esos requerimientos y sus lineas, en vez de escanear las lineas de
+        // TODOS los requerimientos activos como hacia antes (ese era el cuello de
+        // botella real: miles de lineas de otras tiendas que el operario ni ve).
         const requestIds = [...new Set(myAssignments.map(assignment => assignment.request_id))];
-        const lineIds = [...new Set(myAssignments.map(assignment => assignment.line_id))];
 
         if (requestIds.length === 0) {
           setRequests([]);
@@ -981,13 +1003,20 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           return;
         }
 
+        // Nota: las lineas se piden por request_id (no por line_id de cada
+        // asignacion una por una) porque cuentas de picking masivo (ej. "Picking 1
+        // CD") pueden tener miles de asignaciones activas -> miles de line_id
+        // distintos, y un filtro .in("id", lineIds) con esa cardinalidad genera una
+        // URL de decenas de miles de caracteres que Supabase rechaza con 400 (esto
+        // es lo que causaba el error "no se pudo cargar el detalle completo").
+        // request_id tiene cardinalidad mucho menor (una cuenta con miles de
+        // asignaciones tipicamente cae en unas pocas centenas de requerimientos
+        // distintos), asi que se mantiene chico y evita el problema.
         const [requestsResp, allLines, scansResp] = await Promise.all([
           supabase.from("picking_requests").select("*").in("id", requestIds),
-          lineIds.length
-            ? fetchAll<PickingLine>((from, to) =>
-                supabase.from("picking_request_lines").select("*").in("id", lineIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
-              )
-            : Promise.resolve([]),
+          fetchAll<PickingLine>((from, to) =>
+            supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+          ),
           supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500),
         ]);
 
