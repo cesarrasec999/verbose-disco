@@ -392,49 +392,15 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     return <span className="ml-1">{salesSort.dir === "asc" ? "▲" : "▼"}</span>;
   }
 
-  async function loadCostMap() {
-    const costBySku = new Map<string, number>();
-    const PAGE = 1000;
-    let page = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from("cyclic_products")
-        .select("sku,cost")
-        .eq("is_active", true)
-        .range(page * PAGE, (page + 1) * PAGE - 1);
-      if (error) throw error;
-      for (const product of data || []) costBySku.set(fullProductCode(product.sku), parseCost(product.cost));
-      if (!data || data.length < PAGE) break;
-      page += 1;
-    }
-    return costBySku;
-  }
-
-  async function loadRotationMapForStore(store: Store, skus: string[]) {
-    const rotations = new Map<string, string>();
-    const cleanSkus = [...new Set(skus.map(fullProductCode).filter(Boolean))];
-    const storeKeys = rotationStoreKeysForStore(store);
-    if (cleanSkus.length === 0 || storeKeys.length === 0) return rotations;
-
-    for (let i = 0; i < cleanSkus.length; i += 500) {
-      const { data, error } = await supabase
-        .from("product_rotation_monthly")
-        .select("product_code,rotation_category,period_month")
-        .in("store_key", storeKeys)
-        .in("product_code", cleanSkus.slice(i, i + 500))
-        .lte("period_month", currentRotationPeriod())
-        .order("period_month", { ascending: false });
-      if (error) {
-        console.warn("No se pudieron cargar rotaciones:", error.message);
-        return rotations;
-      }
-      for (const row of data || []) {
-        const sku = fullProductCode(row.product_code);
-        if (sku && !rotations.has(sku)) rotations.set(sku, String(row.rotation_category || "").trim().toUpperCase());
-      }
-    }
-    return rotations;
-  }
+  // Fila que devuelve la funcion SQL get_stock_valuation_report:
+  // valorizado de UNA sede ya agrupado por categoria de rotacion.
+  type StockValuationRpcRow = {
+    rotation: string;
+    codes_with_stock: number;
+    total_units: number;
+    inventory_value: number;
+    missing_cost_codes: number;
+  };
 
   async function loadRotationBreaks(targetStores: Store[]) {
     const breakRows: RotationBreakRow[] = [];
@@ -656,12 +622,10 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
 
     setLoading(true);
     setMessage("");
-    setProgress("Preparando costos...");
+    setProgress("Generando reporte...");
     try {
-      const costBySku = await loadCostMap();
       const valuation: ValuationRow[] = [];
       const rotationTotals = new Map<string, RotationRow>();
-      const PAGE = 1000;
 
       for (let storeIndex = 0; storeIndex < targetStores.length; storeIndex += 1) {
         const store = targetStores[storeIndex];
@@ -669,38 +633,34 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         if (!sede) continue;
         setProgress(`Calculando ${storeIndex + 1}/${targetStores.length}: ${store.name}`);
 
-        const stockBySku = new Map<string, number>();
-        let page = 0;
-        while (true) {
-          const { data, error } = await supabase
-            .from("stock_general")
-            .select("codsap,stock")
-            .eq("sede", sede)
-            .gt("stock", 0)
-            .range(page * PAGE, (page + 1) * PAGE - 1);
-          if (error) throw error;
-          for (const row of data || []) {
-            const sku = fullProductCode(row.codsap);
-            if (!sku) continue;
-            stockBySku.set(sku, r2((stockBySku.get(sku) || 0) + Number(row.stock || 0)));
-          }
-          if (!data || data.length < PAGE) break;
-          page += 1;
-        }
+        // El join stock x costo x rotacion y el GROUP BY se hacen en la BD
+        // (funcion get_stock_valuation_report); llega ~1 fila por rotacion
+        // en vez de todo stock_general + todo el catalogo activo.
+        const { data, error } = await supabase.rpc("get_stock_valuation_report", {
+          p_sede: sede,
+          p_rotation_store_keys: rotationStoreKeysForStore(store),
+          p_rotation_period: currentRotationPeriod(),
+        });
+        if (error) throw error;
+        const groups = (data || []) as StockValuationRpcRow[];
 
-        const rotationBySku = await loadRotationMapForStore(store, [...stockBySku.keys()]);
+        let codesWithStock = 0;
         let totalUnits = 0;
         let inventoryValue = 0;
         let missingCostCodes = 0;
 
-        for (const [sku, stock] of stockBySku.entries()) {
-          const cost = costBySku.get(sku) || 0;
-          const rowValue = r2(stock * cost);
-          totalUnits = r2(totalUnits + stock);
-          inventoryValue = r2(inventoryValue + rowValue);
-          if (cost <= 0) missingCostCodes += 1;
+        for (const group of groups) {
+          const rotation = String(group.rotation || "SIN ROTACION");
+          const codes = Number(group.codes_with_stock || 0);
+          const units = Number(group.total_units || 0);
+          const value = Number(group.inventory_value || 0);
+          const missing = Number(group.missing_cost_codes || 0);
 
-          const rotation = rotationBySku.get(sku) || "SIN ROTACION";
+          codesWithStock += codes;
+          totalUnits = r2(totalUnits + units);
+          inventoryValue = r2(inventoryValue + value);
+          missingCostCodes += missing;
+
           const current = rotationTotals.get(rotation) || {
             rotation,
             codes_with_stock: 0,
@@ -708,10 +668,10 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
             inventory_value: 0,
             missing_cost_codes: 0,
           };
-          current.codes_with_stock += 1;
-          current.total_units = r2(current.total_units + stock);
-          current.inventory_value = r2(current.inventory_value + rowValue);
-          if (cost <= 0) current.missing_cost_codes += 1;
+          current.codes_with_stock += codes;
+          current.total_units = r2(current.total_units + units);
+          current.inventory_value = r2(current.inventory_value + value);
+          current.missing_cost_codes += missing;
           rotationTotals.set(rotation, current);
         }
 
@@ -719,7 +679,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
           store_id: store.id,
           store_name: store.name,
           sede,
-          codes_with_stock: stockBySku.size,
+          codes_with_stock: codesWithStock,
           total_units: totalUnits,
           inventory_value: inventoryValue,
           missing_cost_codes: missingCostCodes,
