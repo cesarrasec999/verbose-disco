@@ -297,6 +297,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
   const [selectedReasonFilter, setSelectedReasonFilter] = useState("all");
+  const [selectedOperatorReason, setSelectedOperatorReason] = useState("all");
   const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
   const [selectedReportPicker, setSelectedReportPicker] = useState("all");
   const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
@@ -490,9 +491,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [myAssignments, requests]);
 
   const filteredMyAssignments = useMemo(() => {
-    if (selectedRequesterStore === "all") return myAssignments;
-    return myAssignments.filter(assignment => requesterStoreKey(requests.find(request => request.id === assignment.request_id)) === selectedRequesterStore);
-  }, [myAssignments, requests, selectedRequesterStore]);
+    return myAssignments.filter(assignment => {
+      const request = requests.find(item => item.id === assignment.request_id);
+      if (selectedRequesterStore !== "all" && requesterStoreKey(request) !== selectedRequesterStore) return false;
+      if (selectedOperatorReason !== "all" && normalize(request?.reason) !== selectedOperatorReason) return false;
+      return true;
+    });
+  }, [myAssignments, requests, selectedRequesterStore, selectedOperatorReason]);
 
   const sortedMyAssignments = useMemo(() => {
     return [...filteredMyAssignments].sort((a, b) => {
@@ -2819,24 +2824,12 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
             </div>
           </section>
         ) : (
-          <div className="mt-4 space-y-4">
-            <section className="rounded-2xl border bg-white p-3 shadow-sm">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase text-slate-500">Mi avance</p>
-                  <p className="text-xl font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="text-xs font-black uppercase text-slate-500">Fecha asignacion</label>
-                  <input
-                    type="date"
-                    value={pickingDate}
-                    onChange={event => {
-                      setPickingDate(event.target.value);
-                      setActiveAssignmentId("");
-                    }}
-                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
-                  />
+          <div className="mt-2 space-y-3">
+            <section className="rounded-2xl border bg-white p-2.5 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-black text-violet-700">{operatorTotals.progress}%</span>
                   {pickingDate !== todayISO() && (
                     <button
                       type="button"
@@ -2844,30 +2837,52 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         setPickingDate(todayISO());
                         setActiveAssignmentId("");
                       }}
-                      className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600"
+                      className="rounded-lg border px-2 py-0.5 text-[11px] font-black text-slate-600"
                     >
                       Hoy
                     </button>
                   )}
-                  <label className="text-xs font-black uppercase text-slate-500">Tienda solicitante</label>
-                  <select
-                    value={selectedRequesterStore}
-                    onChange={event => {
-                      setSelectedRequesterStore(event.target.value);
-                      setActiveAssignmentId("");
-                    }}
-                    className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
-                  >
-                    <option value="all">Todas las tiendas</option>
-                    {requesterStoreOptions.map(option => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
-                    ))}
-                  </select>
-                  <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-black text-violet-700">{operatorTotals.progress}%</span>
                 </div>
               </div>
-              <div className="h-2 rounded-full bg-slate-100">
-                <div className="h-2 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
+              <div className="mt-1.5 h-1.5 rounded-full bg-slate-100">
+                <div className="h-1.5 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-1.5">
+                <input
+                  type="date"
+                  value={pickingDate}
+                  onChange={event => {
+                    setPickingDate(event.target.value);
+                    setActiveAssignmentId("");
+                  }}
+                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                />
+                <select
+                  value={selectedRequesterStore}
+                  onChange={event => {
+                    setSelectedRequesterStore(event.target.value);
+                    setActiveAssignmentId("");
+                  }}
+                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                >
+                  <option value="all">Todas las tiendas</option>
+                  {requesterStoreOptions.map(option => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
+                <select
+                  value={selectedOperatorReason}
+                  onChange={event => {
+                    setSelectedOperatorReason(event.target.value);
+                    setActiveAssignmentId("");
+                  }}
+                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                >
+                  <option value="all">Todos los motivos</option>
+                  {reasonOptions.map(option => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
               </div>
             </section>
 
@@ -2901,6 +2916,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                           </div>
                           <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{line?.unit || "-"}</span>
                         </div>
+                        <p className={`mt-0.5 text-[10px] font-black uppercase tracking-wide ${reasonBadgeClass(request?.reason)}`}>{request?.reason || "Sin motivo"}</p>
                         <p className="mt-1 line-clamp-2 text-xs text-slate-500">{line?.description}</p>
                         <div className="mt-2 flex flex-wrap gap-1">
                           {cardLocations.length > 0 ? cardLocations.map(location => (
