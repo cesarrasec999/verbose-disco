@@ -877,46 +877,6 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     setLoading(true);
     const currentUserCanManage = canManagePicking(currentUser);
 
-    const [requestsResp, usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
-      supabase
-        .from("picking_requests")
-        .select("*")
-        .eq("status_code", "A")
-        .order("creation_date", { ascending: false })
-        .limit(500),
-      supabase
-        .from("cyclic_users")
-        .select("id,full_name,role,module_access,whatsapp")
-        .eq("is_active", true)
-        .order("full_name"),
-      supabase.from("stores").select("id,code,name,erp_sede").eq("is_active", true),
-      supabase.from("erp_sync_status").select("synced_at,updated_at").eq("id", "picking_requests").maybeSingle(),
-      supabase.from("picking_requests").select("source_updated_at,updated_at").order("source_updated_at", { ascending: false }).limit(1),
-    ]);
-
-    if (requestsResp.error) {
-      toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
-      setLoading(false);
-      return;
-    }
-
-    const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
-    setRequests(requestRows);
-    setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
-    if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
-    setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => item.role === "Operario" && canAccessModule(item, "picking")));
-    setStores((storesResp.data || []) as StoreRow[]);
-
-    if (requestRows.length === 0) {
-      setLines([]);
-      setAssignments([]);
-      setScans([]);
-      setLoading(false);
-      return;
-    }
-
-    const requestIds = requestRows.map(request => request.id);
-
     // Trae TODAS las filas paginando de 1000 en 1000 para evitar el limite de Supabase
     async function fetchAll<T>(buildQuery: (from: number, to: number) => Promise<{ data: T[] | null; error: unknown }>): Promise<T[]> {
       const PAGE = 1000;
@@ -933,45 +893,124 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       return all;
     }
 
-    let allLines: PickingLine[] = [];
-    let allAssignments: PickingAssignment[] = [];
-    let scansResp: { data: PickingScan[] | null; error: { message: string } | null };
+    const [usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
+      supabase
+        .from("cyclic_users")
+        .select("id,full_name,role,module_access,whatsapp")
+        .eq("is_active", true)
+        .order("full_name"),
+      supabase.from("stores").select("id,code,name,erp_sede").eq("is_active", true),
+      supabase.from("erp_sync_status").select("synced_at,updated_at").eq("id", "picking_requests").maybeSingle(),
+      supabase.from("picking_requests").select("source_updated_at,updated_at").order("source_updated_at", { ascending: false }).limit(1),
+    ]);
+
+    setLastErpSync(syncResp.data?.synced_at || syncResp.data?.updated_at || syncFallbackResp.data?.[0]?.source_updated_at || syncFallbackResp.data?.[0]?.updated_at || null);
+    setPickers(((usersResp.data || []) as CyclicUser[]).filter(item => item.role === "Operario" && canAccessModule(item, "picking")));
+    setStores((storesResp.data || []) as StoreRow[]);
+
     try {
-      [allLines, allAssignments, scansResp] = await Promise.all([
-        // Lineas: paginar para traer todos los codigos sin corte
-        fetchAll<PickingLine>((from, to) =>
-          supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
-        ),
-        // Asignaciones: paginar tambien para no perder lotes
-        fetchAll<PickingAssignment>((from, to) => {
-          const base = supabase
+      if (currentUserCanManage) {
+        // Manager: necesita ver TODOS los requerimientos activos (resumen, reportes,
+        // asignacion por cualquier operario), asi que mantiene el fetch completo.
+        const requestsResp = await supabase
+          .from("picking_requests")
+          .select("*")
+          .eq("status_code", "A")
+          .order("creation_date", { ascending: false })
+          .limit(500);
+
+        if (requestsResp.error) {
+          toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+          setLoading(false);
+          return;
+        }
+
+        const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
+        setRequests(requestRows);
+        if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
+
+        if (requestRows.length === 0) {
+          setLines([]);
+          setAssignments([]);
+          setScans([]);
+          setLoading(false);
+          return;
+        }
+
+        const requestIds = requestRows.map(request => request.id);
+        const [allLines, allAssignments, scansResp] = await Promise.all([
+          fetchAll<PickingLine>((from, to) =>
+            supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+          ),
+          fetchAll<PickingAssignment>((from, to) =>
+            supabase.from("picking_assignments").select("*").in("request_id", requestIds).neq("status", "cancelado").order("created_at", { ascending: false }).range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
+          ),
+          supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000),
+        ]);
+
+        if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
+        setLines(allLines);
+        setAssignments(allAssignments);
+        setScans((scansResp.data || []) as PickingScan[]);
+      } else {
+        // Operario: no necesita los 500 requerimientos activos del sistema, solo lo
+        // que tiene asignado. Trae primero SUS asignaciones (liviano, ya viene
+        // filtrado por picker) y con eso arma un set chico de request_id/line_id para
+        // pedir solo esas lineas/requerimientos, en vez de escanear las lineas de
+        // TODOS los requerimientos activos como hacia antes (esto era el cuello de
+        // botella real: miles de lineas de otras tiendas que el operario ni ve).
+        const myAssignments = await fetchAll<PickingAssignment>((from, to) =>
+          supabase
             .from("picking_assignments")
             .select("*")
-            .in("request_id", requestIds)
+            .or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`)
             .neq("status", "cancelado")
             .order("created_at", { ascending: false })
-            .range(from, to);
-          const q = currentUserCanManage
-            ? base
-            : base.or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`);
-          return q as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>;
-        }),
-        // Scans: limite generoso, no requiere paginacion completa
-        (currentUserCanManage
-          ? supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000)
-          : supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500)) as unknown as Promise<{ data: PickingScan[] | null; error: { message: string } | null }>,
-      ]);
+            .range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
+        );
+
+        const requestIds = [...new Set(myAssignments.map(assignment => assignment.request_id))];
+        const lineIds = [...new Set(myAssignments.map(assignment => assignment.line_id))];
+
+        if (requestIds.length === 0) {
+          setRequests([]);
+          setLines([]);
+          setAssignments([]);
+          setScans([]);
+          setLoading(false);
+          return;
+        }
+
+        const [requestsResp, allLines, scansResp] = await Promise.all([
+          supabase.from("picking_requests").select("*").in("id", requestIds),
+          lineIds.length
+            ? fetchAll<PickingLine>((from, to) =>
+                supabase.from("picking_request_lines").select("*").in("id", lineIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+              )
+            : Promise.resolve([]),
+          supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500),
+        ]);
+
+        if (requestsResp.error) {
+          toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+          setLoading(false);
+          return;
+        }
+        if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
+
+        const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
+        setRequests(requestRows);
+        if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
+        setLines(allLines);
+        setAssignments(myAssignments);
+        setScans((scansResp.data || []) as PickingScan[]);
+      }
     } catch (error) {
       toast.error("No se pudo cargar el detalle completo de picking. Refresca o revisa el sync antes de asignar.");
       setLoading(false);
       return;
     }
 
-    if ("error" in scansResp && scansResp.error) toast.error("No pude leer registros: " + (scansResp.error as { message: string }).message);
-
-    setLines(allLines);
-    setAssignments(allAssignments);
-    setScans(("data" in scansResp ? scansResp.data || [] : []) as PickingScan[]);
     setLoading(false);
   }, []);
 
