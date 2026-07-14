@@ -381,8 +381,14 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
 
   useEffect(() => {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
-    else sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
-  }, [session?.id]);
+    // Solo se borra la clave una vez que ya se resolvio si habia o no una
+    // sesion guardada para restaurar (!sessionRestorePending). Sin este
+    // guard, en el primer render de una ruta recien montada (session todavia
+    // null porque loadSavedSession es asincrona) este efecto borraba la
+    // clave que openSession() acababa de guardar, antes de que nadie llegara
+    // a leerla - la sesion nunca se restauraba, para ningun rol.
+    else if (!sessionRestorePending) sessionStorage.removeItem(AUDIT_SESSION_ID_KEY);
+  }, [session?.id, sessionRestorePending]);
 
   useEffect(() => {
     if (canViewAuditSummary && mainTab === "adminSummary") {
