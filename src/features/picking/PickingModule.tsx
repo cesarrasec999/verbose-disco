@@ -304,6 +304,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [selectedRegistryRequesterStore, setSelectedRegistryRequesterStore] = useState("all");
   const [assignmentDate, setAssignmentDate] = useState(todayISO());
   const [pickingDate, setPickingDate] = useState(todayISO());
+  const pickingDateRef = useRef(pickingDate);
+  useEffect(() => { pickingDateRef.current = pickingDate; }, [pickingDate]);
   const [reportDate, setReportDate] = useState(todayISO());
   const [registryDate, setRegistryDate] = useState(todayISO());
   const [productivityDateFrom, setProductivityDateFrom] = useState("");
@@ -953,84 +955,49 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         setAssignments(allAssignments);
         setScans((scansResp.data || []) as PickingScan[]);
       } else {
-        // Operario: no necesita los 500 requerimientos activos del sistema, solo lo
-        // que tiene asignado. Primero trae solo los IDs de los requerimientos
-        // activos (liviano, misma cota de 500 que ya usa el manager) para acotar
-        // sus asignaciones a esos — cuentas de picking masivo (ej. "Picking 1 CD")
-        // acumulan miles de asignaciones no canceladas a lo largo del tiempo, y sin
-        // esta cota su fetch de asignaciones crece sin limite mes a mes.
-        const activeRequestIdsResp = await supabase
-          .from("picking_requests")
-          .select("id")
-          .eq("status_code", "A")
-          .order("creation_date", { ascending: false })
-          .limit(500);
-        const activeRequestIds = (activeRequestIdsResp.data || []).map(row => (row as { id: string }).id);
+        // Operario: una sola consulta indexada en la base (get_my_picking_assignments,
+        // ver supabase/migrations/20260714190000_picking_my_assignments_fn.sql) que
+        // hace el JOIN asignacion+requerimiento+linea en el servidor, filtrado por
+        // picker Y por la fecha seleccionada (pickingDate). Antes se traia el
+        // historial COMPLETO del operario (cuentas de picking masivo acumulan miles
+        // de asignaciones no canceladas a lo largo de meses) y se filtraba por fecha
+        // recien en el navegador; ahora la base solo devuelve las filas del dia que
+        // se esta mirando.
+        const rpcResp = await supabase.rpc("get_my_picking_assignments", {
+          p_picker_id: currentUser.id,
+          p_picker_name: currentUser.full_name,
+          p_date: pickingDateRef.current,
+        });
 
-        if (activeRequestIds.length === 0) {
-          setRequests([]);
-          setLines([]);
-          setAssignments([]);
-          setScans([]);
-          setLoading(false);
-          return;
-        }
-
-        const myAssignments = await fetchAll<PickingAssignment>((from, to) =>
-          supabase
-            .from("picking_assignments")
-            .select("*")
-            .in("request_id", activeRequestIds)
-            .or(`picker_id.eq.${currentUser.id},picker_name.eq.${currentUser.full_name}`)
-            .neq("status", "cancelado")
-            .order("created_at", { ascending: false })
-            .range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
-        );
-
-        // Set chico de request_id realmente usados por sus asignaciones (subconjunto
-        // de activeRequestIds, tipicamente muy por debajo de 500) — con eso se piden
-        // solo esos requerimientos y sus lineas, en vez de escanear las lineas de
-        // TODOS los requerimientos activos como hacia antes (ese era el cuello de
-        // botella real: miles de lineas de otras tiendas que el operario ni ve).
-        const requestIds = [...new Set(myAssignments.map(assignment => assignment.request_id))];
-
-        if (requestIds.length === 0) {
-          setRequests([]);
-          setLines([]);
-          setAssignments([]);
-          setScans([]);
-          setLoading(false);
-          return;
-        }
-
-        // Nota: las lineas se piden por request_id (no por line_id de cada
-        // asignacion una por una) porque cuentas de picking masivo (ej. "Picking 1
-        // CD") pueden tener miles de asignaciones activas -> miles de line_id
-        // distintos, y un filtro .in("id", lineIds) con esa cardinalidad genera una
-        // URL de decenas de miles de caracteres que Supabase rechaza con 400 (esto
-        // es lo que causaba el error "no se pudo cargar el detalle completo").
-        // request_id tiene cardinalidad mucho menor (una cuenta con miles de
-        // asignaciones tipicamente cae en unas pocas centenas de requerimientos
-        // distintos), asi que se mantiene chico y evita el problema.
-        const [requestsResp, allLines, scansResp] = await Promise.all([
-          supabase.from("picking_requests").select("*").in("id", requestIds),
-          fetchAll<PickingLine>((from, to) =>
-            supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
-          ),
-          supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500),
-        ]);
-
-        if (requestsResp.error) {
+        if (rpcResp.error) {
           toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
           setLoading(false);
           return;
         }
+
+        type MyAssignmentRow = { assignment: PickingAssignment; request: PickingRequest; line: PickingLine };
+        const rows = (rpcResp.data || []) as MyAssignmentRow[];
+
+        const requestsById = new Map<string, PickingRequest>();
+        const linesById = new Map<string, PickingLine>();
+        const myAssignments: PickingAssignment[] = [];
+        for (const row of rows) {
+          if (!requestsById.has(row.request.id)) requestsById.set(row.request.id, row.request);
+          if (!linesById.has(row.line.id)) linesById.set(row.line.id, row.line);
+          myAssignments.push(row.assignment);
+        }
+
+        const requestRows = [...requestsById.values()];
+        const requestIds = [...requestsById.keys()];
+
+        const scansResp = requestIds.length
+          ? await supabase.from("picking_scans").select("*").in("request_id", requestIds).eq("picker_id", currentUser.id).order("created_at", { ascending: false }).limit(500)
+          : { data: [] as PickingScan[], error: null };
         if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
 
-        const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
         setRequests(requestRows);
         if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
-        setLines(allLines);
+        setLines([...linesById.values()]);
         setAssignments(myAssignments);
         setScans((scansResp.data || []) as PickingScan[]);
       }
@@ -1222,6 +1189,18 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadData]);
+
+  const operatorDateLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!user || manager) return;
+    if (!operatorDateLoadedRef.current) {
+      // La primera carga ya la hizo el efecto de montaje de arriba con este mismo
+      // pickingDate inicial; evita duplicar el fetch al entrar a la pantalla.
+      operatorDateLoadedRef.current = true;
+      return;
+    }
+    void loadData(user);
+  }, [pickingDate, user, manager, loadData]);
 
   useEffect(() => {
     async function loadLocations() {
