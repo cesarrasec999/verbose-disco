@@ -276,22 +276,33 @@ export default function CreditosCobranzasModule({ subTab }: { subTab: SubTab }) 
       mainQuery = applyBaseFilters(mainQuery, base);
       mainQuery = applyColumnFilters(mainQuery, debouncedColumnFilters);
       mainQuery = mainQuery.range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-      const { data, error, count } = await mainQuery;
-      if (error) throw error;
 
-      // Totales exactos: solo 2 columnas angostas, paginadas para no
-      // toparse con el limite de 1000 filas, sin cargar toda la tabla
-      // visible (eso es justamente lo que la paginacion evita).
-      const aggRows = await fetchAllPages<{ importe_total: number; cumple_documentacion: boolean }>((from, to) => {
-        let q = supabase.from("ventas_credito").select("importe_total,cumple_documentacion");
-        q = applyBaseFilters(q, base);
-        q = applyColumnFilters(q, debouncedColumnFilters);
-        return q.range(from, to);
+      // Totales exactos calculados en la base (RPC get_ventas_credito_totales):
+      // 1 request que devuelve 1 fila con SUM/COUNT, en vez de traer todas las
+      // filas filtradas (miles, paginadas de a 1000) para sumar/contar en JS.
+      // La funcion SQL replica los mismos filtros de applyBaseFilters/
+      // applyColumnFilters; los filtros de columna van trimmeados en un jsonb.
+      const filterPayload: Record<string, string> = {};
+      for (const [key, value] of Object.entries(debouncedColumnFilters)) {
+        if (value?.trim()) filterPayload[key] = value.trim();
+      }
+      const aggQuery = supabase.rpc("get_ventas_credito_totales", {
+        p_date_from: dateFrom,
+        p_date_to: dateTo,
+        p_store: storeFilter || null,
+        p_status: statusFilter === "all" ? null : statusFilter,
+        p_sub_tab: subTab,
+        p_filters: filterPayload,
       });
-      const importeTotal = aggRows.reduce((s, r) => s + Number(r.importe_total || 0), 0);
-      const cumplen = aggRows.filter(r => r.cumple_documentacion).length;
 
-      const syncRes = await supabase.from("erp_sync_status").select("synced_at").eq("id", "ventas_credito").maybeSingle();
+      const syncQuery = supabase.from("erp_sync_status").select("synced_at").eq("id", "ventas_credito").maybeSingle();
+
+      const [{ data, error, count }, aggRes, syncRes] = await Promise.all([mainQuery, aggQuery, syncQuery]);
+      if (error) throw error;
+      if (aggRes.error) throw aggRes.error;
+      const agg = (aggRes.data as { importe_total: number | string; cumplen: number | string }[] | null)?.[0];
+      const importeTotal = Number(agg?.importe_total ?? 0);
+      const cumplen = Number(agg?.cumplen ?? 0);
 
       setRows((data || []) as VentaCredito[]);
       setTotalCount(count ?? 0);

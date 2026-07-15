@@ -756,7 +756,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         let page = 0;
         let hasMore = true;
         while (hasMore) {
-            const { data } = await supabase.from("cyclic_products").select("*").eq("is_active", true).order("sku").range(page * PAGE, (page + 1) * PAGE - 1);
+            // Solo las columnas que este modulo lee realmente (evitar select("*") sobre el catalogo completo)
+            const { data } = await supabase.from("cyclic_products").select("id,sku,barcode,description,unit,cost,is_active").eq("is_active", true).order("sku").range(page * PAGE, (page + 1) * PAGE - 1);
             if (data && data.length > 0) { all.push(...(data as Product[])); page++; }
             if (!data || data.length < PAGE) hasMore = false;
         }
