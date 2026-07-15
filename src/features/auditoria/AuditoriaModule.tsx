@@ -617,64 +617,49 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       return;
     }
 
-    let itemData: any[] = [];
-    let countData: any[] = [];
+    // Los agregados por sesion (item_count, ok_items, diff_value, etc.) se
+    // calculan en la BD (funcion get_audit_admin_summary) en vez de traer
+    // TODOS los audit_session_items + audit_counts del rango al navegador
+    // para sumarlos en JavaScript.
+    type AuditAdminAggRow = {
+      session_id: string;
+      item_count: number;
+      count_records: number;
+      audited_items: number;
+      ok_items: number;
+      missing_items: number;
+      surplus_items: number;
+      not_counted_items: number;
+      diff_units: number;
+      diff_value: number;
+    };
+    let aggData: AuditAdminAggRow[] = [];
     try {
-      [itemData, countData] = await Promise.all([
-        fetchAuditAdminDetails("audit_session_items", "id,session_id,system_stock,cost_snapshot", sessionIds),
-        fetchAuditAdminDetails("audit_counts", "id,session_id,item_id,quantity", sessionIds),
-      ]);
+      const { data: rpcData, error } = await supabase.rpc("get_audit_admin_summary", { p_session_ids: sessionIds });
+      if (error) throw error;
+      aggData = (rpcData || []) as AuditAdminAggRow[];
     } catch (error: any) {
       setAdminSummaryLoading(false);
       setMessage("Error cargando detalle del resumen: " + (error?.message || error));
       return;
     }
 
-    const countsByItem = new Map<string, number>();
-    const countRecordsBySession = new Map<string, number>();
-    for (const count of countData || []) {
-      countsByItem.set(count.item_id, (countsByItem.get(count.item_id) || 0) + Number(count.quantity || 0));
-      countRecordsBySession.set(count.session_id, (countRecordsBySession.get(count.session_id) || 0) + 1);
-    }
-
-    const itemsBySession = new Map<string, any[]>();
-    for (const item of itemData || []) {
-      if (!itemsBySession.has(item.session_id)) itemsBySession.set(item.session_id, []);
-      itemsBySession.get(item.session_id)!.push(item);
-    }
+    const aggBySession = new Map<string, AuditAdminAggRow>();
+    for (const row of aggData) aggBySession.set(row.session_id, row);
 
     const rows = sessionRows.map(row => {
-      const rowItems = itemsBySession.get(row.id) || [];
-      let auditedItems = 0;
-      let okItems = 0;
-      let missingItems = 0;
-      let surplusItems = 0;
-      let diffUnits = 0;
-      let diffValue = 0;
-
-      for (const item of rowItems) {
-        const counted = countsByItem.get(item.id) || 0;
-        const stock = Number(item.system_stock || 0);
-        const diff = counted - stock;
-        if (countsByItem.has(item.id)) auditedItems += 1;
-        if (countsByItem.has(item.id) && diff === 0) okItems += 1;
-        if (diff < 0) missingItems += 1;
-        if (diff > 0) surplusItems += 1;
-        diffUnits += diff;
-        diffValue += diff * Number(item.cost_snapshot || 0);
-      }
-
+      const agg = aggBySession.get(row.id);
       return {
         ...row,
-        item_count: rowItems.length,
-        count_records: countRecordsBySession.get(row.id) || 0,
-        audited_items: auditedItems,
-        ok_items: okItems,
-        missing_items: missingItems,
-        surplus_items: surplusItems,
-        not_counted_items: Math.max(0, rowItems.length - auditedItems),
-        diff_units: diffUnits,
-        diff_value: diffValue,
+        item_count: agg?.item_count || 0,
+        count_records: agg?.count_records || 0,
+        audited_items: agg?.audited_items || 0,
+        ok_items: agg?.ok_items || 0,
+        missing_items: agg?.missing_items || 0,
+        surplus_items: agg?.surplus_items || 0,
+        not_counted_items: agg?.not_counted_items || 0,
+        diff_units: agg?.diff_units || 0,
+        diff_value: agg?.diff_value || 0,
       };
     });
 
