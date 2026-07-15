@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import Link from "next/link";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 import {
   Camera, CheckCircle2, ChevronLeft, Home, LogOut, Package,
   Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
@@ -1571,6 +1572,47 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     }
   }
 
+  function exportDifferencesExcel() {
+    if (differenceRows.length === 0) { showMsg("No hay diferencias para exportar."); return; }
+    const kindLabel = (kind: DifferenceKind) =>
+      kind === "sobrante" ? "Sobrante" : kind === "desmedro" ? "Desmedro" : "Faltante";
+    const statusLabel = (status: RegularizationStatus) =>
+      status === "regularizado" ? "Regularizado"
+        : status === "atendido" ? "Atendido"
+          : status === "rechazado" ? "Rechazado"
+            : "Pendiente";
+    const rows = differenceRows.map(row => {
+      const reg = regularizations.get(row.diffKey);
+      const diffQty = row.kind === "desmedro" ? null : (row.kind === "sobrante" ? row.qty : -row.qty);
+      return {
+        "Tienda destino": row.destinationStore,
+        Documento: row.document,
+        "Tienda origen": row.sourceStore,
+        "Entregó guía": row.dispatchedByName || "",
+        "Recepción completada": row.deliveredAt ? new Date(row.deliveredAt).toLocaleString("es-PE") : "",
+        "Recibió": row.deliveredByName || "",
+        Código: row.productCode,
+        Descripción: row.description || "",
+        Unidad: row.unit || "",
+        Tipo: kindLabel(row.kind),
+        Enviado: row.qtySent ?? "",
+        Recibido: row.qtyReceived ?? "",
+        Diferencia: diffQty ?? -row.qty,
+        "Reportado": new Date(row.reportedAt).toLocaleString("es-PE"),
+        "Reportado por": row.reportedByName || "",
+        Notas: row.notes || "",
+        Estado: statusLabel(reg?.status || "pendiente"),
+        "N° Requerimiento reg.": reg?.requirement_ref || "",
+        "Atendido por": reg?.attended_by_name || "",
+        "Atendido el": reg?.attended_at ? new Date(reg.attended_at).toLocaleString("es-PE") : "",
+        "Regularizado el": reg?.regularized_at ? new Date(reg.regularized_at).toLocaleString("es-PE") : "",
+      };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Diferencias");
+    XLSX.writeFile(wb, `diferencias-recepcion-${diffDateFrom}_a_${diffDateTo}.xlsx`);
+  }
+
   function regularizationDefaults(row: ReceptionDifferenceRow): Omit<DifferenceRegularization, "id" | "created_at"> {
     const existing = regularizations.get(row.diffKey);
     return {
@@ -2128,6 +2170,13 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                     className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                   >
                     {loadingDifferences ? "Cargando..." : "Actualizar"}
+                  </button>
+                  <button
+                    onClick={exportDifferencesExcel}
+                    disabled={loadingDifferences || differenceRows.length === 0}
+                    className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    Exportar Excel
                   </button>
                 </div>
               </div>
