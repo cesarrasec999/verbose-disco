@@ -1,0 +1,588 @@
+"use client";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supabase/client";
+import { readStoredUser } from "@/lib/singleDeviceSession";
+import { canAccessModule } from "@/features/access/moduleAccess";
+import type { CyclicUser, Store } from "@/features/ciclicos/types";
+
+// ─── Constantes ─────────────────────────────────────────────────────────────
+
+type ChecklistStatus = "cumple" | "no_cumple" | "justificado";
+type ChecklistItemKey =
+  | "check_list_diario"
+  | "fotos_almacen"
+  | "orden_limpieza"
+  | "documentos_al_dia"
+  | "conteo_ciclico"
+  | "reporte_incidencias"
+  | "reduccion_productos_x";
+
+// Los 7 puntos son fijos (ver hoja INFO del Sheet original) - no hace falta
+// una tabla catalogo en BD para algo que no cambia.
+const CHECKLIST_ITEMS: { key: ChecklistItemKey; label: string }[] = [
+  { key: "check_list_diario", label: "Check list diario" },
+  { key: "fotos_almacen", label: "Fotos de almacén" },
+  { key: "orden_limpieza", label: "Orden y limpieza" },
+  { key: "documentos_al_dia", label: "Documentos al día" },
+  { key: "conteo_ciclico", label: "Conteo cíclico" },
+  { key: "reporte_incidencias", label: "Reporte de incidencias" },
+  { key: "reduccion_productos_x", label: "Reducción de productos X" },
+];
+
+const AUDITOR_ROLES = ["Validador", "Supervisor", "Administrador", "Operario"];
+
+type MyStore = { id: string; store_id: string; store_name: string };
+type Assignment = { id: string; store_id: string; auditor_user_id: string; store_name: string; auditor_name: string };
+type ChecklistEntryRow = { item_key: string; entry_date: string; status: ChecklistStatus };
+
+type PeriodType = "dia" | "mes" | "rango";
+type PeriodState = { type: PeriodType; date: string; month: string; from: string; to: string };
+
+type ResumenRow = {
+  store_id: string;
+  store_name: string;
+  auditor_name: string;
+  cumplio: number;
+  no_cumplio: number;
+  justificado: number;
+  pct: number;
+  eri: number;
+  session_count: number;
+  combined: number;
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function addDaysISO(date: string, days: number) {
+  const [year, month, day] = date.split("-").map(Number);
+  const current = new Date(year, month - 1, day);
+  current.setDate(current.getDate() + days);
+  return current.toISOString().slice(0, 10);
+}
+function monthLastDate(monthValue: string) {
+  const [year, month] = monthValue.split("-").map(Number);
+  return new Date(year, month, 0).getDate();
+}
+function localDateStartISO(date: string) {
+  return new Date(`${date}T00:00:00`).toISOString();
+}
+function previousMonthValue(monthValue: string) {
+  const [year, month] = monthValue.split("-").map(Number);
+  const d = new Date(year, month - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function defaultPeriod(month: string): PeriodState {
+  return { type: "mes", date: todayISO(), month, from: `${month}-01`, to: todayISO() };
+}
+function periodRange(p: PeriodState): { from: string; toExclusive: string; label: string } {
+  if (p.type === "dia") {
+    const date = p.date || todayISO();
+    return { from: date, toExclusive: addDaysISO(date, 1), label: date };
+  }
+  if (p.type === "mes") {
+    const month = p.month || todayISO().slice(0, 7);
+    const to = `${month}-${String(monthLastDate(month)).padStart(2, "0")}`;
+    return { from: `${month}-01`, toExclusive: addDaysISO(to, 1), label: month };
+  }
+  const rangeFrom = p.from || todayISO();
+  const rangeTo = p.to || rangeFrom;
+  const from = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
+  const to = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
+  return { from, toExclusive: addDaysISO(to, 1), label: `${from} al ${to}` };
+}
+function statusColor(status: ChecklistStatus | undefined) {
+  if (status === "cumple") return "bg-emerald-100 text-emerald-700";
+  if (status === "no_cumple") return "bg-red-100 text-red-600";
+  if (status === "justificado") return "bg-amber-100 text-amber-700";
+  return "bg-slate-100 text-slate-400";
+}
+function statusSymbol(status: ChecklistStatus | undefined) {
+  if (status === "cumple") return "✓";
+  if (status === "no_cumple") return "✗";
+  if (status === "justificado") return "J";
+  return "-";
+}
+
+// ─── Sub-componentes ────────────────────────────────────────────────────────
+
+function PeriodPicker({ label, value, onChange }: { label: string; value: PeriodState; onChange: (next: PeriodState) => void }) {
+  const tabClass = (active: boolean) => `rounded-lg px-2 py-1.5 text-xs font-black ${active ? "bg-slate-950 text-white" : "text-slate-500"}`;
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <div>
+        <p className="mb-1 text-[11px] font-black uppercase text-slate-400">{label}</p>
+        <div className="grid grid-cols-3 gap-1 rounded-xl border bg-slate-50 p-1">
+          <button onClick={() => onChange({ ...value, type: "dia" })} className={tabClass(value.type === "dia")}>Dia</button>
+          <button onClick={() => onChange({ ...value, type: "mes" })} className={tabClass(value.type === "mes")}>Mes</button>
+          <button onClick={() => onChange({ ...value, type: "rango" })} className={tabClass(value.type === "rango")}>Rango</button>
+        </div>
+      </div>
+      {value.type === "dia" && (
+        <input type="date" value={value.date} onChange={e => onChange({ ...value, date: e.target.value })} className="rounded-xl border px-3 py-2 text-sm" />
+      )}
+      {value.type === "mes" && (
+        <input type="month" value={value.month} onChange={e => onChange({ ...value, month: e.target.value })} className="rounded-xl border px-3 py-2 text-sm" />
+      )}
+      {value.type === "rango" && (
+        <>
+          <input type="date" value={value.from} onChange={e => onChange({ ...value, from: e.target.value })} className="rounded-xl border px-3 py-2 text-sm" />
+          <input type="date" value={value.to} onChange={e => onChange({ ...value, to: e.target.value })} className="rounded-xl border px-3 py-2 text-sm" />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Página ─────────────────────────────────────────────────────────────────
+
+export default function ChecklistModule() {
+  const [user, setUser] = useState<CyclicUser | null>(null);
+  const [ready, setReady] = useState(false);
+  const [stores, setStores] = useState<Store[]>([]);
+
+  // Vista auditor
+  const [myStores, setMyStores] = useState<MyStore[]>([]);
+  const [selectedStoreId, setSelectedStoreId] = useState("");
+  const [todayEntries, setTodayEntries] = useState<Record<string, ChecklistStatus>>({});
+  const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
+  const [historyMonth, setHistoryMonth] = useState(todayISO().slice(0, 7));
+  const [historyEntries, setHistoryEntries] = useState<ChecklistEntryRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Vista admin/supervisor
+  const [adminTab, setAdminTab] = useState<"resumen" | "asignaciones">("resumen");
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [checklistUsers, setChecklistUsers] = useState<CyclicUser[]>([]);
+  const [newAssignmentStoreId, setNewAssignmentStoreId] = useState("");
+  const [newAssignmentAuditorId, setNewAssignmentAuditorId] = useState("");
+  const [savingAssignment, setSavingAssignment] = useState(false);
+  const [deletingAssignmentId, setDeletingAssignmentId] = useState<string | null>(null);
+  const [cumplimientoPeriod, setCumplimientoPeriod] = useState<PeriodState>(() => defaultPeriod(todayISO().slice(0, 7)));
+  const [existenciaPeriod, setExistenciaPeriod] = useState<PeriodState>(() => defaultPeriod(previousMonthValue(todayISO().slice(0, 7))));
+  const [resumenRows, setResumenRows] = useState<ResumenRow[]>([]);
+  const [resumenLoading, setResumenLoading] = useState(false);
+
+  const canManageChecklist = user?.role === "Administrador" || user?.role === "Supervisor";
+
+  // ─── Init ──────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    const stored = readStoredUser<CyclicUser>();
+    if (!stored || !canAccessModule(stored, "checklist")) { window.location.replace("/"); return; }
+    Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
+    supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
+      .then(({ data }) => {
+        if (cancelled) return;
+        setStores((data || []) as Store[]);
+        setReady(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !user) return;
+    if (canManageChecklist) { void loadAssignments(); void loadChecklistUsers(); }
+    else { void loadMyAssignments(user); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, user]);
+
+  useEffect(() => {
+    if (!selectedStoreId) return;
+    void loadTodayEntries(selectedStoreId);
+    void loadMonthHistory(selectedStoreId, historyMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStoreId]);
+
+  useEffect(() => {
+    if (!selectedStoreId) return;
+    void loadMonthHistory(selectedStoreId, historyMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyMonth]);
+
+  useEffect(() => {
+    if (canManageChecklist && stores.length > 0) void loadResumen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManageChecklist, stores, assignments, cumplimientoPeriod, existenciaPeriod]);
+
+  // ─── Carga: vista auditor ───────────────────────────────────────────────────
+
+  async function loadMyAssignments(currentUser: CyclicUser) {
+    const { data, error } = await supabase
+      .from("checklist_store_assignments")
+      .select("id, store_id, stores(name)")
+      .eq("auditor_user_id", currentUser.id)
+      .order("id");
+    if (error) { toast.error("Error cargando tiendas asignadas: " + error.message); return; }
+    const rows = (data || []).map((r: any) => ({ id: r.id, store_id: r.store_id, store_name: r.stores?.name || "" })) as MyStore[];
+    setMyStores(rows);
+    if (rows.length > 0) setSelectedStoreId(prev => prev || rows[0].store_id);
+  }
+
+  async function loadTodayEntries(storeId: string) {
+    const { data, error } = await supabase
+      .from("checklist_entries")
+      .select("item_key, status")
+      .eq("store_id", storeId)
+      .eq("entry_date", todayISO());
+    if (error) { toast.error("Error cargando checklist de hoy: " + error.message); return; }
+    const map: Record<string, ChecklistStatus> = {};
+    for (const row of (data || []) as { item_key: string; status: ChecklistStatus }[]) map[row.item_key] = row.status;
+    setTodayEntries(map);
+  }
+
+  async function saveTodayEntry(itemKey: ChecklistItemKey, status: ChecklistStatus) {
+    if (!selectedStoreId || !user) return;
+    setSavingItemKey(itemKey);
+    try {
+      const { error } = await supabase.from("checklist_entries").upsert({
+        store_id: selectedStoreId,
+        item_key: itemKey,
+        entry_date: todayISO(),
+        status,
+        created_by: user.id,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "store_id,item_key,entry_date" });
+      if (error) throw error;
+      setTodayEntries(prev => ({ ...prev, [itemKey]: status }));
+      if (historyMonth === todayISO().slice(0, 7)) void loadMonthHistory(selectedStoreId, historyMonth);
+    } catch (e: any) {
+      toast.error("Error guardando: " + e.message);
+    } finally {
+      setSavingItemKey(null);
+    }
+  }
+
+  async function loadMonthHistory(storeId: string, monthValue: string) {
+    setHistoryLoading(true);
+    try {
+      const from = `${monthValue}-01`;
+      const to = `${monthValue}-${String(monthLastDate(monthValue)).padStart(2, "0")}`;
+      const { data, error } = await supabase
+        .from("checklist_entries")
+        .select("item_key, entry_date, status")
+        .eq("store_id", storeId)
+        .gte("entry_date", from)
+        .lte("entry_date", to);
+      if (error) throw error;
+      setHistoryEntries((data || []) as ChecklistEntryRow[]);
+    } catch (e: any) {
+      toast.error("Error cargando historial: " + e.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // ─── Carga: vista admin/supervisor ─────────────────────────────────────────
+
+  async function loadAssignments() {
+    const { data, error } = await supabase
+      .from("checklist_store_assignments")
+      .select("id, store_id, auditor_user_id, stores(name), cyclic_users(full_name)")
+      .order("created_at");
+    if (error) { toast.error("Error cargando asignaciones: " + error.message); return; }
+    setAssignments((data || []).map((r: any) => ({
+      id: r.id,
+      store_id: r.store_id,
+      auditor_user_id: r.auditor_user_id,
+      store_name: r.stores?.name || "",
+      auditor_name: r.cyclic_users?.full_name || "",
+    })));
+  }
+
+  async function loadChecklistUsers() {
+    const { data, error } = await supabase
+      .from("cyclic_users")
+      .select("id, username, full_name, role, store_id, can_access_all_stores, module_access, is_active")
+      .eq("is_active", true)
+      .in("role", AUDITOR_ROLES)
+      .order("full_name");
+    if (error) { toast.error("Error cargando usuarios: " + error.message); return; }
+    setChecklistUsers((data || []) as CyclicUser[]);
+  }
+
+  async function addAssignment() {
+    if (!newAssignmentStoreId || !newAssignmentAuditorId) { toast.error("Selecciona tienda y auditor."); return; }
+    setSavingAssignment(true);
+    try {
+      const { error } = await supabase.from("checklist_store_assignments").insert({
+        store_id: newAssignmentStoreId,
+        auditor_user_id: newAssignmentAuditorId,
+      });
+      if (error) throw error;
+      setNewAssignmentStoreId("");
+      setNewAssignmentAuditorId("");
+      await loadAssignments();
+    } catch (e: any) {
+      toast.error(/duplicate key/i.test(e.message) ? "Esa tienda ya está asignada a ese auditor." : "Error asignando: " + e.message);
+    } finally {
+      setSavingAssignment(false);
+    }
+  }
+
+  async function deleteAssignment(id: string) {
+    setDeletingAssignmentId(id);
+    try {
+      const { error } = await supabase.from("checklist_store_assignments").delete().eq("id", id);
+      if (error) throw error;
+      setAssignments(prev => prev.filter(a => a.id !== id));
+    } catch (e: any) {
+      toast.error("Error quitando asignación: " + e.message);
+    } finally {
+      setDeletingAssignmentId(null);
+    }
+  }
+
+  async function loadResumen() {
+    setResumenLoading(true);
+    try {
+      const storeIds = stores.map(s => s.id);
+      const cRange = periodRange(cumplimientoPeriod);
+      const eRange = periodRange(existenciaPeriod);
+      const [{ data: cData, error: cErr }, { data: eData, error: eErr }] = await Promise.all([
+        supabase.rpc("get_checklist_period_summary", { p_store_ids: storeIds, p_from: cRange.from, p_to: addDaysISO(cRange.toExclusive, -1) }),
+        supabase.rpc("get_checklist_existencia_summary", { p_store_ids: storeIds, p_from: localDateStartISO(eRange.from), p_to: localDateStartISO(eRange.toExclusive) }),
+      ]);
+      if (cErr) throw cErr;
+      if (eErr) throw eErr;
+      const cMap = new Map<string, { cumplio: number; no_cumplio: number; justificado: number; pct: number }>(
+        (cData || []).map((r: any) => [r.store_id, r])
+      );
+      const eMap = new Map<string, { eri: number; session_count: number }>(
+        (eData || []).map((r: any) => [r.store_id, r])
+      );
+      const assignMap = new Map(assignments.map(a => [a.store_id, a.auditor_name]));
+      const rows: ResumenRow[] = stores.map(s => {
+        const c = cMap.get(s.id) || { cumplio: 0, no_cumplio: 0, justificado: 0, pct: 0 };
+        const e = eMap.get(s.id) || { eri: 0, session_count: 0 };
+        const combined = Math.round(((c.pct || 0) + (e.eri || 0)) / 2);
+        return {
+          store_id: s.id,
+          store_name: s.name,
+          auditor_name: assignMap.get(s.id) || "Sin asignar",
+          cumplio: c.cumplio || 0,
+          no_cumplio: c.no_cumplio || 0,
+          justificado: c.justificado || 0,
+          pct: c.pct || 0,
+          eri: e.eri || 0,
+          session_count: e.session_count || 0,
+          combined,
+        };
+      }).sort((a, b) => b.combined - a.combined);
+      setResumenRows(rows);
+    } catch (e: any) {
+      toast.error("Error cargando resumen: " + e.message);
+    } finally {
+      setResumenLoading(false);
+    }
+  }
+
+  // ─── Render ─────────────────────────────────────────────────────────────────
+
+  if (!ready || !user) return <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</p>;
+
+  const days = Array.from({ length: monthLastDate(historyMonth) }, (_, i) => i + 1);
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <div>
+          <p className="text-xs font-black uppercase text-slate-500">Auditoría de almacenes</p>
+          <h1 className="text-2xl font-black text-slate-950">Checklist</h1>
+        </div>
+
+        {canManageChecklist ? (
+          <>
+            <div className="grid grid-cols-2 gap-1 rounded-2xl border bg-white p-1 shadow-sm sm:w-80">
+              <button onClick={() => setAdminTab("resumen")} className={`rounded-xl px-3 py-2 text-sm font-black ${adminTab === "resumen" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}>Resumen</button>
+              <button onClick={() => setAdminTab("asignaciones")} className={`rounded-xl px-3 py-2 text-sm font-black ${adminTab === "asignaciones" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}>Asignaciones</button>
+            </div>
+
+            {adminTab === "resumen" && (
+              <div className="space-y-4 rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-end justify-between gap-4">
+                  <div className="flex flex-wrap gap-6">
+                    <PeriodPicker label="Período Cumplimiento" value={cumplimientoPeriod} onChange={setCumplimientoPeriod} />
+                    <PeriodPicker label="Período Auditoría Existencia" value={existenciaPeriod} onChange={setExistenciaPeriod} />
+                  </div>
+                  <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
+                    {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] font-black uppercase text-slate-400">
+                        <th className="p-2">Tienda</th>
+                        <th className="p-2">Auditor</th>
+                        <th className="p-2 text-center">Cumplió</th>
+                        <th className="p-2 text-center">No cumplió</th>
+                        <th className="p-2 text-center">Justificado</th>
+                        <th className="p-2 text-center">% Checklist</th>
+                        <th className="p-2 text-center">Auditoría Existencia</th>
+                        <th className="p-2 text-center">Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumenRows.map(row => (
+                        <tr key={row.store_id} className="border-t">
+                          <td className="p-2 font-bold text-slate-800">{row.store_name}</td>
+                          <td className="p-2 text-slate-500">{row.auditor_name}</td>
+                          <td className="p-2 text-center text-emerald-700 font-black">{row.cumplio}</td>
+                          <td className="p-2 text-center text-red-600 font-black">{row.no_cumplio}</td>
+                          <td className="p-2 text-center text-amber-600 font-black">{row.justificado}</td>
+                          <td className="p-2 text-center font-black">{row.pct}%</td>
+                          <td className="p-2 text-center font-black">{row.session_count > 0 ? `${row.eri}%` : "Sin auditorías"}</td>
+                          <td className={`p-2 text-center font-black ${row.combined < 90 ? "text-red-600" : "text-emerald-700"}`}>{row.combined}%</td>
+                        </tr>
+                      ))}
+                      {!resumenLoading && resumenRows.length === 0 && (
+                        <tr><td colSpan={8} className="p-8 text-center text-sm font-bold text-slate-400">Sin datos.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {adminTab === "asignaciones" && (
+              <div className="space-y-4 rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-end gap-2">
+                  <select value={newAssignmentStoreId} onChange={e => setNewAssignmentStoreId(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm font-bold">
+                    <option value="">Tienda...</option>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                  <select value={newAssignmentAuditorId} onChange={e => setNewAssignmentAuditorId(e.target.value)} className="rounded-xl border px-3 py-2.5 text-sm font-bold">
+                    <option value="">Auditor...</option>
+                    {checklistUsers.map(u => <option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}
+                  </select>
+                  <button onClick={() => void addAssignment()} disabled={savingAssignment} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-40">
+                    {savingAssignment ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Agregar
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] font-black uppercase text-slate-400">
+                        <th className="p-2">Tienda</th>
+                        <th className="p-2">Auditor</th>
+                        <th className="p-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignments.map(a => (
+                        <tr key={a.id} className="border-t">
+                          <td className="p-2 font-bold text-slate-800">{a.store_name}</td>
+                          <td className="p-2 text-slate-600">{a.auditor_name}</td>
+                          <td className="p-2 text-right">
+                            <button onClick={() => void deleteAssignment(a.id)} disabled={deletingAssignmentId === a.id} className="rounded-lg p-2 text-red-500 hover:bg-red-50 disabled:opacity-40">
+                              {deletingAssignmentId === a.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {assignments.length === 0 && (
+                        <tr><td colSpan={3} className="p-8 text-center text-sm font-bold text-slate-400">Sin asignaciones todavía.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {myStores.length === 0 ? (
+              <div className="rounded-2xl border bg-white p-8 text-center text-sm font-bold text-slate-400 shadow-sm">
+                No tienes tiendas asignadas en Checklist. Contacta a un administrador.
+              </div>
+            ) : (
+              <>
+                <select value={selectedStoreId} onChange={e => setSelectedStoreId(e.target.value)} className="w-full rounded-2xl border bg-white px-4 py-2.5 text-sm font-black shadow-sm sm:w-80">
+                  {myStores.map(s => <option key={s.store_id} value={s.store_id}>{s.store_name}</option>)}
+                </select>
+
+                <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <p className="mb-3 text-xs font-black uppercase text-slate-500">Checklist de hoy ({todayISO()})</p>
+                  <div className="space-y-2">
+                    {CHECKLIST_ITEMS.map(item => {
+                      const current = todayEntries[item.key];
+                      const saving = savingItemKey === item.key;
+                      return (
+                        <div key={item.key} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3">
+                          <span className="text-sm font-bold text-slate-800">{item.label}</span>
+                          <div className="flex gap-1.5">
+                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "cumple")}
+                              className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "cumple" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700"}`}>
+                              <CheckCircle2 size={14} /> Cumple
+                            </button>
+                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "no_cumple")}
+                              className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "no_cumple" ? "bg-red-600 text-white" : "bg-red-50 text-red-600"}`}>
+                              <XCircle size={14} /> No cumple
+                            </button>
+                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "justificado")}
+                              className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "justificado" ? "bg-amber-600 text-white" : "bg-amber-50 text-amber-700"}`}>
+                              <AlertTriangle size={14} /> Justificado
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <p className="text-xs font-black uppercase text-slate-500">Historial del mes</p>
+                    <input type="month" value={historyMonth} onChange={e => setHistoryMonth(e.target.value)} className="rounded-xl border px-3 py-2 text-xs font-bold" />
+                  </div>
+                  {historyLoading ? (
+                    <p className="p-4 text-center text-sm font-bold text-slate-400">Cargando...</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="text-xs">
+                        <thead>
+                          <tr>
+                            <th className="sticky left-0 bg-white p-1.5 text-left font-black uppercase text-slate-400">Ítem</th>
+                            {days.map(d => <th key={d} className="p-1 text-center font-black text-slate-400">{d}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {CHECKLIST_ITEMS.map(item => (
+                            <tr key={item.key} className="border-t">
+                              <td className="sticky left-0 whitespace-nowrap bg-white p-1.5 font-bold text-slate-700">{item.label}</td>
+                              {days.map(d => {
+                                const dateStr = `${historyMonth}-${String(d).padStart(2, "0")}`;
+                                const found = historyEntries.find(e => e.item_key === item.key && e.entry_date === dateStr);
+                                return (
+                                  <td key={d} className="p-0.5 text-center">
+                                    <span className={`inline-flex h-5 w-5 items-center justify-center rounded font-black ${statusColor(found?.status)}`}>
+                                      {statusSymbol(found?.status)}
+                                    </span>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

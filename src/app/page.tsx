@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, CreditCard, FileText, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, CreditCard, FileText, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -57,7 +57,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/creditos-cobranzas";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/creditos-cobranzas" | "/checklist";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -82,6 +82,7 @@ const MODULES: Array<{
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
   { label: "Ajustes Provisionales", description: "Ingresos y regularizaciones provisionales del ERP", destination: "/ajustes-provisionales", icon: TrendingUp, accent: "bg-indigo-600" },
   { label: "Creditos y Cobranzas", description: "Control de documentacion de ventas a credito y notas de credito", destination: "/creditos-cobranzas", icon: CreditCard, accent: "bg-rose-600" },
+  { label: "Checklist", description: "Checklist diario de auditoria de almacenes por tienda", destination: "/checklist", icon: ListChecks, accent: "bg-lime-600" },
 ];
 
 const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
@@ -98,6 +99,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/recepcion": "reception",
   "/ajustes-provisionales": "ajustes_provisionales",
   "/creditos-cobranzas": "credit_sales",
+  "/checklist": "checklist",
 };
 
 function userModuleAccess(user: CyclicUser): ModuleAccessKey[] {
