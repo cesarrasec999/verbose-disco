@@ -372,8 +372,15 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   }, [isMobileAccess, user, mainTab, registerTab, session, sessionRestorePending, router]);
 
   useEffect(() => {
-    if (isReadOnlySupervisor && registerTab === "count") router.replace("/auditoria/registro/registros");
-  }, [isReadOnlySupervisor, registerTab, router]);
+    // Guard: "registerTab" cae a "count" por defecto en CUALQUIER ruta que no
+    // pase el prop explicito (sesiones, resumen-admin, etc.), no solo dentro
+    // de /auditoria/registro/*. Sin el check de mainTab, este efecto redirigia
+    // a /auditoria/registro/registros incluso estando en /auditoria/sesiones,
+    // y desde ahi el guard de arriba (sin sesion activa -> volver a sesiones)
+    // rebotaba de nuevo para aca - loop infinito real para Supervisor, que
+    // nunca tiene sesion activa porque no puede iniciar conteos.
+    if (mainTab === "register" && isReadOnlySupervisor && registerTab === "count") router.replace("/auditoria/registro/registros");
+  }, [mainTab, isReadOnlySupervisor, registerTab, router]);
 
   useEffect(() => {
     // Guard: sin este "if (!user) return" temprano, canViewAuditSummary da
