@@ -212,9 +212,47 @@ function readAnyRequestCache(userId: string | undefined): ReceptionRequest[] {
   }
   return best?.rows || [];
 }
+// Cada combinacion tienda+fecha usada en la sesion crea una key de cache
+// nueva (ver requestScopeKey) - sin limpieza esto crecia sin tope hasta
+// superar la cuota de localStorage ("Setting the value of ... exceeded the
+// quota"), lo que tiraba loadRequests() completo a su catch y mostraba
+// "Error cargando requerimientos" aunque la consulta a Supabase si hubiera
+// funcionado. pruneRequestCache() borra entradas vencidas (TTL) y, si aun
+// asi sobran muchas, las mas viejas por encima de un tope duro.
+function pruneRequestCache(exceptKey?: string) {
+  if (typeof window === "undefined") return;
+  const live: { key: string; savedAt: number }[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i) || "";
+    if (!key.startsWith(REQUEST_CACHE_PREFIX)) continue;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "") as RequestCachePayload;
+      if (!parsed?.savedAt || Date.now() - parsed.savedAt > REQUEST_CACHE_TTL_MS) { localStorage.removeItem(key); continue; }
+      if (key !== exceptKey) live.push({ key, savedAt: parsed.savedAt });
+    } catch {
+      localStorage.removeItem(key);
+    }
+  }
+  const MAX_LIVE_ENTRIES = 6;
+  if (live.length > MAX_LIVE_ENTRIES) {
+    live.sort((a, b) => a.savedAt - b.savedAt);
+    for (const entry of live.slice(0, live.length - MAX_LIVE_ENTRIES)) localStorage.removeItem(entry.key);
+  }
+}
 function writeRequestCache(key: string, rows: ReceptionRequest[]) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(REQUEST_CACHE_PREFIX + key, JSON.stringify({ savedAt: Date.now(), rows } satisfies RequestCachePayload));
+  const fullKey = REQUEST_CACHE_PREFIX + key;
+  const payload = JSON.stringify({ savedAt: Date.now(), rows } satisfies RequestCachePayload);
+  try {
+    localStorage.setItem(fullKey, payload);
+    pruneRequestCache(fullKey);
+  } catch {
+    // Cuota llena: se limpia lo vencido/viejo y se reintenta una vez. Si
+    // sigue fallando, se deja pasar en silencio - el cache es solo una
+    // optimizacion de carga inicial, no debe bloquear loadRequests().
+    pruneRequestCache();
+    try { localStorage.setItem(fullKey, payload); } catch {}
+  }
 }
 function rqKey(req: ReceptionRequest) { return req.erp_inv_request_id || req.doc_number || req.inv_request_no || req.id; }
 function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_status"] {
@@ -419,6 +457,16 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
   const [filterErpStatus, setFilterErpStatus] = useState<"all" | "transit" | "received">("all");
   const [reasonFilter, setReasonFilter] = useState("all");
+  // Acota la consulta a reception_requests por creation_date, igual que el
+  // resto de modulos (reportes, diferencias) - antes se traia sin tope de
+  // fecha (hasta 1000 filas por tienda via FILTERED_PAGE_SIZE), lo que hacia
+  // crecer sin limite el cache de localStorage hasta superar la cuota.
+  const [reqDateFrom, setReqDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [reqDateTo, setReqDateTo] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Escaneo
   const [scanProduct, setScanProduct]   = useState("");
@@ -480,13 +528,14 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   const requestScopeKey = useCallback(() => {
     if (!user) return "anonymous";
+    const dateScope = `${reqDateFrom}_${reqDateTo}`;
     if (canViewAllStores) {
-      return `${user.id}:admin:${storeFilter || "all"}`;
+      return `${user.id}:admin:${storeFilter || "all"}:${dateScope}`;
     }
     const store = stores.find(item => item.id === user.store_id);
     const codes = storeCodes(store);
-    return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}`;
-  }, [canViewAllStores, storeCodes, stores, user, storeFilter]);
+    return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}:${dateScope}`;
+  }, [canViewAllStores, storeCodes, stores, user, storeFilter, reqDateFrom, reqDateTo]);
 
   const applyRequests = useCallback((rows: ReceptionRequest[]) => {
     setRequests(rows);
@@ -630,25 +679,64 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     const t = setTimeout(() => void loadRequests(), 300);
     return () => clearTimeout(t);
   }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (ready && user) void loadRequests();
+  }, [reqDateFrom, reqDateTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
-  function buildReceptionQuery(signal: AbortSignal, codes: string[], searchText: string, offset: number, pageSize: number) {
+  // Busqueda por codigo de producto: reception_requests no tiene el codigo
+  // (vive en las lineas), asi que primero se resuelve a que request_id
+  // pertenecen las lineas que matchean y esos ids se suman al OR de texto.
+  // Tope de 3 caracteres + limit(300) para no repetir el bug real de picking
+  // (2026-07-14: un .in() con demasiados ids generaba URLs de 40k+
+  // caracteres y Supabase respondia 400) - un partial de 1-2 caracteres
+  // puede matchear miles de lineas.
+  const PRODUCT_SEARCH_MIN_LEN = 3;
+  const PRODUCT_SEARCH_LIMIT = 300;
+  async function findRequestIdsByProductCode(searchText: string, signal: AbortSignal): Promise<string[]> {
+    if (searchText.length < PRODUCT_SEARCH_MIN_LEN) return [];
+    const escaped = searchText.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    try {
+      const { data } = await supabase
+        .from("reception_request_lines")
+        .select("request_id")
+        .or([
+          `product_code.ilike.%${escaped}%`,
+          `sku.ilike.%${escaped}%`,
+          `barcode.ilike.%${escaped}%`,
+        ].join(","))
+        .limit(PRODUCT_SEARCH_LIMIT)
+        .abortSignal(signal);
+      return [...new Set((data || []).map(row => row.request_id as string))];
+    } catch {
+      return [];
+    }
+  }
+
+  function buildReceptionQuery(
+    signal: AbortSignal, codes: string[], searchText: string, offset: number, pageSize: number,
+    fromIso: string, toIso: string, productRequestIds: string[] = [],
+  ) {
     let q = supabase
       .from("reception_requests")
       .select("*")
       .order("creation_date", { ascending: false })
       .range(offset, offset + pageSize - 1)
+      .gte("creation_date", fromIso)
+      .lte("creation_date", toIso)
       .abortSignal(signal);
     if (searchText) {
       const escaped = searchText.replace(/%/g, "\\%").replace(/_/g, "\\_");
-      q = q.or([
+      const orParts = [
         `doc_number.ilike.%${escaped}%`,
         `inv_request_no.ilike.%${escaped}%`,
         `destination_store_name.ilike.%${escaped}%`,
         `source_store_name.ilike.%${escaped}%`,
         `erp_inv_request_id.ilike.%${escaped}%`,
-      ].join(","));
+      ];
+      if (productRequestIds.length > 0) orParts.push(`id.in.(${productRequestIds.join(",")})`);
+      q = q.or(orParts.join(","));
     } else {
       q = q.or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)");
     }
@@ -673,11 +761,16 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
       const pageSize = codes.length > 0 ? FILTERED_PAGE_SIZE : PAGE_SIZE;
+      const fromIso = `${reqDateFrom}T00:00:00`;
+      const toIso = `${reqDateTo}T23:59:59`;
+      const trimmedSearch = search.trim();
       const syncStatusPromise = supabase
         .from("erp_sync_status").select("synced_at,updated_at")
         .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
+      const productRequestIds = trimmedSearch ? await findRequestIdsByProductCode(trimmedSearch, signal) : [];
+      if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
 
-      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), 0, pageSize);
+      const { data, error } = await buildReceptionQuery(signal, codes, trimmedSearch, 0, pageSize, fromIso, toIso, productRequestIds);
       if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
       if (error) throw error;
 
@@ -722,7 +815,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
       const pageSize = codes.length > 0 ? FILTERED_PAGE_SIZE : PAGE_SIZE;
       const offset = loadedOffsetRef.current;
-      const { data, error } = await buildReceptionQuery(signal, codes, search.trim(), offset, pageSize);
+      const fromIso = `${reqDateFrom}T00:00:00`;
+      const toIso = `${reqDateTo}T23:59:59`;
+      const trimmedSearch = search.trim();
+      const productRequestIds = trimmedSearch ? await findRequestIdsByProductCode(trimmedSearch, signal) : [];
+      if (signal.aborted || !mountedRef.current) return;
+      const { data, error } = await buildReceptionQuery(signal, codes, trimmedSearch, offset, pageSize, fromIso, toIso, productRequestIds);
       if (signal.aborted || !mountedRef.current) return;
       if (error) throw error;
       const rows = (data || []) as ReceptionRequest[];
@@ -2071,10 +2169,24 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 {destStoreOptions.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
               </select>
             )}
+            {listPanel !== "diferencias" && (
+              <>
+                <div>
+                  <label className="block text-[11px] font-black uppercase text-slate-400">Desde</label>
+                  <input type="date" value={reqDateFrom} onChange={e => setReqDateFrom(e.target.value)}
+                    className="border rounded-2xl px-3 py-2 text-xs font-bold text-slate-700" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-black uppercase text-slate-400">Hasta</label>
+                  <input type="date" value={reqDateTo} onChange={e => setReqDateTo(e.target.value)}
+                    className="border rounded-2xl px-3 py-2 text-xs font-bold text-slate-700" />
+                </div>
+              </>
+            )}
             {listPanel === "recepcion" && (
               <>
                 <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
-                  placeholder="Buscar documento, tienda..."
+                  placeholder="Buscar documento, tienda, código..."
                   value={search} onChange={e => setSearch(e.target.value)} />
                 <select value={reasonFilter} onChange={e => setReasonFilter(e.target.value)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
