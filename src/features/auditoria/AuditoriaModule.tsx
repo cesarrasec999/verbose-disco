@@ -376,8 +376,18 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   }, [isReadOnlySupervisor, registerTab, router]);
 
   useEffect(() => {
+    // Guard: sin este "if (!user) return" temprano, canViewAuditSummary da
+    // false en el primer render (user todavia null, la carga real es
+    // asincrona en el efecto de mount) sin importar el rol real - rebotaba
+    // a /auditoria/registro apenas se entraba a /auditoria/resumen-admin,
+    // y de ahi el guard de la ruta "register" (para Administrador sin
+    // sesion activa) rebotaba una segunda vez a /auditoria/sesiones. Mismo
+    // patron de causa raiz que el bug de "no deja entrar a sesiones" del
+    // 2026-07-14 (guard de redirect disparando antes de que resuelva un
+    // estado cargado de forma asincrona).
+    if (!user) return;
     if (mainTab === "adminSummary" && !canViewAuditSummary) router.replace("/auditoria/registro");
-  }, [mainTab, canViewAuditSummary, router]);
+  }, [user, mainTab, canViewAuditSummary, router]);
 
   useEffect(() => {
     if (session?.id) sessionStorage.setItem(AUDIT_SESSION_ID_KEY, session.id);
