@@ -5020,8 +5020,33 @@ export default function InventariosPage() {
         await persistCountPending();
       }
 
-      const request = editingCountId
-        ? supabase.from("general_inventory_counts").update(row).eq("id", editingCountId)
+      // editingCountId puede seguir siendo un id local ("gi-count-<uuid>",
+      // ver createClientUuid) si el registro se sincronizo en segundo plano
+      // (cola offline, PwaQueueSync cada 30s) mientras el formulario de
+      // edicion seguia abierto con ese id viejo capturado al montar. pendingEdit
+      // ya no lo encuentra (se borro de la cola al sincronizar), asi que sin
+      // este chequeo el id local se mandaba tal cual a la columna uuid de
+      // Supabase y fallaba con "invalid input syntax for type uuid". Se busca
+      // el id real por clave natural (misma sesion/producto/ubicacion) antes
+      // de intentar el update.
+      let updateTargetId = editingCountId;
+      if (editingCountId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(editingCountId)) {
+        const { data: syncedRow } = await supabase
+          .from("general_inventory_counts")
+          .select("id")
+          .eq("session_id", selectedSession.id)
+          .eq("product_id", product.id)
+          .eq("location_id", loc.id)
+          .maybeSingle();
+        if (!syncedRow) {
+          setMessage("Este registro se sincronizo mientras lo editabas. Recarga la pantalla e intenta de nuevo.");
+          return;
+        }
+        updateTargetId = syncedRow.id;
+      }
+
+      const request = updateTargetId
+        ? supabase.from("general_inventory_counts").update(row).eq("id", updateTargetId)
         : supabase.from("general_inventory_counts").insert(insertRow);
       const { error } = await request;
 
@@ -5036,7 +5061,7 @@ export default function InventariosPage() {
 
       // Local update inmediato — el realtime sincroniza con el servidor a los 800ms
       const localRow: CountRow = {
-        id: editingCountId ?? clientUuid,
+        id: updateTargetId ?? clientUuid,
         session_id: selectedSession.id,
         operator_id: operator.id,
         location_id: loc.id,
