@@ -28,6 +28,8 @@ function getYesterdayLimaISO(): string {
   return `${y}-${m}-${d}`;
 }
 
+const DEPLOY_COMMIT = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || null;
+
 export async function GET(request: Request) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
@@ -35,6 +37,13 @@ export async function GET(request: Request) {
     if (auth !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
+  }
+
+  const url = new URL(request.url);
+  if (url.searchParams.get("probe") === "1") {
+    // No toca Supabase ni envia correo: solo confirma que deploy esta activo, para
+    // no disparar pruebas reales contra un deploy anterior mientras Vercel propaga.
+    return NextResponse.json({ ok: true, probe: true, commit: DEPLOY_COMMIT });
   }
 
   const gmailUser = process.env.GMAIL_USER;
@@ -50,7 +59,6 @@ export async function GET(request: Request) {
   }
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  const url = new URL(request.url);
   const dateParam = url.searchParams.get("date");
   const date = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : getYesterdayLimaISO();
   // Override de destinatario solo para pruebas manuales (mismo CRON_SECRET que ya protege
@@ -92,7 +100,7 @@ export async function GET(request: Request) {
         : undefined,
     });
 
-    return NextResponse.json({ ok: true, date, hasData, to, cc, attached: !!xlsxBuffer });
+    return NextResponse.json({ ok: true, date, hasData, to, cc, attached: !!xlsxBuffer, commit: DEPLOY_COMMIT });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: message }, { status: 500 });

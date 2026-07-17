@@ -289,14 +289,16 @@ const difColor = (v: number) => (v < 0 ? "#dc2626" : v > 0 ? "#2563eb" : "#16a34
 function htmlBarRow(name: string, pct: number, color: string, valueLabel: string) {
   const filled = Math.max(1, Math.round(Math.max(0, Math.min(100, pct))));
   const empty = 100 - filled;
+  // Altura via atributo HTML "height" + line-height en el <td> (no en <tr>): Gmail/Outlook
+  // ignoran con frecuencia el height puesto en <tr>, lo que colapsaba la barra a 0px.
   return `
     <tr>
       <td style="padding:3px 8px 3px 0;font-size:11px;font-weight:600;color:#1e293b;width:220px;white-space:nowrap;">${name}</td>
       <td style="padding:3px 0;">
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-          <tr style="height:16px;">
-            <td width="${filled}%" bgcolor="${color}" style="background:${color};border-radius:3px 0 0 3px;font-size:0;line-height:0;">&nbsp;</td>
-            ${empty > 0 ? `<td width="${empty}%" bgcolor="#e2e8f0" style="background:#e2e8f0;border-radius:0 3px 3px 0;font-size:0;line-height:0;">&nbsp;</td>` : ""}
+          <tr>
+            <td width="${filled}%" height="16" bgcolor="${color}" style="background:${color};border-radius:3px 0 0 3px;font-size:1px;line-height:16px;mso-line-height-rule:exactly;">&nbsp;</td>
+            ${empty > 0 ? `<td width="${empty}%" height="16" bgcolor="#e2e8f0" style="background:#e2e8f0;border-radius:0 3px 3px 0;font-size:1px;line-height:16px;mso-line-height-rule:exactly;">&nbsp;</td>` : ""}
           </tr>
         </table>
       </td>
