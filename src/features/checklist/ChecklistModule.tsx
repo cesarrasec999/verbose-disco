@@ -54,8 +54,18 @@ type ResumenRow = {
   pct: number;
   eri: number;
   session_count: number;
+  cyclicEri: number;
+  cyclicCountedItems: number;
   combined: number;
 };
+
+// >=90 verde, >=70 naranja, <70 rojo - pedido explicito del usuario para la
+// columna final ponderada.
+function scoreColorClass(value: number) {
+  if (value >= 90) return "text-emerald-700";
+  if (value >= 70) return "text-orange-600";
+  return "text-red-600";
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -153,7 +163,11 @@ export default function ChecklistModule() {
   // Vista auditor
   const [myStores, setMyStores] = useState<MyStore[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState("");
-  const [todayEntries, setTodayEntries] = useState<Record<string, ChecklistStatus>>({});
+  // El auditor puede filtrar y modificar cualquier fecha pasada (no solo
+  // hoy) - pedido explicito del usuario, antes solo se podia marcar el
+  // dia actual.
+  const [selectedDate, setSelectedDate] = useState(() => todayISO());
+  const [dateEntries, setDateEntries] = useState<Record<string, ChecklistStatus>>({});
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [historyMonth, setHistoryMonth] = useState(todayISO().slice(0, 7));
   const [historyEntries, setHistoryEntries] = useState<ChecklistEntryRow[]>([]);
@@ -202,10 +216,16 @@ export default function ChecklistModule() {
 
   useEffect(() => {
     if (!selectedStoreId) return;
-    void loadTodayEntries(selectedStoreId);
+    void loadEntriesForDate(selectedStoreId, selectedDate);
     void loadMonthHistory(selectedStoreId, historyMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStoreId]);
+
+  useEffect(() => {
+    if (!selectedStoreId) return;
+    void loadEntriesForDate(selectedStoreId, selectedDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate]);
 
   useEffect(() => {
     if (!selectedStoreId) return;
@@ -232,33 +252,33 @@ export default function ChecklistModule() {
     if (rows.length > 0) setSelectedStoreId(prev => prev || rows[0].store_id);
   }
 
-  async function loadTodayEntries(storeId: string) {
+  async function loadEntriesForDate(storeId: string, date: string) {
     const { data, error } = await supabase
       .from("checklist_entries")
       .select("item_key, status")
       .eq("store_id", storeId)
-      .eq("entry_date", todayISO());
-    if (error) { toast.error("Error cargando checklist de hoy: " + error.message); return; }
+      .eq("entry_date", date);
+    if (error) { toast.error("Error cargando checklist del día: " + error.message); return; }
     const map: Record<string, ChecklistStatus> = {};
     for (const row of (data || []) as { item_key: string; status: ChecklistStatus }[]) map[row.item_key] = row.status;
-    setTodayEntries(map);
+    setDateEntries(map);
   }
 
-  async function saveTodayEntry(itemKey: ChecklistItemKey, status: ChecklistStatus) {
+  async function saveEntry(itemKey: ChecklistItemKey, status: ChecklistStatus) {
     if (!selectedStoreId || !user) return;
     setSavingItemKey(itemKey);
     try {
       const { error } = await supabase.from("checklist_entries").upsert({
         store_id: selectedStoreId,
         item_key: itemKey,
-        entry_date: todayISO(),
+        entry_date: selectedDate,
         status,
         created_by: user.id,
         updated_at: new Date().toISOString(),
       }, { onConflict: "store_id,item_key,entry_date" });
       if (error) throw error;
-      setTodayEntries(prev => ({ ...prev, [itemKey]: status }));
-      if (historyMonth === todayISO().slice(0, 7)) void loadMonthHistory(selectedStoreId, historyMonth);
+      setDateEntries(prev => ({ ...prev, [itemKey]: status }));
+      if (historyMonth === selectedDate.slice(0, 7)) void loadMonthHistory(selectedStoreId, historyMonth);
     } catch (e: any) {
       toast.error("Error guardando: " + e.message);
     } finally {
@@ -352,23 +372,32 @@ export default function ChecklistModule() {
       const storeIds = stores.map(s => s.id);
       const cRange = periodRange(cumplimientoPeriod);
       const eRange = periodRange(existenciaPeriod);
-      const [{ data: cData, error: cErr }, { data: eData, error: eErr }] = await Promise.all([
+      // El ERI de conteo ciclico usa el mismo periodo que Auditoria
+      // Existencia (los dos son "ERI de existencia", solo cambia la fuente
+      // de datos) - evita sumar un 3er selector de fecha a la pantalla.
+      const [{ data: cData, error: cErr }, { data: eData, error: eErr }, { data: yData, error: yErr }] = await Promise.all([
         supabase.rpc("get_checklist_period_summary", { p_store_ids: storeIds, p_from: cRange.from, p_to: addDaysISO(cRange.toExclusive, -1) }),
         supabase.rpc("get_checklist_existencia_summary", { p_store_ids: storeIds, p_from: localDateStartISO(eRange.from), p_to: localDateStartISO(eRange.toExclusive) }),
+        supabase.rpc("get_cyclic_period_summary", { p_store_ids: storeIds, p_from: eRange.from, p_to: addDaysISO(eRange.toExclusive, -1) }),
       ]);
       if (cErr) throw cErr;
       if (eErr) throw eErr;
+      if (yErr) throw yErr;
       const cMap = new Map<string, { cumplio: number; no_cumplio: number; justificado: number; pct: number }>(
         (cData || []).map((r: any) => [r.store_id, r])
       );
       const eMap = new Map<string, { eri: number; session_count: number }>(
         (eData || []).map((r: any) => [r.store_id, r])
       );
+      const yMap = new Map<string, { eri: number; counted_items: number }>(
+        (yData || []).map((r: any) => [r.store_id, r])
+      );
       const assignMap = new Map(assignments.map(a => [a.store_id, a.auditor_name]));
       const rows: ResumenRow[] = stores.map(s => {
         const c = cMap.get(s.id) || { cumplio: 0, no_cumplio: 0, justificado: 0, pct: 0 };
         const e = eMap.get(s.id) || { eri: 0, session_count: 0 };
-        const combined = Math.round(((c.pct || 0) + (e.eri || 0)) / 2);
+        const y = yMap.get(s.id) || { eri: 0, counted_items: 0 };
+        const combined = Math.round(((c.pct || 0) + (e.eri || 0) + (y.eri || 0)) / 3);
         return {
           store_id: s.id,
           store_name: s.name,
@@ -379,6 +408,8 @@ export default function ChecklistModule() {
           pct: c.pct || 0,
           eri: e.eri || 0,
           session_count: e.session_count || 0,
+          cyclicEri: y.eri || 0,
+          cyclicCountedItems: y.counted_items || 0,
           combined,
         };
       }).sort((a, b) => b.combined - a.combined);
@@ -417,7 +448,7 @@ export default function ChecklistModule() {
                 <div className="flex flex-wrap items-end justify-between gap-4">
                   <div className="flex flex-wrap gap-6">
                     <PeriodPicker label="Período Cumplimiento" value={cumplimientoPeriod} onChange={setCumplimientoPeriod} />
-                    <PeriodPicker label="Período Auditoría Existencia" value={existenciaPeriod} onChange={setExistenciaPeriod} />
+                    <PeriodPicker label="Período ERI (Existencia + Conteo Cíclico)" value={existenciaPeriod} onChange={setExistenciaPeriod} />
                   </div>
                   <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
                     {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar
@@ -435,6 +466,7 @@ export default function ChecklistModule() {
                         <th className="p-2 text-center">Justificado</th>
                         <th className="p-2 text-center">% Checklist</th>
                         <th className="p-2 text-center">Auditoría Existencia</th>
+                        <th className="p-2 text-center">ERI Conteo Cíclico</th>
                         <th className="p-2 text-center">Score</th>
                       </tr>
                     </thead>
@@ -448,11 +480,12 @@ export default function ChecklistModule() {
                           <td className="p-2 text-center text-amber-600 font-black">{row.justificado}</td>
                           <td className="p-2 text-center font-black">{row.pct}%</td>
                           <td className="p-2 text-center font-black">{row.session_count > 0 ? `${row.eri}%` : "Sin auditorías"}</td>
-                          <td className={`p-2 text-center font-black ${row.combined < 90 ? "text-red-600" : "text-emerald-700"}`}>{row.combined}%</td>
+                          <td className="p-2 text-center font-black">{row.cyclicCountedItems > 0 ? `${row.cyclicEri}%` : "Sin conteos"}</td>
+                          <td className={`p-2 text-center font-black ${scoreColorClass(row.combined)}`}>{row.combined}%</td>
                         </tr>
                       ))}
                       {!resumenLoading && resumenRows.length === 0 && (
-                        <tr><td colSpan={8} className="p-8 text-center text-sm font-bold text-slate-400">Sin datos.</td></tr>
+                        <tr><td colSpan={9} className="p-8 text-center text-sm font-bold text-slate-400">Sin datos.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -519,24 +552,39 @@ export default function ChecklistModule() {
                 </select>
 
                 <div className="rounded-2xl border bg-white p-4 shadow-sm">
-                  <p className="mb-3 text-xs font-black uppercase text-slate-500">Checklist de hoy ({todayISO()})</p>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-black uppercase text-slate-500">
+                      Checklist del día{selectedDate === todayISO() ? " (hoy)" : ""}
+                    </p>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      max={todayISO()}
+                      onChange={e => {
+                        const next = e.target.value;
+                        setSelectedDate(next);
+                        if (next.slice(0, 7) !== historyMonth) setHistoryMonth(next.slice(0, 7));
+                      }}
+                      className="rounded-xl border px-3 py-2 text-xs font-bold"
+                    />
+                  </div>
                   <div className="space-y-2">
                     {CHECKLIST_ITEMS.map(item => {
-                      const current = todayEntries[item.key];
+                      const current = dateEntries[item.key];
                       const saving = savingItemKey === item.key;
                       return (
                         <div key={item.key} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3">
                           <span className="text-sm font-bold text-slate-800">{item.label}</span>
                           <div className="flex gap-1.5">
-                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "cumple")}
+                            <button disabled={saving} onClick={() => void saveEntry(item.key, "cumple")}
                               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "cumple" ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700"}`}>
                               <CheckCircle2 size={14} /> Cumple
                             </button>
-                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "no_cumple")}
+                            <button disabled={saving} onClick={() => void saveEntry(item.key, "no_cumple")}
                               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "no_cumple" ? "bg-red-600 text-white" : "bg-red-50 text-red-600"}`}>
                               <XCircle size={14} /> No cumple
                             </button>
-                            <button disabled={saving} onClick={() => void saveTodayEntry(item.key, "justificado")}
+                            <button disabled={saving} onClick={() => void saveEntry(item.key, "justificado")}
                               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-black ${current === "justificado" ? "bg-amber-600 text-white" : "bg-amber-50 text-amber-700"}`}>
                               <AlertTriangle size={14} /> Justificado
                             </button>
