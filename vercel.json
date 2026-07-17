@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/reporte-conteo-ciclico",
+      "schedule": "0 13 * * *"
+    }
+  ]
+}
