@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 import * as XLSX from "xlsx";
 import { Download, Home, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
@@ -79,6 +81,7 @@ export default function AjustesProvisionalesPage() {
   const [loaded, setLoaded]   = useState(false);
   const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
 
   // Cargar usuario desde localStorage
   useEffect(() => {
@@ -87,6 +90,13 @@ export default function AjustesProvisionalesPage() {
       if (raw) setUser(JSON.parse(raw) as CyclicUser);
     } catch { setUser(null); }
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "ajustes_provisionales", user)) setModuleDisabled(true);
+    });
+  }, [user]);
 
   // Cargar tiendas
   useEffect(() => {
@@ -253,6 +263,7 @@ export default function AjustesProvisionalesPage() {
       </div>
     );
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Ajustes Provisionales" />;
 
   // ─── Render principal ─────────────────────────────────────────────────────────
 

@@ -5,6 +5,8 @@ import { Home, LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { NoInventariablesModule } from "@/features/no-inventariables/NoInventariablesModule";
 import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
 import type { CyclicUser, NonInventoryProduct, Product } from "@/features/ciclicos/types";
@@ -16,6 +18,7 @@ export default function NoInventariablesPage() {
   const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<{ text: string; type: "info" | "success" | "error" } | null>(null);
   const [ready, setReady] = useState(false);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
 
   useEffect(() => {
     const stored = readStoredUser<CyclicUser>();
@@ -23,6 +26,9 @@ export default function NoInventariablesPage() {
       window.location.replace("/");
       return;
     }
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "reports_non_inventory", stored)) setModuleDisabled(true);
+    });
     setUser(stored);
     fetchNonInventoryProducts(supabase).then(data => {
       setProducts(data);
@@ -48,6 +54,7 @@ export default function NoInventariablesPage() {
       </main>
     );
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="No Inventariables" />;
 
   return (
     <main className="min-h-screen bg-slate-100">

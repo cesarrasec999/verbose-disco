@@ -9,6 +9,8 @@ import { Home, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
 type VentaCredito = {
@@ -190,6 +192,7 @@ export default function CreditosCobranzasModule({ subTab }: { subTab: SubTab }) 
   const searchParams = useSearchParams();
 
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [rows, setRows] = useState<VentaCredito[]>([]);
   const [loading, setLoading] = useState(false);
@@ -239,6 +242,13 @@ export default function CreditosCobranzasModule({ subTab }: { subTab: SubTab }) 
       if (raw) setUser(JSON.parse(raw) as CyclicUser);
     } catch { setUser(null); }
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "credit_sales", user)) setModuleDisabled(true);
+    });
+  }, [user]);
 
   useEffect(() => {
     supabase.from("stores").select("id,code,name,is_active,erp_sede,erp_store_no").order("name")
@@ -382,6 +392,7 @@ export default function CreditosCobranzasModule({ subTab }: { subTab: SubTab }) 
       </div>
     );
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Créditos y Cobranzas" />;
 
   const syncStale = !lastSync || Date.now() - new Date(lastSync).getTime() > 15 * 60 * 1000;
 

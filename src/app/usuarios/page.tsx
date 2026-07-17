@@ -5,6 +5,8 @@ import { Home, LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { UsersModule } from "@/features/usuarios/UsersModule";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
@@ -13,6 +15,7 @@ export default function UsuariosPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [message, setMessage] = useState<{ text: string; type: "info" | "success" | "error" } | null>(null);
   const [ready, setReady] = useState(false);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
 
   useEffect(() => {
     const stored = readStoredUser<CyclicUser>();
@@ -20,6 +23,9 @@ export default function UsuariosPage() {
       window.location.replace("/");
       return;
     }
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "users", stored)) setModuleDisabled(true);
+    });
     setUser(stored);
     supabase.from("stores").select("id, code, name, erp_sede, is_active").order("name").then(({ data }) => {
       setStores((data || []) as Store[]);
@@ -45,6 +51,7 @@ export default function UsuariosPage() {
       </main>
     );
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Usuarios" />;
 
   return (
     <main className="min-h-screen bg-slate-100">

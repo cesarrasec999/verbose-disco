@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Download, Edit2, Home, RefreshCw, Save, Search, Tags, UserPlus, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 
@@ -119,6 +121,7 @@ function errorText(error: unknown) {
 
 export default function EtiquetadoPackingPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [storeId, setStoreId] = useState("");
   const [query, setQuery] = useState("");
@@ -173,6 +176,9 @@ export default function EtiquetadoPackingPage() {
       window.location.replace("/");
       return;
     }
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "packing", parsed)) setModuleDisabled(true);
+    });
     window.setTimeout(() => {
       setUser(parsed);
       void loadInitialData(parsed);
@@ -501,6 +507,7 @@ async function searchProducts() {
   }
 
   if (!user) return <main className="min-h-screen bg-slate-100 p-6 text-slate-600">Validando acceso...</main>;
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Etiquetado/Packing" />;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">

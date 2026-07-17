@@ -5,6 +5,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Flashlight, Home, PackageSearch, QrCode, RefreshCw, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
 type User = {
   id: string;
@@ -77,6 +79,7 @@ function formatDateTime(value?: string | null) {
 
 export default function ConsultaStockPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<StockResult[]>([]);
@@ -97,7 +100,13 @@ export default function ConsultaStockPage() {
       return;
     }
     if (rawUser) {
-      try { setUser(JSON.parse(rawUser)); } catch { localStorage.removeItem("cyclic_user"); }
+      try {
+        const parsed = JSON.parse(rawUser) as User;
+        setUser(parsed);
+        fetchDisabledModules().then(disabled => {
+          if (isModuleBlockedForUser(disabled, "consulta", parsed)) setModuleDisabled(true);
+        });
+      } catch { localStorage.removeItem("cyclic_user"); }
     }
     void loadBaseData();
   }, []);
@@ -293,6 +302,8 @@ export default function ConsultaStockPage() {
 
   const hasResults = results.length > 0;
   const totalMatches = useMemo(() => results.reduce((sum, result) => sum + result.total, 0), [results]);
+
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Consulta" />;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-950">

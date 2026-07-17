@@ -10,6 +10,8 @@ import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdent
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems, removeOfflineItem } from "@/lib/offline/pendingQueue";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import {
   fetchAllInventoryCounts,
   fetchInventoryNonInventoryRows,
@@ -163,6 +165,7 @@ function summaryQuantityStatusLabel(value: number | null, status: "no" | "assign
 
 export default function InventariosPage() {
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [sessionsStoreFilter, setSessionsStoreFilter] = useState("");
   const [sessions, setSessions] = useState<InventorySession[]>([]);
@@ -1092,7 +1095,11 @@ export default function InventariosPage() {
     const rawUser = localStorage.getItem("cyclic_user");
     if (rawUser) {
       try {
-        setUser(JSON.parse(rawUser) as CyclicUser);
+        const parsedUser = JSON.parse(rawUser) as CyclicUser;
+        setUser(parsedUser);
+        fetchDisabledModules().then(disabled => {
+          if (isModuleBlockedForUser(disabled, "general_inventory", parsedUser)) setModuleDisabled(true);
+        });
       } catch {
         setUser(null);
       }
@@ -6909,6 +6916,8 @@ export default function InventariosPage() {
       </div>
     );
   }
+
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Inventarios" />;
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-100 text-slate-900">

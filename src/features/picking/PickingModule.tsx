@@ -5,6 +5,8 @@ import Link from "next/link";
 import { BarChart3, ClipboardList, Clock, Download, Home, Printer, QrCode, RefreshCw, ScanLine, Trophy, TrendingUp, UserCircle, UserPlus, X } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
 import { toast } from "sonner";
 
@@ -275,6 +277,7 @@ function BarListCard({ title, rows, colorClass }: { title: string; rows: Array<{
 
 export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<PickingRequest[]>([]);
   const [lines, setLines] = useState<PickingLine[]>([]);
@@ -1183,6 +1186,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       window.location.replace("/");
       return;
     }
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "picking", parsed)) setModuleDisabled(true);
+    });
     const timer = window.setTimeout(() => {
       setUser(parsed);
       void loadData(parsed);
@@ -2039,6 +2045,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   if (!user) {
     return <main className="min-h-screen bg-slate-100 p-6 text-slate-700">Validando acceso...</main>;
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Picking" />;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">

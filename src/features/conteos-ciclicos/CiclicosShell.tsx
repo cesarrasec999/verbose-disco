@@ -17,6 +17,8 @@ import { SidebarBrand } from "@/features/ciclicos/components/SidebarBrand";
 import {
     canAccessModule,
 } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
 import type {
     AllStoreAssignmentSummary,
@@ -114,6 +116,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const isForcedValidador = forcedTab === "validador";
     // ─── Auth ───────────────────────────────────────────────
     const [user, setUser]         = useState<CyclicUser | null>(null);
+    const [moduleDisabled, setModuleDisabled] = useState(false);
     const [activeTab, setActiveTab] = useState<TabKey>(forcedTab || "operario");
     const isMobileAccess = useIsMobileAccess();
 
@@ -296,6 +299,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 if (!u.is_active) { localStorage.removeItem("cyclic_user"); window.location.replace("/"); return; }
                 writeStoredUser(u);
                 setUser(u);
+                fetchDisabledModules().then(disabled => {
+                    if (isModuleBlockedForUser(disabled, forcedTab === "ubicaciones" ? "locations" : "cyclic_count_take", u)) setModuleDisabled(true);
+                });
 
                 const savedValTabRaw = sessionStorage.getItem("cyclic_val_tab") as ValTabKey | null;
                 const restoredValTab = savedValTabRaw
@@ -359,6 +365,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
             } catch {
                 setUser(parsed);
+                fetchDisabledModules().then(disabled => {
+                    if (isModuleBlockedForUser(disabled, forcedTab === "ubicaciones" ? "locations" : "cyclic_count_take", parsed)) setModuleDisabled(true);
+                });
                 if (forcedTab) setActiveTab(forcedTab);
                 else if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
                 else if (parsed.role === "Validador" || parsed.role === "Supervisor" || parsed.role === "Administrador") router.replace("/conteos-ciclicos");
@@ -6224,6 +6233,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             );
         }
     }
+
+    if (moduleDisabled) return <ModuleDisabledScreen moduleLabel={forcedTab === "ubicaciones" ? "Ubicaciones" : "Conteo Cíclico"} />;
 
     return (
         <main className="h-screen bg-slate-100 text-slate-900 flex overflow-hidden">

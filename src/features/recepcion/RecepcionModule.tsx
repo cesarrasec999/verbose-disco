@@ -14,6 +14,8 @@ import {
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
@@ -406,6 +408,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const searchParams = useSearchParams();
 
   const [user, setUser]         = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores]     = useState<Store[]>([]);
   const [requests, setRequests] = useState<ReceptionRequest[]>([]);
   const [lines, setLines]       = useState<ReceptionLine[]>([]);
@@ -640,6 +643,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     let cancelled = false;
     const stored = readStoredUser<CyclicUser>();
     if (!stored || !canAccessModule(stored, "reception")) { window.location.replace("/"); return; }
+    fetchDisabledModules().then(disabled => {
+      if (!cancelled && isModuleBlockedForUser(disabled, "reception", stored)) setModuleDisabled(true);
+    });
     Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
     supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
       .then(({ data }) => {
@@ -2080,6 +2086,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   if (!ready) {
     return <main className="min-h-screen bg-slate-100 flex items-center justify-center"><p className="text-slate-500 font-black">Cargando...</p></main>;
   }
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Recepción" />;
 
   return (
     <main className="min-h-screen bg-slate-100 flex flex-col">

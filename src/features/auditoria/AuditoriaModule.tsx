@@ -11,6 +11,8 @@ import { supabase } from "@/lib/supabase/client";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -262,6 +264,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const registerTab: RegisterTab = registerTabProp || "count";
   const isMobileAccess = useIsMobileAccess();
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [sessions, setSessions] = useState<AuditSession[]>([]);
   const [storeId, setStoreId] = useState("");
@@ -340,6 +343,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         window.location.replace("/dashboard");
         return;
       }
+      fetchDisabledModules().then(disabled => {
+        if (isModuleBlockedForUser(disabled, "audit", currentUser)) setModuleDisabled(true);
+      });
       setUser(currentUser);
       writeStoredUser(currentUser);
       void loadSessions(currentUser);
@@ -2055,6 +2061,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   }
 
   if (!user) return <main className="min-h-screen grid place-items-center text-slate-500">Cargando...</main>;
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Auditorías" />;
 
   const visibleMainTab = canViewAuditSummary || mainTab !== "adminSummary" ? mainTab : "register";
   const tabClass = (active: boolean) => `flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${active ? "bg-slate-900 text-white shadow-sm" : "bg-white text-slate-600 hover:bg-slate-50"}`;

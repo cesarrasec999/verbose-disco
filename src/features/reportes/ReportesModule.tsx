@@ -8,6 +8,8 @@ import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
@@ -246,6 +248,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       return null;
     }
   });
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -296,6 +299,13 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
   useEffect(() => {
     if (isMobileAccess) window.location.replace("/dashboard");
   }, [isMobileAccess]);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchDisabledModules().then(disabled => {
+      if (isModuleBlockedForUser(disabled, "reports", user)) setModuleDisabled(true);
+    });
+  }, [user]);
 
   const canView = Boolean(
     user && (
@@ -1037,6 +1047,8 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     acc.value = r2(acc.value + row.cost);
     return acc;
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
+
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">

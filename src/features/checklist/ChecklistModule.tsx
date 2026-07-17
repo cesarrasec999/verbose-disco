@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
+import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
+import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
@@ -144,6 +146,7 @@ function PeriodPicker({ label, value, onChange }: { label: string; value: Period
 
 export default function ChecklistModule() {
   const [user, setUser] = useState<CyclicUser | null>(null);
+  const [moduleDisabled, setModuleDisabled] = useState(false);
   const [ready, setReady] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
 
@@ -177,6 +180,9 @@ export default function ChecklistModule() {
     let cancelled = false;
     const stored = readStoredUser<CyclicUser>();
     if (!stored || !canAccessModule(stored, "checklist")) { window.location.replace("/"); return; }
+    fetchDisabledModules().then(disabled => {
+      if (!cancelled && isModuleBlockedForUser(disabled, "checklist", stored)) setModuleDisabled(true);
+    });
     Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
     supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
       .then(({ data }) => {
@@ -387,6 +393,7 @@ export default function ChecklistModule() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (!ready || !user) return <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</p>;
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Checklist" />;
 
   const days = Array.from({ length: monthLastDate(historyMonth) }, (_, i) => i + 1);
 
