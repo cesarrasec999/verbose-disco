@@ -2,7 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Home, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { readStoredUser } from "@/lib/singleDeviceSession";
@@ -431,9 +431,14 @@ export default function ChecklistModule() {
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8">
       <div className="mx-auto max-w-6xl space-y-4">
-        <div>
-          <p className="text-xs font-black uppercase text-slate-500">Auditoría de almacenes</p>
-          <h1 className="text-2xl font-black text-slate-950">Checklist</h1>
+        <div className="flex items-center gap-3">
+          <button onClick={() => { window.location.href = "/"; }} className="rounded-xl border bg-white p-2 text-slate-600 hover:bg-slate-50" title="Menú principal">
+            <Home size={18} />
+          </button>
+          <div>
+            <p className="text-xs font-black uppercase text-slate-500">Auditoría de almacenes</p>
+            <h1 className="text-2xl font-black text-slate-950">Checklist</h1>
+          </div>
         </div>
 
         {canManageChecklist ? (
