@@ -13,7 +13,7 @@ import type { CyclicUser } from "@/features/ciclicos/types";
 // proposito NO pasa por canAccessModule/module_access (que cualquier
 // Administrador puede autoconcederse desde Usuarios). El gate es por id
 // de usuario hardcodeado, no por rol.
-const CONTROL_OWNER_ID = "6640b556-8944-4921-8b13-c547c834fb05";
+export const CONTROL_OWNER_ID = "6640b556-8944-4921-8b13-c547c834fb05";
 
 // Los 14 modulos de nivel superior (mismos que src/app/page.tsx
 // DESTINATION_MODULE) - Conteo Ciclico cubre tanto /dashboard como

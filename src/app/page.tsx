@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, ClipboardCheck, CreditCard, FileText, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { Boxes, ClipboardCheck, CreditCard, FileText, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
   normalizedModuleAccess,
   type ModuleAccessKey,
 } from "@/features/access/moduleAccess";
+import { CONTROL_OWNER_ID } from "@/features/control/ControlModule";
 import {
   endSingleDeviceSession,
   onStoredSessionExpired,
@@ -569,6 +570,21 @@ export default function LoginPage() {
                 </button>
               );
             })}
+            {authenticatedUser.id === CONTROL_OWNER_ID && (
+              <button
+                key="control"
+                onClick={() => { window.location.href = "/control"; }}
+                className="group flex min-h-[104px] items-center gap-3 rounded-2xl border border-red-400/40 bg-white/92 p-3 text-left shadow-xl shadow-slate-950/20 backdrop-blur-md transition hover:border-red-400 hover:bg-white"
+              >
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white">
+                  <ShieldAlert size={22} />
+                </span>
+                <span>
+                  <span className="block text-base font-black text-slate-950">Control</span>
+                  <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">Habilitar/deshabilitar módulos</span>
+                </span>
+              </button>
+            )}
             {allowedModules.length === 0 && (
               <div className="rounded-2xl border border-white/20 bg-white/90 p-5 text-sm font-bold text-slate-600">
                 No tienes modulos activos. Pide al administrador que revise tus permisos.

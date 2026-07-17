@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
 :root {
+  /* La app es 100% light-mode (todos los componentes usan clases Tailwind
+     explicitas tipo bg-white/text-slate-900, ninguno usa las variables
+     --background/--foreground de abajo ni los tokens shadcn). Sin esta
+     declaracion, si el SO/navegador esta en modo oscuro, el navegador
+     renderiza controles nativos (select, listas desplegables) con estilo
+     oscuro (texto blanco) aunque el fondo siga siendo blanco por Tailwind -
+     texto invisible. Forzamos light siempre para evitar ese choque. */
+  color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
 
@@ -27,13 +35,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
