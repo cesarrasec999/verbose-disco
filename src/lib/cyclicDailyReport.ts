@@ -286,6 +286,9 @@ const pctColor = eriColor;
 const difColor = (v: number) => (v < 0 ? "#dc2626" : v > 0 ? "#2563eb" : "#16a34a");
 
 /** Barra horizontal 0-100% con tabla HTML (ancho por atributo, compatible Gmail/Outlook) */
+const BAR_LABEL_W = 220;
+const BAR_H = 22;
+
 function htmlBarRow(name: string, pct: number, color: string, valueLabel: string) {
   const filled = Math.max(1, Math.round(Math.max(0, Math.min(100, pct))));
   const empty = 100 - filled;
@@ -293,22 +296,44 @@ function htmlBarRow(name: string, pct: number, color: string, valueLabel: string
   // ignoran con frecuencia el height puesto en <tr>, lo que colapsaba la barra a 0px.
   return `
     <tr>
-      <td style="padding:3px 8px 3px 0;font-size:11px;font-weight:600;color:#1e293b;width:220px;white-space:nowrap;">${name}</td>
-      <td style="padding:3px 0;">
+      <td style="padding:4px 8px 4px 0;font-size:11px;font-weight:600;color:#1e293b;width:${BAR_LABEL_W}px;white-space:nowrap;">${name}</td>
+      <td style="padding:4px 0;">
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
           <tr>
-            <td width="${filled}%" height="16" bgcolor="${color}" style="background:${color};border-radius:3px 0 0 3px;font-size:1px;line-height:16px;mso-line-height-rule:exactly;">&nbsp;</td>
-            ${empty > 0 ? `<td width="${empty}%" height="16" bgcolor="#e2e8f0" style="background:#e2e8f0;border-radius:0 3px 3px 0;font-size:1px;line-height:16px;mso-line-height-rule:exactly;">&nbsp;</td>` : ""}
+            <td width="${filled}%" height="${BAR_H}" bgcolor="${color}" style="background:${color};border-radius:4px 0 0 4px;font-size:1px;line-height:${BAR_H}px;mso-line-height-rule:exactly;">&nbsp;</td>
+            ${empty > 0 ? `<td width="${empty}%" height="${BAR_H}" bgcolor="#e2e8f0" style="background:#e2e8f0;border-radius:0 4px 4px 0;font-size:1px;line-height:${BAR_H}px;mso-line-height-rule:exactly;">&nbsp;</td>` : ""}
           </tr>
         </table>
       </td>
-      <td style="padding:3px 0 3px 8px;font-size:11px;font-weight:800;color:${color};text-align:right;white-space:nowrap;">${valueLabel}</td>
+      <td style="padding:4px 0 4px 8px;font-size:11px;font-weight:800;color:${color};text-align:right;white-space:nowrap;">${valueLabel}</td>
     </tr>`;
 }
 
-function barChartTable(rows: { name: string; pct: number; color: string; valueLabel: string }[]) {
+/** Fila de eje (0% / 50% / 100%, o etiquetas custom) alineada sobre el area de barras. */
+function barChartAxisRow(leftLabel: string, midLabel: string, rightLabel: string) {
+  return `
+    <tr>
+      <td style="padding:0 8px 6px 0;font-size:9px;font-weight:700;color:#94a3b8;letter-spacing:1px;width:${BAR_LABEL_W}px;">TIENDA</td>
+      <td style="padding:0 0 6px;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr>
+            <td width="34%" style="font-size:9px;color:#94a3b8;text-align:left;">${leftLabel}</td>
+            <td width="32%" style="font-size:9px;color:#94a3b8;text-align:center;">${midLabel}</td>
+            <td width="34%" style="font-size:9px;color:#94a3b8;text-align:right;">${rightLabel}</td>
+          </tr>
+        </table>
+      </td>
+      <td style="padding:0 0 6px 8px;width:60px;"></td>
+    </tr>`;
+}
+
+function barChartTable(
+  rows: { name: string; pct: number; color: string; valueLabel: string }[],
+  axis: [string, string, string] = ["0%", "50%", "100%"]
+) {
   if (rows.length === 0) return "<p style='color:#94a3b8;font-size:12px;margin:0;'>Sin datos</p>";
-  return `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${rows.map(r => htmlBarRow(r.name, r.pct, r.color, r.valueLabel)).join("")}</table>`;
+  const header = barChartAxisRow(axis[0], axis[1], axis[2]);
+  return `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${header}${rows.map(r => htmlBarRow(r.name, r.pct, r.color, r.valueLabel)).join("")}</table>`;
 }
 
 export async function buildDailyCyclicReportHTML(
@@ -345,7 +370,8 @@ export async function buildDailyCyclicReportHTML(
       pct: (Math.abs(r.dif_valorizada) / maxAbsDif) * 100,
       color: difColor(r.dif_valorizada),
       valueLabel: `S/${r.dif_valorizada >= 0 ? "+" : ""}${formatMoney(r.dif_valorizada).replace("S/ ", "")}`,
-    }))
+    })),
+    ["S/ 0", "", `S/ ${maxAbsDif.toLocaleString("es-PE", { maximumFractionDigits: 2 })}`]
   );
 
   const storeRows = [...filasQueComplieron]
