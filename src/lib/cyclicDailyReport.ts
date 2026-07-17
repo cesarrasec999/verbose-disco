@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import * as XLSX from "xlsx";
 import { parseCost, r2, isSessionFlagLocation, formatMoney } from "@/features/ciclicos/utils";
 
 /**
@@ -572,5 +573,146 @@ export async function buildDailyCyclicReportHTML(
 </div>
 </body></html>`;
 
-  return { html, subject: `Informe Conteo Cíclico — ${periodoLabel}`, hasData };
+  const [yyyy, mm, dd] = date.split("-");
+  const subject = `Resumen Conteo Ciclico ${dd}.${mm}.${yyyy}`;
+
+  return { html, subject, hasData };
+}
+
+type ProductDetailRow = { id: string; sku: string | null; description: string | null; unit: string | null; cost: unknown };
+
+/**
+ * Replica exportGlobal() (boton "Excel global" del dashboard) para un solo dia,
+ * generando el .xlsx en memoria (sin canvas ni filesystem) para adjuntar al correo.
+ */
+export async function buildDailyDetailXlsxBuffer(supabase: SupabaseClient, date: string): Promise<Buffer | null> {
+  const asgnRows = await fetchAllPages<AssignmentRow>((from, to) =>
+    supabase
+      .from("cyclic_assignments")
+      .select("id, store_id, product_id, system_stock, assigned_date")
+      .eq("assigned_date", date)
+      .order("id")
+      .range(from, to)
+      .then(r => r.data)
+  );
+  if (asgnRows.length === 0) return null;
+
+  const storeIds = [...new Set(asgnRows.map(a => a.store_id))];
+  const prodIds = [...new Set(asgnRows.map(a => a.product_id))];
+
+  let storesList: NameRow[] = [];
+  for (let i = 0; i < storeIds.length; i += 500) {
+    const { data } = await supabase.from("stores").select("id, name").in("id", storeIds.slice(i, i + 500));
+    storesList = storesList.concat((data as NameRow[]) || []);
+  }
+  const storeMap = new Map(storesList.map(s => [s.id, s.name]));
+
+  let prodsList: ProductDetailRow[] = [];
+  for (let i = 0; i < prodIds.length; i += 500) {
+    const { data } = await supabase.from("cyclic_products").select("id, sku, description, unit, cost").in("id", prodIds.slice(i, i + 500));
+    prodsList = prodsList.concat((data as ProductDetailRow[]) || []);
+  }
+  const prodMap = new Map(prodsList.map(p => [p.id, p]));
+
+  const asgnIds = asgnRows.map(a => a.id);
+  let cntAll: CountRow[] = [];
+  for (let i = 0; i < asgnIds.length; i += 500) {
+    const chunk = asgnIds.slice(i, i + 500);
+    const chunkCounts = await fetchAllPages<CountRow>((from, to) =>
+      supabase.from("cyclic_counts").select("assignment_id, counted_quantity, location, status").in("assignment_id", chunk).range(from, to).then(r => r.data)
+    );
+    cntAll = cntAll.concat(chunkCounts);
+  }
+
+  const countMap = new Map<string, CountRow[]>();
+  for (const c of cntAll.filter(c => !isSessionFlagLocation(c.location))) {
+    if (!countMap.has(c.assignment_id)) countMap.set(c.assignment_id, []);
+    countMap.get(c.assignment_id)!.push(c);
+  }
+
+  const asgnById = new Map(asgnRows.map(a => [a.id, a]));
+  const recountDoneDayKeys = new Set<string>();
+  const sessionFinishedDayKeys = new Set<string>();
+  for (const c of cntAll) {
+    if (c.location !== "__recount_done__" && c.location !== "__session_finished__") continue;
+    const asg = asgnById.get(c.assignment_id);
+    if (!asg) continue;
+    const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+    if (c.location === "__recount_done__") recountDoneDayKeys.add(dayKey);
+    if (c.location === "__session_finished__") sessionFinishedDayKeys.add(dayKey);
+  }
+
+  const dayProdsSet = new Map<string, Set<string>>();
+  const dayProdsCountedSet = new Map<string, Set<string>>();
+  for (const asg of asgnRows) {
+    const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+    if (!dayProdsSet.has(dayKey)) { dayProdsSet.set(dayKey, new Set()); dayProdsCountedSet.set(dayKey, new Set()); }
+    dayProdsSet.get(dayKey)!.add(asg.product_id);
+    if ((countMap.get(asg.id) || []).length > 0) dayProdsCountedSet.get(dayKey)!.add(asg.product_id);
+  }
+  const cumplioByDayKey = new Set<string>();
+  for (const [dayKey, prods] of dayProdsSet) {
+    const counted = dayProdsCountedSet.get(dayKey)!;
+    const allCounted = prods.size > 0 && counted.size === prods.size;
+    if (recountDoneDayKeys.has(dayKey) || (sessionFinishedDayKeys.has(dayKey) && allCounted) || allCounted) {
+      cumplioByDayKey.add(dayKey);
+    }
+  }
+
+  type ExportRowAgg = {
+    tienda: string; fecha: string; sku: string; descripcion: string; unidad: string;
+    costo: number; stock_sistema: number; total_contado: number; cumplio: string;
+  };
+  const resMap = new Map<string, ExportRowAgg>();
+
+  for (const asg of asgnRows) {
+    const key = `${asg.store_id}__${asg.assigned_date}__${asg.product_id}`;
+    const dayKey = `${asg.store_id}__${asg.assigned_date}`;
+    const prod = prodMap.get(asg.product_id);
+    const tienda = storeMap.get(asg.store_id) || asg.store_id;
+    const costo = parseCost(prod?.cost);
+    const stock = Number(asg.system_stock || 0);
+    const cnts = countMap.get(asg.id) || [];
+    const totalContado = cnts.reduce((s, c) => s + Number(c.counted_quantity), 0);
+    const cumplioStr = cumplioByDayKey.has(dayKey) ? "SI" : "NO";
+
+    if (!resMap.has(key)) {
+      resMap.set(key, {
+        tienda, fecha: asg.assigned_date,
+        sku: prod?.sku || asg.product_id,
+        descripcion: prod?.description || "",
+        unidad: prod?.unit || "",
+        costo, stock_sistema: stock, total_contado: 0, cumplio: cumplioStr,
+      });
+    }
+    const row = resMap.get(key)!;
+    row.total_contado += totalContado;
+    if (costo > 0 && row.costo === 0) row.costo = costo;
+  }
+
+  const exportRows = [...resMap.values()].map(r => {
+    const diferencia = r2(r.total_contado - r.stock_sistema);
+    const dif_valorizada = r2(diferencia * r.costo);
+    const estado = r.cumplio === "NO" ? "NO CONTADO" : diferencia === 0 ? "OK" : diferencia > 0 ? "SOBRANTE" : "FALTANTE";
+    return {
+      TIENDA: r.tienda,
+      FECHA_ASIGNACION: r.fecha,
+      SKU: r.sku,
+      DESCRIPCION: r.descripcion,
+      UNIDAD: r.unidad,
+      COSTO: r.costo,
+      STOCK: r.stock_sistema,
+      CONTEO: r.total_contado,
+      DIFERENCIA: diferencia,
+      ESTADO: estado,
+      DIF_VALORIZADA: dif_valorizada,
+      CUMPLIO: r.cumplio,
+    };
+  }).sort((a, b) => (a.TIENDA + a.FECHA_ASIGNACION + a.SKU).localeCompare(b.TIENDA + b.FECHA_ASIGNACION + b.SKU));
+
+  const ws = XLSX.utils.json_to_sheet(exportRows);
+  const wbk = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wbk, ws, "Detalle Códigos");
+  const buffer = XLSX.write(wbk, { type: "buffer", bookType: "xlsx" });
+  return buffer as Buffer;
 }

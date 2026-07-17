@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
-import { buildDailyCyclicReportHTML } from "@/lib/cyclicDailyReport";
+import { buildDailyCyclicReportHTML, buildDailyDetailXlsxBuffer } from "@/lib/cyclicDailyReport";
 
 // Corre 1 vez al dia (ver vercel.json, 13:00 UTC = 8:00 America/Lima) disparado
 // por Vercel Cron. Envia el mismo informe que el boton "Generar correo" del
@@ -53,12 +53,22 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const dateParam = url.searchParams.get("date");
   const date = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : getYesterdayLimaISO();
+  // Override de destinatario solo para pruebas manuales (mismo CRON_SECRET que ya protege
+  // el endpoint). Sin este parametro, el envio real usa siempre TO/CC de produccion.
+  const toOverride = url.searchParams.get("to");
 
   try {
     const { html, subject, hasData } = await buildDailyCyclicReportHTML(supabase, date);
 
-    const to = process.env.REPORTE_CICLICOS_TO || DEFAULT_TO;
-    const cc = process.env.REPORTE_CICLICOS_CC || DEFAULT_CC;
+    // Sin asignaciones ese dia (ej. domingo sin conteo programado): no se envia nada.
+    if (!hasData) {
+      return NextResponse.json({ ok: true, date, hasData, skipped: true });
+    }
+
+    const xlsxBuffer = await buildDailyDetailXlsxBuffer(supabase, date);
+
+    const to = toOverride || process.env.REPORTE_CICLICOS_TO || DEFAULT_TO;
+    const cc = toOverride ? undefined : (process.env.REPORTE_CICLICOS_CC || DEFAULT_CC);
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
@@ -73,9 +83,16 @@ export async function GET(request: Request) {
       cc,
       subject,
       html,
+      attachments: xlsxBuffer
+        ? [{
+            filename: `ciclicos_detalle_${date}.xlsx`,
+            content: xlsxBuffer,
+            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }]
+        : undefined,
     });
 
-    return NextResponse.json({ ok: true, date, hasData, to, cc });
+    return NextResponse.json({ ok: true, date, hasData, to, cc, attached: !!xlsxBuffer });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: message }, { status: 500 });
