@@ -1,0 +1,23 @@
+-- ============================================================================
+-- ROLLBACK de 20260718120000_gi_realtime_stock_snapshot_sync.sql
+--
+-- IMPORTANTE: este archivo termina en ".sql.rollback" A PROPOSITO para que
+-- el CLI de Supabase NO lo aplique como migracion normal (un ".sql" con
+-- timestamp dentro de supabase/migrations/ se aplicaria automaticamente en
+-- el siguiente `db push`, deshaciendo el trigger al instante).
+--
+-- Como ejecutarlo si algo sale mal en produccion: copiar/pegar este SQL en
+-- el SQL Editor de Supabase (o via Management API) tal cual. Es idempotente
+-- (IF EXISTS en todo) y NO toca ningun dato: solo elimina los triggers y las
+-- funciones. Las filas ya escritas en general_inventory_stock_snapshot
+-- quedan como esten (son datos validos de la foto; el refresco manual del
+-- cliente vuelve a ser el unico mecanismo, igual que antes de la migracion).
+-- ============================================================================
+
+DROP TRIGGER IF EXISTS trg_stock_general_gi_snapshot_upd ON stock_general;
+DROP TRIGGER IF EXISTS trg_stock_general_gi_snapshot_ins ON stock_general;
+
+DROP FUNCTION IF EXISTS gi_stock_snapshot_sync_from_erp();
+DROP FUNCTION IF EXISTS gi_snapshot_counted_qty(uuid, uuid, boolean);
+
+NOTIFY pgrst, 'reload schema';
