@@ -186,6 +186,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
     const [countHistoryProduct, setCountHistoryProduct] = useState<Product|null>(null);
+    const [countHistoryCandidates, setCountHistoryCandidates] = useState<Product[]>([]);
     const [countHistoryRows, setCountHistoryRows] = useState<ProductCountHistoryRow[]>([]);
     const [countHistoryLoading, setCountHistoryLoading] = useState(false);
     const [countHistorySearch, setCountHistorySearch] = useState("");
@@ -3029,6 +3030,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             return;
         }
         setCountHistoryProduct(null);
+        setCountHistoryCandidates([]);
         setCountHistoryRows([]);
         setCountHistoryLoading(true);
         try {
@@ -3043,9 +3045,33 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             if (productError) throw productError;
 
             const productsFound = ((productRows || []) as Product[]);
-            const productMap = new Map(productsFound.map(product => [product.id, product]));
-            const productIds = productsFound.map(product => product.id);
-            if (productIds.length === 0) return;
+            if (productsFound.length === 0) {
+                showMessage("No se encontraron codigos que coincidan.", "error");
+                return;
+            }
+            // Coincidencia unica: ir directo a los resultados, sin pedir seleccion.
+            if (productsFound.length === 1) {
+                await loadCountHistoryForProduct(productsFound[0]);
+                return;
+            }
+            // Varias coincidencias: mostrar la lista de codigos para que el usuario elija uno.
+            setCountHistoryCandidates(productsFound);
+        } catch (error: any) {
+            showMessage("Error buscando resultados de conteo: " + (error?.message || error), "error");
+        } finally {
+            setCountHistoryLoading(false);
+        }
+    }
+
+    async function loadCountHistoryForProduct(selectedProduct: Product) {
+        setCountHistoryProduct(selectedProduct);
+        setCountHistoryCandidates([]);
+        setCountHistoryRows([]);
+        setCountHistoryLoading(true);
+        try {
+            const productsFound = [selectedProduct];
+            const productMap = new Map(productsFound.map(p => [p.id, p]));
+            const productIds = productsFound.map(p => p.id);
 
             const PAGE = 1000;
             let assignmentRows: any[] = [];
@@ -7436,12 +7462,63 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
                             {countHistoryLoading ? (
                                 <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">Cargando resultados...</div>
+                            ) : countHistoryCandidates.length > 0 ? (
+                                <div className="border rounded-2xl overflow-hidden">
+                                    <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-200 text-xs font-semibold text-amber-800">
+                                        {countHistoryCandidates.length} codigos coinciden con &quot;{countHistorySearch.trim()}&quot;. Selecciona el codigo exacto:
+                                    </div>
+                                    <div className="max-h-[420px] overflow-auto divide-y">
+                                        {countHistoryCandidates.map(product => (
+                                            <button
+                                                key={product.id}
+                                                className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50 transition"
+                                                onClick={() => loadCountHistoryForProduct(product)}
+                                            >
+                                                <div className="min-w-0">
+                                                    <div className="font-mono text-xs font-bold text-slate-900">{product.sku}</div>
+                                                    <div className="text-sm text-slate-600 truncate">{product.description}</div>
+                                                </div>
+                                                <span className="shrink-0 text-xs font-semibold text-blue-600">Ver resultados →</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
                             ) : countHistoryRows.length === 0 ? (
-                                <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500">
-                                    Ingresa un codigo para consultar resultados de conteo.
+                                <div className="rounded-2xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500 space-y-2">
+                                    {countHistoryProduct ? (
+                                        <>
+                                            <p>
+                                                El codigo <span className="font-mono font-bold text-slate-700">{countHistoryProduct.sku}</span>{" "}
+                                                ({countHistoryProduct.description}) no tiene resultados de conteo registrados.
+                                            </p>
+                                            <button
+                                                className="text-xs font-semibold text-blue-600 hover:underline"
+                                                onClick={() => { setCountHistoryProduct(null); setCountHistorySearch(""); }}
+                                            >
+                                                ← Buscar otro codigo
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <p>Ingresa un codigo para consultar resultados de conteo.</p>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="border rounded-2xl overflow-hidden">
+                                    {countHistoryProduct && (
+                                        <div className="px-4 py-2.5 bg-slate-50 border-b flex items-center justify-between gap-3 flex-wrap">
+                                            <div className="text-xs">
+                                                <span className="font-semibold text-slate-500">Mostrando resultados de:</span>{" "}
+                                                <span className="font-mono font-bold text-slate-900">{countHistoryProduct.sku}</span>{" "}
+                                                <span className="text-slate-600">{countHistoryProduct.description}</span>
+                                            </div>
+                                            <button
+                                                className="text-xs font-semibold text-blue-600 hover:underline"
+                                                onClick={() => { setCountHistoryProduct(null); setCountHistoryRows([]); setCountHistorySearch(""); }}
+                                            >
+                                                ← Buscar otro codigo
+                                            </button>
+                                        </div>
+                                    )}
                                     <div className="max-h-[520px] overflow-auto">
                                         <table className="w-full min-w-[1160px] text-sm">
                                             <thead className="bg-slate-100 sticky top-0">
