@@ -3007,6 +3007,56 @@ export default function InventariosPage() {
     return Boolean(row && row.counted > 0 && row.diff === 0);
   }
 
+  // Chequeo "OK" en vivo (no depende de `summary` en memoria, que puede estar
+  // desactualizado) -- usa la misma funcion SQL (gi_snapshot_counted_qty) que
+  // ya usa el trigger de sincronizacion en tiempo real, para que la nocion de
+  // "esta OK" sea identica en cliente y servidor.
+  async function checkProductCurrentlyOk(sessionId: string, productId: string): Promise<{ ok: boolean; systemStock: number; counted: number }> {
+    const session = sessions.find(row => row.id === sessionId) || selectedSession;
+    const [{ data: snapshotRow }, { data: countedValue, error: rpcError }] = await Promise.all([
+      supabase.from("general_inventory_stock_snapshot").select("system_stock").eq("session_id", sessionId).eq("product_id", productId).maybeSingle(),
+      supabase.rpc("gi_snapshot_counted_qty", {
+        p_session_id: sessionId,
+        p_product_id: productId,
+        p_validation_enabled: Boolean(session?.validation_enabled),
+      }),
+    ]);
+    if (rpcError) throw rpcError;
+    const systemStock = Number(snapshotRow?.system_stock || 0);
+    const counted = Number(countedValue || 0);
+    return { ok: counted > 0 && counted === systemStock, systemStock, counted };
+  }
+
+  // Refresca el stock en vivo del ERP para UN solo producto de una sesion,
+  // sin pasar por el filtro de "protegido" de refreshUnlockedSnapshotsForSkus
+  // (que se basa en `summary` en memoria, todavia no actualizado justo
+  // despues de editar) -- se llama cuando YA se confirmo que este producto
+  // dejo de estar OK por una edicion, para que no se quede esperando al
+  // proximo cambio real de stock_general (que puede tardar).
+  async function refreshSingleProductStockFromErp(sessionId: string, productId: string, sku: string) {
+    const sede = sessionSede(sessionId);
+    if (!sede) return;
+    const codsap = normalizeCode(sku).toUpperCase();
+    if (!codsap) return;
+
+    const [stockRes, productRes] = await Promise.all([
+      supabase.from("stock_general").select("stock,costo").eq("sede", sede).eq("codsap", codsap).maybeSingle(),
+      supabase.from("cyclic_products").select("id,sku,description,unit,cost").eq("id", productId).maybeSingle(),
+    ]);
+    if (!productRes.data) return;
+
+    await supabase.from("general_inventory_stock_snapshot").upsert({
+      session_id: sessionId,
+      product_id: productId,
+      sku: productRes.data.sku,
+      description: productRes.data.description,
+      unit: productRes.data.unit,
+      system_stock: Number(stockRes.data?.stock || 0),
+      cost: Number(stockRes.data?.costo ?? productRes.data.cost ?? 0),
+      frozen_at: new Date().toISOString(),
+    }, { onConflict: "session_id,product_id" });
+  }
+
   async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]): Promise<number> {
     const sede = sessionSede(sessionId);
     if (!sede) return 0;
@@ -3234,7 +3284,11 @@ export default function InventariosPage() {
   }
 
   async function loadSummary(sessionId: string, force = false, gen?: number) {
-    if (!force && summaryLoadedSessionId === sessionId) return;
+    // Ambos checks de "ya cargado, no volver a pedir" deben respetar
+    // isSessionTabFresh -- si no, un markSessionTabStale (ej. tras editar un
+    // registro) no tiene efecto: este primer check devolvia temprano igual,
+    // ignorando por completo que la sesion quedo marcada como desactualizada.
+    if (!force && summaryLoadedSessionId === sessionId && isSessionTabFresh(sessionId, "resumen")) return;
     const hadCachedSummary = applyCachedSummary(sessionId);
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
@@ -5670,6 +5724,24 @@ export default function InventariosPage() {
       return;
     }
 
+    // Si el codigo ya esta OK (contado = stock), avisar antes de editar: la
+    // edicion casi seguro lo va a dejar con una diferencia real.
+    let wasOk = false;
+    try {
+      const status = await checkProductCurrentlyOk(editingAdminCount.session_id, editingAdminCount.product_id);
+      wasOk = status.ok;
+      if (wasOk) {
+        const confirmed = window.confirm(
+          `${editingAdminCount.sku} ya esta OK (contado = stock sistema: ${status.systemStock}).\n` +
+          `Si editas este registro es muy probable que quede con una diferencia (sobrante o faltante).\n\n` +
+          `¿Confirmas que quieres editarlo de todas formas?`
+        );
+        if (!confirmed) return;
+      }
+    } catch (checkError) {
+      console.warn("No se pudo verificar el estado OK antes de editar:", checkError);
+    }
+
     const locationRow = await resolveInventoryLocation(location, { allowCreate: true, sourceLabel: location });
     if (!locationRow) {
       setMessage(selectedSession?.location_lock_enabled ? "La ubicacion no esta cargada para esta sesion." : "No se pudo registrar la ubicacion.");
@@ -5691,9 +5763,24 @@ export default function InventariosPage() {
       return;
     }
 
+    // El registro cambio: Resumen/Productividad quedaron desactualizados
+    // hasta que alguien los vuelva a visitar (o se recarguen aca mismo).
+    markSessionTabStale(editingAdminCount.session_id, "resumen");
+    markSessionTabStale(editingAdminCount.session_id, "productividad");
+
+    // Si el producto dejo de estar protegido por esta edicion, no esperar al
+    // proximo cambio real de stock_general -- sincronizarlo con el ERP ya.
+    if (wasOk) {
+      try {
+        await refreshSingleProductStockFromErp(editingAdminCount.session_id, editingAdminCount.product_id, editingAdminCount.sku);
+      } catch (refreshError) {
+        console.warn("No se pudo re-sincronizar stock en vivo tras la edicion:", refreshError);
+      }
+    }
+
     setEditingAdminCount(null);
     setMessage("Registro actualizado.");
-    await loadSessionData(editingAdminCount.session_id, "registros");
+    await loadSessionData(editingAdminCount.session_id, isValidator ? validatorTab : "registros");
   }
 
   async function deleteCount(row: CountRow) {
@@ -5706,6 +5793,8 @@ export default function InventariosPage() {
       setMessage("No se pudo eliminar: " + error.message);
       return;
     }
+    markSessionTabStale(row.session_id, "resumen");
+    markSessionTabStale(row.session_id, "productividad");
     await loadSessionData(row.session_id, isValidator ? validatorTab : "registros");
   }
 
