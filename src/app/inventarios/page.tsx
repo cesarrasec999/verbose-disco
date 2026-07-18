@@ -238,7 +238,6 @@ export default function InventariosPage() {
   const lastSummaryReloadRef = useRef<number>(0);
   const summaryThrottleTimerRef = useRef<number | null>(null);
   const sessionLoadGenRef = useRef(0);
-  const lastFrozenRefreshBySessionRef = useRef<Map<string, number>>(new Map());
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
   const [summaryLoadedSessionId, setSummaryLoadedSessionId] = useState("");
@@ -3177,7 +3176,6 @@ export default function InventariosPage() {
     setRefreshingNonOkStock(true);
     setMessage("Sincronizando stock del inventario con ERP...");
     try {
-      lastFrozenRefreshBySessionRef.current.delete(selectedSessionId);
       // Barrido completo (no solo SKUs ya conocidos): tambien trae codigos
       // nuevos que ganaron stock en el ERP y todavia no estaban en la sesion.
       const updatedCount = await refreshFullSessionSnapshotFromErp(selectedSessionId);
@@ -3233,27 +3231,23 @@ export default function InventariosPage() {
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     setSummaryLoading(true);
     try {
-      // Refrescar snapshot de productos no-OK desde stock_general vivo, tanto
-      // en sesiones abiertas como congeladas (antes solo corria si la sesion
-      // estaba congelada -- una sesion abierta con productos ya contados se
-      // quedaba mostrando system_stock=0/diferencias falsas para siempre,
-      // porque get_general_inventory_summary() solo lee system_stock del
-      // snapshot, nunca de stock_general directamente).
-      // loadProtectedOkProductIdsForStockUpdate (adentro de refreshFullSessionSnapshotFromErp)
-      // garantiza que los productos con conteo OK no se modifican.
-      const activeSession = sessions.find(s => s.id === sessionId) || selectedSession;
-      if (activeSession && activeSession.status !== "finished" && activeSession.status !== "cancelled") {
-        const lastRefresh = lastFrozenRefreshBySessionRef.current.get(sessionId) || 0;
-        if (Date.now() - lastRefresh > 55000) {
-          lastFrozenRefreshBySessionRef.current.set(sessionId, Date.now());
-          try {
-            // Barrido completo (no solo SKUs ya conocidos): un codigo que
-            // gano stock en el ERP mientras la sesion estaba abierta entra
-            // al resumen aca, sin esperar a que se finalice.
-            await refreshFullSessionSnapshotFromErp(sessionId);
-          } catch { /* continua con snapshot existente si falla */ }
-        }
-      }
+      // NO se llama mas a refreshFullSessionSnapshotFromErp() aca de forma
+      // automatica. Ese barrido BORRA todas las filas no-OK del snapshot y
+      // las reinserta de a paginas (puede tardar varios segundos en una
+      // sesion grande) -- mientras tanto, el canal Realtime nuevo
+      // (gi-live-stock-*, ver useEffect ~1335) reacciona a CADA escritura
+      // intermedia de ese barrido y recarga el resumen a medio terminar,
+      // causando que los KPIs "parpadeen" con numeros incompletos (ej.
+      // "720/720" mientras solo quedan los codigos OK protegidos, luego
+      // "752/2874" a medida que se reinsertan) -- bug real visto en
+      // produccion 2026-07-18 (sesion Callao y probablemente otras).
+      // El trigger de BD (gi_stock_snapshot_sync_from_erp, migracion
+      // 20260718120000) ya mantiene el snapshot al dia en tiempo real por
+      // su cuenta, asi que este barrido completo ya no hace falta como
+      // proceso automatico -- se dejo solo como accion manual explicita
+      // (boton "Actualizar stock ERP", forceRefreshNonOkStock) y como
+      // barrido puntual al desfinalizar una sesion (unfinishSession), para
+      // el caso borde de cambios de ERP perdidos mientras estuvo finalizada.
       const rpcRows = await loadSummaryFromRpc(sessionId);
       if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
       if (rpcRows) {
@@ -4508,6 +4502,13 @@ export default function InventariosPage() {
       return;
     }
     setMessage(`Sesion desfinalizada. Estado actual: ${statusLabel(nextStatus)}.`);
+    // Mientras estuvo "finished" el trigger de sincronizacion de stock la
+    // ignoro a proposito (no toca sesiones finalizadas/canceladas) -- un
+    // barrido puntual aca pone al dia cualquier cambio de ERP que haya
+    // pasado en el medio, antes de que el trigger retome solo desde ahora.
+    try {
+      await refreshFullSessionSnapshotFromErp(selectedSessionId);
+    } catch { /* si falla, el trigger igual la va a ir poniendo al dia con cada cambio nuevo del ERP */ }
     await loadInitial(selectedSessionId);
     if (selectedSessionId) await loadSessionData(selectedSessionId, validatorTab);
   }
