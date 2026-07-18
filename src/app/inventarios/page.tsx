@@ -227,7 +227,7 @@ export default function InventariosPage() {
   const savingCountRef = useRef(false);
   const productLookupRequestRef = useRef(0);
   const productLookupModeRef = useRef<ProductLookupMode>("typed");
-  const pendingStockSkusRef = useRef<Set<string>>(new Set());
+  const pendingStockRefreshRef = useRef(false);
   const summaryRef = useRef<SummaryRow[]>([]);
   const summaryCacheRef = useRef<Map<string, SummaryCacheEntry>>(new Map());
   const dirtyObservationKeysRef = useRef<Set<string>>(new Set());
@@ -1335,18 +1335,20 @@ export default function InventariosPage() {
   useEffect(() => {
     if (!selectedSessionId || !isValidator || validatorTab !== "resumen") return;
     if (selectedSession?.status === "finished" || selectedSession?.status === "cancelled") return;
-    const sede = sessionSede(selectedSessionId);
-    if (!sede) return;
 
+    // El trigger de BD (gi_stock_snapshot_sync_from_erp, migracion
+    // 20260718120000) ya escribe el stock en vivo directo en
+    // general_inventory_stock_snapshot -- este canal solo necesita avisarle
+    // al cliente que se refresque, no volver a calcular nada el mismo.
+    // Antes escuchaba cambios en stock_general, pero esa tabla nunca estuvo
+    // habilitada para Realtime en Supabase (canal muerto, jamas disparaba).
     let timer: number | null = null;
     const flushStockChanges = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        const skus = [...pendingStockSkusRef.current];
-        pendingStockSkusRef.current.clear();
-        if (skus.length === 0) return;
-        void refreshUnlockedSnapshotsForSkus(selectedSessionId, skus)
-          .then(() => loadSummary(selectedSessionId, true))
+        if (!pendingStockRefreshRef.current) return;
+        pendingStockRefreshRef.current = false;
+        void loadSummary(selectedSessionId, true)
           .catch(error => setMessage("No se pudo actualizar stock en tiempo real: " + (error instanceof Error ? error.message : String(error))));
       }, 1000);
     };
@@ -1355,11 +1357,9 @@ export default function InventariosPage() {
       .channel(`gi-live-stock-${selectedSessionId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "stock_general", filter: `sede=eq.${sede}` },
-        payload => {
-          const sku = normalizeCode((payload.new as any)?.codsap || (payload.old as any)?.codsap).toUpperCase();
-          if (!sku) return;
-          pendingStockSkusRef.current.add(sku);
+        { event: "*", schema: "public", table: "general_inventory_stock_snapshot", filter: `session_id=eq.${selectedSessionId}` },
+        () => {
+          pendingStockRefreshRef.current = true;
           flushStockChanges();
         }
       )
@@ -3003,10 +3003,6 @@ export default function InventariosPage() {
     return store?.erp_sede || store?.name || session?.store_name || "";
   }
 
-  function isSummaryRowStockProtected(row: SummaryRow | undefined) {
-    return Boolean(row && row.counted > 0 && row.diff === 0);
-  }
-
   // Chequeo "OK" en vivo (no depende de `summary` en memoria, que puede estar
   // desactualizado) -- usa la misma funcion SQL (gi_snapshot_counted_qty) que
   // ya usa el trigger de sincronizacion en tiempo real, para que la nocion de
@@ -3027,12 +3023,10 @@ export default function InventariosPage() {
     return { ok: counted > 0 && counted === systemStock, systemStock, counted };
   }
 
-  // Refresca el stock en vivo del ERP para UN solo producto de una sesion,
-  // sin pasar por el filtro de "protegido" de refreshUnlockedSnapshotsForSkus
-  // (que se basa en `summary` en memoria, todavia no actualizado justo
-  // despues de editar) -- se llama cuando YA se confirmo que este producto
-  // dejo de estar OK por una edicion, para que no se quede esperando al
-  // proximo cambio real de stock_general (que puede tardar).
+  // Refresca el stock en vivo del ERP para UN solo producto de una sesion --
+  // se llama cuando YA se confirmo que este producto dejo de estar OK por
+  // una edicion, para que no se quede esperando al proximo cambio real de
+  // stock_general (que puede tardar).
   async function refreshSingleProductStockFromErp(sessionId: string, productId: string, sku: string) {
     const sede = sessionSede(sessionId);
     if (!sede) return;
@@ -3055,60 +3049,6 @@ export default function InventariosPage() {
       cost: Number(stockRes.data?.costo ?? productRes.data.cost ?? 0),
       frozen_at: new Date().toISOString(),
     }, { onConflict: "session_id,product_id" });
-  }
-
-  async function refreshUnlockedSnapshotsForSkus(sessionId: string, rawSkus: string[]): Promise<number> {
-    const sede = sessionSede(sessionId);
-    if (!sede) return 0;
-
-    const allSkus = [...new Set(rawSkus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))]
-      .filter(sku => {
-        const row = summaryRef.current.find(item => normalizeCode(item.sku).toUpperCase() === sku);
-        return !isSummaryRowStockProtected(row);
-      });
-    if (allSkus.length === 0) return 0;
-
-    const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
-    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const now = new Date().toISOString();
-
-    // Se procesa en lotes de 500 SKUs: evita depender de una sola consulta
-    // que traiga de una todos los productos (Supabase corta resultados en
-    // 1000 filas por default) y mantiene los upserts en tamaños manejables.
-    const CHUNK = 500;
-    for (let i = 0; i < allSkus.length; i += CHUNK) {
-      const skus = allSkus.slice(i, i + CHUNK);
-      const [stockRes, productsRes] = await Promise.all([
-        supabase.from("stock_general").select("codsap,stock,costo").eq("sede", sede).in("codsap", skus),
-        supabase.from("cyclic_products").select("id,sku,description,unit,cost,is_active").eq("is_active", true).in("sku", skus),
-      ]);
-      if (stockRes.error) throw stockRes.error;
-      if (productsRes.error) throw productsRes.error;
-
-      const stockBySku = new Map((stockRes.data || []).map(row => [normalizeCode(row.codsap).toUpperCase(), row]));
-      const rows = ((productsRes.data || []) as Product[])
-        .filter(product => !nonInventorySkus.has(normalizeCode(product.sku).toUpperCase()))
-        .map(product => {
-          const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
-          return {
-            session_id: sessionId,
-            product_id: product.id,
-            sku: product.sku,
-            description: product.description,
-            unit: product.unit,
-            system_stock: Number(stock?.stock || 0),
-            cost: Number(stock?.costo ?? product.cost ?? 0),
-            frozen_at: now,
-          };
-        });
-
-      if (rows.length === 0) continue;
-      const { error } = await supabase
-        .from("general_inventory_stock_snapshot")
-        .upsert(rows, { onConflict: "session_id,product_id" });
-      if (error) throw error;
-    }
-    return allSkus.length;
   }
 
   // Barrido completo de stock_general (todo lo que tenga stock>0 en la sede,
@@ -3299,7 +3239,8 @@ export default function InventariosPage() {
       // quedaba mostrando system_stock=0/diferencias falsas para siempre,
       // porque get_general_inventory_summary() solo lee system_stock del
       // snapshot, nunca de stock_general directamente).
-      // isSummaryRowStockProtected garantiza que los productos con conteo OK no se modifican.
+      // loadProtectedOkProductIdsForStockUpdate (adentro de refreshFullSessionSnapshotFromErp)
+      // garantiza que los productos con conteo OK no se modifican.
       const activeSession = sessions.find(s => s.id === sessionId) || selectedSession;
       if (activeSession && activeSession.status !== "finished" && activeSession.status !== "cancelled") {
         const lastRefresh = lastFrozenRefreshBySessionRef.current.get(sessionId) || 0;
