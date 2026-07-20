@@ -285,6 +285,11 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [scans, setScans] = useState<PickingScan[]>([]);
   const [pickers, setPickers] = useState<CyclicUser[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
+  // Universo COMPLETO de tienda entrega / motivo entre los requerimientos activos,
+  // independiente de la pestana y fecha que se este mirando (el filtro del header es
+  // compartido por las 5 pestanas). Se llena con una consulta liviana aparte; ver loadData.
+  const [filterSourceStores, setFilterSourceStores] = useState<Array<{ key: string; label: string }>>([]);
+  const [filterReasons, setFilterReasons] = useState<Array<{ key: string; label: string }>>([]);
   const [selectedRequestId, setSelectedRequestId] = useState("");
   const selectedRequestIdRef = useRef(selectedRequestId);
   useEffect(() => { selectedRequestIdRef.current = selectedRequestId; }, [selectedRequestId]);
@@ -306,13 +311,23 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [selectedRegistryPicker, setSelectedRegistryPicker] = useState("all");
   const [selectedRegistryRequesterStore, setSelectedRegistryRequesterStore] = useState("all");
   const [assignmentDate, setAssignmentDate] = useState(todayISO());
+  const assignmentDateRef = useRef(assignmentDate);
+  useEffect(() => { assignmentDateRef.current = assignmentDate; }, [assignmentDate]);
   const [pickingDate, setPickingDate] = useState(todayISO());
   const pickingDateRef = useRef(pickingDate);
   useEffect(() => { pickingDateRef.current = pickingDate; }, [pickingDate]);
   const [reportDate, setReportDate] = useState(todayISO());
+  const reportDateRef = useRef(reportDate);
+  useEffect(() => { reportDateRef.current = reportDate; }, [reportDate]);
   const [registryDate, setRegistryDate] = useState(todayISO());
+  const registryDateRef = useRef(registryDate);
+  useEffect(() => { registryDateRef.current = registryDate; }, [registryDate]);
   const [productivityDateFrom, setProductivityDateFrom] = useState("");
+  const productivityDateFromRef = useRef(productivityDateFrom);
+  useEffect(() => { productivityDateFromRef.current = productivityDateFrom; }, [productivityDateFrom]);
   const [productivityDateTo, setProductivityDateTo] = useState("");
+  const productivityDateToRef = useRef(productivityDateTo);
+  useEffect(() => { productivityDateToRef.current = productivityDateTo; }, [productivityDateTo]);
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
   const [locationSort, setLocationSort] = useState<LocationSort>("asc");
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -329,25 +344,18 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const manager = canManagePicking(user);
   const admin = user?.role === "Administrador";
 
-  const sourceStoreOptions = useMemo(() => {
-    const grouped = new Map<string, string>();
-    for (const request of requests) {
-      const key = normalize(request.source_store_code || request.source_store_name);
-      if (!key) continue;
-      grouped.set(key, request.source_store_name || request.source_store_code);
-    }
-    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [requests]);
+  // Derivan del universo completo (filterSourceStores/filterReasons, ver loadData) y no
+  // de `requests`, que ahora solo trae los requerimientos de la pestana/fecha activa: si
+  // dependieran de `requests` el listado de opciones cambiaria segun la fecha elegida.
+  const sourceStoreOptions = useMemo(
+    () => [...filterSourceStores].sort((a, b) => a.label.localeCompare(b.label)),
+    [filterSourceStores]
+  );
 
-  const reasonOptions = useMemo(() => {
-    const grouped = new Map<string, string>();
-    for (const request of requests) {
-      const key = normalize(request.reason);
-      if (!key) continue;
-      grouped.set(key, request.reason || key);
-    }
-    return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [requests]);
+  const reasonOptions = useMemo(
+    () => [...filterReasons].sort((a, b) => a.label.localeCompare(b.label)),
+    [filterReasons]
+  );
 
   const sourceFilteredRequests = useMemo(
     () => selectedSourceStore === "all"
@@ -915,48 +923,178 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
     try {
       if (currentUserCanManage) {
-        // Manager: necesita ver TODOS los requerimientos activos (resumen, reportes,
-        // asignacion por cualquier operario), asi que mantiene el fetch completo.
-        const requestsResp = await supabase
+        // El filtro de tienda entrega / motivo del header es compartido por las 5
+        // pestanas y debe reflejar el universo COMPLETO de requerimientos activos,
+        // no solo los de la fecha que se esta mirando; se pide aparte, liviano (2
+        // columnas, sin lines ni assignments), independiente del resto del fetch.
+        const filterOptionsResp = await supabase
           .from("picking_requests")
-          .select("*")
+          .select("source_store_code,source_store_name,reason")
           .eq("status_code", "A")
-          .order("creation_date", { ascending: false })
-          .limit(500);
+          .is("hidden_at", null);
 
-        if (requestsResp.error) {
+        if (filterOptionsResp.error) {
           toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
           setLoading(false);
           return;
         }
 
-        const requestRows = ((requestsResp.data || []) as PickingRequest[]).filter(request => !request.hidden_at);
-        setRequests(requestRows);
-        if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
-
-        if (requestRows.length === 0) {
-          setLines([]);
-          setAssignments([]);
-          setScans([]);
-          setLoading(false);
-          return;
+        const filterRows = (filterOptionsResp.data || []) as Array<{ source_store_code: string; source_store_name: string | null; reason: string | null }>;
+        const sourceStoreGrouped = new Map<string, string>();
+        const reasonGrouped = new Map<string, string>();
+        for (const row of filterRows) {
+          const storeKey = normalize(row.source_store_code || row.source_store_name);
+          if (storeKey) sourceStoreGrouped.set(storeKey, row.source_store_name || row.source_store_code);
+          const reasonKey = normalize(row.reason);
+          if (reasonKey) reasonGrouped.set(reasonKey, row.reason || reasonKey);
         }
+        setFilterSourceStores([...sourceStoreGrouped.entries()].map(([key, label]) => ({ key, label })));
+        setFilterReasons([...reasonGrouped.entries()].map(([key, label]) => ({ key, label })));
 
-        const requestIds = requestRows.map(request => request.id);
-        const [allLines, allAssignments, scansResp] = await Promise.all([
-          fetchAll<PickingLine>((from, to) =>
-            supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
-          ),
-          fetchAll<PickingAssignment>((from, to) =>
-            supabase.from("picking_assignments").select("*").in("request_id", requestIds).neq("status", "cancelado").order("created_at", { ascending: false }).range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
-          ),
-          supabase.from("picking_scans").select("*").in("request_id", requestIds).order("created_at", { ascending: false }).limit(2000),
-        ]);
+        // Cada pestana pide solo los datos de la fecha (o rango) que esta mirando en
+        // ese momento, en vez del dataset activo completo (antes: TODOS los
+        // requerimientos activos + sus 31,612 lineas + 28,085 asignaciones en una
+        // sola carga, sin importar pestana ni fecha). Ver
+        // supabase/migrations/20260720133000_picking_manager_scoped_queries.sql.
+        if (panel === "asignacion") {
+          // Asignacion filtra picking_requests por su propio creation_date; fecha
+          // vacia (boton "Limpiar fecha") reproduce el fetch completo original.
+          const day = assignmentDateRef.current;
+          let requestsQuery = supabase
+            .from("picking_requests")
+            .select("*")
+            .eq("status_code", "A")
+            .is("hidden_at", null)
+            .order("creation_date", { ascending: false });
+          if (day) {
+            const dayStart = `${day}T00:00:00.000Z`;
+            const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
+            requestsQuery = requestsQuery.gte("creation_date", dayStart).lt("creation_date", dayEnd);
+          }
+          const requestsResp = await requestsQuery;
 
-        if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
-        setLines(allLines);
-        setAssignments(allAssignments);
-        setScans((scansResp.data || []) as PickingScan[]);
+          if (requestsResp.error) {
+            toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+            setLoading(false);
+            return;
+          }
+
+          const requestRows = (requestsResp.data || []) as PickingRequest[];
+          setRequests(requestRows);
+          if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
+
+          if (requestRows.length === 0) {
+            setLines([]);
+            setAssignments([]);
+            setScans([]);
+            setLoading(false);
+            return;
+          }
+
+          const requestIds = requestRows.map(request => request.id);
+          const [allLines, allAssignments] = await Promise.all([
+            fetchAll<PickingLine>((from, to) =>
+              supabase.from("picking_request_lines").select("*").in("request_id", requestIds).order("id").range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+            ),
+            fetchAll<PickingAssignment>((from, to) =>
+              supabase.from("picking_assignments").select("*").in("request_id", requestIds).neq("status", "cancelado").order("created_at", { ascending: false }).range(from, to) as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>
+            ),
+          ]);
+          setLines(allLines);
+          setAssignments(allAssignments);
+          // Asignacion no usa picking_scans en ninguna parte (ni la vista, ni sus
+          // acciones de asignar/reasignar/quitar); se deja vacio para no traerlos.
+          setScans([]);
+        } else if (panel === "resumen" || panel === "reportes") {
+          // Resumen y Reportes comparten "fecha efectiva" de asignacion (picking_date,
+          // o si no existe el primer scan del requerimiento, o si no created_at); la
+          // resuelve get_picking_assignments_by_date en el servidor. p_date null (boton
+          // "Limpiar fecha") reproduce el fetch completo original sin filtro de fecha.
+          const rpcResp = await supabase.rpc("get_picking_assignments_by_date", {
+            p_date: reportDateRef.current || null,
+          });
+
+          if (rpcResp.error) {
+            toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+            setLoading(false);
+            return;
+          }
+
+          type ReportRow = { assignment: PickingAssignment; request: PickingRequest; line: PickingLine };
+          const rows = (rpcResp.data || []) as ReportRow[];
+          const requestsById = new Map<string, PickingRequest>();
+          const linesById = new Map<string, PickingLine>();
+          const rowAssignments: PickingAssignment[] = [];
+          for (const row of rows) {
+            if (!requestsById.has(row.request.id)) requestsById.set(row.request.id, row.request);
+            if (!linesById.has(row.line.id)) linesById.set(row.line.id, row.line);
+            rowAssignments.push(row.assignment);
+          }
+
+          const requestIds = [...requestsById.keys()];
+          setRequests([...requestsById.values()]);
+          if (!selectedRequestIdRef.current && requestIds[0]) setSelectedRequestId(requestIds[0]);
+          setAssignments(rowAssignments);
+
+          const assignmentIds = rowAssignments.map(assignment => assignment.id);
+          const [linesResp, scansResp] = await Promise.all([
+            // Resumen necesita TODAS las lineas de cada requerimiento en pantalla (no
+            // solo las asignadas) para el conteo "requerido vs asignado" y las filas
+            // pendientes del Excel; Reportes solo usa lineas con asignacion, que ya
+            // vienen en el join de arriba.
+            panel === "resumen" && requestIds.length
+              ? supabase.from("picking_request_lines").select("*").in("request_id", requestIds)
+              : Promise.resolve({ data: null as PickingLine[] | null, error: null }),
+            // reportScansByAssignment (pestana Reportes) suma TODOS los scans de cada
+            // asignacion en pantalla, sin filtrarlos de nuevo por fecha (una asignacion
+            // puede completarse en un dia distinto al de su fecha efectiva).
+            assignmentIds.length
+              ? supabase.from("picking_scans").select("*").in("assignment_id", assignmentIds)
+              : Promise.resolve({ data: [] as PickingScan[], error: null }),
+          ]);
+
+          if (linesResp.error) toast.error("No pude leer lineas: " + linesResp.error.message);
+          if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
+
+          setLines(panel === "resumen" && linesResp.data ? (linesResp.data as PickingLine[]) : [...linesById.values()]);
+          setScans((scansResp.data || []) as PickingScan[]);
+        } else {
+          // Registros (un dia puntual) y Productividad (rango, puede venir con un solo
+          // extremo o ninguno) comparten get_picking_scans_by_date_range. Ambos extremos
+          // null reproduce el limite de 2000 escaneos mas recientes que ya usaba el
+          // fetch completo original como "sin filtro de fecha".
+          const pFrom = panel === "registros" ? (registryDateRef.current || null) : (productivityDateFromRef.current || null);
+          const pTo = panel === "registros" ? (registryDateRef.current || null) : (productivityDateToRef.current || null);
+          const rpcResp = await supabase.rpc("get_picking_scans_by_date_range", { p_from: pFrom, p_to: pTo });
+
+          if (rpcResp.error) {
+            toast.error("No pude leer registros: " + rpcResp.error.message);
+            setLoading(false);
+            return;
+          }
+
+          type ScanRow = { scan: PickingScan; assignment: PickingAssignment; request: PickingRequest; line: PickingLine };
+          const rows = (rpcResp.data || []) as ScanRow[];
+          const requestsById = new Map<string, PickingRequest>();
+          const linesById = new Map<string, PickingLine>();
+          const assignmentsById = new Map<string, PickingAssignment>();
+          const rowScans: PickingScan[] = [];
+          for (const row of rows) {
+            if (!requestsById.has(row.request.id)) requestsById.set(row.request.id, row.request);
+            if (!linesById.has(row.line.id)) linesById.set(row.line.id, row.line);
+            if (row.assignment && !assignmentsById.has(row.assignment.id)) assignmentsById.set(row.assignment.id, row.assignment);
+            rowScans.push(row.scan);
+          }
+
+          const requestIds = [...requestsById.keys()];
+          setRequests([...requestsById.values()]);
+          if (!selectedRequestIdRef.current && requestIds[0]) setSelectedRequestId(requestIds[0]);
+          setLines([...linesById.values()]);
+          // Solo para que el boton "Eliminar" de Registros (deleteScan) encuentre la
+          // asignacion del scan en el estado local; Productividad no la usa.
+          setAssignments([...assignmentsById.values()]);
+          setScans(rowScans);
+        }
       } else {
         // Operario: una sola consulta indexada en la base (get_my_picking_assignments,
         // ver supabase/migrations/20260714190000_picking_my_assignments_fn.sql) que
@@ -1011,7 +1149,11 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }
 
     setLoading(false);
-  }, []);
+    // panel nunca cambia durante la vida de esta instancia (cada pestana es su propia
+    // ruta/pagina que monta PickingModule de nuevo), asi que agregarlo a las deps no
+    // recrea loadData en la practica; las fechas usan refs (como pickingDateRef) para
+    // no forzar esa recreacion en cada tecleo del selector de fecha.
+  }, [panel]);
 
   useEffect(() => {
     if (!selectedRequest || selectedRequestId === selectedRequest.id) return;
@@ -1207,6 +1349,50 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }
     void loadData(user);
   }, [pickingDate, user, manager, loadData]);
+
+  // Equivalente a operatorDateLoadedRef, uno por pestana de manager: cada una pide
+  // datos acotados a su propia fecha (ver loadData), asi que hay que refrescar
+  // cuando el usuario cambia esa fecha sin salir de la pestana (cambiar de pestana
+  // ya recarga solo, porque cada una es una ruta/pagina que monta el modulo de nuevo).
+  const assignmentDateLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!user || !manager || panel !== "asignacion") return;
+    if (!assignmentDateLoadedRef.current) {
+      assignmentDateLoadedRef.current = true;
+      return;
+    }
+    void loadData(user);
+  }, [assignmentDate, user, manager, panel, loadData]);
+
+  const reportDateLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!user || !manager || (panel !== "resumen" && panel !== "reportes")) return;
+    if (!reportDateLoadedRef.current) {
+      reportDateLoadedRef.current = true;
+      return;
+    }
+    void loadData(user);
+  }, [reportDate, user, manager, panel, loadData]);
+
+  const registryDateLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!user || !manager || panel !== "registros") return;
+    if (!registryDateLoadedRef.current) {
+      registryDateLoadedRef.current = true;
+      return;
+    }
+    void loadData(user);
+  }, [registryDate, user, manager, panel, loadData]);
+
+  const productivityDateLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!user || !manager || panel !== "productividad") return;
+    if (!productivityDateLoadedRef.current) {
+      productivityDateLoadedRef.current = true;
+      return;
+    }
+    void loadData(user);
+  }, [productivityDateFrom, productivityDateTo, user, manager, panel, loadData]);
 
   useEffect(() => {
     async function loadLocations() {
