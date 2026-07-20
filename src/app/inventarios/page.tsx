@@ -102,6 +102,7 @@ const SESSION_KEY = "general_inventory_session_id";
 const SUMMARY_PAGE_SIZE = 120;
 const VALIDATOR_RECORDS_PAGE_SIZE = 120;
 const RECOUNT_PAGE_SIZE = 80;
+const FINISHED_REPORT_PAGE_SIZE = 50;
 
 type SummaryCacheEntry = {
   rows: SummaryRow[];
@@ -143,6 +144,8 @@ type FinishedGeneralInventoryReportRow = {
   net_value_diff: number;
   abs_value_diff: number;
   eri_pct: number;
+  sales_in_period: number | null;
+  deviation_over_sales_pct: number | null;
 };
 
 function currentMonthStartISO() {
@@ -291,6 +294,7 @@ export default function InventariosPage() {
   const [finishedReportTo, setFinishedReportTo] = useState(new Date().toISOString().slice(0, 10));
   const [finishedReportRows, setFinishedReportRows] = useState<FinishedGeneralInventoryReportRow[]>([]);
   const [finishedReportLoading, setFinishedReportLoading] = useState(false);
+  const [finishedReportPage, setFinishedReportPage] = useState(1);
   const [editingRecountItemId, setEditingRecountItemId] = useState<string | null>(null);
   const editingRecountItemIdRef = useRef<string | null>(null);
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
@@ -971,9 +975,9 @@ export default function InventariosPage() {
     setRecountManagerTab("pendientes");
   }
 
-  function renderRecountPagination(total: number, page: number, totalPages: number, onPageChange: (page: number) => void) {
-    const from = total === 0 ? 0 : ((page - 1) * RECOUNT_PAGE_SIZE) + 1;
-    const to = Math.min(page * RECOUNT_PAGE_SIZE, total);
+  function renderRecountPagination(total: number, page: number, totalPages: number, onPageChange: (page: number) => void, pageSize: number = RECOUNT_PAGE_SIZE) {
+    const from = total === 0 ? 0 : ((page - 1) * pageSize) + 1;
+    const to = Math.min(page * pageSize, total);
     return (
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
@@ -1089,6 +1093,13 @@ export default function InventariosPage() {
     netValueDiff: 0,
     absValueDiff: 0,
   }), [finishedReportRows]);
+
+  const finishedReportTotalPages = Math.max(1, Math.ceil(finishedReportRows.length / FINISHED_REPORT_PAGE_SIZE));
+  const pagedFinishedReportRows = useMemo(() => {
+    const page = Math.min(finishedReportPage, finishedReportTotalPages);
+    const start = (page - 1) * FINISHED_REPORT_PAGE_SIZE;
+    return finishedReportRows.slice(start, start + FINISHED_REPORT_PAGE_SIZE);
+  }, [finishedReportRows, finishedReportPage, finishedReportTotalPages]);
 
   useEffect(() => {
     const rawUser = localStorage.getItem("cyclic_user");
@@ -1896,6 +1907,7 @@ export default function InventariosPage() {
       return;
     }
     setFinishedReportRows((data || []) as FinishedGeneralInventoryReportRow[]);
+    setFinishedReportPage(1);
     setMessage(`Reporte cargado: ${(data || []).length} inventario(s) finalizado(s).`);
   }
 
@@ -1909,7 +1921,6 @@ export default function InventariosPage() {
       Tienda: row.store_name || "",
       FechaProgramada: dateOnly(row.scheduled_date),
       Finalizado: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
-      FinalizadoPor: row.finished_by_name || "",
       StockCongelado: row.stock_frozen_at ? new Date(row.stock_frozen_at).toLocaleString("es-PE") : "",
       DuracionMin: Number(row.duration_minutes || 0),
       CodigosTotales: Number(row.total_codes || 0),
@@ -1926,6 +1937,8 @@ export default function InventariosPage() {
       DiferenciaNeta: Number(row.net_value_diff || 0),
       DiferenciaAbs: Number(row.abs_value_diff || 0),
       ERI: Number(row.eri_pct || 0),
+      VentasPeriodo: Number(row.sales_in_period || 0),
+      DesviacionSobreVentaPct: row.deviation_over_sales_pct === null || row.deviation_over_sales_pct === undefined ? "" : Number(row.deviation_over_sales_pct),
     }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Inventarios finalizados");
@@ -7188,7 +7201,6 @@ export default function InventariosPage() {
                       <th className="border p-2 text-left">Inventario</th>
                       <th className="border p-2 text-left">Tienda</th>
                       <th className="border p-2 text-left">Finalizado</th>
-                      <th className="border p-2 text-left">Usuario</th>
                       <th className="border p-2 text-right">Codigos</th>
                       <th className="border p-2 text-right">Contados</th>
                       <th className="border p-2 text-right">OK</th>
@@ -7199,15 +7211,15 @@ export default function InventariosPage() {
                       <th className="border p-2 text-right">Valor sistema</th>
                       <th className="border p-2 text-right">Dif. neta</th>
                       <th className="border p-2 text-right">Dif. abs.</th>
+                      <th className="border p-2 text-right">Desviacion sobre la venta</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {finishedReportRows.map(row => (
+                    {pagedFinishedReportRows.map(row => (
                       <tr key={row.session_id} className="hover:bg-slate-50">
                         <td className="border p-2 font-black text-slate-900">{row.inventory_name}</td>
                         <td className="border p-2 font-semibold">{row.store_name || "-"}</td>
                         <td className="border p-2">{row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "-"}</td>
-                        <td className="border p-2">{row.finished_by_name || "-"}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.total_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.counted_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold text-green-700">{number2(Number(row.ok_codes || 0))}</td>
@@ -7218,6 +7230,11 @@ export default function InventariosPage() {
                         <td className="border p-2 text-right font-black">{money(Number(row.system_value || 0))}</td>
                         <td className={`border p-2 text-right font-black ${Number(row.net_value_diff || 0) < 0 ? "text-red-700" : "text-blue-700"}`}>{money(Number(row.net_value_diff || 0))}</td>
                         <td className="border p-2 text-right font-black">{money(Number(row.abs_value_diff || 0))}</td>
+                        <td className="border p-2 text-right font-black">
+                          {row.deviation_over_sales_pct === null || row.deviation_over_sales_pct === undefined
+                            ? "-"
+                            : `${number2(Number(row.deviation_over_sales_pct))}%`}
+                        </td>
                       </tr>
                     ))}
                     {finishedReportRows.length === 0 && (
@@ -7230,6 +7247,13 @@ export default function InventariosPage() {
                   </tbody>
                 </table>
               </div>
+              {finishedReportRows.length > 0 && renderRecountPagination(
+                finishedReportRows.length,
+                Math.min(finishedReportPage, finishedReportTotalPages),
+                finishedReportTotalPages,
+                setFinishedReportPage,
+                FINISHED_REPORT_PAGE_SIZE
+              )}
             </section>
           )}
 
