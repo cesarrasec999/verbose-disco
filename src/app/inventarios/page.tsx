@@ -7211,6 +7211,7 @@ export default function InventariosPage() {
                       <th className="border p-2 text-right">Valor sistema</th>
                       <th className="border p-2 text-right">Dif. neta</th>
                       <th className="border p-2 text-right">Dif. abs.</th>
+                      <th className="border p-2 text-right">Ventas del periodo</th>
                       <th className="border p-2 text-right">Desviacion sobre la venta</th>
                     </tr>
                   </thead>
@@ -7230,6 +7231,7 @@ export default function InventariosPage() {
                         <td className="border p-2 text-right font-black">{money(Number(row.system_value || 0))}</td>
                         <td className={`border p-2 text-right font-black ${Number(row.net_value_diff || 0) < 0 ? "text-red-700" : "text-blue-700"}`}>{money(Number(row.net_value_diff || 0))}</td>
                         <td className="border p-2 text-right font-black">{money(Number(row.abs_value_diff || 0))}</td>
+                        <td className="border p-2 text-right font-black">{money(Number(row.sales_in_period || 0))}</td>
                         <td className="border p-2 text-right font-black">
                           {row.deviation_over_sales_pct === null || row.deviation_over_sales_pct === undefined
                             ? "-"
@@ -7239,7 +7241,7 @@ export default function InventariosPage() {
                     ))}
                     {finishedReportRows.length === 0 && (
                       <tr>
-                        <td colSpan={14} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={15} className="p-8 text-center text-sm text-slate-400">
                           Genera el reporte para ver inventarios finalizados.
                         </td>
                       </tr>
