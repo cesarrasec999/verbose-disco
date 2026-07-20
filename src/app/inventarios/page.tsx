@@ -1076,23 +1076,35 @@ export default function InventariosPage() {
     };
   }, [summary]);
 
-  const finishedReportTotals = useMemo(() => finishedReportRows.reduce((acc, row) => ({
-    inventories: acc.inventories + 1,
-    totalCodes: acc.totalCodes + Number(row.total_codes || 0),
-    okCodes: acc.okCodes + Number(row.ok_codes || 0),
-    differenceCodes: acc.differenceCodes + Number(row.difference_codes || 0),
-    systemValue: acc.systemValue + Number(row.system_value || 0),
-    netValueDiff: acc.netValueDiff + Number(row.net_value_diff || 0),
-    absValueDiff: acc.absValueDiff + Number(row.abs_value_diff || 0),
-  }), {
-    inventories: 0,
-    totalCodes: 0,
-    okCodes: 0,
-    differenceCodes: 0,
-    systemValue: 0,
-    netValueDiff: 0,
-    absValueDiff: 0,
-  }), [finishedReportRows]);
+  const finishedReportTotals = useMemo(() => {
+    const sums = finishedReportRows.reduce((acc, row) => ({
+      inventories: acc.inventories + 1,
+      totalCodes: acc.totalCodes + Number(row.total_codes || 0),
+      okCodes: acc.okCodes + Number(row.ok_codes || 0),
+      differenceCodes: acc.differenceCodes + Number(row.difference_codes || 0),
+      systemValue: acc.systemValue + Number(row.system_value || 0),
+      netValueDiff: acc.netValueDiff + Number(row.net_value_diff || 0),
+      absValueDiff: acc.absValueDiff + Number(row.abs_value_diff || 0),
+      salesInPeriod: acc.salesInPeriod + Number(row.sales_in_period || 0),
+    }), {
+      inventories: 0,
+      totalCodes: 0,
+      okCodes: 0,
+      differenceCodes: 0,
+      systemValue: 0,
+      netValueDiff: 0,
+      absValueDiff: 0,
+      salesInPeriod: 0,
+    });
+    // Signo invertido a proposito: diferencia positiva (sobrante) resta,
+    // diferencia negativa (faltante) suma -- para que un sobrante en una
+    // tienda compense un faltante en otra al ponderar contra la venta
+    // total del periodo, en vez de que ambos sumen como si fueran perdida.
+    const weightedDeviationPct = sums.salesInPeriod > 0
+      ? Math.round((-sums.netValueDiff / sums.salesInPeriod) * 10000) / 100
+      : null;
+    return { ...sums, weightedDeviationPct };
+  }, [finishedReportRows]);
 
   const finishedReportTotalPages = Math.max(1, Math.ceil(finishedReportRows.length / FINISHED_REPORT_PAGE_SIZE));
   const pagedFinishedReportRows = useMemo(() => {
@@ -7186,12 +7198,16 @@ export default function InventariosPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                 <MiniMetric label="Inventarios" value={number2(finishedReportTotals.inventories)} />
                 <MiniMetric label="Codigos" value={number2(finishedReportTotals.totalCodes)} />
                 <MiniMetric label="OK" value={number2(finishedReportTotals.okCodes)} />
                 <MiniMetric label="Con diferencia" value={number2(finishedReportTotals.differenceCodes)} />
                 <MiniMetric label="Dif. valorizada" value={money(finishedReportTotals.netValueDiff)} />
+                <MiniMetric
+                  label="Desviacion general ponderada"
+                  value={finishedReportTotals.weightedDeviationPct === null ? "-" : `${number2(finishedReportTotals.weightedDeviationPct)}%`}
+                />
               </div>
 
               <div className="overflow-x-auto rounded-2xl border">
@@ -7232,7 +7248,7 @@ export default function InventariosPage() {
                         <td className={`border p-2 text-right font-black ${Number(row.net_value_diff || 0) < 0 ? "text-red-700" : "text-blue-700"}`}>{money(Number(row.net_value_diff || 0))}</td>
                         <td className="border p-2 text-right font-black">{money(Number(row.abs_value_diff || 0))}</td>
                         <td className="border p-2 text-right font-black">{money(Number(row.sales_in_period || 0))}</td>
-                        <td className="border p-2 text-right font-black">
+                        <td className={`border p-2 text-right font-black ${row.deviation_over_sales_pct !== null && row.deviation_over_sales_pct !== undefined ? (Number(row.deviation_over_sales_pct) > 0 ? "text-red-700" : Number(row.deviation_over_sales_pct) < 0 ? "text-blue-700" : "") : ""}`}>
                           {row.deviation_over_sales_pct === null || row.deviation_over_sales_pct === undefined
                             ? "-"
                             : `${number2(Number(row.deviation_over_sales_pct))}%`}
