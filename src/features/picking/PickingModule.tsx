@@ -1899,6 +1899,12 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
   async function downloadReport(scope: "global" | "mine") {
     const XLSX = await import("xlsx");
+    // No confiar en el stockByLine del estado: si se descarga justo despues
+    // de cambiar de pestana/fecha (el efecto que lo recalcula todavia no
+    // termino), o si por cualquier otra razon quedo desactualizado, el
+    // Excel salia con columnas de STOCK en 0 aunque el ERP tuviera stock
+    // real -- mismo problema que se encontro y corrigio en printBatchAssignment.
+    const freshStockByLine = await resolveStockForLines(lines, requests, stores);
     const assignmentRequestIds = new Set((panel === "resumen" ? summaryRequests : filteredRequests).map(request => request.id));
     const scopedGlobalAssignments = panel === "reportes"
       ? reportAssignments
@@ -1924,7 +1930,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         "RQ (ASIGNADO)": num(assignment.assigned_qty),
         "PICADO": pickedForScope,
         "PENDIENTE": num(assignment.assigned_qty) - pickedForScope,
-        "STOCK": num(stockByLine[assignment.line_id] ?? 0),
+        "STOCK": num(freshStockByLine[assignment.line_id] ?? 0),
         "ZONA": (locationsByLine[assignment.line_id] || []).map(cleanLocationLabel).join(", "),
         "ESTADO": assignment.status,
         "ESTADO ASIGNACION": "ASIGNADO",
@@ -1952,7 +1958,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
             "RQ (ASIGNADO)": 0,
             "PICADO": 0,
             "PENDIENTE": num(line.qty_requested),
-            "STOCK": num(stockByLine[line.id] ?? 0),
+            "STOCK": num(freshStockByLine[line.id] ?? 0),
             "ZONA": (locationsByLine[line.id] || []).map(cleanLocationLabel).join(", "),
             "ESTADO": "pendiente",
             "ESTADO ASIGNACION": "PENDIENTE POR ASIGNAR",
