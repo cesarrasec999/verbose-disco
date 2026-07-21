@@ -1196,59 +1196,58 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     return () => window.clearTimeout(timer);
   }, [registryRequesterStoreOptions, selectedRegistryRequesterStore]);
 
-  useEffect(() => {
-    async function loadStock() {
-      if (requests.length === 0 || lines.length === 0 || stores.length === 0) {
-        setStockByLine({});
-        return;
-      }
-      const sourceSedes = [...new Set(requests.map(request => {
-        const sourceCode = normalize(request.source_store_code);
-        const sourceName = normalize(request.source_store_name);
-        const store = stores.find(item =>
-          normalize(item.code) === sourceCode ||
-          normalize(item.erp_sede) === sourceCode ||
-          normalize(item.name) === sourceName
-        );
-        return String(store?.erp_sede || store?.name || request.source_store_name || request.source_store_code || "").trim();
-      }).filter(Boolean))];
-      const codes = [...new Set(lines.flatMap(line => [line.product_code, line.sku].filter(Boolean) as string[]).map(normalize))];
-      if (sourceSedes.length === 0 || codes.length === 0) {
-        setStockByLine({});
-        return;
-      }
+  // Extraido a funcion aparte (no solo el efecto) porque printBatchAssignment
+  // tambien la necesita: cuando imprime un lote que referencia lineas recien
+  // llegadas (no estaban todavia en el estado `lines`), no puede esperar a
+  // que este efecto reaccione en el proximo render -- ver comentario en
+  // printBatchAssignment.
+  async function resolveStockForLines(targetLines: PickingLine[], requestsList: PickingRequest[], storesList: StoreRow[]): Promise<Record<string, number>> {
+    if (requestsList.length === 0 || targetLines.length === 0 || storesList.length === 0) return {};
+    const sourceSedes = [...new Set(requestsList.map(request => {
+      const sourceCode = normalize(request.source_store_code);
+      const sourceName = normalize(request.source_store_name);
+      const store = storesList.find(item =>
+        normalize(item.code) === sourceCode ||
+        normalize(item.erp_sede) === sourceCode ||
+        normalize(item.name) === sourceName
+      );
+      return String(store?.erp_sede || store?.name || request.source_store_name || request.source_store_code || "").trim();
+    }).filter(Boolean))];
+    const codes = [...new Set(targetLines.flatMap(line => [line.product_code, line.sku].filter(Boolean) as string[]).map(normalize))];
+    if (sourceSedes.length === 0 || codes.length === 0) return {};
 
-      const stockRows: Array<{ sede: string | null; codsap: string | null; stock: number | string | null }> = [];
-      for (let i = 0; i < codes.length; i += 500) {
-        const { data } = await supabase
-          .from("stock_general")
-          .select("sede,codsap,stock")
-          .in("sede", sourceSedes)
-          .in("codsap", codes.slice(i, i + 500));
-        stockRows.push(...((data || []) as typeof stockRows));
-      }
-      const bySedeCode = new Map<string, number>();
-      for (const row of stockRows) {
-        const key = `${normalize(row.sede)}__${normalize(row.codsap)}`;
-        bySedeCode.set(key, (bySedeCode.get(key) || 0) + num(row.stock));
-      }
-      const next: Record<string, number> = {};
-      for (const line of lines) {
-        const request = requests.find(item => item.id === line.request_id);
-        const sourceCode = normalize(request?.source_store_code);
-        const sourceName = normalize(request?.source_store_name);
-        const store = stores.find(item =>
-          normalize(item.code) === sourceCode ||
-          normalize(item.erp_sede) === sourceCode ||
-          normalize(item.name) === sourceName
-        );
-        const sede = normalize(store?.erp_sede || store?.name || request?.source_store_name || request?.source_store_code);
-        next[line.id] = bySedeCode.get(`${sede}__${normalize(line.product_code)}`) || bySedeCode.get(`${sede}__${normalize(line.sku)}`) || 0;
-      }
-      setStockByLine(next);
+    const stockRows: Array<{ sede: string | null; codsap: string | null; stock: number | string | null }> = [];
+    for (let i = 0; i < codes.length; i += 500) {
+      const { data } = await supabase
+        .from("stock_general")
+        .select("sede,codsap,stock")
+        .in("sede", sourceSedes)
+        .in("codsap", codes.slice(i, i + 500));
+      stockRows.push(...((data || []) as typeof stockRows));
     }
+    const bySedeCode = new Map<string, number>();
+    for (const row of stockRows) {
+      const key = `${normalize(row.sede)}__${normalize(row.codsap)}`;
+      bySedeCode.set(key, (bySedeCode.get(key) || 0) + num(row.stock));
+    }
+    const next: Record<string, number> = {};
+    for (const line of targetLines) {
+      const request = requestsList.find(item => item.id === line.request_id);
+      const sourceCode = normalize(request?.source_store_code);
+      const sourceName = normalize(request?.source_store_name);
+      const store = storesList.find(item =>
+        normalize(item.code) === sourceCode ||
+        normalize(item.erp_sede) === sourceCode ||
+        normalize(item.name) === sourceName
+      );
+      const sede = normalize(store?.erp_sede || store?.name || request?.source_store_name || request?.source_store_code);
+      next[line.id] = bySedeCode.get(`${sede}__${normalize(line.product_code)}`) || bySedeCode.get(`${sede}__${normalize(line.sku)}`) || 0;
+    }
+    return next;
+  }
 
-    void loadStock();
+  useEffect(() => {
+    void (async () => setStockByLine(await resolveStockForLines(lines, requests, stores)))();
   }, [lines, requests, stores]);
 
   const closeScanner = useCallback(async () => {
@@ -2039,6 +2038,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }
 
     let printLines = lines;
+    let effectiveStockByLine = stockByLine;
     const localLineIds = new Set(printLines.map(line => line.id));
     const missingLineIds = [...new Set(batchAssignments.map(item => item.line_id).filter(id => !localLineIds.has(id)))];
     if (missingLineIds.length > 0) {
@@ -2051,12 +2051,26 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         return;
       }
       const fetched = (data || []) as PickingLine[];
-      printLines = [...printLines, ...fetched.filter(line => !localLineIds.has(line.id))];
-      if (fetched.length > 0) setLines(prev => {
-        const prevIds = new Set(prev.map(line => line.id));
-        const additions = fetched.filter(line => !prevIds.has(line.id));
-        return additions.length > 0 ? [...prev, ...additions] : prev;
-      });
+      const newLines = fetched.filter(line => !localLineIds.has(line.id));
+      printLines = [...printLines, ...newLines];
+      if (newLines.length > 0) {
+        setLines(prev => {
+          const prevIds = new Set(prev.map(line => line.id));
+          const additions = newLines.filter(line => !prevIds.has(line.id));
+          return additions.length > 0 ? [...prev, ...additions] : prev;
+        });
+        // El efecto que recalcula stockByLine recien va a reaccionar en el
+        // proximo render (depende de `lines`), pero esta funcion sigue
+        // corriendo sincrono y arma el HTML ya mismo -- sin esto, cualquier
+        // linea que hubo que traer aca (por no estar todavia en el estado)
+        // se imprimia siempre con stock 0, sin importar el stock real en el
+        // ERP. Se resuelve aparte para estas lineas puntuales y se mezcla
+        // con el stockByLine ya conocido, sin esperar al proximo render.
+        const missingRequestIds = [...new Set(newLines.map(line => line.request_id))];
+        const relatedForMissingStock = requests.filter(r => missingRequestIds.includes(r.id));
+        const stockForNewLines = await resolveStockForLines(newLines, relatedForMissingStock, stores);
+        effectiveStockByLine = { ...effectiveStockByLine, ...stockForNewLines };
+      }
     }
 
     const lineById = new Map(printLines.map(line => [line.id, line]));
@@ -2104,7 +2118,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           <td class="c">${num(assignment.assigned_qty)}</td>
           <td class="c"></td>
           <td class="obs"></td>
-          <td class="c">${num(stockByLine[assignment.line_id] ?? 0)}</td>
+          <td class="c">${num(effectiveStockByLine[assignment.line_id] ?? 0)}</td>
           <td class="c">${zona}</td>
         </tr>`;
     }).join("");
