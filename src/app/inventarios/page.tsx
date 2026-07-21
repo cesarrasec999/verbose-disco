@@ -1003,6 +1003,22 @@ export default function InventariosPage() {
     );
   }
 
+  function renderReportKpiCard(label: string, value: string, tone: "slate" | "green" | "amber" | "red" | "blue") {
+    const toneClasses: Record<typeof tone, string> = {
+      slate: "border-slate-300 bg-slate-50 text-slate-900",
+      green: "border-green-300 bg-green-50 text-green-800",
+      amber: "border-amber-300 bg-amber-50 text-amber-800",
+      red: "border-red-300 bg-red-50 text-red-700",
+      blue: "border-blue-300 bg-blue-50 text-blue-800",
+    };
+    return (
+      <div className={`rounded-2xl border-2 p-4 text-center shadow-sm ${toneClasses[tone]}`}>
+        <div className="text-2xl font-black">{value}</div>
+        <div className="mt-1 text-[11px] font-bold uppercase tracking-wide">{label}</div>
+      </div>
+    );
+  }
+
   function barcodeVariants(value: string) {
     const raw = normalizeCode(value).toUpperCase();
     const hyphenated = raw.replace(/['’‘´`]/g, "-");
@@ -1103,7 +1119,10 @@ export default function InventariosPage() {
     const weightedDeviationPct = sums.salesInPeriod > 0
       ? Math.round((-sums.netValueDiff / sums.salesInPeriod) * 10000) / 100
       : null;
-    return { ...sums, weightedDeviationPct };
+    const weightedEriPct = sums.totalCodes > 0
+      ? Math.round((sums.okCodes / sums.totalCodes) * 10000) / 100
+      : null;
+    return { ...sums, weightedDeviationPct, weightedEriPct };
   }, [finishedReportRows]);
 
   const finishedReportTotalPages = Math.max(1, Math.ceil(finishedReportRows.length / FINISHED_REPORT_PAGE_SIZE));
@@ -7198,16 +7217,25 @@ export default function InventariosPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                <MiniMetric label="Inventarios" value={number2(finishedReportTotals.inventories)} />
-                <MiniMetric label="Codigos" value={number2(finishedReportTotals.totalCodes)} />
-                <MiniMetric label="OK" value={number2(finishedReportTotals.okCodes)} />
-                <MiniMetric label="Con diferencia" value={number2(finishedReportTotals.differenceCodes)} />
-                <MiniMetric label="Dif. valorizada" value={money(finishedReportTotals.netValueDiff)} />
-                <MiniMetric
-                  label="Desviacion general ponderada"
-                  value={finishedReportTotals.weightedDeviationPct === null ? "-" : `${number2(finishedReportTotals.weightedDeviationPct)}%`}
-                />
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {renderReportKpiCard("Inventarios (cantidad)", number2(finishedReportTotals.inventories), "slate")}
+                {renderReportKpiCard(
+                  "ERI ponderado",
+                  finishedReportTotals.weightedEriPct === null ? "-" : `${number2(finishedReportTotals.weightedEriPct)}%`,
+                  finishedReportTotals.weightedEriPct === null ? "slate" : finishedReportTotals.weightedEriPct >= 90 ? "green" : finishedReportTotals.weightedEriPct >= 70 ? "amber" : "red"
+                )}
+                {renderReportKpiCard(
+                  "Diferencia valorizada",
+                  money(finishedReportTotals.netValueDiff),
+                  finishedReportTotals.netValueDiff < 0 ? "red" : finishedReportTotals.netValueDiff > 0 ? "blue" : "slate"
+                )}
+                {renderReportKpiCard(
+                  "Desviacion sobre la venta ponderada",
+                  finishedReportTotals.weightedDeviationPct === null ? "-" : `${number2(finishedReportTotals.weightedDeviationPct)}%`,
+                  finishedReportTotals.weightedDeviationPct === null || finishedReportTotals.weightedDeviationPct === 0
+                    ? "slate"
+                    : finishedReportTotals.weightedDeviationPct > 0 ? "red" : "blue"
+                )}
               </div>
 
               <div className="overflow-x-auto rounded-2xl border">
