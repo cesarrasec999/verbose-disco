@@ -96,6 +96,12 @@ import {
   summaryStatus,
 } from "@/features/inventarios/utils";
 
+// Unico usuario autorizado para editar el stock de sistema de sesiones YA
+// finalizadas (ver saveFinishedStockEdit). A proposito NO es "cualquier
+// Administrador" -- hoy hay 2 cuentas con ese rol (Administrador Principal y
+// Diana Apaico) y el usuario pidio explicitamente restringirlo a esta cuenta
+// puntual, por id, no por rol.
+const FINISHED_STOCK_EDITOR_USER_ID = "6640b556-8944-4921-8b13-c547c834fb05";
 const OPERATOR_KEY = "general_inventory_operator";
 const OPERATOR_MODE_KEY = "general_inventory_operator_mode";
 const SESSION_KEY = "general_inventory_session_id";
@@ -218,6 +224,10 @@ export default function InventariosPage() {
   const [editingAdminCount, setEditingAdminCount] = useState<CountRow | null>(null);
   const [editingAdminLocation, setEditingAdminLocation] = useState("");
   const [editingAdminQuantity, setEditingAdminQuantity] = useState("");
+  const [editingFinishedStock, setEditingFinishedStock] = useState<SummaryRow | null>(null);
+  const [editingFinishedStockValue, setEditingFinishedStockValue] = useState("");
+  const [editingFinishedStockNote, setEditingFinishedStockNote] = useState("");
+  const [savingFinishedStockEdit, setSavingFinishedStockEdit] = useState(false);
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
@@ -5769,6 +5779,84 @@ export default function InventariosPage() {
     await loadSessionData(editingAdminCount.session_id, isValidator ? validatorTab : "registros");
   }
 
+  // Edicion de system_stock en sesiones YA finalizadas -- unicamente para
+  // corregir a mano un stock de sistema que quedo mal congelado (ver
+  // investigacion de Huancayo en LOG_PROYECTO.md, 2026-07-19). Restringido
+  // a un solo usuario (FINISHED_STOCK_EDITOR_USER_ID) y a sesiones
+  // finalizadas. No toca stock_general ni dispara ningun refresco de ERP
+  // -- es un UPDATE directo y puntual sobre general_inventory_stock_snapshot,
+  // marcado con manually_adjusted para dejar rastro de que ya no es el
+  // valor original congelado por el sistema.
+  function openFinishedStockEdit(row: SummaryRow) {
+    if (!isSelectedSessionFinished) return;
+    if (user?.id !== FINISHED_STOCK_EDITOR_USER_ID) return;
+    setEditingFinishedStock(row);
+    setEditingFinishedStockValue(String(row.system_stock ?? ""));
+    setEditingFinishedStockNote("");
+  }
+
+  async function saveFinishedStockEdit() {
+    if (!editingFinishedStock || !selectedSessionId) return;
+    if (user?.id !== FINISHED_STOCK_EDITOR_USER_ID) return;
+    if (!isSelectedSessionFinished) {
+      setMessage("Esta edicion solo aplica a sesiones ya finalizadas.");
+      return;
+    }
+
+    const newValue = Number(editingFinishedStockValue);
+    if (!Number.isFinite(newValue) || newValue < 0) {
+      setMessage("Ingresa un stock de sistema valido (numero mayor o igual a 0).");
+      return;
+    }
+    const oldValue = Number(editingFinishedStock.system_stock || 0);
+    if (newValue === oldValue) {
+      setMessage("El valor no cambio, no se guardo nada.");
+      setEditingFinishedStock(null);
+      return;
+    }
+    const note = editingFinishedStockNote.trim();
+    if (!note) {
+      setMessage("El motivo del ajuste es obligatorio.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Vas a cambiar el stock de sistema de ${editingFinishedStock.sku} (${editingFinishedStock.description}) ` +
+      `de ${number2(oldValue)} a ${number2(newValue)} en un inventario YA FINALIZADO.\n\n` +
+      `Esto mueve el resultado y los KPIs de este inventario (Valor sistema, Diferencia, ERI, etc.) ` +
+      `de forma inmediata y visible para todos. El stock queda congelado con este valor -- no se vuelve a sincronizar con el ERP.\n\n` +
+      `Motivo registrado: "${note}"\n\n` +
+      `¿Confirmas el cambio?`
+    );
+    if (!confirmed) return;
+
+    setSavingFinishedStockEdit(true);
+    const { error } = await supabase
+      .from("general_inventory_stock_snapshot")
+      .update({
+        system_stock: newValue,
+        manually_adjusted: true,
+        adjusted_by: user?.id || null,
+        adjusted_at: new Date().toISOString(),
+        adjustment_note: note,
+      })
+      .eq("session_id", selectedSessionId)
+      .eq("product_id", editingFinishedStock.product_id);
+    setSavingFinishedStockEdit(false);
+
+    if (error) {
+      setMessage("No se pudo guardar el ajuste de stock: " + error.message);
+      return;
+    }
+
+    setEditingFinishedStock(null);
+    setMessage(`Stock de sistema de ${editingFinishedStock.sku} actualizado a ${number2(newValue)}.`);
+    // "En tiempo real": recarga forzada del resumen para que el KPI y la
+    // tabla reflejen el ajuste de inmediato, sin esperar a que el usuario
+    // navegue fuera y vuelva.
+    await loadSummary(selectedSessionId, true);
+  }
+
   async function deleteCount(row: CountRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
@@ -8726,6 +8814,8 @@ export default function InventariosPage() {
               canForceRefreshStock={user?.role === "Administrador" && !isSelectedSessionFinished}
               refreshingNonOkStock={refreshingNonOkStock}
               onForceRefreshNonOkStock={forceRefreshNonOkStock}
+              canEditFinishedStock={user?.id === FINISHED_STOCK_EDITOR_USER_ID && isSelectedSessionFinished}
+              onEditSystemStock={openFinishedStockEdit}
             />
           )}
       </section>
@@ -8756,6 +8846,53 @@ export default function InventariosPage() {
                 Guardar
               </button>
               <button onClick={() => setEditingAdminCount(null)} className="rounded-xl border px-4 py-3 text-sm font-black">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingFinishedStock && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
+          <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h3 className="font-black text-red-700">Editar stock de sistema (inventario finalizado)</h3>
+            <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">{editingFinishedStock.sku} - {editingFinishedStock.description}</p>
+            <p className="mt-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+              Esto cambia el stock de sistema congelado de este código en un inventario ya finalizado.
+              Mueve el Valor sistema, la Diferencia y el ERI de esta sesión de inmediato. No se vuelve a
+              sincronizar con el ERP.
+            </p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Stock de sistema actual</label>
+                <p className="text-sm font-bold text-slate-700">{number2(editingFinishedStock.system_stock)}</p>
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Nuevo stock de sistema</label>
+                <input
+                  value={editingFinishedStockValue}
+                  onChange={event => setEditingFinishedStockValue(event.target.value)}
+                  placeholder="Nuevo stock"
+                  inputMode="decimal"
+                  className="mt-1 w-full rounded-xl border px-3 py-3 text-sm font-bold"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Motivo del ajuste (obligatorio)</label>
+                <textarea
+                  value={editingFinishedStockNote}
+                  onChange={event => setEditingFinishedStockNote(event.target.value)}
+                  placeholder="Por que se corrige este stock..."
+                  className="mt-1 min-h-16 w-full rounded-xl border px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <button onClick={saveFinishedStockEdit} disabled={savingFinishedStockEdit} className="rounded-xl bg-red-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                {savingFinishedStockEdit ? "Guardando..." : "Guardar ajuste"}
+              </button>
+              <button onClick={() => setEditingFinishedStock(null)} disabled={savingFinishedStockEdit} className="rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40">
                 Cancelar
               </button>
             </div>

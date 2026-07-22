@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, PackageSearch, RefreshCw, RotateCcw } from "lucide-react";
+import { Download, Pencil, PackageSearch, RefreshCw, RotateCcw } from "lucide-react";
 import type { SummaryRow, SummarySortKey, SortState } from "@/features/inventarios/types";
 import { DonutKpi, Kpi, SortHeader, ValueBarKpi } from "@/features/inventarios/components/InventoryUi";
 import { money, number2, summaryStatus } from "@/features/inventarios/utils";
@@ -54,6 +54,8 @@ type ResumenModuleProps = {
   canForceRefreshStock?: boolean;
   refreshingNonOkStock?: boolean;
   onForceRefreshNonOkStock?: () => void;
+  canEditFinishedStock?: boolean;
+  onEditSystemStock?: (row: SummaryRow) => void;
 };
 
 export function ResumenModule({
@@ -86,6 +88,8 @@ export function ResumenModule({
   canForceRefreshStock,
   refreshingNonOkStock,
   onForceRefreshNonOkStock,
+  canEditFinishedStock,
+  onEditSystemStock,
 }: ResumenModuleProps) {
   const okCount = summary.filter(row => row.diff === 0 && row.counted > 0).length;
   const maxDifferenceValue = Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1);
@@ -210,7 +214,20 @@ export function ResumenModule({
                   <td className="p-2 font-black">{row.sku}</td>
                   <td className="max-w-sm whitespace-normal break-words p-2">{row.description}</td>
                   <td className="p-2 text-center">{row.unit}</td>
-                  <td className="p-2 text-center">{number2(row.system_stock)}</td>
+                  <td className="p-2 text-center">
+                    {canEditFinishedStock ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditSystemStock?.(row)}
+                        title="Editar stock de sistema (inventario finalizado)"
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2 py-1 font-bold text-red-700 hover:bg-red-50"
+                      >
+                        {number2(row.system_stock)} <Pencil size={12} />
+                      </button>
+                    ) : (
+                      number2(row.system_stock)
+                    )}
+                  </td>
                   <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
                   <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}</td>
                   {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
