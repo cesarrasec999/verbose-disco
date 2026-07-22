@@ -2559,9 +2559,11 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                   <div className="border-b px-4 py-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                       <div className="font-black">Resumen por código ({filteredSummaryRows.length}/{summaryRows.length})</div>
-                      <button onClick={downloadSummaryExcel} disabled={filteredSummaryRows.length === 0} className="inline-flex items-center justify-center rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
-                        <Download className="mr-1" size={15} /> Descargar Excel
-                      </button>
+                      {!isMobileAccess && (
+                        <button onClick={downloadSummaryExcel} disabled={filteredSummaryRows.length === 0} className="inline-flex items-center justify-center rounded-xl bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">
+                          <Download className="mr-1" size={15} /> Descargar Excel
+                        </button>
+                      )}
                     </div>
                     <div className="mt-3 flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
                       <input
