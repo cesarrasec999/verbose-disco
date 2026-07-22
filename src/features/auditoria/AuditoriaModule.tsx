@@ -369,7 +369,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   useEffect(() => {
     if (!user) return;
     if (isMobileAccess) {
-      if (mainTab !== "register" || registerTab !== "count") router.replace("/auditoria/registro");
+      // "summary" (Resumen) tambien queda permitido en movil ademas de
+      // "count" -- el validador necesita ver codigos asignados vs
+      // registrado desde el celular, sin salir del rol de solo conteo.
+      if (mainTab !== "register" || (registerTab !== "count" && registerTab !== "summary")) router.replace("/auditoria/registro");
       return;
     }
     if (!session && !sessionRestorePending && (user.role === "Administrador" || user.role === "Supervisor") && mainTab === "register") {
@@ -2316,9 +2319,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
 
         {visibleMainTab === "register" && (
           <section className="space-y-4">
-            <div className="hidden grid-cols-3 gap-2 md:grid">
+            <div className={`grid gap-2 ${isMobileAccess ? "grid-cols-2" : "grid-cols-3"}`}>
               {canCountAudit && <Link href="/auditoria/registro" className={subTabClass(registerTab === "count")}><PackageSearch size={15} /> Contar</Link>}
-              <Link href="/auditoria/registro/registros" className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</Link>
+              {!isMobileAccess && <Link href="/auditoria/registro/registros" className={subTabClass(registerTab === "records")}><ClipboardList size={15} /> Registros</Link>}
               <Link href="/auditoria/registro/resumen" className={subTabClass(registerTab === "summary")}><BarChart3 size={15} /> Resumen</Link>
             </div>
 
@@ -2514,8 +2517,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
               </div>
             )}
 
-            {!isMobileAccess && registerTab === "summary" && (
+            {registerTab === "summary" && (
               <div className="space-y-4">
+                {!isMobileAccess && (
+                <>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">ERI</div><div className="text-2xl font-black">{totals.eri}%</div></div>
                   <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Sobrante</div><div className="text-2xl font-black text-blue-700">{totals.surplus}</div></div>
@@ -2542,6 +2547,8 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                     <input value={warehouseAdvisor} onChange={e => setWarehouseAdvisor(e.target.value)} placeholder="Asesor de almacén" className="rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-200" />
                   </div>
                 </div>
+                </>
+                )}
 
                 <div className="rounded-2xl border bg-white shadow-sm">
                   <div className="border-b px-4 py-3">
