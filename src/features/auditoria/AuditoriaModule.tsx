@@ -291,7 +291,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [torchOn, setTorchOn] = useState(false);
   const [recordsQuery, setRecordsQuery] = useState("");
   const [summaryQuery, setSummaryQuery] = useState("");
-  const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: SortDirection }>({ key: "value", direction: "desc" });
+  // Por defecto ordenado por magnitud de diferencia (mayor a menor, sin
+  // importar si es faltante o sobrante) -- pedido por el usuario para
+  // priorizar los codigos con mayor discrepancia al abrir el Resumen.
+  const [summarySort, setSummarySort] = useState<{ key: SummarySortKey; direction: SortDirection }>({ key: "diff", direction: "desc" });
   const [adminSummaryPeriod, setAdminSummaryPeriod] = useState<AuditSummaryPeriod>("dia");
   const [adminSummaryDate, setAdminSummaryDate] = useState(todayISO());
   const [adminSummaryMonth, setAdminSummaryMonth] = useState(todayISO().slice(0, 7));
@@ -1446,7 +1449,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         case "unit": return row.item.unit || "";
         case "stock": return Number(row.item.system_stock || 0);
         case "counted": return row.total;
-        case "diff": return row.diff;
+        // Magnitud (abs), no el signo -- un faltante grande y un sobrante
+        // grande deben quedar igual de arriba al ordenar por diferencia.
+        case "diff": return Math.abs(row.diff);
         case "value": return row.value;
         case "status": return row.status;
         case "observation": return itemObservationDrafts[row.item.id] ?? row.item.observation ?? "";
