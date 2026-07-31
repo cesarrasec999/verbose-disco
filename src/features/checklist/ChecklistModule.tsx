@@ -2,7 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Home, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, Home, Loader2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { readStoredUser } from "@/lib/singleDeviceSession";
@@ -40,6 +40,12 @@ const AUDITOR_ROLES = ["Validador", "Supervisor", "Administrador", "Operario"];
 type MyStore = { id: string; store_id: string; store_name: string };
 type Assignment = { id: string; store_id: string; auditor_user_id: string; store_name: string; auditor_name: string };
 type ChecklistEntryRow = { item_key: string; entry_date: string; status: ChecklistStatus };
+type ChecklistExportEntry = ChecklistEntryRow & {
+  store_id: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 type PeriodType = "dia" | "mes" | "rango";
 type PeriodState = { type: PeriodType; date: string; month: string; from: string; to: string };
@@ -121,6 +127,17 @@ function statusSymbol(status: ChecklistStatus | undefined) {
   if (status === "justificado") return "J";
   return "-";
 }
+function statusLabel(status: ChecklistStatus | undefined) {
+  if (status === "cumple") return "Cumple";
+  if (status === "no_cumple") return "No cumple";
+  if (status === "justificado") return "Justificado";
+  return "Sin registro";
+}
+function datesInRange(from: string, toExclusive: string) {
+  const dates: string[] = [];
+  for (let date = from; date < toExclusive; date = addDaysISO(date, 1)) dates.push(date);
+  return dates;
+}
 
 // ─── Sub-componentes ────────────────────────────────────────────────────────
 
@@ -185,6 +202,7 @@ export default function ChecklistModule() {
   const [existenciaPeriod, setExistenciaPeriod] = useState<PeriodState>(() => defaultPeriod(previousMonthValue(todayISO().slice(0, 7))));
   const [resumenRows, setResumenRows] = useState<ResumenRow[]>([]);
   const [resumenLoading, setResumenLoading] = useState(false);
+  const [downloadingDetail, setDownloadingDetail] = useState(false);
 
   const canManageChecklist = user?.role === "Administrador" || user?.role === "Supervisor";
 
@@ -421,6 +439,88 @@ export default function ChecklistModule() {
     }
   }
 
+  async function downloadChecklistDetail() {
+    if (stores.length === 0) return;
+    setDownloadingDetail(true);
+    try {
+      const range = periodRange(cumplimientoPeriod);
+      const storeIds = stores.map(store => store.id);
+      const entries: ChecklistExportEntry[] = [];
+      const pageSize = 1000;
+
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from("checklist_entries")
+          .select("store_id, item_key, entry_date, status, notes, created_at, updated_at")
+          .in("store_id", storeIds)
+          .gte("entry_date", range.from)
+          .lt("entry_date", range.toExclusive)
+          .order("entry_date")
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        const page = (data || []) as ChecklistExportEntry[];
+        entries.push(...page);
+        if (page.length < pageSize) break;
+      }
+
+      const XLSX = await import("xlsx");
+      const itemLabelByKey = new Map(CHECKLIST_ITEMS.map(item => [item.key, item.label]));
+      const storeById = new Map(stores.map(store => [store.id, store.name]));
+      const auditorByStoreId = new Map(assignments.map(assignment => [assignment.store_id, assignment.auditor_name]));
+      const entriesByStoreDay = new Map<string, ChecklistExportEntry[]>();
+      for (const entry of entries) {
+        const key = `${entry.store_id}|${entry.entry_date}`;
+        const current = entriesByStoreDay.get(key) || [];
+        current.push(entry);
+        entriesByStoreDay.set(key, current);
+      }
+
+      const dailyRows = stores.flatMap(store => datesInRange(range.from, range.toExclusive).map(date => {
+        const dayEntries = entriesByStoreDay.get(`${store.id}|${date}`) || [];
+        const statusByItem = new Map(dayEntries.map(entry => [entry.item_key, entry.status]));
+        const cumplio = [...statusByItem.values()].filter(status => status === "cumple").length;
+        const noCumplio = [...statusByItem.values()].filter(status => status === "no_cumple").length;
+        const justificado = [...statusByItem.values()].filter(status => status === "justificado").length;
+        const registrados = statusByItem.size;
+        return {
+          FECHA: date,
+          TIENDA: store.name,
+          AUDITOR_ASIGNADO: auditorByStoreId.get(store.id) || "Sin asignar",
+          PUNTOS_CUMPLE: cumplio,
+          PUNTOS_NO_CUMPLE: noCumplio,
+          PUNTOS_JUSTIFICADOS: justificado,
+          PUNTOS_SIN_REGISTRO: CHECKLIST_ITEMS.length - registrados,
+          CUMPLIO_TODO_EL_DIA: cumplio === CHECKLIST_ITEMS.length ? "SI" : "NO",
+          ESTADO_DIA: registrados === 0 ? "Sin registro" : cumplio === CHECKLIST_ITEMS.length ? "Cumplió" : "Con pendientes/incidencias",
+        };
+      }));
+
+      const detailRows = entries.map(entry => ({
+        FECHA: entry.entry_date,
+        TIENDA: storeById.get(entry.store_id) || entry.store_id,
+        AUDITOR_ASIGNADO: auditorByStoreId.get(entry.store_id) || "Sin asignar",
+        PUNTO_CHECKLIST: itemLabelByKey.get(entry.item_key as ChecklistItemKey) || entry.item_key,
+        ESTADO: statusLabel(entry.status),
+        OBSERVACIONES: entry.notes || "",
+        REGISTRADO_EL: entry.created_at,
+        ACTUALIZADO_EL: entry.updated_at,
+      })).sort((a, b) => (a.FECHA + a.TIENDA + a.PUNTO_CHECKLIST).localeCompare(b.FECHA + b.TIENDA + b.PUNTO_CHECKLIST));
+
+      const dailySheet = XLSX.utils.json_to_sheet(dailyRows);
+      dailySheet["!cols"] = [{ wch: 14 }, { wch: 28 }, { wch: 24 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 22 }, { wch: 28 }];
+      const detailSheet = XLSX.utils.json_to_sheet(detailRows);
+      detailSheet["!cols"] = [{ wch: 14 }, { wch: 28 }, { wch: 24 }, { wch: 30 }, { wch: 16 }, { wch: 38 }, { wch: 23 }, { wch: 23 }];
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, dailySheet, "Cumplimiento diario");
+      XLSX.utils.book_append_sheet(workbook, detailSheet, "Detalle por punto");
+      XLSX.writeFile(workbook, `checklist_${range.from}_a_${addDaysISO(range.toExclusive, -1)}.xlsx`);
+    } catch (e: any) {
+      toast.error("Error descargando detalle: " + e.message);
+    } finally {
+      setDownloadingDetail(false);
+    }
+  }
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (!ready || !user) return <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</p>;
@@ -455,9 +555,14 @@ export default function ChecklistModule() {
                     <PeriodPicker label="Período Cumplimiento" value={cumplimientoPeriod} onChange={setCumplimientoPeriod} />
                     <PeriodPicker label="Período ERI (Existencia + Conteo Cíclico)" value={existenciaPeriod} onChange={setExistenciaPeriod} />
                   </div>
-                  <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
-                    {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => void downloadChecklistDetail()} disabled={downloadingDetail} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40">
+                      {downloadingDetail ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Descargar detalle Excel
+                    </button>
+                    <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
+                      {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar
+                    </button>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
