@@ -147,8 +147,9 @@ export default function LoginPage() {
 
   function canEnterDestination(user: CyclicUser, targetDestination: LoginDestination) {
     const moduleKey = DESTINATION_MODULE[targetDestination];
+    if (targetDestination === "/diferencias-inventario") return true;
     // Módulos con acceso directo por clave — sin lógica de roles adicional
-    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales" || targetDestination === "/creditos-cobranzas" || targetDestination === "/diferencias-inventario") {
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales" || targetDestination === "/creditos-cobranzas") {
       return userModuleAccess(user).includes(moduleKey);
     }
     if (targetDestination === "/dashboard") {

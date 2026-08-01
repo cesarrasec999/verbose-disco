@@ -59,7 +59,6 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
   { key: "credit_sales", label: "Creditos y Cobranzas", group: "Modulos" },
   { key: "checklist", label: "Checklist", group: "Modulos" },
-  { key: "inventory_differences", label: "Diferencias de Inventario", group: "Modulos" },
 ];
 
 type AccessUser = {
@@ -85,7 +84,6 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "packing",
     "ajustes_provisionales",
     "checklist",
-    "inventory_differences",
   ];
   if (role === "Validador") return [
     "cyclic_assign_products",
@@ -102,10 +100,9 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "picking",
     "packing",
     "ajustes_provisionales",
-    "inventory_differences",
   ];
   if (role === "Cajero") return [];
-  return ["cyclic_count_take", "packing", "inventory_differences"];
+  return ["cyclic_count_take", "packing"];
 }
 
 export function expandLegacyModuleAccess(keys: string[], role: Role | string, canAccessAudit?: boolean | null): ModuleAccessKey[] {
@@ -141,6 +138,10 @@ export function hasExplicitModuleAccess(user: Pick<AccessUser, "module_access"> 
 
 export function canAccessModule(user: AccessUser | null | undefined, key: ModuleAccessKey) {
   if (!user) return false;
+  // El reporte de diferencias es transversal: todo usuario autenticado puede
+  // reportar y consultar sus propios casos. Las acciones de validación se
+  // controlan dentro del módulo por rol.
+  if (key === "inventory_differences") return true;
   return normalizedModuleAccess(user).includes(key);
 }
 

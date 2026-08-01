@@ -64,7 +64,6 @@ export default function ReportarTab() {
 
   useEffect(() => {
     if (!user || stores.length === 0 || selectedStoreId) return;
-    if (user.can_access_all_stores) return;
     if (user.store_id) setSelectedStoreId(user.store_id);
   }, [user, stores, selectedStoreId]);
 
@@ -206,21 +205,18 @@ export default function ReportarTab() {
     return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" reason="Tu usuario no tiene acceso a este módulo." />;
   }
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" />;
+  if (!user.store_id) {
+    return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" reason="Tu usuario no tiene una tienda asignada para registrar diferencias." />;
+  }
 
   return (
     <main className="mx-auto max-w-2xl space-y-4 p-4 pb-24">
       <TabNav active="reportar" />
 
-      {user.can_access_all_stores && (
-        <select
-          value={selectedStoreId}
-          onChange={event => { setSelectedStoreId(event.target.value); resetForm(); }}
-          className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold"
-        >
-          <option value="">Selecciona una tienda</option>
-          {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
-        </select>
-      )}
+      <div className="rounded-xl border bg-slate-50 px-3 py-3 text-sm">
+        <span className="font-black text-slate-500">Tienda de registro: </span>
+        <span className="font-black text-slate-900">{selectedStore?.name || "Cargando tienda asignada..."}</span>
+      </div>
 
       {!selectedProduct && (
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
