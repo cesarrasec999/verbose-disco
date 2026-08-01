@@ -62,10 +62,12 @@ export default function ReportarTab() {
       .then(({ data }) => setStores((data || []) as Store[]));
   }, []);
 
+  const canReportAllStores = user?.role === "Administrador" || user?.role === "Supervisor" || user?.role === "Validador";
+
   useEffect(() => {
     if (!user || stores.length === 0 || selectedStoreId) return;
-    if (user.store_id) setSelectedStoreId(user.store_id);
-  }, [user, stores, selectedStoreId]);
+    if (!canReportAllStores && user.store_id) setSelectedStoreId(user.store_id);
+  }, [user, stores, selectedStoreId, canReportAllStores]);
 
   const selectedStore = stores.find(store => store.id === selectedStoreId) || null;
 
@@ -205,7 +207,7 @@ export default function ReportarTab() {
     return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" reason="Tu usuario no tiene acceso a este módulo." />;
   }
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" />;
-  if (!user.store_id) {
+  if (!canReportAllStores && !user.store_id) {
     return (
       <main className="mx-auto max-w-2xl p-4">
         <div className="rounded-2xl border bg-white p-6 text-center shadow-sm">
@@ -221,10 +223,21 @@ export default function ReportarTab() {
     <main className="mx-auto max-w-2xl space-y-4 p-4 pb-24">
       <TabNav active="reportar" />
 
-      <div className="rounded-xl border bg-slate-50 px-3 py-3 text-sm">
-        <span className="font-black text-slate-500">Tienda de registro: </span>
-        <span className="font-black text-slate-900">{selectedStore?.name || "Cargando tienda asignada..."}</span>
-      </div>
+      {canReportAllStores ? (
+        <select
+          value={selectedStoreId}
+          onChange={event => { setSelectedStoreId(event.target.value); resetForm(); }}
+          className="w-full rounded-xl border bg-white px-3 py-3 text-sm font-bold"
+        >
+          <option value="">Selecciona la tienda para registrar</option>
+          {stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+        </select>
+      ) : (
+        <div className="rounded-xl border bg-slate-50 px-3 py-3 text-sm">
+          <span className="font-black text-slate-500">Tienda de registro: </span>
+          <span className="font-black text-slate-900">{selectedStore?.name || "Cargando tienda asignada..."}</span>
+        </div>
+      )}
 
       {!selectedProduct && (
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
