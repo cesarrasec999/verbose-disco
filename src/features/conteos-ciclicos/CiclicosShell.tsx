@@ -4466,7 +4466,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         }
 
         const productIds = [...productMap.keys()];
-        const byId = new Map<string, ProductLocation>();
+        const latestByLocation = new Map<string, ProductLocation>();
+        const keepLatestLocation = (row: ProductLocation) => {
+            const key = `${row.store_id || "global"}|${row.product_id}|${String(row.location || "").trim().toUpperCase()}`;
+            const current = latestByLocation.get(key);
+            const currentTime = new Date(current?.last_seen_at || current?.updated_at || 0).getTime();
+            const rowTime = new Date(row.last_seen_at || row.updated_at || 0).getTime();
+            if (!current || rowTime >= currentTime) latestByLocation.set(key, row);
+        };
         if (productIds.length > 0) {
             const cleanIds = [...new Set(productIds)].filter(Boolean);
             let q1 = supabase
@@ -4478,7 +4485,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             q1 = applyStoreFilter(q1);
             const { data, error } = await q1;
             if (error) throw error;
-            for (const row of (data || []) as ProductLocation[]) byId.set(row.id, row);
+            for (const row of (data || []) as ProductLocation[]) keepLatestLocation(row);
         }
 
         const locationTerm = term.toUpperCase();
@@ -4492,9 +4499,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         q2 = applyStoreFilter(q2);
         const { data: locationRows, error: locationError } = await q2;
         if (locationError) throw locationError;
-        for (const row of (locationRows || []) as ProductLocation[]) byId.set(row.id, row);
+        for (const row of (locationRows || []) as ProductLocation[]) keepLatestLocation(row);
 
-        const hydratedRows = await hydrateLocationQuantities([...byId.values()]);
+        const hydratedRows = await hydrateLocationQuantities([...latestByLocation.values()]);
         return hydratedRows.sort((a, b) => {
             const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
             const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
@@ -4962,10 +4969,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const pageSize = 1000;
             for (let from = 0; ; from += pageSize) {
                 let query = supabase
-                    .from("product_locations")
-                    .select("id,store_id,sku,location,stored_quantity,is_active,last_source,last_seen_at,updated_at,cyclic_products(sku,description,unit),stores(name)")
-                    .eq("is_active", true)
-                    .order("sku", { ascending: true })
+                    .from("product_location_history")
+                    .select("id,store_id,store_name,product_id,sku,product_description,unit,location,stored_quantity,is_active,action,previous_location,previous_stored_quantity,previous_is_active,actor_user_id,source,occurred_at")
+                    .order("occurred_at", { ascending: false })
                     .range(from, from + pageSize - 1);
                 if (locationStoreId) query = query.eq("store_id", locationStoreId);
                 const { data, error } = await query;
@@ -4974,27 +4980,49 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 if (!data || data.length < pageSize) break;
             }
 
+            const actorIds = [...new Set(rows.map(row => row.actor_user_id).filter(Boolean))] as string[];
+            const actorNames = new Map<string, string>();
+            for (let from = 0; from < actorIds.length; from += 500) {
+                const { data, error } = await supabase
+                    .from("cyclic_users")
+                    .select("id,full_name,username")
+                    .in("id", actorIds.slice(from, from + 500));
+                if (error) throw error;
+                for (const actor of data || []) actorNames.set(actor.id, actor.full_name || actor.username || "-");
+            }
+
+            const actionLabels: Record<string, string> = {
+                created: "Alta",
+                updated: "Edición",
+                deleted: "Eliminación",
+                restored: "Reactivación",
+                baseline: "Registro inicial",
+            };
             const exportRows = rows.map(row => {
-                const product = row.cyclic_products;
                 const store = allStores.find(s => s.id === row.store_id);
                 return {
-                    Tienda: row.stores?.name || store?.name || "Global",
-                    Codigo: product?.sku || row.sku || "",
-                    Descripcion: product?.description || "",
-                    UM: product?.unit || "",
-                    Ubicacion: row.location || "",
-                    Cantidad: row.stored_quantity ?? "",
-                    Activo: row.is_active ? "Si" : "No",
-                    Fuente: row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion",
-                    "Ultimo cambio": row.last_seen_at || row.updated_at || "",
+                    "Fecha y hora": row.occurred_at || "",
+                    Acción: actionLabels[row.action] || row.action || "",
+                    Tienda: row.store_name || store?.name || "Global",
+                    Usuario: actorNames.get(row.actor_user_id) || "Sistema / sin usuario",
+                    Código: row.sku || "",
+                    Descripción: row.product_description || "",
+                    UM: row.unit || "",
+                    Ubicación: row.location || "",
+                    "Cantidad guardada": row.stored_quantity ?? "",
+                    Activa: row.is_active ? "Sí" : "No",
+                    Fuente: row.source === "manual" ? "Recepcion" : row.source || "Recepcion",
+                    "Ubicación anterior": row.previous_location || "",
+                    "Cantidad anterior": row.previous_stored_quantity ?? "",
+                    "Activa anteriormente": row.previous_is_active === null || row.previous_is_active === undefined ? "" : row.previous_is_active ? "Sí" : "No",
                 };
             });
 
             const workbook = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "Ubicaciones");
+            XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "UBICACIONES");
             const selectedStore = allStores.find(s => s.id === locationStoreId)?.name || "todas";
-            XLSX.writeFile(workbook, `ubicaciones_${selectedStore.replace(/[^a-z0-9]+/gi, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-            showMessage(`${exportRows.length.toLocaleString("es-PE")} ubicaciones exportadas.`, "success");
+            XLSX.writeFile(workbook, `ubicaciones_historial_${selectedStore.replace(/[^a-z0-9]+/gi, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+            showMessage(`${exportRows.length.toLocaleString("es-PE")} registros de ubicaciones exportados.`, "success");
         } catch (error: any) {
             showMessage("Error descargando ubicaciones: " + (error?.message || error), "error");
         } finally {
@@ -8252,7 +8280,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             disabled={locationBusy}
                                             onClick={exportLocationsExcel}
                                         >
-                                            <Download size={16} /> Descargar ubicaciones
+                                            <Download size={16} /> UBICACIONES
                                         </button>
                                     </div>
                                 </div>
