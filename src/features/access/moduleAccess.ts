@@ -21,7 +21,8 @@ export type ModuleAccessKey =
   | "reception"
   | "ajustes_provisionales"
   | "credit_sales"
-  | "checklist";
+  | "checklist"
+  | "inventory_differences";
 
 export const CYCLIC_SUBMODULE_KEYS: ModuleAccessKey[] = [
   "cyclic_count_take",
@@ -58,6 +59,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
   { key: "credit_sales", label: "Creditos y Cobranzas", group: "Modulos" },
   { key: "checklist", label: "Checklist", group: "Modulos" },
+  { key: "inventory_differences", label: "Diferencias de Inventario", group: "Modulos" },
 ];
 
 type AccessUser = {
@@ -83,6 +85,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "packing",
     "ajustes_provisionales",
     "checklist",
+    "inventory_differences",
   ];
   if (role === "Validador") return [
     "cyclic_assign_products",
@@ -99,9 +102,10 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "picking",
     "packing",
     "ajustes_provisionales",
+    "inventory_differences",
   ];
   if (role === "Cajero") return [];
-  return ["cyclic_count_take", "packing"];
+  return ["cyclic_count_take", "packing", "inventory_differences"];
 }
 
 export function expandLegacyModuleAccess(keys: string[], role: Role | string, canAccessAudit?: boolean | null): ModuleAccessKey[] {

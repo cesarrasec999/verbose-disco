@@ -15,7 +15,7 @@ import type { CyclicUser } from "@/features/ciclicos/types";
 // de usuario hardcodeado, no por rol.
 export const CONTROL_OWNER_ID = "6640b556-8944-4921-8b13-c547c834fb05";
 
-// Los 14 modulos de nivel superior (mismos que src/app/page.tsx
+// Los 15 modulos de nivel superior (mismos que src/app/page.tsx
 // DESTINATION_MODULE) - Conteo Ciclico cubre tanto /dashboard como
 // /conteos-ciclicos/*, son el mismo modulo para este kill switch.
 const KILL_SWITCH_MODULES: { key: ModuleAccessKey; label: string }[] = [
@@ -33,6 +33,7 @@ const KILL_SWITCH_MODULES: { key: ModuleAccessKey; label: string }[] = [
   { key: "ajustes_provisionales", label: "Ajustes Provisionales" },
   { key: "credit_sales", label: "Créditos y Cobranzas" },
   { key: "checklist", label: "Checklist" },
+  { key: "inventory_differences", label: "Diferencias de Inventario" },
 ];
 
 type ModuleFlagRow = {
