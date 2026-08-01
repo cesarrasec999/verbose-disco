@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import {
   Camera, CheckCircle2, ChevronLeft, Home, LogOut, Package,
-  Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
+  Download, Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
@@ -176,6 +176,7 @@ const SUPPLY_REASONS = new Set(["ABASTECIMIENTO", "ABASTECIMIENTO URGENTE"]);
 const REQUEST_CACHE_PREFIX = "recepcion_requests_cache:";
 const REQUEST_CACHE_TTL_MS = 20 * 60 * 1000;
 const PAGE_SIZE = 50;
+const PENDING_REQUESTS_PAGE_SIZE = 1000;
 // Con un filtro de tienda especifico el universo ya es acotado (la tienda con
 // mas volumen, CD-GPC, tiene ~270 registros como destino): se carga todo de
 // una vez para no esconder "en transito" antiguos detras de "Cargar mas".
@@ -400,7 +401,7 @@ function StatusBadge({ status }: { status: ReceptionRequest["reception_status"] 
 
 // ─── Página ───────────────────────────────────────────────────────────────────
 
-type ListPanel = "recepcion" | "resumen" | "diferencias";
+type ListPanel = "recepcion" | "pendientes" | "resumen" | "diferencias";
 
 export default function RecepcionModule({ listPanel }: { listPanel: ListPanel }) {
   const router = useRouter();
@@ -421,6 +422,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [saving, setSaving]     = useState(false);
   const [hasMore, setHasMore]   = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [exportingPendingRequests, setExportingPendingRequests] = useState(false);
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
@@ -533,12 +535,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     if (!user) return "anonymous";
     const dateScope = `${reqDateFrom}_${reqDateTo}`;
     if (canViewAllStores) {
-      return `${user.id}:admin:${storeFilter || "all"}:${dateScope}`;
+      return `${user.id}:${listPanel}:admin:${storeFilter || "all"}:${dateScope}`;
     }
     const store = stores.find(item => item.id === user.store_id);
     const codes = storeCodes(store);
-    return `${user.id}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}:${dateScope}`;
-  }, [canViewAllStores, storeCodes, stores, user, storeFilter, reqDateFrom, reqDateTo]);
+    return `${user.id}:${listPanel}:store:${(codes.length > 0 ? codes : [user.store_id || "none"]).sort().join("+")}:${dateScope}`;
+  }, [canViewAllStores, storeCodes, stores, user, storeFilter, reqDateFrom, reqDateTo, listPanel]);
 
   const applyRequests = useCallback((rows: ReceptionRequest[]) => {
     setRequests(rows);
@@ -750,6 +752,18 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     return q;
   }
 
+  function buildPendingReceptionQuery(signal: AbortSignal, codes: string[], offset: number) {
+    let q = supabase
+      .from("reception_requests")
+      .select("*")
+      .eq("status_code", "T")
+      .order("creation_date", { ascending: false })
+      .range(offset, offset + PENDING_REQUESTS_PAGE_SIZE - 1)
+      .abortSignal(signal);
+    if (codes.length > 0) q = q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+    return q;
+  }
+
   async function loadRequests() {
     const seq = ++loadSeq.current;
     abortRef.current?.abort();
@@ -759,20 +773,41 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
     const scopeKey = requestScopeKey();
     const cachedRows = readRequestCache(scopeKey);
-    const fallbackCachedRows = cachedRows.length > 0 ? cachedRows : readAnyRequestCache(user?.id);
+    const fallbackCachedRows = listPanel === "pendientes" ? [] : (cachedRows.length > 0 ? cachedRows : readAnyRequestCache(user?.id));
     if (requests.length === 0 && cachedRows.length > 0) setRequests(cachedRows);
     else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
       const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+      const syncStatusPromise = supabase
+        .from("erp_sync_status").select("synced_at,updated_at")
+        .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
+
+      if (listPanel === "pendientes") {
+        const pendingRows: ReceptionRequest[] = [];
+        for (let offset = 0; ; offset += PENDING_REQUESTS_PAGE_SIZE) {
+          const { data, error } = await buildPendingReceptionQuery(signal, codes, offset);
+          if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
+          if (error) throw error;
+          const page = (data || []) as ReceptionRequest[];
+          pendingRows.push(...page);
+          if (page.length < PENDING_REQUESTS_PAGE_SIZE) break;
+        }
+        loadedOffsetRef.current = pendingRows.length;
+        setHasMore(false);
+        const syncStatus = await syncStatusPromise;
+        if (seq === loadSeq.current && mountedRef.current) {
+          setLastErpSync(syncStatus.data?.synced_at || syncStatus.data?.updated_at || pendingRows[0]?.request_date || null);
+          applyRequests(pendingRows);
+        }
+        return;
+      }
+
       const pageSize = codes.length > 0 ? FILTERED_PAGE_SIZE : PAGE_SIZE;
       const fromIso = `${reqDateFrom}T00:00:00`;
       const toIso = `${reqDateTo}T23:59:59`;
       const trimmedSearch = search.trim();
-      const syncStatusPromise = supabase
-        .from("erp_sync_status").select("synced_at,updated_at")
-        .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
       const productRequestIds = trimmedSearch ? await findRequestIdsByProductCode(trimmedSearch, signal) : [];
       if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
 
@@ -1908,6 +1943,58 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     return true;
   }), [scopedRequestGroups, filterStatus, filterErpStatus, reasonFilter]);
 
+  const pendingRequestsByStore = useMemo(() => {
+    const grouped = new Map<string, ReceptionRequestGroup[]>();
+    for (const request of scopedRequestGroups) {
+      if (!request.child_requests.some(item => (item.erp_status ?? item.status_code) === "T")) continue;
+      const key = request.destination_store_code || request.destination_store_name || "SIN_TIENDA";
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(request);
+    }
+    return [...grouped.entries()]
+      .map(([key, rows]) => ({
+        key,
+        name: rows[0]?.destination_store_name || rows[0]?.destination_store_code || "Sin tienda",
+        rows: [...rows].sort((a, b) => String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [scopedRequestGroups]);
+
+  async function exportPendingRequestsExcel() {
+    setExportingPendingRequests(true);
+    try {
+      const exportRows = pendingRequestsByStore.flatMap(group => group.rows.flatMap(request =>
+        request.child_requests.map(item => ({
+          Tienda: item.destination_store_name || item.destination_store_code || group.name,
+          "Código tienda": item.destination_store_code || "",
+          "Requerimiento": item.inv_request_no || "",
+          "Guía / documento": item.doc_number || "",
+          "Estado RMS": "En tránsito",
+          "Fecha requerimiento": item.creation_date || "",
+          "Fecha tránsito": item.request_date || "",
+          "Tienda origen": item.source_store_name || item.source_store_code || "",
+          "Código origen": item.source_store_code || "",
+          Motivo: item.reason || "",
+          "Líneas": num(item.line_count),
+          "Cantidad solicitada": num(item.qty_requested_total),
+          "Cantidad pendiente": num(item.qty_pending_total),
+          "Estado recepción": item.reception_status === "completed" ? "Completado" : item.reception_status === "in_progress" ? "En proceso" : "Pendiente",
+          "Recepcionado por": item.completed_by_name || "",
+          Observaciones: item.notes || "",
+        }))
+      ));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "Pendientes recepción");
+      const selectedStore = destStoreOptions.find(store => store.code === storeFilter)?.name || "todas_las_tiendas";
+      XLSX.writeFile(workbook, `pendientes_por_recepcion_${selectedStore.replace(/[^a-z0-9]+/gi, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success(`${exportRows.length.toLocaleString("es-PE")} requerimientos pendientes exportados.`);
+    } catch (error: any) {
+      showMsg("Error descargando pendientes por recepción: " + (error?.message || error));
+    } finally {
+      setExportingPendingRequests(false);
+    }
+  }
+
   const destStoreOptions = useMemo(() => {
     // Base: todas las tiendas activas (no solo las que aparecen en la pagina
     // de solicitudes recientes cargadas, que puede dejar fuera tiendas con
@@ -2129,12 +2216,18 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         <div className="flex-1 p-4 max-w-3xl w-full mx-auto space-y-3 lg:max-w-6xl xl:max-w-7xl">
 
           {(canViewSummary || canViewDifferences) && (
-            <div className={`grid gap-2 rounded-2xl border bg-white p-1 shadow-sm ${canViewSummary ? "grid-cols-3" : "grid-cols-2"}`}>
+            <div className={`grid gap-2 rounded-2xl border bg-white p-1 shadow-sm ${canViewSummary ? "grid-cols-4" : "grid-cols-3"}`}>
               <Link
                 href={tabHref("recepcion")}
                 className={`rounded-xl px-3 py-2 text-center text-sm font-black ${listPanel === "recepcion" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
               >
                 Recepción
+              </Link>
+              <Link
+                href={tabHref("pendientes")}
+                className={`rounded-xl px-3 py-2 text-center text-sm font-black ${listPanel === "pendientes" ? "bg-slate-950 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                Pendientes por recepción
               </Link>
               {canViewSummary && (
                 <Link
@@ -2176,7 +2269,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 {destStoreOptions.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
               </select>
             )}
-            {listPanel !== "diferencias" && (
+            {listPanel !== "diferencias" && listPanel !== "pendientes" && (
               <>
                 <div>
                   <label className="block text-[11px] font-black uppercase text-slate-400">Desde</label>
@@ -2220,6 +2313,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           </div>
 
           {listPanel === "recepcion" && <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>}
+          {listPanel === "pendientes" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+              <p className="text-xs text-slate-400 font-black">{pendingRequestsByStore.reduce((total, group) => total + group.rows.length, 0)} requerimiento{pendingRequestsByStore.reduce((total, group) => total + group.rows.length, 0) !== 1 ? "s" : ""} en tránsito · {pendingRequestsByStore.length} tienda{pendingRequestsByStore.length !== 1 ? "s" : ""}</p>
+              <button
+                type="button"
+                onClick={() => void exportPendingRequestsExcel()}
+                disabled={exportingPendingRequests || loading}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+              >
+                <Download size={15} /> {exportingPendingRequests ? "Descargando..." : "Descargar Excel"}
+              </button>
+            </div>
+          )}
           {listPanel === "resumen" && <p className="text-xs text-slate-400 font-black px-1">{summaryRows.length} tienda{summaryRows.length !== 1 ? "s" : ""}</p>}
           {listPanel === "diferencias" && <p className="text-xs text-slate-400 font-black px-1">{differenceRows.length} diferencia{differenceRows.length !== 1 ? "s" : ""}</p>}
 
@@ -2254,6 +2360,58 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 ))}
                 {summaryRows.length === 0 && <p className="p-8 text-center text-sm font-bold text-slate-400">Sin datos para mostrar.</p>}
               </div>
+            </div>
+          )}
+
+          {!loading && listPanel === "pendientes" && pendingRequestsByStore.length === 0 && (
+            <div className="py-16 text-center text-slate-400">
+              <Package size={40} className="mx-auto mb-3 opacity-30" />
+              <p className="font-black">No hay requerimientos pendientes por recepción.</p>
+              <p className="mt-1 text-xs">Aquí se muestran todos los requerimientos que siguen en tránsito en RMS.</p>
+            </div>
+          )}
+
+          {!loading && listPanel === "pendientes" && pendingRequestsByStore.length > 0 && (
+            <div className="space-y-4">
+              {pendingRequestsByStore.map(group => (
+                <section key={group.key} className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-teal-50 px-4 py-3">
+                    <div>
+                      <p className="font-black text-slate-900">{group.name}</p>
+                      <p className="text-xs font-bold text-teal-700">{group.rows.length} requerimiento{group.rows.length !== 1 ? "s" : ""} en tránsito</p>
+                    </div>
+                    <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-black text-teal-700">Pendiente por recepción</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[760px] text-sm">
+                      <thead className="bg-slate-50 text-left text-[11px] font-black uppercase text-slate-500">
+                        <tr>
+                          <th className="px-4 py-3">Requerimiento</th>
+                          <th className="px-4 py-3">Guía</th>
+                          <th className="px-4 py-3">Origen</th>
+                          <th className="px-4 py-3">Fecha tránsito</th>
+                          <th className="px-4 py-3 text-right">Líneas</th>
+                          <th className="px-4 py-3 text-right">Cantidad</th>
+                          <th className="px-4 py-3">Estado recepción</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.rows.flatMap(request => request.child_requests).map(item => (
+                          <tr key={item.id} className="border-t border-slate-100">
+                            <td className="px-4 py-3 font-black text-slate-900">{item.inv_request_no || "-"}</td>
+                            <td className="px-4 py-3 font-bold text-slate-600">{item.doc_number || "-"}</td>
+                            <td className="px-4 py-3 text-slate-600">{item.source_store_name || item.source_store_code || "-"}</td>
+                            <td className="px-4 py-3 text-slate-600">{dateShort(item.request_date || item.creation_date)}</td>
+                            <td className="px-4 py-3 text-right font-bold text-slate-700">{fmt(num(item.line_count))}</td>
+                            <td className="px-4 py-3 text-right font-black text-slate-900">{fmt(num(item.qty_requested_total))}</td>
+                            <td className="px-4 py-3"><StatusBadge status={item.reception_status} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ))}
             </div>
           )}
 
