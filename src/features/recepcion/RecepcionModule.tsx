@@ -296,6 +296,9 @@ function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] 
   );
 }
 function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
+function dateTimeForExcel(v: string | null) {
+  return v ? new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" }) : "";
+}
 function timeShort(v: string | null) {
   if (!v) return "-";
   return new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
@@ -1970,8 +1973,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           "Requerimiento": item.inv_request_no || "",
           "Guía / documento": item.doc_number || "",
           "Estado RMS": "En tránsito",
-          "Fecha requerimiento": item.creation_date || "",
-          "Fecha tránsito": item.request_date || "",
+          "Fecha requerimiento": dateTimeForExcel(item.creation_date),
+          "Fecha tránsito": dateTimeForExcel(item.request_date),
           "Tienda origen": item.source_store_name || item.source_store_code || "",
           "Código origen": item.source_store_code || "",
           Motivo: item.reason || "",
