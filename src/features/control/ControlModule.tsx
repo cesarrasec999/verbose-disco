@@ -33,6 +33,7 @@ const KILL_SWITCH_MODULES: { key: ModuleAccessKey; label: string }[] = [
   { key: "ajustes_provisionales", label: "Ajustes Provisionales" },
   { key: "credit_sales", label: "Créditos y Cobranzas" },
   { key: "checklist", label: "Checklist" },
+  { key: "inventory_differences", label: "Diferencias de Inventario" },
 ];
 
 type ModuleFlagRow = {

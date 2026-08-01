@@ -206,7 +206,15 @@ export default function ReportarTab() {
   }
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" />;
   if (!user.store_id) {
-    return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" reason="Tu usuario no tiene una tienda asignada para registrar diferencias." />;
+    return (
+      <main className="mx-auto max-w-2xl p-4">
+        <div className="rounded-2xl border bg-white p-6 text-center shadow-sm">
+          <h1 className="text-lg font-black text-slate-900">Diferencias de Inventario</h1>
+          <p className="mt-2 text-sm font-semibold text-slate-600">Tu usuario no tiene una tienda asignada para registrar diferencias.</p>
+          <p className="mt-1 text-xs text-slate-400">Solicita al administrador asignarte una tienda y vuelve a ingresar.</p>
+        </div>
+      </main>
+    );
   }
 
   return (
