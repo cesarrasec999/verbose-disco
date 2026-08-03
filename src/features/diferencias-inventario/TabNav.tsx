@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ClipboardList, PackagePlus } from "lucide-react";
+import { ClipboardList, Home, PackagePlus } from "lucide-react";
 
 export function TabNav({ active }: { active: "reportar" | "resumen" }) {
   const tabClass = (isActive: boolean) =>
@@ -11,6 +11,9 @@ export function TabNav({ active }: { active: "reportar" | "resumen" }) {
 
   return (
     <div className="flex gap-2">
+      <Link href="/" className="flex shrink-0 items-center justify-center rounded-xl border bg-white px-3 text-slate-600 hover:bg-slate-50" title="Menú principal" aria-label="Menú principal">
+        <Home size={18} />
+      </Link>
       <Link href="/diferencias-inventario/reportar" className={tabClass(active === "reportar")}>
         <PackagePlus size={16} /> Reportar
       </Link>
