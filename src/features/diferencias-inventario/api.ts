@@ -1,7 +1,7 @@
 import { supabase } from "@/lib/supabase/client";
 import type { Product, Store } from "@/features/ciclicos/types";
 import { fullProductCode, mappedProductCodeCandidates, preferFullCodsapProducts } from "@/features/ciclicos/utils";
-import type { DifferenceReport, DifferenceStatus } from "./types";
+import type { DifferenceReason, DifferenceReport, DifferenceRequestData, DifferenceStatus } from "./types";
 
 const PHOTO_BUCKET = "inventory-difference-photos";
 
@@ -54,6 +54,28 @@ export async function fetchStockForStore(store: Pick<Store, "erp_sede" | "name">
   return Number(data?.stock || 0);
 }
 
+function provisionalStoreCode(store: Pick<Store, "erp_sede" | "name">): string | null {
+  const label = String(store.erp_sede || store.name || "");
+  if (/CD-GPC|CENTRO DISTRIBUCION/i.test(label)) return "1000";
+  const match = label.match(/^GPC0*(\d+)/i);
+  if (!match) return null;
+  const number = Number(match[1]);
+  const overrides: Record<number, number> = { 2: 4, 3: 5, 4: 2, 5: 3 };
+  return String(1000 + (overrides[number] ?? number));
+}
+
+export async function fetchProvisionalPending(store: Pick<Store, "erp_sede" | "name">, product: Pick<Product, "sku">): Promise<number> {
+  const storeCode = provisionalStoreCode(store);
+  if (!storeCode) return 0;
+  const { data, error } = await supabase.rpc("get_ajustes_provisionales", {
+    year_start: `${new Date().getFullYear()}-01-01`, p_store: storeCode, p_limit: 500, p_offset: 0,
+  });
+  if (error) throw error;
+  const code = fullProductCode(product.sku);
+  const row = (data || []).find((item: { product_code?: string }) => String(item.product_code || "") === code) as { total_qty?: number } | undefined;
+  return Number(row?.total_qty || 0);
+}
+
 export async function uploadDifferencePhoto(file: File): Promise<string> {
   const path = `${crypto.randomUUID()}.jpg`;
   const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(path, file);
@@ -65,14 +87,16 @@ export async function uploadDifferencePhoto(file: File): Promise<string> {
 export type NewDifferenceReport = {
   store_id: string | null;
   store_name: string | null;
-  product_id: string;
+  product_id: string | null;
   sku: string;
   description: string | null;
   unit: string | null;
   system_stock_at_report: number;
-  physical_qty: number;
-  photo_url: string;
+  physical_qty: number | null;
+  photo_url: string | null;
   notes: string | null;
+  reason: DifferenceReason;
+  request_data: DifferenceRequestData;
   operator_id: string;
   operator_name: string;
 };
@@ -132,5 +156,10 @@ export async function rejectReport(id: string, validator: { id: string; name: st
       validated_at: new Date().toISOString(),
     })
     .eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteDifferenceReport(id: string): Promise<void> {
+  const { error } = await supabase.from("inventory_difference_reports").delete().eq("id", id);
   if (error) throw error;
 }

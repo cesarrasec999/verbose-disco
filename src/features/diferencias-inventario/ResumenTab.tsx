@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
@@ -9,15 +9,15 @@ import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 import { formatDateTime, formatNumber } from "@/features/ciclicos/utils";
-import { fetchDifferenceReports, regularizeReport, rejectReport } from "./api";
-import type { DifferenceReport, DifferenceStatus } from "./types";
+import { deleteDifferenceReport, fetchDifferenceReports, regularizeReport, rejectReport } from "./api";
+import type { DifferenceReason, DifferenceReport, DifferenceStatus } from "./types";
 import { TabNav } from "./TabNav";
 
 const PAGE_SIZE = 30;
 
 const STATUS_LABEL: Record<DifferenceStatus, string> = {
   pendiente: "Pendiente",
-  regularizado: "Regularizado",
+  regularizado: "Atendido",
   rechazado: "Rechazado",
 };
 
@@ -26,6 +26,23 @@ const STATUS_BADGE: Record<DifferenceStatus, string> = {
   regularizado: "bg-green-100 text-green-700",
   rechazado: "bg-red-100 text-red-700",
 };
+
+const REASON_LABEL: Record<DifferenceReason, string> = {
+  cruce_sku: "Cruce de SKU",
+  ajuste_inventario: "Ajuste de inventario",
+  post_inventario: "Post inventario",
+  ingreso_provisional: "Ingreso provisional",
+  regularizacion_provisional: "Regularización de provisional",
+  transformacion_interna: "Transformación interna",
+};
+
+function requestDetail(report: DifferenceReport) {
+  const products = report.request_data?.products || [];
+  const labels = products.map(product => `${product.sku} (${product.role}: ${formatNumber(product.quantity)})`);
+  const process = report.request_data?.regularization_process ? ` · ${report.request_data.regularization_process}` : "";
+  const pending = report.request_data?.provisional_pending !== undefined && report.request_data?.provisional_pending !== null ? ` · Pendiente: ${formatNumber(report.request_data.provisional_pending)}` : "";
+  return `${labels.join(" · ") || report.sku}${process}${pending}`;
+}
 
 export default function ResumenTab() {
   const [user, setUser] = useState<CyclicUser | null>(null);
@@ -133,6 +150,20 @@ export default function ResumenTab() {
     }
   }
 
+  async function handleDelete(report: DifferenceReport) {
+    if (!window.confirm(`¿Eliminar la solicitud ${report.sku}? Esta acción no se puede deshacer.`)) return;
+    setSavingActionId(report.id);
+    try {
+      await deleteDifferenceReport(report.id);
+      toast.success("Solicitud eliminada.");
+      await loadReports();
+    } catch (error) {
+      toast.error("No se pudo eliminar: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setSavingActionId(null);
+    }
+  }
+
   if (!userLoaded) return null;
   if (!user || !canAccessModule(user, "inventory_differences")) {
     return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" reason="Tu usuario no tiene acceso a este módulo." />;
@@ -158,7 +189,7 @@ export default function ResumenTab() {
             <select value={statusFilter} onChange={event => setStatusFilter(event.target.value as DifferenceStatus | "all")} className="rounded-xl border px-3 py-2 text-xs font-bold">
               <option value="all">Todos los estados</option>
               <option value="pendiente">Pendiente</option>
-              <option value="regularizado">Regularizado</option>
+              <option value="regularizado">Atendidos</option>
               <option value="rechazado">Rechazado</option>
             </select>
             <button onClick={() => void loadReports()} className="rounded-xl border p-2 text-slate-600" title="Actualizar">
@@ -168,11 +199,12 @@ export default function ResumenTab() {
         </div>
 
         <div className="mt-4 overflow-auto">
-          <table className="w-full min-w-[1100px] text-sm">
+          <table className="w-full min-w-[1250px] text-sm">
             <thead className="bg-slate-100 text-xs text-slate-600">
               <tr>
                 <th className="p-2 text-left">Código</th>
                 <th className="p-2 text-left">Descripción</th>
+                <th className="p-2 text-left">Motivo / detalle</th>
                 {canValidate && <th className="p-2 text-left">Tienda</th>}
                 <th className="p-2">Stock al reportar</th>
                 <th className="p-2">Cant. física</th>
@@ -188,19 +220,20 @@ export default function ResumenTab() {
             </thead>
             <tbody>
               {rows.map(report => {
-                const diff = report.physical_qty - report.system_stock_at_report;
+                const diff = report.physical_qty === null ? null : report.physical_qty - report.system_stock_at_report;
                 return (
                   <tr key={report.id} className="border-b hover:bg-slate-50">
                     <td className="p-2 font-black">{report.sku}</td>
                     <td className="max-w-xs truncate p-2">{report.description}</td>
+                    <td className="max-w-sm p-2 text-xs"><b>{REASON_LABEL[report.reason] || report.reason}</b><br /><span className="text-slate-500">{requestDetail(report)}</span></td>
                     {canValidate && <td className="p-2">{report.store_name}</td>}
                     <td className="p-2 text-center">{formatNumber(report.system_stock_at_report)}</td>
-                    <td className="p-2 text-center font-bold">{formatNumber(report.physical_qty)}</td>
-                    <td className={`p-2 text-center font-black ${diff < 0 ? "text-red-600" : diff > 0 ? "text-blue-700" : "text-green-700"}`}>
-                      {diff > 0 ? "+" : ""}{formatNumber(diff)}
+                    <td className="p-2 text-center font-bold">{report.physical_qty === null ? "-" : formatNumber(report.physical_qty)}</td>
+                    <td className={`p-2 text-center font-black ${diff === null ? "text-slate-400" : diff < 0 ? "text-red-600" : diff > 0 ? "text-blue-700" : "text-green-700"}`}>
+                      {diff === null ? "-" : <>{diff > 0 ? "+" : ""}{formatNumber(diff)}</>}
                     </td>
                     <td className="p-2 text-center">
-                      <a href={report.photo_url} target="_blank" rel="noreferrer" className="text-blue-700 underline">Ver</a>
+                      {report.photo_url ? <a href={report.photo_url} target="_blank" rel="noreferrer" className="text-blue-700 underline">Ver</a> : "-"}
                     </td>
                     <td className="max-w-xs truncate p-2 text-xs">{report.notes || "-"}</td>
                     <td className="p-2 text-xs">{report.operator_name}</td>
@@ -248,11 +281,12 @@ export default function ResumenTab() {
                             >
                               Rechazar
                             </button>
+                            <button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40">
+                              <Trash2 size={12} /> Eliminar
+                            </button>
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">
-                            {report.validated_by_name ? `Por ${report.validated_by_name}` : "-"}
-                          </span>
+                          <div className="flex flex-col gap-1"><span className="text-xs text-slate-400">{report.validated_by_name ? `Por ${report.validated_by_name}` : "-"}</span><button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40"><Trash2 size={12} /> Eliminar</button></div>
                         )}
                       </td>
                     )}
@@ -261,7 +295,7 @@ export default function ResumenTab() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={canValidate ? 13 : 11} className="p-8 text-center text-sm text-slate-400">
+                  <td colSpan={canValidate ? 14 : 12} className="p-8 text-center text-sm text-slate-400">
                     {loading ? "Cargando..." : "Sin reportes."}
                   </td>
                 </tr>
