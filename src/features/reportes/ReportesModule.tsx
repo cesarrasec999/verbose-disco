@@ -1458,7 +1458,8 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
 
         {activeTab === "presupuesto" && (
           <>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              <div className="rounded-2xl bg-emerald-700 p-4 text-white"><p className="text-xs font-bold text-emerald-100">Venta total seleccionada</p><p className="mt-1 text-xl font-black">{money(salesTotals.sales)}</p></div>
               <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventory || totals.value)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Presupuesto inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.budget)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Cumplimiento</p><p className={`mt-1 text-xl font-black ${budgetCompliance >= 100 ? "text-blue-700" : "text-red-600"}`}>{percent(budgetCompliance)}</p></div>
@@ -1471,10 +1472,11 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                 <Formula>presupuesto de inventario = costo venta proyectado x 1.2. Cumplimiento = valorizado inventario / presupuesto inventario x 100.</Formula>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] text-sm">
+                <table className="w-full min-w-[1100px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
+                      <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta{sortIcon("sales")}</th>
                       <th onClick={() => toggleSort("inventory_value")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado actual{sortIcon("inventory_value")}</th>
                       <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectado{sortIcon("budget_cost")}</th>
                       <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inv.{sortIcon("budget")}</th>
@@ -1486,6 +1488,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                     {sortedSalesRows.map(row => (
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
+                        <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget_cost)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
@@ -1493,7 +1496,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
                   </tbody>
                 </table>
               </div>
