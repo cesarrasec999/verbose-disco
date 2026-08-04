@@ -1045,27 +1045,41 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     const whatsappTotals = whatsappRows.reduce((acc, row) => ({
       budget: r2(acc.budget + row.inventory_budget),
       inventoryCutoff: r2(acc.inventoryCutoff + row.inventory_value_cutoff),
-    }), { budget: 0, inventoryCutoff: 0 });
-    const whatsappDiff = r2(whatsappTotals.inventoryCutoff - whatsappTotals.budget);
+      inventoryCurrent: r2(acc.inventoryCurrent + row.inventory_value),
+    }), { budget: 0, inventoryCutoff: 0, inventoryCurrent: 0 });
+    const whatsappCutoffDiff = r2(whatsappTotals.inventoryCutoff - whatsappTotals.budget);
+    const whatsappCurrentDiff = r2(whatsappTotals.inventoryCurrent - whatsappTotals.budget);
     const topRows = [...whatsappRows]
       .sort((a, b) => Math.abs(b.inventory_cutoff_vs_budget) - Math.abs(a.inventory_cutoff_vs_budget))
       .slice(0, 5);
     const selectedLabel = String(whatsappRows.length) + " tienda" + (whatsappRows.length === 1 ? "" : "s") + " consideradas";
+    const currentDateLabel = new Date().toLocaleDateString("es-PE", { day: "2-digit", month: "2-digit", year: "numeric" });
     const signedMoney = (value: number) => (value >= 0 ? "+" : "") + money(value);
     const lines = [
       "*REPORTE DE PRESUPUESTO DE INVENTARIO*",
-      "Fecha de corte: " + reportDate,
       selectedLabel,
-      "Valorizado corte: " + money(whatsappTotals.inventoryCutoff) + " | Presupuesto: " + money(whatsappTotals.budget),
-      "Desviación total: *" + signedMoney(whatsappDiff) + "*",
+      "",
+      "*CIERRE DE MES (" + shortDateLabel(reportDate) + ")*",
+      "Valorizado: " + money(whatsappTotals.inventoryCutoff) + " | Presupuesto: " + money(whatsappTotals.budget),
+      "Desviación al cierre: *" + signedMoney(whatsappCutoffDiff) + "*",
+      "",
+      "*ACTUALIDAD (" + currentDateLabel + ")*",
+      "Valorizado actual: " + money(whatsappTotals.inventoryCurrent) + " | Presupuesto: " + money(whatsappTotals.budget),
+      "Desviación actual: *" + signedMoney(whatsappCurrentDiff) + "*",
       "",
       "*Top 5 tiendas con mayor desviación:*",
       ...topRows.map((row, index) => {
-        const pct = row.inventory_budget > 0 ? (row.inventory_cutoff_vs_budget / row.inventory_budget) * 100 : 0;
-        return String(index + 1) + ". " + row.store_name + ": " + signedMoney(row.inventory_cutoff_vs_budget) + " (" + (pct >= 0 ? "+" : "") + percent(pct) + ")";
+        const cutoffPct = row.inventory_budget > 0 ? (row.inventory_cutoff_vs_budget / row.inventory_budget) * 100 : 0;
+        const currentDiff = r2(row.inventory_vs_budget);
+        const currentPct = row.inventory_budget > 0 ? (currentDiff / row.inventory_budget) * 100 : 0;
+        return String(index + 1) + ". " + row.store_name + " | Cierre: " + signedMoney(row.inventory_cutoff_vs_budget) + " (" + (cutoffPct >= 0 ? "+" : "") + percent(cutoffPct) + ") | Actual: " + signedMoney(currentDiff) + " (" + (currentPct >= 0 ? "+" : "") + percent(currentPct) + ")";
       }),
       "",
-      "La desviación corresponde a valorizado de fecha de corte menos presupuesto.",
+      "Las desviaciones corresponden a valorizado menos presupuesto; se muestran al cierre y a la actualidad.",
+      "",
+      "*ACCIONES SUGERIDAS*",
+      "Priorizar las tiendas con mayor desviación para recuperar ventas, reducir quiebres y ajustar el inventario al presupuesto.",
+      "Coordinar la logística inversa de sobrantes, faltantes y transferencias para regularizar existencias y liberar stock disponible.",
     ];
     setBudgetReportText(lines.join("\n"));
     setBudgetReportOpen(true);
