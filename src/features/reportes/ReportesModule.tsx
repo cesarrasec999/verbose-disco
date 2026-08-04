@@ -1075,7 +1075,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         return String(index + 1) + ". " + row.store_name + " | Cierre: " + signedMoney(row.inventory_cutoff_vs_budget) + " (" + (cutoffPct >= 0 ? "+" : "") + percent(cutoffPct) + ") | Actual: " + signedMoney(currentDiff) + " (" + (currentPct >= 0 ? "+" : "") + percent(currentPct) + ")";
       }),
       "",
-      "Las desviaciones corresponden a valorizado menos presupuesto; se muestran al cierre y a la actualidad.",
+      "Las desviaciones comparan el valorizado con el presupuesto y pueden ser positivas o negativas; se muestran al cierre y a la actualidad.",
       "",
       "*ACCIONES SUGERIDAS*",
       "Priorizar las tiendas con mayor desviación para recuperar ventas, reducir quiebres y ajustar el inventario al presupuesto.",
