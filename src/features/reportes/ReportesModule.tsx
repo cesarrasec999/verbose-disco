@@ -1079,7 +1079,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       "",
       "*ACCIONES SUGERIDAS*",
       "Priorizar las tiendas con mayor desviación para recuperar ventas, reducir quiebres y ajustar el inventario al presupuesto.",
-      "Coordinar la logística inversa de sobrantes, faltantes y transferencias para regularizar existencias y liberar stock disponible.",
+      "Coordinar la logística inversa para redistribuir mercadería de productos con menor rotación hacia tiendas donde sí puedan venderse.",
     ];
     setBudgetReportText(lines.join("\n"));
     setBudgetReportOpen(true);
