@@ -1036,19 +1036,28 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
   }
 
   function openBudgetReport() {
-    const topRows = [...salesRows]
+    const isExcludedFromWhatsApp = (row: SalesReportRow) => {
+      const storeName = row.store_name.toLowerCase();
+      const compactStoreName = storeName.replace(/\s+/g, "");
+      return compactStoreName.includes("cd-gpc") || storeName.includes("corporativo") || storeName.includes("td virtual");
+    };
+    const whatsappRows = salesRows.filter(row => !isExcludedFromWhatsApp(row));
+    const whatsappTotals = whatsappRows.reduce((acc, row) => ({
+      budget: r2(acc.budget + row.inventory_budget),
+      inventoryCutoff: r2(acc.inventoryCutoff + row.inventory_value_cutoff),
+    }), { budget: 0, inventoryCutoff: 0 });
+    const whatsappDiff = r2(whatsappTotals.inventoryCutoff - whatsappTotals.budget);
+    const topRows = [...whatsappRows]
       .sort((a, b) => Math.abs(b.inventory_cutoff_vs_budget) - Math.abs(a.inventory_cutoff_vs_budget))
       .slice(0, 5);
-    const selectedLabel = selectedStoreIds.length === 0
-      ? "Todas las tiendas"
-      : String(selectedStoreIds.length) + " tienda" + (selectedStoreIds.length === 1 ? "" : "s") + " seleccionada" + (selectedStoreIds.length === 1 ? "" : "s");
+    const selectedLabel = String(whatsappRows.length) + " tienda" + (whatsappRows.length === 1 ? "" : "s") + " consideradas";
     const signedMoney = (value: number) => (value >= 0 ? "+" : "") + money(value);
     const lines = [
       "*REPORTE DE PRESUPUESTO DE INVENTARIO*",
       "Fecha de corte: " + reportDate,
       selectedLabel,
-      "Valorizado corte: " + money(salesTotals.inventoryCutoff) + " | Presupuesto: " + money(salesTotals.budget),
-      "Desviación total: *" + signedMoney(inventoryCutoffBudgetDiff) + "*",
+      "Valorizado corte: " + money(whatsappTotals.inventoryCutoff) + " | Presupuesto: " + money(whatsappTotals.budget),
+      "Desviación total: *" + signedMoney(whatsappDiff) + "*",
       "",
       "*Top 5 tiendas con mayor desviación:*",
       ...topRows.map((row, index) => {
