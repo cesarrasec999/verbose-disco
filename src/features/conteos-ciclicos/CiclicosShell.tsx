@@ -2513,21 +2513,41 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     // ════════════════════════════════════════════════════════
     //  OPERARIO — REPORTE DE RECONTEO
     // ════════════════════════════════════════════════════════
-    function generateRecountReport() {
+    async function generateRecountReport() {
         if (myAssignments.length === 0) {
             showMessage("No hay codigos asignados para generar el reporte.", "error");
             return;
         }
 
-        const storeName = allStores.find(s => s.id === selectedStoreId)?.name || myAssignments[0]?.store_name || selectedStoreId || "-";
-        const realCounts = counts.filter(c => !isSessionFlagLocation(c.location));
+        // Refrescar desde BD para incluir cambios guardados desde el modo
+        // análisis, incluso si el operador tenía la pantalla abierta.
+        const reportWindow = window.open("", "_blank");
+        if (!reportWindow) {
+            showMessage("El navegador bloqueo la ventana del reporte. Permite ventanas emergentes e intenta otra vez.", "error");
+            return;
+        }
+        reportWindow.document.write("<p style=\"font-family:Arial;padding:24px\">Actualizando datos del conteo...</p>");
+        let reportAssignments: Assignment[];
+        let reportCounts: CountRecord[];
+        try {
+            const fresh = await fetchCyclicDayData(supabase, { storeId: selectedStoreId, date: selectedDate });
+            reportAssignments = fresh.assignments;
+            reportCounts = fresh.counts;
+        } catch (error: any) {
+            reportWindow.close();
+            showMessage("No se pudo actualizar el reporte: " + (error?.message || error), "error");
+            return;
+        }
+
+        const storeName = allStores.find(s => s.id === selectedStoreId)?.name || reportAssignments[0]?.store_name || selectedStoreId || "-";
+        const realCounts = reportCounts.filter(c => !isSessionFlagLocation(c.location));
         const countsByAssignment = new Map<string, CountRecord[]>();
         for (const count of realCounts) {
             if (!countsByAssignment.has(count.assignment_id)) countsByAssignment.set(count.assignment_id, []);
             countsByAssignment.get(count.assignment_id)!.push(count);
         }
 
-        const rows = myAssignments.map(assignment => {
+        const rows = reportAssignments.map(assignment => {
             const assignmentCounts = countsByAssignment.get(assignment.id) || [];
             const countedQty = r2(assignmentCounts.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
             const systemStock = Number(assignment.system_stock || assignmentCounts[0]?.stock_snapshot || 0);
@@ -2695,11 +2715,6 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 </body>
 </html>`;
 
-        const reportWindow = window.open("", "_blank");
-        if (!reportWindow) {
-            showMessage("El navegador bloqueo la ventana del reporte. Permite ventanas emergentes e intenta otra vez.", "error");
-            return;
-        }
         reportWindow.document.open();
         reportWindow.document.write(html);
         reportWindow.document.close();
@@ -4495,10 +4510,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setResumenOverrides({}); setResumenDraft({});
             setResumenDraft({});
             // Recargar datos para reflejar lo guardado
-            loadValidadorData(valStoreId, valDate);
+            await loadValidadorData(valStoreId, valDate);
+            await loadResumenPorCodigo(valStoreId, valDate);
         } else {
             showMessage(`⚠️ Se guardaron con ${errores} error${errores !== 1 ? "es" : ""}. Revisa la consola.`, "error");
-            loadValidadorData(valStoreId, valDate);
+            await loadValidadorData(valStoreId, valDate);
+            await loadResumenPorCodigo(valStoreId, valDate);
         }
     }
 
@@ -6228,18 +6245,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [resumenPorCodigo, setResumenPorCodigo] = useState<ResumenRow[]>([]);
     const [resumenDbLoading, setResumenDbLoading] = useState(false);
 
-    useEffect(() => {
-        if (!valStoreId || valStoreId === ALL_STORES_VALUE || !valDate) {
+    async function loadResumenPorCodigo(storeId: string = valStoreId, date: string = valDate) {
+        if (!storeId || storeId === ALL_STORES_VALUE || !date) {
             setResumenPorCodigo([]);
             return;
         }
         setResumenDbLoading(true);
-        supabase
-            .rpc("get_cyclic_day_summary", { p_store_id: valStoreId, p_date: valDate })
-            .then(({ data, error }) => {
-                setResumenDbLoading(false);
-                if (!error && data) setResumenPorCodigo(data as ResumenRow[]);
-            });
+        const { data, error } = await supabase.rpc("get_cyclic_day_summary", { p_store_id: storeId, p_date: date });
+        setResumenDbLoading(false);
+        if (!error && data) setResumenPorCodigo(data as ResumenRow[]);
+    }
+
+    useEffect(() => {
+        void loadResumenPorCodigo();
     }, [valStoreId, valDate]);
 
     // Resumen con overrides aplicados para el modo análisis
