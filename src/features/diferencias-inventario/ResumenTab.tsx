@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Trash2 } from "lucide-react";
+import { Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
@@ -9,7 +9,7 @@ import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 import { formatDateTime, formatNumber } from "@/features/ciclicos/utils";
-import { deleteDifferenceReport, fetchDifferenceReports, regularizeReport, rejectReport } from "./api";
+import { deleteDifferenceReport, fetchDifferenceReports, regularizeReport, rejectReport, updateDifferenceReport } from "./api";
 import type { DifferenceReason, DifferenceReport, DifferenceStatus } from "./types";
 import { TabNav } from "./TabNav";
 
@@ -87,6 +87,9 @@ export default function ResumenTab() {
 
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [adjustmentNumberDraft, setAdjustmentNumberDraft] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingReason, setEditingReason] = useState<DifferenceReason>("ajuste_inventario");
+  const [editingPhysicalQty, setEditingPhysicalQty] = useState("");
   const [savingActionId, setSavingActionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -110,6 +113,7 @@ export default function ResumenTab() {
   }, []);
 
   const canValidate = user?.role === "Validador" || user?.role === "Supervisor" || user?.role === "Administrador";
+  const showActions = Boolean(user);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const loadReports = useMemo(() => async () => {
@@ -141,6 +145,40 @@ export default function ResumenTab() {
   function openAdjustmentPrompt(reportId: string) {
     setAdjustingId(reportId);
     setAdjustmentNumberDraft("");
+    setEditingId(null);
+  }
+
+  function openEditPrompt(report: DifferenceReport) {
+    setEditingId(report.id);
+    setEditingReason(report.reason);
+    setEditingPhysicalQty(report.physical_qty === null ? "" : String(report.physical_qty));
+    setAdjustingId(null);
+  }
+
+  async function saveEdit(report: DifferenceReport) {
+    const rawPhysical = editingPhysicalQty.trim();
+    const requiresPhysical = editingReason === "cruce_sku" || editingReason === "ajuste_inventario" || editingReason === "post_inventario";
+    if (requiresPhysical && rawPhysical === "") {
+      toast.error("Ingresa la cantidad física para este motivo.");
+      return;
+    }
+    const physicalQty = rawPhysical === "" ? null : Number(rawPhysical);
+    if (physicalQty !== null && (!Number.isFinite(physicalQty) || physicalQty < 0)) {
+      toast.error("La cantidad física debe ser un número mayor o igual a 0.");
+      return;
+    }
+    if (!user) return;
+    setSavingActionId(report.id);
+    try {
+      await updateDifferenceReport(report.id, { reason: editingReason, physical_qty: physicalQty }, report.request_data?.cross_group_id);
+      setEditingId(null);
+      toast.success("Registro actualizado.");
+      await loadReports();
+    } catch (error) {
+      toast.error("No se pudo actualizar: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setSavingActionId(null);
+    }
   }
 
   async function confirmRegularize(report: DifferenceReport) {
@@ -242,7 +280,7 @@ export default function ResumenTab() {
               <col style={{ width: "8%" }} />
               <col style={{ width: "6%" }} />
               <col style={{ width: "6%" }} />
-              {canValidate && <col style={{ width: "12%" }} />}
+              <col style={{ width: canValidate ? "12%" : "10%" }} />
             </colgroup>
             <thead className="bg-slate-100 text-xs text-slate-600">
               <tr>
@@ -259,7 +297,7 @@ export default function ResumenTab() {
                 <th className="p-2">Fecha</th>
                 <th className="p-2">Estado</th>
                 <th className="p-2"># Ajuste</th>
-                {canValidate && <th className="p-2">Acciones</th>}
+                <th className="p-2">Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -288,51 +326,69 @@ export default function ResumenTab() {
                       </span>
                     </td>
                     <td className="break-words p-2 text-center font-bold">{report.request_data?.cross_line_role === "cruce" ? <span className="text-slate-400">Línea vinculada</span> : report.adjustment_number || "-"}</td>
-                    {canValidate && (
+                    {showActions && (
                       <td className="p-2">
                         {report.request_data?.cross_line_role === "cruce" ? (
                           <span className="text-[10px] font-bold text-slate-400">Acción en línea principal</span>
-                        ) : report.status === "pendiente" ? (
+                        ) : report.status === "pendiente" && (canValidate || report.operator_id === user?.id) ? (
                           <div className="flex flex-col gap-1">
-                            {adjustingId === report.id ? (
-                              <div className="flex gap-1">
-                                <input
-                                  value={adjustmentNumberDraft}
-                                  onChange={event => setAdjustmentNumberDraft(event.target.value)}
-                                  placeholder="# ajuste"
-                                  className="w-24 rounded-lg border px-2 py-1 text-xs"
-                                />
-                                <button
-                                  onClick={() => void confirmRegularize(report)}
-                                  disabled={savingActionId === report.id}
-                                  className="rounded-lg bg-green-700 px-2 py-1 text-xs font-black text-white disabled:opacity-40"
-                                >
-                                  OK
-                                </button>
-                                <button onClick={() => setAdjustingId(null)} className="rounded-lg border px-2 py-1 text-xs font-black">X</button>
+                            {editingId === report.id ? (
+                              <div className="space-y-1 rounded-lg bg-slate-50 p-1">
+                                <select value={editingReason} onChange={event => setEditingReason(event.target.value as DifferenceReason)} className="w-full rounded-lg border px-2 py-1 text-[10px] font-bold">
+                                  {Object.entries(REASON_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                </select>
+                                <input value={editingPhysicalQty} onChange={event => setEditingPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física" className="w-full rounded-lg border px-2 py-1 text-[10px]" />
+                                <div className="flex gap-1">
+                                  <button onClick={() => void saveEdit(report)} disabled={savingActionId === report.id} className="flex-1 rounded-lg bg-blue-700 px-2 py-1 text-[10px] font-black text-white disabled:opacity-40">Guardar</button>
+                                  <button onClick={() => setEditingId(null)} className="rounded-lg border px-2 py-1 text-[10px] font-black">X</button>
+                                </div>
                               </div>
                             ) : (
-                              <button
-                                onClick={() => openAdjustmentPrompt(report.id)}
-                                disabled={savingActionId === report.id}
-                                className="rounded-lg border border-green-300 px-2 py-1 text-xs font-black text-green-700 disabled:opacity-40"
-                              >
-                                Regularizar
-                              </button>
+                              <button onClick={() => openEditPrompt(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-blue-300 px-2 py-1 text-[10px] font-black text-blue-700 disabled:opacity-40"><Pencil size={11} /> Editar</button>
                             )}
-                            <button
-                              onClick={() => void handleReject(report)}
-                              disabled={savingActionId === report.id}
-                              className="rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40"
-                            >
-                              Rechazar
-                            </button>
-                            <button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40">
-                              <Trash2 size={12} /> Eliminar
-                            </button>
+                            {canValidate && <>
+                              {adjustingId === report.id ? (
+                                <div className="flex gap-1">
+                                  <input
+                                    value={adjustmentNumberDraft}
+                                    onChange={event => setAdjustmentNumberDraft(event.target.value)}
+                                    placeholder="# ajuste"
+                                    className="w-24 rounded-lg border px-2 py-1 text-xs"
+                                  />
+                                  <button
+                                    onClick={() => void confirmRegularize(report)}
+                                    disabled={savingActionId === report.id}
+                                    className="rounded-lg bg-green-700 px-2 py-1 text-xs font-black text-white disabled:opacity-40"
+                                  >
+                                    OK
+                                  </button>
+                                  <button onClick={() => setAdjustingId(null)} className="rounded-lg border px-2 py-1 text-xs font-black">X</button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => openAdjustmentPrompt(report.id)}
+                                  disabled={savingActionId === report.id}
+                                  className="rounded-lg border border-green-300 px-2 py-1 text-xs font-black text-green-700 disabled:opacity-40"
+                                >
+                                  Regularizar
+                                </button>
+                              )}
+                              <button
+                                onClick={() => void handleReject(report)}
+                                disabled={savingActionId === report.id}
+                                className="rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40"
+                              >
+                                Rechazar
+                              </button>
+                              <button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40">
+                                <Trash2 size={12} /> Eliminar
+                              </button>
+                            </>}
                           </div>
-                        ) : (
+                        ) : canValidate ? (
                           <div className="flex flex-col gap-1"><span className="text-xs text-slate-400">{report.validated_by_name ? `Por ${report.validated_by_name}` : "-"}</span><button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-2 py-1 text-xs font-black text-red-700 disabled:opacity-40"><Trash2 size={12} /> Eliminar</button></div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">-</span>
                         )}
                       </td>
                     )}
@@ -341,7 +397,7 @@ export default function ResumenTab() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={canValidate ? 14 : 12} className="p-8 text-center text-sm text-slate-400">
+                  <td colSpan={canValidate ? 14 : 13} className="p-8 text-center text-sm text-slate-400">
                     {loading ? "Cargando..." : "Sin reportes."}
                   </td>
                 </tr>

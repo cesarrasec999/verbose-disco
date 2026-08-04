@@ -136,6 +136,26 @@ export async function fetchDifferenceReports(params: FetchReportsParams): Promis
   return { rows: (data || []) as DifferenceReport[], total: count || 0 };
 }
 
+export async function updateDifferenceReport(
+  id: string,
+  payload: { reason: DifferenceReason; physical_qty: number | null },
+  groupId?: string,
+): Promise<void> {
+  if (groupId) {
+    const { error: groupError } = await supabase
+      .from("inventory_difference_reports")
+      .update({ reason: payload.reason })
+      .eq("request_data->>cross_group_id", groupId);
+    if (groupError) throw groupError;
+  }
+  const { error } = await supabase
+    .from("inventory_difference_reports")
+    .update({ reason: payload.reason, physical_qty: payload.physical_qty })
+    .eq("id", id)
+    .eq("status", "pendiente");
+  if (error) throw error;
+}
+
 export async function regularizeReport(id: string, adjustmentNumber: string, validator: { id: string; name: string }, groupId?: string): Promise<void> {
   let query = supabase
     .from("inventory_difference_reports")
