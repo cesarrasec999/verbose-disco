@@ -119,6 +119,11 @@ function isoDatePart(value: unknown) {
   return String(value || "").slice(0, 10);
 }
 
+function shortDateLabel(value: string) {
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}/${month}` : value;
+}
+
 function money(value: number) {
   return `S/ ${Number(value || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -383,6 +388,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         case "day_cost": aVal = a.day_cost_amount; bVal = b.day_cost_amount; break;
         case "day_margin": aVal = a.day_sales_amount > 0 ? (a.day_sales_amount - a.day_cost_amount) / a.day_sales_amount : 0; bVal = b.day_sales_amount > 0 ? (b.day_sales_amount - b.day_cost_amount) / b.day_sales_amount : 0; break;
         case "sales": aVal = a.sales_amount; bVal = b.sales_amount; break;
+        case "cost_accumulated": aVal = a.cost_amount; bVal = b.cost_amount; break;
         case "proj_sales": aVal = a.projected_sales; bVal = b.projected_sales; break;
         case "proj_cost": aVal = a.projected_cost; bVal = b.projected_cost; break;
         case "proj_margin": aVal = a.projected_sales > 0 ? (a.projected_sales - a.projected_cost) / a.projected_sales : 0; bVal = b.projected_sales > 0 ? (b.projected_sales - b.projected_cost) / b.projected_sales : 0; break;
@@ -393,6 +399,8 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         case "compliance": aVal = a.inventory_budget > 0 ? a.inventory_value / a.inventory_budget : 0; bVal = b.inventory_budget > 0 ? b.inventory_value / b.inventory_budget : 0; break;
         case "diff": aVal = a.inventory_vs_budget; bVal = b.inventory_vs_budget; break;
         case "cutoff_diff": aVal = a.inventory_cutoff_vs_budget; bVal = b.inventory_cutoff_vs_budget; break;
+        case "cutoff_compliance": aVal = a.inventory_budget > 0 ? a.inventory_value_cutoff / a.inventory_budget : 0; bVal = b.inventory_budget > 0 ? b.inventory_value_cutoff / b.inventory_budget : 0; break;
+        case "current_compliance": aVal = a.inventory_budget > 0 ? a.inventory_value / a.inventory_budget : 0; bVal = b.inventory_budget > 0 ? b.inventory_value / b.inventory_budget : 0; break;
       }
       if (typeof aVal === "string") return salesSort.dir === "asc" ? aVal.localeCompare(bVal as string, "es") : (bVal as string).localeCompare(aVal, "es");
       return salesSort.dir === "asc" ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
@@ -1014,19 +1022,16 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     }))), "Valorizado por rotacion");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows.map(row => ({
       Tienda: row.store_name,
-      VentaDia: row.day_sales_amount,
       VentaAcumulada: row.sales_amount,
-      CostoVentaDia: row.day_cost_amount,
       CostoVentaAcumulado: row.cost_amount,
-      Margen: row.margin,
-      VentaProyectada: row.projected_sales,
-      CostoVentaProyectado: row.projected_cost,
-      CostoBasePresupuesto: row.inventory_budget_cost,
+      CostoVentaProyectada: row.inventory_budget_cost,
       PresupuestoInventario: row.inventory_budget,
-      ValorizadoInventarioActual: row.inventory_value,
       ValorizadoInventarioFechaCorte: row.inventory_value_cutoff,
-      InventarioActualVsPresupuesto: row.inventory_vs_budget,
+      CumplimientoFechaCorte: row.inventory_budget > 0 ? (row.inventory_value_cutoff / row.inventory_budget) * 100 : 0,
       InventarioFechaCorteVsPresupuesto: row.inventory_cutoff_vs_budget,
+      ValorizadoInventarioActual: row.inventory_value,
+      CumplimientoActual: row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0,
+      InventarioActualVsPresupuesto: row.inventory_vs_budget,
     }))), "Ventas presupuesto");
     XLSX.writeFile(wb, `reportes-inventario-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
@@ -1527,21 +1532,23 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
                 <h2 className="font-black">Presupuesto de inventario por tienda</h2>
-                <Formula>Presupuesto = costo venta proyectado x 1.2. El valorizado actual usa la fotografía calculada ahora; el valorizado fecha corte usa la fotografía del día seleccionado.</Formula>
+                <Formula>Presupuesto = costo venta proyectado x 1.2. La primera parte compara el presupuesto con la fecha de corte; la segunda compara el inventario actual.</Formula>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1450px] text-sm">
+                <table className="w-full min-w-[1650px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
-                      <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta{sortIcon("sales")}</th>
-                      <th onClick={() => toggleSort("inventory_value")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado actual{sortIcon("inventory_value")}</th>
-                      <th onClick={() => toggleSort("inventory_value_cutoff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado fecha corte{sortIcon("inventory_value_cutoff")}</th>
-                      <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectado{sortIcon("budget_cost")}</th>
-                      <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inv.{sortIcon("budget")}</th>
-                      <th onClick={() => toggleSort("compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento{sortIcon("compliance")}</th>
-                      <th onClick={() => toggleSort("cutoff_diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desv. corte{sortIcon("cutoff_diff")}</th>
-                      <th onClick={() => toggleSort("diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desv. actual{sortIcon("diff")}</th>
+                      <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta acumulada{sortIcon("sales")}</th>
+                      <th onClick={() => toggleSort("cost_accumulated")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta acumulada{sortIcon("cost_accumulated")}</th>
+                      <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectada{sortIcon("budget_cost")}</th>
+                      <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inventarios{sortIcon("budget")}</th>
+                      <th onClick={() => toggleSort("inventory_value_cutoff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Inv. Valorizado {shortDateLabel(reportDate)}{sortIcon("inventory_value_cutoff")}</th>
+                      <th onClick={() => toggleSort("cutoff_compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento %{sortIcon("cutoff_compliance")}</th>
+                      <th onClick={() => toggleSort("cutoff_diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desviación sobre ppto{sortIcon("cutoff_diff")}</th>
+                      <th onClick={() => toggleSort("inventory_value")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Inv. Valorizado actual{sortIcon("inventory_value")}</th>
+                      <th onClick={() => toggleSort("current_compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento % actual{sortIcon("current_compliance")}</th>
+                      <th onClick={() => toggleSort("diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desviación sobre ppto actual{sortIcon("diff")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1549,16 +1556,18 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                       <tr key={row.store_id}>
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
-                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                        <td className="border p-2 text-right font-black">{money(row.inventory_value_cutoff)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.cost_amount)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget_cost)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
-                        <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value_cutoff)}</td>
+                        <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value_cutoff / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value_cutoff / row.inventory_budget) * 100 : 0)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_cutoff_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_cutoff_vs_budget)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                        <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={11} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
                   </tbody>
                 </table>
               </div>
