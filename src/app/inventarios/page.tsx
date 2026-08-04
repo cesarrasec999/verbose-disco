@@ -1109,6 +1109,8 @@ export default function InventariosPage() {
       okCodes: acc.okCodes + Number(row.ok_codes || 0),
       differenceCodes: acc.differenceCodes + Number(row.difference_codes || 0),
       systemValue: acc.systemValue + Number(row.system_value || 0),
+      surplusValue: acc.surplusValue + Number(row.surplus_value || 0),
+      missingValue: acc.missingValue + Number(row.missing_value || 0),
       netValueDiff: acc.netValueDiff + Number(row.net_value_diff || 0),
       absValueDiff: acc.absValueDiff + Number(row.abs_value_diff || 0),
       salesInPeriod: acc.salesInPeriod + Number(row.sales_in_period || 0),
@@ -1118,6 +1120,8 @@ export default function InventariosPage() {
       okCodes: 0,
       differenceCodes: 0,
       systemValue: 0,
+      surplusValue: 0,
+      missingValue: 0,
       netValueDiff: 0,
       absValueDiff: 0,
       salesInPeriod: 0,
@@ -7099,7 +7103,7 @@ export default function InventariosPage() {
         onOpenOperatorRecountMode={openOperatorRecountMode}
       />
 
-      <div className={`mx-auto grid w-full min-w-0 ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-7xl gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
+      <div className={`mx-auto grid w-full min-w-0 ${isOperatorView ? "max-w-2xl gap-2 px-2 py-2" : "max-w-[1800px] gap-4 px-3 py-4"} ${showSidePanel ? "lg:grid-cols-[360px_1fr]" : "lg:grid-cols-1"}`}>
         {showSidePanel && (
         <aside className="space-y-4">
           {canManageInventory && (
@@ -7305,12 +7309,22 @@ export default function InventariosPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                 {renderReportKpiCard("Inventarios (cantidad)", number2(finishedReportTotals.inventories), "slate")}
                 {renderReportKpiCard(
                   "ERI ponderado",
                   finishedReportTotals.weightedEriPct === null ? "-" : `${number2(finishedReportTotals.weightedEriPct)}%`,
                   finishedReportTotals.weightedEriPct === null ? "slate" : finishedReportTotals.weightedEriPct >= 90 ? "green" : finishedReportTotals.weightedEriPct >= 70 ? "amber" : "red"
+                )}
+                {renderReportKpiCard(
+                  "Sobrantes valorizados",
+                  money(finishedReportTotals.surplusValue),
+                  "blue"
+                )}
+                {renderReportKpiCard(
+                  "Faltantes valorizados",
+                  money(finishedReportTotals.missingValue),
+                  "red"
                 )}
                 {renderReportKpiCard(
                   "Diferencia valorizada",
@@ -7327,7 +7341,7 @@ export default function InventariosPage() {
               </div>
 
               <div className="overflow-x-auto rounded-2xl border">
-                <table className="w-full min-w-[1320px] text-xs">
+                <table className="w-full min-w-[1180px] text-[11px]">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
                       <th className="border p-2 text-left">Inventario</th>

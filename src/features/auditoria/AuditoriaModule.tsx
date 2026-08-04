@@ -119,6 +119,7 @@ type AuditAdminSummaryRow = AuditSession & {
   not_counted_items: number;
   diff_units: number;
   diff_value: number;
+  eri_pct: number;
 };
 
 function todayISO() {
@@ -689,6 +690,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         not_counted_items: agg?.not_counted_items || 0,
         diff_units: agg?.diff_units || 0,
         diff_value: agg?.diff_value || 0,
+        eri_pct: (agg?.audited_items || 0) > 0
+          ? Math.round(((agg?.ok_items || 0) / (agg?.audited_items || 0)) * 10000) / 100
+          : 0,
       };
     });
 
@@ -1630,6 +1634,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       "Codigos auditados": row.audited_items,
       "Registros conteo": row.count_records,
       OK: row.ok_items,
+      ERI: `${number2(row.eri_pct)}%`,
       Faltantes: row.missing_items,
       Sobrantes: row.surplus_items,
       "Dif. unidades": r2(row.diff_units),
@@ -1639,7 +1644,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     summarySheet["!cols"] = [
       { wch: 28 }, { wch: 24 }, { wch: 14 }, { wch: 20 }, { wch: 20 },
       { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 10 },
-      { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
+      { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 36 },
     ];
 
     const countsByItem = new Map<string, number>();
@@ -2108,7 +2113,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-3 py-4 md:px-5">
+      <div className="mx-auto max-w-[1600px] px-3 py-4 md:px-5">
         <div className={`mb-4 hidden gap-2 rounded-2xl border bg-white p-1.5 shadow-sm md:grid ${canViewAuditSummary ? "grid-cols-3" : "grid-cols-2"}`}>
           <Link href="/auditoria/sesiones" className={tabClass(visibleMainTab === "sessions")}><Settings2 size={16} /> Sesiones</Link>
           <Link href="/auditoria/registro" className={tabClass(visibleMainTab === "register")}><ClipboardList size={16} /> Registro</Link>
@@ -2283,7 +2288,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
             <div className="rounded-2xl border bg-white shadow-sm">
               <div className="border-b px-4 py-3 font-black">Sesiones finalizadas del periodo ({adminSummaryRows.length})</div>
               <div className="max-h-[62vh] overflow-auto">
-                <table className="w-full min-w-[1180px] text-sm">
+                <table className="w-full min-w-[1240px] text-sm">
                   <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <th className="p-2 text-left">Tienda</th>
@@ -2293,6 +2298,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                       <th className="p-2">Auditados</th>
                       <th className="p-2">Registros</th>
                       <th className="p-2">OK</th>
+                      <th className="p-2">ERI</th>
                       <th className="p-2">Falt.</th>
                       <th className="p-2">Sobr.</th>
                       <th className="p-2">Dif. und.</th>
@@ -2309,6 +2315,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                         <td className="p-2 text-center font-semibold">{number2(row.audited_items)}</td>
                         <td className="p-2 text-center font-semibold">{number2(row.count_records)}</td>
                         <td className="p-2 text-center font-black text-green-700">{number2(row.ok_items)}</td>
+                        <td className={`p-2 text-center font-black ${row.eri_pct >= 90 ? "text-green-700" : row.eri_pct >= 70 ? "text-amber-700" : "text-red-600"}`}>{number2(row.eri_pct)}%</td>
                         <td className="p-2 text-center font-black text-red-600">{number2(row.missing_items)}</td>
                         <td className="p-2 text-center font-black text-blue-700">{number2(row.surplus_items)}</td>
                         <td className={`p-2 text-center font-black ${row.diff_units < 0 ? "text-red-600" : row.diff_units > 0 ? "text-blue-700" : "text-green-700"}`}>{row.diff_units > 0 ? "+" : ""}{number2(row.diff_units)}</td>
@@ -2316,7 +2323,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                       </tr>
                     ))}
                     {!adminSummaryLoading && adminSummaryRows.length === 0 && (
-                      <tr><td colSpan={11} className="p-6 text-center text-sm font-semibold text-slate-500">No hay sesiones finalizadas en este periodo.</td></tr>
+                      <tr><td colSpan={12} className="p-6 text-center text-sm font-semibold text-slate-500">No hay sesiones finalizadas en este periodo.</td></tr>
                     )}
                   </tbody>
                 </table>
