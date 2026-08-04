@@ -267,7 +267,8 @@ function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_s
   return "pending";
 }
 function isTransitRequest(req: ReceptionRequest) {
-  return req.erp_status === "T" || req.status_code === "T";
+  const erpStatus = textValue(req.erp_status);
+  return erpStatus ? erpStatus === "T" : req.status_code === "T";
 }
 function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] {
   const grouped = new Map<string, ReceptionRequest[]>();
@@ -425,7 +426,7 @@ function ReasonBadge({ reason }: { reason: string | null }) {
 }
 
 function ErpStatusBadge({ statusCode, erpStatus }: { statusCode: string | null; erpStatus?: string | null }) {
-  const effectiveStatus = erpStatus === "T" ? "T" : statusCode;
+  const effectiveStatus = textValue(erpStatus) || statusCode;
   if (effectiveStatus === "V" || effectiveStatus === "R" || effectiveStatus === "E")
     return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido en RMS</span>;
   if (effectiveStatus === "T")
@@ -790,7 +791,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     } else {
       q = q.or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)");
     }
-    if (codes.length > 0) q = q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+    if (codes.length > 0) q = q.in("destination_store_code", codes);
     return q;
   }
 
@@ -800,11 +801,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       .select("*")
       // RMS puede dejar el estado de tránsito en status_code o en erp_status;
       // no se debe exigir guía/documento para que aparezca el requerimiento.
-      .or("status_code.eq.T,erp_status.eq.T")
+      .eq("erp_status", "T")
       .order("creation_date", { ascending: false })
       .range(offset, offset + PENDING_REQUESTS_PAGE_SIZE - 1)
       .abortSignal(signal);
-    if (codes.length > 0) q = q.or(codes.map(code => `destination_store_code.eq.${code}`).join(","));
+    if (codes.length > 0) q = q.in("destination_store_code", codes);
     return q;
   }
 
@@ -1956,11 +1957,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   const scopedRequestGroups = useMemo(() => {
     if (!canViewAllStores || storeFilter === "all") return requestGroups;
-    const target = normalize(storeFilter);
+    const targetCodes = new Set(selectedStoreCodes(storeFilter).map(normalize));
     return requestGroups.filter(req =>
-      req.child_requests.some(item => normalize(item.destination_store_code) === target)
+      req.child_requests.some(item => targetCodes.has(normalize(item.destination_store_code)))
     );
-  }, [canViewAllStores, requestGroups, storeFilter]);
+  }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
 
   const reasonOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -1976,7 +1977,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     if (!isVisibleReceptionDocument(r)) return false;
     if (filterStatus !== "all" && r.reception_status !== filterStatus) return false;
     if (filterErpStatus !== "all") {
-      const es = r.erp_status ?? r.status_code;
+      const es = textValue(r.erp_status) || r.status_code;
       if (filterErpStatus === "transit"  && es !== "T")                          return false;
       if (filterErpStatus === "received" && es !== "V" && es !== "R" && es !== "E") return false;
     }
