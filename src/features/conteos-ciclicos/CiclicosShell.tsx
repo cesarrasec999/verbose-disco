@@ -2550,7 +2550,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         const rows = reportAssignments.map(assignment => {
             const assignmentCounts = countsByAssignment.get(assignment.id) || [];
             const countedQty = r2(assignmentCounts.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0));
-            const systemStock = Number(assignment.system_stock || assignmentCounts[0]?.stock_snapshot || 0);
+            // 0 es un stock válido después de una corrección en modo análisis;
+            // no debe reemplazarse por el stock_snapshot histórico del conteo.
+            const systemStock = Number(assignment.system_stock ?? assignmentCounts[0]?.stock_snapshot ?? 0);
             const difference = r2(countedQty - systemStock);
             const cost = Number(assignment.cost || assignmentCounts[0]?.cost || 0);
             const locations = assignmentCounts.length > 0
