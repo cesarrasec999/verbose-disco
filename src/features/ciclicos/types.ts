@@ -36,6 +36,10 @@ export type Product = {
   system_stock?: number;
   rotation_category?: string | null;
   inventory_value?: number;
+  sales_amount?: number;
+  sales_quantity?: number;
+  sales_period_start?: string | null;
+  sales_period_end?: string | null;
   recommendation_group?: "A" | "OTRAS" | string | null;
 };
 

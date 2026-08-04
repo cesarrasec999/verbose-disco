@@ -199,6 +199,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
     const [assignRecommendationsLoading, setAssignRecommendationsLoading] = useState(false);
+    const [salesRecommendationsLoading, setSalesRecommendationsLoading] = useState(false);
     const assignSearchRequestRef = useRef(0);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
@@ -2862,6 +2863,61 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setAssignSearchNotice("No se pudo generar la recomendacion: " + (error?.message || error));
         } finally {
             setAssignRecommendationsLoading(false);
+        }
+    }
+
+    async function loadSalesAssignmentRecommendations() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
+        if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
+        if (!valStoreId || valStoreId === ALL_STORES_VALUE) {
+            showMessage("Selecciona una tienda especifica para recomendar codigos.", "error");
+            return;
+        }
+        if (salesRecommendationsLoading || assignRecommendationsLoading) return;
+
+        setSalesRecommendationsLoading(true);
+        setAssignSearchNotice("");
+        try {
+            const { data, error } = await supabase.rpc("get_cyclic_sales_assignment_recommendations", {
+                p_store_id: valStoreId,
+                p_assigned_date: valDate,
+                p_limit: 30,
+            });
+            if (error) {
+                setAssignSearchNotice("No se pudo generar la recomendacion por ventas. Ejecuta la migracion de ventas de conteo ciclico en Supabase: " + error.message);
+                return;
+            }
+            const rows = ((data || []) as any[]).map(row => ({
+                id: String(row.product_id || row.id || ""),
+                sku: String(row.sku || ""),
+                barcode: row.barcode || null,
+                description: String(row.description || ""),
+                unit: String(row.unit || ""),
+                cost: Number(row.cost || 0),
+                is_active: true,
+                system_stock: Number(row.system_stock || 0),
+                inventory_value: Number(row.inventory_value || 0),
+                sales_amount: Number(row.sales_amount || 0),
+                sales_quantity: Number(row.sales_quantity || 0),
+                sales_period_start: row.sales_period_start || null,
+                sales_period_end: row.sales_period_end || null,
+                recommendation_group: row.recommendation_group || "VENTA_ULTIMO_MES",
+            })).filter(product => product.id && product.sku) as Product[];
+
+            setAssignSearch("");
+            setAssignUnitFilter("");
+            setAssignResults(rows);
+            setAssignSelectedIds(new Set(rows.map(product => product.id)));
+            const periodStart = rows[0]?.sales_period_start || "";
+            const periodEnd = rows[0]?.sales_period_end || "";
+            setAssignSearchNotice(rows.length > 0
+                ? `Recomendacion por ventas cargada: ${rows.length} codigos del ${periodStart} al ${periodEnd}, ordenados por mayor venta valorizada.`
+                : "No se encontraron codigos con ventas en el ultimo mes y stock disponible para esta tienda."
+            );
+        } catch (error: any) {
+            setAssignSearchNotice("No se pudo generar la recomendacion por ventas: " + (error?.message || error));
+        } finally {
+            setSalesRecommendationsLoading(false);
         }
     }
 
@@ -7728,13 +7784,24 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         <button
                                             type="button"
                                             onClick={loadAssignmentRecommendations}
-                                            disabled={assignRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-40"
                                         >
                                             {assignRecommendationsLoading ? "Calculando..." : "Recomendar 30 codigos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
                                             15 rotacion A; si no alcanza, completa con B y luego C + 15 mayor valorizado
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={loadSalesAssignmentRecommendations}
+                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-40"
+                                        >
+                                            {salesRecommendationsLoading ? "Calculando ventas..." : "Recomendar 30 más vendidos"}
+                                        </button>
+                                        <span className="text-xs font-semibold text-slate-500">
+                                            Último mes calendario, ordenados por venta valorizada de mayor a menor
                                         </span>
                                     </div>
                                     {assignSearchNotice && (
@@ -7789,6 +7856,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                     {p.rotation_category && <> · Rot: {p.rotation_category}</>}
                                                                     {p.system_stock !== undefined && <> · Stock: {formatNumber(Number(p.system_stock || 0))}</>}
                                                                     {p.inventory_value !== undefined && <> · Val: {formatMoney(Number(p.inventory_value || 0))}</>}
+                                                                    {p.sales_amount !== undefined && <> · Venta mes: {formatMoney(Number(p.sales_amount || 0))}</>}
                                                                 </div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
