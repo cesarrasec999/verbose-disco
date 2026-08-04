@@ -35,8 +35,11 @@ begin
     select
       s.id,
       s.erp_sede as sede,
-      case when regexp_replace(coalesce(s.code, ''), '\D', '', 'g') <> ''
-           then (1000 + regexp_replace(coalesce(s.code, ''), '\D', '', 'g')::integer)::text
+      case
+        when regexp_replace(coalesce(s.code, ''), '\D', '', 'g') <> ''
+          then regexp_replace(coalesce(s.code, ''), '\D', '', 'g')
+        when upper(coalesce(s.name, '')) like 'CD-GPC%'
+          then '0'
       end as store_code_num
     from public.stores s
     where s.id = p_store_id and coalesce(s.is_active, true) = true
@@ -48,14 +51,6 @@ begin
     union
     select ccp.product_id from public.cyclic_completed_products ccp
     where ccp.store_id = p_store_id
-    union
-    select distinct ca.product_id
-    from public.cyclic_assignments ca
-    join public.cyclic_counts cc on cc.assignment_id = ca.id
-    where ca.store_id = p_store_id
-      and ca.assigned_date >= p_assigned_date - interval '365 days'
-      and ca.assigned_date < p_assigned_date
-      and cc.location not in ('__session_counting__', '__session_finished__', '__recount_started__', '__recount_done__')
     union
     select distinct ca.product_id
     from public.cyclic_assignments ca
@@ -89,48 +84,31 @@ begin
       and e.sales_date between v_from and v_to
     group by upper(trim(e.product_code))
   ),
-  sales_by_product as materialized (
-    select coalesce(direct.id, mapped.id) as product_id,
-           sum(s.sales_amount)::numeric as sales_amount,
-           sum(s.sales_quantity)::numeric as sales_quantity
-    from sales_by_code s
-    left join lateral (
-      select p.id
-      from public.cyclic_products p
-      where p.is_active = true and upper(trim(p.sku)) = s.product_code
-      order by p.id
-      limit 1
-    ) direct on true
-    left join lateral (
-      select p.id
-      from public.codigos_barra cb
-      join public.cyclic_products p on p.is_active = true and upper(trim(p.sku)) = upper(trim(cb.codsap::text))
-      where upper(trim(coalesce(cb.alu::text, ''))) = s.product_code
-      order by p.id
-      limit 1
-    ) mapped on true
-    where coalesce(direct.id, mapped.id) is not null
-    group by coalesce(direct.id, mapped.id)
-  ),
-  candidates as materialized (
+  stock_candidates as materialized (
     select p.id as product_id,
            p.sku::text,
            p.barcode::text,
            p.description::text,
            p.unit::text,
-           coalesce(nullif(sg.costo, 0), p.cost::numeric, 0) as cost,
-           sg.stock::numeric as system_stock,
-           coalesce(nullif(sg.costo, 0), p.cost::numeric, 0) * sg.stock as inventory_value,
-           sbp.sales_amount,
-           sbp.sales_quantity
+           coalesce(nullif(max(sg.costo), 0), p.cost::numeric, 0) as cost,
+           max(sg.stock)::numeric as system_stock,
+           coalesce(nullif(max(sg.costo), 0), p.cost::numeric, 0) * max(sg.stock) as inventory_value
     from store s
     join public.stock_general sg on sg.sede = s.sede and sg.stock > 0
     join public.cyclic_products p
       on p.is_active = true and upper(trim(p.sku)) = upper(trim(sg.codsap))
-    join sales_by_product sbp on sbp.product_id = p.id and sbp.sales_amount > 0
     left join excluded ex on ex.product_id = p.id
     left join non_inventory ni on ni.product_id = p.id
     where ex.product_id is null and ni.product_id is null
+    group by p.id, p.sku, p.barcode, p.description, p.unit, p.cost
+  ),
+  candidates as materialized (
+    select sc.product_id, sc.sku, sc.barcode, sc.description, sc.unit,
+           sc.cost, sc.system_stock, sc.inventory_value,
+           sb.sales_amount, sb.sales_quantity
+    from stock_candidates sc
+    join sales_by_code sb on sb.product_code = upper(trim(sc.sku))
+    where sb.sales_amount > 0
   )
   select 'VENTA_ULTIMO_MES'::text,
          c.product_id, c.sku, c.barcode, c.description, c.unit, c.cost,
