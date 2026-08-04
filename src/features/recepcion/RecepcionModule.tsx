@@ -266,6 +266,9 @@ function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_s
   if (items.some(item => item.reception_status === "in_progress" || item.reception_status === "completed")) return "in_progress";
   return "pending";
 }
+function isTransitRequest(req: ReceptionRequest) {
+  return req.erp_status === "T" || req.status_code === "T";
+}
 function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] {
   const grouped = new Map<string, ReceptionRequest[]>();
   for (const item of items) {
@@ -302,6 +305,33 @@ function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] 
 }
 function requestGuides(req: ReceptionRequestGroup) {
   return [...new Set(req.child_requests.map(item => textValue(item.doc_number)).filter(Boolean))].join(", ") || "-";
+}
+// Un requerimiento puede agrupar guías con estados RMS distintos. Para
+// pendientes por recepción se conserva únicamente la parte que sigue en
+// tránsito, de modo que el detalle y el Excel no mezclen guías ya recibidas.
+function transitOnlyGroup(group: ReceptionRequestGroup): ReceptionRequestGroup | null {
+  const children = group.child_requests.filter(isTransitRequest);
+  if (children.length === 0) return null;
+  if (children.length === group.child_requests.length) return group;
+  const sorted = [...children].sort((a, b) =>
+    String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))
+  );
+  const base = sorted[0];
+  return {
+    ...base,
+    id: sorted.map(item => item.id).join("|"),
+    erp_inv_request_id: [...new Set(sorted.map(item => textValue(item.erp_inv_request_id)).filter(Boolean))].join(", "),
+    inv_request_no: [...new Set(sorted.map(item => textValue(item.inv_request_no)).filter(Boolean))].join(", ") || base.inv_request_no,
+    doc_number: [...new Set(sorted.map(item => textValue(item.doc_number)).filter(Boolean))].join(", ") || base.doc_number,
+    line_count: sorted.reduce((sum, item) => sum + num(item.line_count), 0),
+    qty_requested_total: sorted.reduce((sum, item) => sum + num(item.qty_requested_total), 0),
+    qty_pending_total: sorted.reduce((sum, item) => sum + num(item.qty_pending_total), 0),
+    reception_status: groupedStatus(sorted),
+    completed_by_name: null,
+    request_ids: sorted.map(item => item.id),
+    transfer_count: sorted.length,
+    child_requests: sorted,
+  };
 }
 function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
 function dateTimeForExcel(v: string | null) {
@@ -394,10 +424,11 @@ function ReasonBadge({ reason }: { reason: string | null }) {
   );
 }
 
-function ErpStatusBadge({ statusCode }: { statusCode: string | null }) {
-  if (statusCode === "V" || statusCode === "R" || statusCode === "E")
+function ErpStatusBadge({ statusCode, erpStatus }: { statusCode: string | null; erpStatus?: string | null }) {
+  const effectiveStatus = erpStatus === "T" ? "T" : statusCode;
+  if (effectiveStatus === "V" || effectiveStatus === "R" || effectiveStatus === "E")
     return <span className="rounded-full bg-amber-100 text-amber-700 text-[10px] font-black px-2 py-0.5">Recibido en RMS</span>;
-  if (statusCode === "T")
+  if (effectiveStatus === "T")
     return <span className="rounded-full bg-teal-50 text-teal-600 text-[10px] font-black px-2 py-0.5">En tránsito en RMS</span>;
   return null;
 }
@@ -1959,10 +1990,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const pendingRequestsByStore = useMemo(() => {
     const grouped = new Map<string, ReceptionRequestGroup[]>();
     for (const request of scopedRequestGroups) {
-      if (!request.child_requests.some(item => item.erp_status === "T" || item.status_code === "T")) continue;
-      const key = request.destination_store_code || request.destination_store_name || "SIN_TIENDA";
+      const pendingRequest = transitOnlyGroup(request);
+      if (!pendingRequest) continue;
+      const key = pendingRequest.destination_store_code || pendingRequest.destination_store_name || "SIN_TIENDA";
       if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push(request);
+      grouped.get(key)!.push(pendingRequest);
     }
     return [...grouped.entries()]
       .map(([key, rows]) => ({
@@ -2758,7 +2790,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <ReasonBadge reason={req.reason} />
-                    <ErpStatusBadge statusCode={req.erp_status ?? req.status_code} />
+                    <ErpStatusBadge statusCode={req.status_code} erpStatus={req.erp_status} />
                   </div>
                   <p className="font-black text-slate-900 text-xl leading-tight mt-0.5">{requestDocumentLabel(req)}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{req.source_store_name || req.source_store_code} → {req.destination_store_name || req.destination_store_code}</p>
@@ -2834,7 +2866,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <ReasonBadge reason={selected.reason} />
-                  <ErpStatusBadge statusCode={selected.erp_status ?? selected.status_code} />
+                  <ErpStatusBadge statusCode={selected.status_code} erpStatus={selected.erp_status} />
                 </div>
                 <h2 className="font-black text-slate-900 text-2xl leading-tight">{requestDocumentLabel(selected)}</h2>
                 <p className="text-sm text-slate-500">{selected.source_store_name} → {selected.destination_store_name}</p>
