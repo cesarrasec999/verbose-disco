@@ -2,7 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, @typescript-eslint/no-unused-expressions, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
@@ -87,6 +87,23 @@ type LocationEntryDraftRecord = {
 type MultiLocationSearchResult = {
     query: string;
     rows: ProductLocation[];
+};
+
+type DashboardDayDetail = {
+    store_id: string;
+    store_name: string;
+    date: string;
+    ok: number;
+    sobrantes: number;
+    faltantes: number;
+    noContados: number;
+    total: number;
+    eri: number;
+    cumplio: boolean;
+    horaInicio: string | null;
+    horaFin: string | null;
+    duracion: number | null;
+    difVal: number;
 };
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
@@ -256,6 +273,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [dashRangeFrom, setDashRangeFrom] = useState(todayISO().slice(0,7) + "-01");
     const [dashRangeTo, setDashRangeTo]     = useState(todayISO());
     const [dashData, setDashData]     = useState<DashboardRow[]>([]);
+    // El detalle diario se deriva de la misma consulta del dashboard y sólo
+    // se muestra bajo demanda al expandir una tienda.
+    const [dashDayDetails, setDashDayDetails] = useState<Record<string, DashboardDayDetail[]>>({});
+    const [expandedDashStoreId, setExpandedDashStoreId] = useState<string | null>(null);
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
@@ -1189,7 +1210,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 dashP++;
             }
 
-            if (asgnRaw.length === 0) { setDashData([]); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
+            if (asgnRaw.length === 0) { setDashData([]); setDashDayDetails({}); setExpandedDashStoreId(null); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
 
             // ── Paso 2: traer stores y products por IDs únicos ────────
             const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
@@ -1294,8 +1315,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             }
 
             // Calcular métricas por día
-            type DayMetrics = { store_id: string; store_name: string; date: string; ok: number; sobrantes: number; faltantes: number; noContados: number; total: number; eri: number; cumplio: boolean; horaInicio: string|null; horaFin: string|null; duracion: number|null; difVal: number; };
-            const dayMetrics: DayMetrics[] = [];
+            const dayMetrics: DashboardDayDetail[] = [];
 
             for (const [, g] of dayGroups) {
                 const groupKey = `${g.store_id}__${g.date}`;
@@ -1389,7 +1409,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 // Vista mes o rango: una fila por tienda.
                 // Totales, ERI y dif. valorizada usan todo el periodo.
                 // Cumplimiento % = diasCumplidos / diasTotales con asignación.
-                const storeGroups = new Map<string, DayMetrics[]>();
+                const storeGroups = new Map<string, DashboardDayDetail[]>();
                 for (const d of dayMetrics) {
                     if (!storeGroups.has(d.store_id)) storeGroups.set(d.store_id, []);
                     storeGroups.get(d.store_id)!.push(d);
@@ -1435,6 +1455,13 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             }
 
             rows.sort((a, b) => a.store_name.localeCompare(b.store_name) || a.date.localeCompare(b.date));
+            const dayDetailsByStore: Record<string, DashboardDayDetail[]> = {};
+            for (const day of dayMetrics) {
+                (dayDetailsByStore[day.store_id] ||= []).push(day);
+            }
+            for (const details of Object.values(dayDetailsByStore)) details.sort((a, b) => a.date.localeCompare(b.date));
+            setDashDayDetails(dayDetailsByStore);
+            setExpandedDashStoreId(null);
             setDashData(rows);
         } finally {
             setDashLoading(false);
@@ -7405,8 +7432,13 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    {filteredDashData.map((r, i) => (
-                                                        <tr key={i} className={r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"}>
+                                                    {filteredDashData.map((r) => (
+                                                        <Fragment key={r.store_id}>
+                                                        <tr
+                                                            onClick={dashPeriod === "dia" ? undefined : () => setExpandedDashStoreId(prev => prev === r.store_id ? null : r.store_id)}
+                                                            className={`${r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"} ${dashPeriod !== "dia" ? "cursor-pointer" : ""}`}
+                                                            title={dashPeriod !== "dia" ? "Haz clic para ver el detalle diario" : undefined}
+                                                        >
                                                             <td className="p-2 border font-medium">
                                                                 {dashPeriod === "dia" ? (
                                                                     <button
@@ -7416,7 +7448,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                     >
                                                                         {r.store_name}
                                                                     </button>
-                                                                ) : r.store_name}
+                                                                ) : (
+                                                                    <button
+                                                                        className="text-left text-blue-700 underline underline-offset-2 hover:text-blue-900 font-semibold transition-colors"
+                                                                        title="Ver detalle diario"
+                                                                        onClick={(event) => { event.stopPropagation(); setExpandedDashStoreId(prev => prev === r.store_id ? null : r.store_id); }}
+                                                                    >
+                                                                        {expandedDashStoreId === r.store_id ? "▾ " : "▸ "}{r.store_name}
+                                                                    </button>
+                                                                )}
                                                             </td>
                                                             <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
                                                             <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
@@ -7448,6 +7488,51 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                 <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
                                                             </>}
                                                         </tr>
+                                                        {dashPeriod !== "dia" && expandedDashStoreId === r.store_id && (
+                                                            <tr>
+                                                                <td colSpan={8} className="border bg-slate-50 p-3">
+                                                                    <div className="rounded-2xl border bg-white p-3 shadow-inner">
+                                                                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                                                            <p className="font-bold text-slate-900">Detalle diario de {r.store_name}</p>
+                                                                            <p className="text-xs text-slate-500">Sólo se muestran los días con conteo enviado.</p>
+                                                                        </div>
+                                                                        <div className="overflow-x-auto">
+                                                                            <table className="w-full min-w-[760px] text-xs">
+                                                                                <thead className="bg-slate-100 text-slate-600">
+                                                                                    <tr>
+                                                                                        <th className="border p-2 text-left">Fecha</th>
+                                                                                        <th className="border p-2 text-right">Asignados</th>
+                                                                                        <th className="border p-2 text-right text-green-700">OK</th>
+                                                                                        <th className="border p-2 text-right text-blue-700">Sobrantes</th>
+                                                                                        <th className="border p-2 text-right text-red-600">Faltantes</th>
+                                                                                        <th className="border p-2 text-right text-amber-700">No contados</th>
+                                                                                        <th className="border p-2 text-right text-red-700">Dif. Val.</th>
+                                                                                        <th className="border p-2 text-right">ERI</th>
+                                                                                        <th className="border p-2 text-center">¿Cumplió?</th>
+                                                                                    </tr>
+                                                                                </thead>
+                                                                                <tbody>
+                                                                                    {(dashDayDetails[r.store_id] || []).map(day => (
+                                                                                        <tr key={`${day.store_id}-${day.date}`} className="hover:bg-slate-50">
+                                                                                            <td className="border p-2 font-semibold">{day.date.split("-").reverse().join("/")}</td>
+                                                                                            <td className="border p-2 text-right">{day.total}</td>
+                                                                                            <td className="border p-2 text-right font-semibold text-green-700">{day.ok}</td>
+                                                                                            <td className="border p-2 text-right font-semibold text-blue-700">{day.sobrantes}</td>
+                                                                                            <td className="border p-2 text-right font-semibold text-red-600">{day.faltantes}</td>
+                                                                                            <td className="border p-2 text-right font-semibold text-amber-700">{day.noContados}</td>
+                                                                                            <td className={`border p-2 text-right font-semibold ${day.difVal < 0 ? "text-red-600" : day.difVal > 0 ? "text-blue-700" : "text-green-700"}`}>{formatMoney(day.difVal)}</td>
+                                                                                            <td className={`border p-2 text-right font-bold ${day.eri >= 90 ? "text-green-700" : day.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{day.eri}%</td>
+                                                                                            <td className={`border p-2 text-center font-bold ${day.cumplio ? "text-green-700" : "text-red-600"}`}>{day.cumplio ? "✓ Sí" : "✗ No"}</td>
+                                                                                        </tr>
+                                                                                    ))}
+                                                                                </tbody>
+                                                                            </table>
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                        </Fragment>
                                                     ))}
                                                 </tbody>
                                             </table>
