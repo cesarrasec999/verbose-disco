@@ -263,6 +263,8 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
   const [salesSort, setSalesSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
   const [updatedAt, setUpdatedAt] = useState("");
   const [salesUpdatedAt, setSalesUpdatedAt] = useState("");
+  const [budgetReportOpen, setBudgetReportOpen] = useState(false);
+  const [budgetReportText, setBudgetReportText] = useState("");
 
   // Filtros compartidos entre las 4 pestañas: viven en la URL
   // (?stores=id1,id2&fecha=yyyy-mm-dd) para que se conserven al navegar.
@@ -1029,6 +1031,46 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     XLSX.writeFile(wb, `reportes-inventario-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
 
+  function openBudgetReport() {
+    const topRows = [...salesRows]
+      .sort((a, b) => Math.abs(b.inventory_cutoff_vs_budget) - Math.abs(a.inventory_cutoff_vs_budget))
+      .slice(0, 5);
+    const selectedLabel = selectedStoreIds.length === 0
+      ? "Todas las tiendas"
+      : String(selectedStoreIds.length) + " tienda" + (selectedStoreIds.length === 1 ? "" : "s") + " seleccionada" + (selectedStoreIds.length === 1 ? "" : "s");
+    const signedMoney = (value: number) => (value >= 0 ? "+" : "") + money(value);
+    const lines = [
+      "*REPORTE DE PRESUPUESTO DE INVENTARIO*",
+      "Fecha de corte: " + reportDate,
+      selectedLabel,
+      "Valorizado corte: " + money(salesTotals.inventoryCutoff) + " | Presupuesto: " + money(salesTotals.budget),
+      "Desviación total: *" + signedMoney(inventoryCutoffBudgetDiff) + "*",
+      "",
+      "*Top 5 tiendas con mayor desviación:*",
+      ...topRows.map((row, index) => {
+        const pct = row.inventory_budget > 0 ? (row.inventory_cutoff_vs_budget / row.inventory_budget) * 100 : 0;
+        return String(index + 1) + ". " + row.store_name + ": " + signedMoney(row.inventory_cutoff_vs_budget) + " (" + (pct >= 0 ? "+" : "") + percent(pct) + ")";
+      }),
+      "",
+      "La desviación corresponde a valorizado de fecha de corte menos presupuesto.",
+    ];
+    setBudgetReportText(lines.join("\n"));
+    setBudgetReportOpen(true);
+  }
+
+  async function copyBudgetReport() {
+    try {
+      await navigator.clipboard.writeText(budgetReportText);
+      setMessage("Mensaje de presupuesto copiado.");
+    } catch {
+      setMessage("No se pudo copiar automáticamente; selecciona el texto del cuadro.");
+    }
+  }
+
+  function sendBudgetReportWhatsApp() {
+    window.open("https://wa.me/?text=" + encodeURIComponent(budgetReportText), "_blank", "noopener,noreferrer");
+  }
+
   const totals = useMemo(() => valuationRows.reduce((acc, row) => ({
     stores: acc.stores + 1,
     codes: acc.codes + row.codes_with_stock,
@@ -1084,6 +1126,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
               <RefreshCw className={`mr-2 inline ${loading ? "animate-spin" : ""}`} size={16} />
               {loading ? "Actualizando..." : "Actualizar"}
             </button>
+            {activeTab === "presupuesto" && <button onClick={openBudgetReport} disabled={loading || salesRows.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">Reporte</button>}
             <button onClick={exportExcel} disabled={loading} className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700 disabled:opacity-40">
               <Download className="mr-2 inline" size={16} /> Excel
             </button>
@@ -1523,6 +1566,25 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
           </>
         )}
       </section>
+
+      {budgetReportOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" onClick={() => setBudgetReportOpen(false)}>
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-black">Reporte para WhatsApp</h2>
+                <p className="text-xs text-slate-500">Top 5 tiendas por desviación absoluta a la fecha de corte.</p>
+              </div>
+              <button onClick={() => setBudgetReportOpen(false)} className="rounded-xl border px-3 py-1 text-sm font-black text-slate-600">Cerrar</button>
+            </div>
+            <textarea value={budgetReportText} readOnly className="mt-4 h-72 w-full resize-none rounded-xl border bg-slate-50 p-3 text-sm leading-relaxed text-slate-800" />
+            <div className="mt-3 flex flex-wrap justify-end gap-2">
+              <button onClick={() => void copyBudgetReport()} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-700">Copiar mensaje</button>
+              <button onClick={sendBudgetReportWhatsApp} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-black text-white">Enviar por WhatsApp</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
