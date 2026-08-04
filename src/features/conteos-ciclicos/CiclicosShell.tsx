@@ -104,6 +104,19 @@ type DashboardDayDetail = {
     horaFin: string | null;
     duracion: number | null;
     difVal: number;
+    differences: DashboardDifferenceDetail[];
+};
+
+type DashboardDifferenceDetail = {
+    product_id: string;
+    sku: string;
+    description: string;
+    unit: string;
+    system_stock: number;
+    counted: number;
+    difference: number;
+    cost: number;
+    difVal: number;
 };
 // ══════════════════════════════════════════════════════════
 //  COMPONENTE PRINCIPAL
@@ -278,6 +291,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     // se muestra bajo demanda al expandir una tienda.
     const [dashDayDetails, setDashDayDetails] = useState<Record<string, DashboardDayDetail[]>>({});
     const [expandedDashStoreId, setExpandedDashStoreId] = useState<string | null>(null);
+    const [expandedDashDateKey, setExpandedDashDateKey] = useState<string | null>(null);
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
@@ -1211,7 +1225,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 dashP++;
             }
 
-            if (asgnRaw.length === 0) { setDashData([]); setDashDayDetails({}); setExpandedDashStoreId(null); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
+            if (asgnRaw.length === 0) { setDashData([]); setDashDayDetails({}); setExpandedDashStoreId(null); setExpandedDashDateKey(null); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
 
             // ── Paso 2: traer stores y products por IDs únicos ────────
             const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
@@ -1226,10 +1240,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
             let prodsList: any[] = [];
             for (let i = 0; i < uniqueProdIds.length; i += 500) {
-                const { data: pc } = await supabase.from("cyclic_products").select("id, cost").in("id", uniqueProdIds.slice(i, i+500));
+                const { data: pc } = await supabase.from("cyclic_products").select("id, sku, description, unit, cost").in("id", uniqueProdIds.slice(i, i+500));
                 prodsList = prodsList.concat(pc || []);
             }
-            const prodCostMap = new Map(prodsList.map((p: any) => [p.id, parseCost(p.cost)]));
+            const prodInfoMap = new Map(prodsList.map((p: any) => [p.id, {
+                sku: String(p.sku || ""),
+                description: String(p.description || ""),
+                unit: String(p.unit || ""),
+                cost: parseCost(p.cost),
+            }]));
+            const prodCostMap = new Map([...prodInfoMap].map(([id, info]) => [id, info.cost]));
 
             // Enriquecer assignments (costo viene solo de cyclic_products)
             const asgnData = asgnRaw.map((a: any) => ({
@@ -1356,15 +1376,28 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 const totalContados = ok + sobrantes + faltantes;
                 const eri = totalContados > 0 ? Math.round((ok / totalContados) * 100) : 0;
 
-                let difValDay = 0;
+                const differences: DashboardDifferenceDetail[] = [];
                 for (const [pid, entry] of prodMap) {
-                    if (entry.contado) {
-                        const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
-                        const costo = parseCost(asgForPid?.cyclic_products?.cost);
-                        const diff = r2(entry.total_counted - entry.system_stock);
-                        difValDay = r2(difValDay + r2(diff * costo));
-                    }
+                    if (!entry.contado) continue;
+                    const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
+                    const info = prodInfoMap.get(pid);
+                    const costo = parseCost(asgForPid?.cyclic_products?.cost ?? info?.cost);
+                    const diff = r2(entry.total_counted - entry.system_stock);
+                    if (diff === 0) continue;
+                    differences.push({
+                        product_id: pid,
+                        sku: info?.sku || String(asgForPid?.sku || pid),
+                        description: info?.description || "",
+                        unit: info?.unit || "",
+                        system_stock: entry.system_stock,
+                        counted: entry.total_counted,
+                        difference: diff,
+                        cost: costo,
+                        difVal: r2(diff * costo),
+                    });
                 }
+                differences.sort((a, b) => Math.abs(b.difVal) - Math.abs(a.difVal) || a.sku.localeCompare(b.sku));
+                const difValDay = r2(differences.reduce((sum, item) => sum + item.difVal, 0));
 
                 const timestamps = g.cnts.map((c: any) => new Date(c.counted_at).getTime()).filter((t: number) => !isNaN(t));
                 const horaInicio = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
@@ -1376,7 +1409,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 // 2. Fallback para datos históricos antes del fix del bug: contó todos los productos
                 const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
                 const cumplio = cumplioPorReconteo || (noContados === 0 && total > 0);
-                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay });
+                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay, differences });
             }
 
             const rows: DashboardRow[] = [];
@@ -1463,6 +1496,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             for (const details of Object.values(dayDetailsByStore)) details.sort((a, b) => a.date.localeCompare(b.date));
             setDashDayDetails(dayDetailsByStore);
             setExpandedDashStoreId(null);
+            setExpandedDashDateKey(null);
             setDashData(rows);
         } finally {
             setDashLoading(false);
@@ -7568,9 +7602,21 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                                     </tr>
                                                                                 </thead>
                                                                                 <tbody>
-                                                                                    {(dashDayDetails[r.store_id] || []).map(day => (
-                                                                                        <tr key={`${day.store_id}-${day.date}`} className="hover:bg-slate-50">
-                                                                                            <td className="border p-2 font-semibold">{day.date.split("-").reverse().join("/")}</td>
+                                                                                    {(dashDayDetails[r.store_id] || []).map(day => {
+                                                                                        const dateKey = `${day.store_id}__${day.date}`;
+                                                                                        const dateExpanded = expandedDashDateKey === dateKey;
+                                                                                        return <Fragment key={dateKey}>
+                                                                                        <tr className="hover:bg-slate-50">
+                                                                                            <td className="border p-2 font-semibold">
+                                                                                                <button
+                                                                                                    type="button"
+                                                                                                    onClick={() => setExpandedDashDateKey(prev => prev === dateKey ? null : dateKey)}
+                                                                                                    className="text-left font-bold text-blue-700 underline underline-offset-2 hover:text-blue-900"
+                                                                                                    title="Ver sólo las diferencias de esta fecha"
+                                                                                                >
+                                                                                                    {dateExpanded ? "▾ " : "▸ "}{day.date.split("-").reverse().join("/")}
+                                                                                                </button>
+                                                                                            </td>
                                                                                             <td className="border p-2 text-right">{day.total}</td>
                                                                                             <td className="border p-2 text-right font-semibold text-green-700">{day.ok}</td>
                                                                                             <td className="border p-2 text-right font-semibold text-blue-700">{day.sobrantes}</td>
@@ -7580,7 +7626,49 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                                             <td className={`border p-2 text-right font-bold ${day.eri >= 90 ? "text-green-700" : day.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{day.eri}%</td>
                                                                                             <td className={`border p-2 text-center font-bold ${day.cumplio ? "text-green-700" : "text-red-600"}`}>{day.cumplio ? "✓ Sí" : "✗ No"}</td>
                                                                                         </tr>
-                                                                                    ))}
+                                                                                        {dateExpanded && (
+                                                                                            <tr>
+                                                                                                <td colSpan={9} className="border bg-slate-50 p-3">
+                                                                                                    <div className="rounded-xl border bg-white p-3">
+                                                                                                        <p className="mb-2 font-bold text-slate-900">Diferencias del {day.date.split("-").reverse().join("/")}</p>
+                                                                                                        {day.differences.length === 0 ? (
+                                                                                                            <p className="text-sm font-semibold text-green-700">No hay diferencias registradas en este día.</p>
+                                                                                                        ) : (
+                                                                                                            <div className="overflow-x-auto">
+                                                                                                                <table className="w-full min-w-[760px] text-xs">
+                                                                                                                    <thead className="bg-slate-100 text-slate-600">
+                                                                                                                        <tr>
+                                                                                                                            <th className="border p-2 text-left">Código</th>
+                                                                                                                            <th className="border p-2 text-left">Descripción</th>
+                                                                                                                            <th className="border p-2 text-left">UM</th>
+                                                                                                                            <th className="border p-2 text-right">Stock sistema</th>
+                                                                                                                            <th className="border p-2 text-right">Contado</th>
+                                                                                                                            <th className="border p-2 text-right">Diferencia</th>
+                                                                                                                            <th className="border p-2 text-right">Dif. valorizada</th>
+                                                                                                                        </tr>
+                                                                                                                    </thead>
+                                                                                                                    <tbody>
+                                                                                                                        {day.differences.map(item => (
+                                                                                                                            <tr key={`${dateKey}-${item.product_id}`}>
+                                                                                                                                <td className="border p-2 font-semibold">{item.sku}</td>
+                                                                                                                                <td className="border p-2">{item.description || "—"}</td>
+                                                                                                                                <td className="border p-2">{item.unit || "—"}</td>
+                                                                                                                                <td className="border p-2 text-right">{formatNumber(item.system_stock)}</td>
+                                                                                                                                <td className="border p-2 text-right">{formatNumber(item.counted)}</td>
+                                                                                                                                <td className={`border p-2 text-right font-bold ${item.difference < 0 ? "text-red-600" : "text-blue-700"}`}>{item.difference > 0 ? "+" : ""}{formatNumber(item.difference)}</td>
+                                                                                                                                <td className={`border p-2 text-right font-bold ${item.difVal < 0 ? "text-red-600" : "text-blue-700"}`}>{formatMoney(item.difVal)}</td>
+                                                                                                                            </tr>
+                                                                                                                        ))}
+                                                                                                                    </tbody>
+                                                                                                                </table>
+                                                                                                            </div>
+                                                                                                        )}
+                                                                                                    </div>
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        )}
+                                                                                        </Fragment>;
+                                                                                    })}
                                                                                 </tbody>
                                                                             </table>
                                                                         </div>
