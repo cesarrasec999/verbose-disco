@@ -104,7 +104,9 @@ type SalesReportRow = SalesDailyRow & {
   inventory_budget_cost: number;
   inventory_budget: number;
   inventory_value: number;
+  inventory_value_cutoff: number;
   inventory_vs_budget: number;
+  inventory_cutoff_vs_budget: number;
 };
 
 const USER_KEY = "cyclic_user";
@@ -383,10 +385,12 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         case "proj_cost": aVal = a.projected_cost; bVal = b.projected_cost; break;
         case "proj_margin": aVal = a.projected_sales > 0 ? (a.projected_sales - a.projected_cost) / a.projected_sales : 0; bVal = b.projected_sales > 0 ? (b.projected_sales - b.projected_cost) / b.projected_sales : 0; break;
         case "inventory_value": aVal = a.inventory_value; bVal = b.inventory_value; break;
+        case "inventory_value_cutoff": aVal = a.inventory_value_cutoff; bVal = b.inventory_value_cutoff; break;
         case "budget_cost": aVal = a.inventory_budget_cost; bVal = b.inventory_budget_cost; break;
         case "budget": aVal = a.inventory_budget; bVal = b.inventory_budget; break;
         case "compliance": aVal = a.inventory_budget > 0 ? a.inventory_value / a.inventory_budget : 0; bVal = b.inventory_budget > 0 ? b.inventory_value / b.inventory_budget : 0; break;
         case "diff": aVal = a.inventory_vs_budget; bVal = b.inventory_vs_budget; break;
+        case "cutoff_diff": aVal = a.inventory_cutoff_vs_budget; bVal = b.inventory_cutoff_vs_budget; break;
       }
       if (typeof aVal === "string") return salesSort.dir === "asc" ? aVal.localeCompare(bVal as string, "es") : (bVal as string).localeCompare(aVal, "es");
       return salesSort.dir === "asc" ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
@@ -794,7 +798,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       }
       const selectedIsCdGpc = selectedStores.length > 0 && selectedStores.some(s => isCdGpcStoreName(s.name));
       const calculationStores = selectedIsCdGpc ? stores.filter(store => store.is_active) : targetStores;
-      const valuationFallback = valuationRows.length === 0 ? await loadReport() : valuationRows;
+      const valuationFallback = (valuationRows.length === 0 ? await loadReport() : valuationRows) || [];
       const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
       const salesEndDate = reportDate;
       const periodDate = new Date(`${reportDate}T00:00:00`);
@@ -877,14 +881,16 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
           dayGrouped.set(groupKey, dayCurrent);
         }
       }
-      const valuationByStore = await loadInventoryValueByStoreForDate(reportDate, valuationFallback);
+      const currentValuationByStore = new Map(valuationFallback.map(row => [row.store_id, Number(row.inventory_value || 0)]));
+      const cutoffValuationByStore = await loadInventoryValueByStoreForDate(reportDate, valuationFallback);
       const rows = [...grouped.values()].map(row => {
         const day = dayGrouped.get(row.store_id);
         const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
         const projectedSales = r2(row.sales_amount * totalBusinessDays / elapsedBusinessDays);
         const projectedCost = r2(projectedSales * (1 - margin));
         const inventoryBudget = r2(projectedCost * 1.2);
-        const inventoryValue = valuationByStore.get(row.store_id) || 0;
+        const inventoryValue = currentValuationByStore.get(row.store_id) || 0;
+        const inventoryValueCutoff = cutoffValuationByStore.get(row.store_id) ?? inventoryValue;
         return {
           ...row,
           day_sales_amount: day?.sales_amount || 0,
@@ -897,7 +903,9 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
           inventory_budget_cost: projectedCost,
           inventory_budget: inventoryBudget,
           inventory_value: inventoryValue,
+          inventory_value_cutoff: inventoryValueCutoff,
           inventory_vs_budget: r2(inventoryValue - inventoryBudget),
+          inventory_cutoff_vs_budget: r2(inventoryValueCutoff - inventoryBudget),
         };
       });
 
@@ -909,6 +917,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
         row.inventory_budget_cost = cdProjectedCost;
         row.inventory_budget = cdInventoryBudget;
         row.inventory_vs_budget = r2(row.inventory_value - row.inventory_budget);
+        row.inventory_cutoff_vs_budget = r2(row.inventory_value_cutoff - row.inventory_budget);
       }
 
       const visibleRows = selectedStoreIds.length === 0 ? rows : rows.filter(row => selectedStoreIds.includes(row.store_id));
@@ -1012,8 +1021,10 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       CostoVentaProyectado: row.projected_cost,
       CostoBasePresupuesto: row.inventory_budget_cost,
       PresupuestoInventario: row.inventory_budget,
-      ValorizadoInventario: row.inventory_value,
-      InventarioVsPresupuesto: row.inventory_vs_budget,
+      ValorizadoInventarioActual: row.inventory_value,
+      ValorizadoInventarioFechaCorte: row.inventory_value_cutoff,
+      InventarioActualVsPresupuesto: row.inventory_vs_budget,
+      InventarioFechaCorteVsPresupuesto: row.inventory_cutoff_vs_budget,
     }))), "Ventas presupuesto");
     XLSX.writeFile(wb, `reportes-inventario-${new Date().toISOString().slice(0, 10)}.xlsx`);
   }
@@ -1034,11 +1045,13 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
     projectedCost: r2(acc.projectedCost + row.projected_cost),
     budget: r2(acc.budget + row.inventory_budget),
     inventory: r2(acc.inventory + row.inventory_value),
-  }), { daySales: 0, dayCost: 0, sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0 }), [salesRows]);
+    inventoryCutoff: r2(acc.inventoryCutoff + row.inventory_value_cutoff),
+  }), { daySales: 0, dayCost: 0, sales: 0, cost: 0, projectedSales: 0, projectedCost: 0, budget: 0, inventory: 0, inventoryCutoff: 0 }), [salesRows]);
 
   const salesDayMargin = salesTotals.daySales > 0 ? ((salesTotals.daySales - salesTotals.dayCost) / salesTotals.daySales) * 100 : 0;
   const projectedMargin = salesTotals.projectedSales > 0 ? ((salesTotals.projectedSales - salesTotals.projectedCost) / salesTotals.projectedSales) * 100 : 0;
   const inventoryBudgetDiff = r2(salesTotals.inventory - salesTotals.budget);
+  const inventoryCutoffBudgetDiff = r2(salesTotals.inventoryCutoff - salesTotals.budget);
   const budgetCompliance = salesTotals.budget > 0 ? (salesTotals.inventory / salesTotals.budget) * 100 : 0;
   const breakTotals = useMemo(() => rotationBreakRows.reduce((acc, row) => {
     if (row.rotation === "A") acc.a += 1;
@@ -1458,30 +1471,34 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
 
         {activeTab === "presupuesto" && (
           <>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
               <div className="rounded-2xl bg-emerald-700 p-4 text-white"><p className="text-xs font-bold text-emerald-100">Venta total seleccionada</p><p className="mt-1 text-xl font-black">{money(salesTotals.sales)}</p></div>
-              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventory || totals.value)}</p></div>
+              <div className="rounded-2xl bg-slate-900 p-4 text-white"><p className="text-xs font-bold text-slate-300">Valorizado actual</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventory || totals.value)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Valorizado fecha corte</p><p className="mt-1 text-xl font-black">{money(salesTotals.inventoryCutoff)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Presupuesto inventario</p><p className="mt-1 text-xl font-black">{money(salesTotals.budget)}</p></div>
               <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Cumplimiento</p><p className={`mt-1 text-xl font-black ${budgetCompliance >= 100 ? "text-blue-700" : "text-red-600"}`}>{percent(budgetCompliance)}</p></div>
-              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Inventario vs presupuesto</p><p className={`mt-1 text-xl font-black ${inventoryBudgetDiff >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(inventoryBudgetDiff)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Desv. actual vs presupuesto</p><p className={`mt-1 text-xl font-black ${inventoryBudgetDiff >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(inventoryBudgetDiff)}</p></div>
+              <div className="rounded-2xl border bg-white p-4"><p className="text-xs font-bold text-slate-500">Desv. corte vs presupuesto</p><p className={`mt-1 text-xl font-black ${inventoryCutoffBudgetDiff >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(inventoryCutoffBudgetDiff)}</p></div>
             </div>
             {salesUpdatedAt && <p className="text-xs font-semibold text-slate-400">{salesUpdatedAt}</p>}
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
                 <h2 className="font-black">Presupuesto de inventario por tienda</h2>
-                <Formula>presupuesto de inventario = costo venta proyectado x 1.2. Cumplimiento = valorizado inventario / presupuesto inventario x 100.</Formula>
+                <Formula>Presupuesto = costo venta proyectado x 1.2. El valorizado actual usa la fotografía calculada ahora; el valorizado fecha corte usa la fotografía del día seleccionado.</Formula>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1100px] text-sm">
+                <table className="w-full min-w-[1450px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
                       <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta{sortIcon("sales")}</th>
                       <th onClick={() => toggleSort("inventory_value")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado actual{sortIcon("inventory_value")}</th>
+                      <th onClick={() => toggleSort("inventory_value_cutoff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Valorizado fecha corte{sortIcon("inventory_value_cutoff")}</th>
                       <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectado{sortIcon("budget_cost")}</th>
                       <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inv.{sortIcon("budget")}</th>
                       <th onClick={() => toggleSort("compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento{sortIcon("compliance")}</th>
-                      <th onClick={() => toggleSort("diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Diferencia{sortIcon("diff")}</th>
+                      <th onClick={() => toggleSort("cutoff_diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desv. corte{sortIcon("cutoff_diff")}</th>
+                      <th onClick={() => toggleSort("diff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Desv. actual{sortIcon("diff")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1490,13 +1507,15 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
+                        <td className="border p-2 text-right font-black">{money(row.inventory_value_cutoff)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget_cost)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value / row.inventory_budget) * 100 : 0)}</td>
+                        <td className={`border p-2 text-right font-black ${row.inventory_cutoff_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_cutoff_vs_budget)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={9} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
                   </tbody>
                 </table>
               </div>
