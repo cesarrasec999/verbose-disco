@@ -46,6 +46,32 @@ function requestDetail(report: DifferenceReport) {
   return `${labels.join(" · ") || report.sku}${process}${pending}`;
 }
 
+/**
+ * Los cruces nuevos ya se guardan como dos filas vinculadas. Los cruces
+ * históricos tienen una sola fila con ambos productos dentro de request_data;
+ * se expanden aquí para que el resumen mantenga el mismo formato visual sin
+ * modificar ni duplicar registros históricos en la base de datos.
+ */
+function displayLines(report: DifferenceReport): DifferenceReport[] {
+  if (report.reason !== "cruce_sku" || report.request_data?.cross_line_role) return [report];
+  const products = report.request_data?.products || [];
+  if (products.length < 2) return [report];
+  return products.slice(0, 2).map((product, index) => ({
+    ...report,
+    product_id: product.product_id,
+    sku: product.sku,
+    description: product.description,
+    unit: product.unit,
+    system_stock_at_report: product.system_stock,
+    physical_qty: product.quantity,
+    photo_url: index === 0 ? report.photo_url : null,
+    request_data: {
+      ...report.request_data,
+      cross_line_role: index === 0 ? "principal" : "cruce",
+    },
+  }));
+}
+
 export default function ResumenTab() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [userLoaded, setUserLoaded] = useState(false);
@@ -237,10 +263,10 @@ export default function ResumenTab() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(report => {
+              {rows.flatMap(displayLines).map((report, displayIndex) => {
                 const diff = report.physical_qty === null ? null : report.physical_qty - report.system_stock_at_report;
                 return (
-                  <tr key={report.id} className="border-b hover:bg-slate-50">
+                  <tr key={`${report.id}-${report.request_data?.cross_line_role || "single"}-${displayIndex}`} className="border-b hover:bg-slate-50">
                     <td className="break-words p-2 font-black">{report.sku}</td>
                     <td className="break-words p-2">{report.description || "-"}</td>
                     <td className="break-words p-2"><b>{REASON_LABEL[report.reason] || report.reason}</b><br /><span className="text-slate-500">{requestDetail(report)}</span></td>
