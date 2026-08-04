@@ -1586,7 +1586,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Resumen por codigo");
     const storeName = (selectedStore?.name || session?.store_name || "tienda").replace(/[\\/:*?"<>|]+/g, "_");
-    XLSX.writeFile(workbook, `resumen_por_codigo_${storeName}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const auditDate = session?.started_at
+      ? new Date(session.started_at).toISOString().slice(0, 10)
+      : todayISO();
+    XLSX.writeFile(workbook, `Auditoria ${storeName} - ${auditDate}.xlsx`);
   }
 
   async function downloadAdminSummaryExcel() {
