@@ -106,6 +106,11 @@ export async function insertDifferenceReport(payload: NewDifferenceReport): Prom
   if (error) throw error;
 }
 
+export async function insertDifferenceReports(payloads: NewDifferenceReport[]): Promise<void> {
+  const { error } = await supabase.from("inventory_difference_reports").insert(payloads);
+  if (error) throw error;
+}
+
 export type FetchReportsParams = {
   scope: "own" | "all";
   operatorId?: string;
@@ -131,8 +136,8 @@ export async function fetchDifferenceReports(params: FetchReportsParams): Promis
   return { rows: (data || []) as DifferenceReport[], total: count || 0 };
 }
 
-export async function regularizeReport(id: string, adjustmentNumber: string, validator: { id: string; name: string }): Promise<void> {
-  const { error } = await supabase
+export async function regularizeReport(id: string, adjustmentNumber: string, validator: { id: string; name: string }, groupId?: string): Promise<void> {
+  let query = supabase
     .from("inventory_difference_reports")
     .update({
       status: "regularizado",
@@ -140,13 +145,14 @@ export async function regularizeReport(id: string, adjustmentNumber: string, val
       validated_by: validator.id,
       validated_by_name: validator.name,
       validated_at: new Date().toISOString(),
-    })
-    .eq("id", id);
+    });
+  query = groupId ? query.eq("request_data->>cross_group_id", groupId) : query.eq("id", id);
+  const { error } = await query;
   if (error) throw error;
 }
 
-export async function rejectReport(id: string, validator: { id: string; name: string }): Promise<void> {
-  const { error } = await supabase
+export async function rejectReport(id: string, validator: { id: string; name: string }, groupId?: string): Promise<void> {
+  let query = supabase
     .from("inventory_difference_reports")
     .update({
       status: "rechazado",
@@ -154,12 +160,15 @@ export async function rejectReport(id: string, validator: { id: string; name: st
       validated_by: validator.id,
       validated_by_name: validator.name,
       validated_at: new Date().toISOString(),
-    })
-    .eq("id", id);
+    });
+  query = groupId ? query.eq("request_data->>cross_group_id", groupId) : query.eq("id", id);
+  const { error } = await query;
   if (error) throw error;
 }
 
-export async function deleteDifferenceReport(id: string): Promise<void> {
-  const { error } = await supabase.from("inventory_difference_reports").delete().eq("id", id);
+export async function deleteDifferenceReport(id: string, groupId?: string): Promise<void> {
+  let query = supabase.from("inventory_difference_reports").delete();
+  query = groupId ? query.eq("request_data->>cross_group_id", groupId) : query.eq("id", id);
+  const { error } = await query;
   if (error) throw error;
 }

@@ -22,6 +22,9 @@ export type DifferenceRequestData = {
   regularization_process?: "Compras" | "Abastecimiento";
   provisional_pending?: number | null;
   notes?: string | null;
+  /** Identifica las dos líneas que pertenecen al mismo cruce de SKU. */
+  cross_group_id?: string;
+  cross_line_role?: "principal" | "cruce";
 };
 
 export type DifferenceReport = {

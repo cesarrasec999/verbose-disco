@@ -38,7 +38,9 @@ const REASON_LABEL: Record<DifferenceReason, string> = {
 
 function requestDetail(report: DifferenceReport) {
   const products = report.request_data?.products || [];
-  const labels = products.map(product => `${product.sku} (${product.role}: ${formatNumber(product.quantity)})`);
+  const lineRole = report.request_data?.cross_line_role;
+  const visibleProducts = lineRole ? products.filter(product => product.role === lineRole) : products;
+  const labels = (visibleProducts.length ? visibleProducts : products).map(product => `${product.sku} (${product.role}: ${formatNumber(product.quantity)})`);
   const process = report.request_data?.regularization_process ? ` · ${report.request_data.regularization_process}` : "";
   const pending = report.request_data?.provisional_pending !== undefined && report.request_data?.provisional_pending !== null ? ` · Pendiente: ${formatNumber(report.request_data.provisional_pending)}` : "";
   return `${labels.join(" · ") || report.sku}${process}${pending}`;
@@ -124,7 +126,7 @@ export default function ResumenTab() {
     if (!confirmed || !user) return;
     setSavingActionId(report.id);
     try {
-      await regularizeReport(report.id, adjustmentNumber, { id: user.id, name: user.full_name });
+      await regularizeReport(report.id, adjustmentNumber, { id: user.id, name: user.full_name }, report.request_data?.cross_group_id);
       setAdjustingId(null);
       toast.success(`${report.sku} regularizado.`);
       await loadReports();
@@ -140,7 +142,7 @@ export default function ResumenTab() {
     if (!confirmed || !user) return;
     setSavingActionId(report.id);
     try {
-      await rejectReport(report.id, { id: user.id, name: user.full_name });
+      await rejectReport(report.id, { id: user.id, name: user.full_name }, report.request_data?.cross_group_id);
       toast.success(`${report.sku} rechazado.`);
       await loadReports();
     } catch (error) {
@@ -154,7 +156,7 @@ export default function ResumenTab() {
     if (!window.confirm(`¿Eliminar la solicitud ${report.sku}? Esta acción no se puede deshacer.`)) return;
     setSavingActionId(report.id);
     try {
-      await deleteDifferenceReport(report.id);
+      await deleteDifferenceReport(report.id, report.request_data?.cross_group_id);
       toast.success("Solicitud eliminada.");
       await loadReports();
     } catch (error) {
@@ -171,7 +173,7 @@ export default function ResumenTab() {
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Diferencias de Inventario" />;
 
   return (
-    <main className="mx-auto max-w-6xl space-y-4 p-4 pb-24">
+    <main className="mx-auto max-w-[1800px] space-y-4 p-4 pb-24">
       <TabNav active="resumen" />
 
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -198,8 +200,24 @@ export default function ResumenTab() {
           </div>
         </div>
 
-        <div className="mt-4 overflow-auto">
-          <table className="w-full min-w-[1250px] text-sm">
+        <div className="mt-4 overflow-hidden">
+          <table className="w-full table-fixed text-[11px] leading-tight">
+            <colgroup>
+              <col style={{ width: canValidate ? "7%" : "8%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "14%" }} />
+              {canValidate && <col style={{ width: "8%" }} />}
+              <col style={{ width: "6%" }} />
+              <col style={{ width: "6%" }} />
+              <col style={{ width: "4%" }} />
+              <col style={{ width: "4%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "6%" }} />
+              <col style={{ width: "6%" }} />
+              {canValidate && <col style={{ width: "12%" }} />}
+            </colgroup>
             <thead className="bg-slate-100 text-xs text-slate-600">
               <tr>
                 <th className="p-2 text-left">Código</th>
@@ -223,10 +241,10 @@ export default function ResumenTab() {
                 const diff = report.physical_qty === null ? null : report.physical_qty - report.system_stock_at_report;
                 return (
                   <tr key={report.id} className="border-b hover:bg-slate-50">
-                    <td className="p-2 font-black">{report.sku}</td>
-                    <td className="max-w-xs truncate p-2">{report.description}</td>
-                    <td className="max-w-sm p-2 text-xs"><b>{REASON_LABEL[report.reason] || report.reason}</b><br /><span className="text-slate-500">{requestDetail(report)}</span></td>
-                    {canValidate && <td className="p-2">{report.store_name}</td>}
+                    <td className="break-words p-2 font-black">{report.sku}</td>
+                    <td className="break-words p-2">{report.description || "-"}</td>
+                    <td className="break-words p-2"><b>{REASON_LABEL[report.reason] || report.reason}</b><br /><span className="text-slate-500">{requestDetail(report)}</span></td>
+                    {canValidate && <td className="break-words p-2">{report.store_name}</td>}
                     <td className="p-2 text-center">{formatNumber(report.system_stock_at_report)}</td>
                     <td className="p-2 text-center font-bold">{report.physical_qty === null ? "-" : formatNumber(report.physical_qty)}</td>
                     <td className={`p-2 text-center font-black ${diff === null ? "text-slate-400" : diff < 0 ? "text-red-600" : diff > 0 ? "text-blue-700" : "text-green-700"}`}>
@@ -235,18 +253,20 @@ export default function ResumenTab() {
                     <td className="p-2 text-center">
                       {report.photo_url ? <a href={report.photo_url} target="_blank" rel="noreferrer" className="text-blue-700 underline">Ver</a> : "-"}
                     </td>
-                    <td className="max-w-xs truncate p-2 text-xs">{report.notes || "-"}</td>
-                    <td className="p-2 text-xs">{report.operator_name}</td>
-                    <td className="p-2 text-xs">{formatDateTime(report.created_at)}</td>
+                    <td className="break-words p-2">{report.notes || "-"}</td>
+                    <td className="break-words p-2">{report.operator_name || "-"}</td>
+                    <td className="break-words p-2">{formatDateTime(report.created_at)}</td>
                     <td className="p-2 text-center">
                       <span className={`rounded-full px-2 py-1 text-[11px] font-black ${STATUS_BADGE[report.status]}`}>
                         {STATUS_LABEL[report.status]}
                       </span>
                     </td>
-                    <td className="p-2 text-center text-xs font-bold">{report.adjustment_number || "-"}</td>
+                    <td className="break-words p-2 text-center font-bold">{report.request_data?.cross_line_role === "cruce" ? <span className="text-slate-400">Línea vinculada</span> : report.adjustment_number || "-"}</td>
                     {canValidate && (
                       <td className="p-2">
-                        {report.status === "pendiente" ? (
+                        {report.request_data?.cross_line_role === "cruce" ? (
+                          <span className="text-[10px] font-bold text-slate-400">Acción en línea principal</span>
+                        ) : report.status === "pendiente" ? (
                           <div className="flex flex-col gap-1">
                             {adjustingId === report.id ? (
                               <div className="flex gap-1">

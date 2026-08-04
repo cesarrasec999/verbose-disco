@@ -9,7 +9,7 @@ import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 import { formatNumber } from "@/features/ciclicos/utils";
-import { fetchProvisionalPending, insertDifferenceReport, uploadDifferencePhoto } from "./api";
+import { fetchProvisionalPending, insertDifferenceReports, uploadDifferencePhoto } from "./api";
 import { ProductSelector, type SelectedRequestProduct } from "./ProductSelector";
 import { TabNav } from "./TabNav";
 import type { DifferenceReason, RequestProductDetail } from "./types";
@@ -121,15 +121,41 @@ export default function ReportarTab() {
     setSaving(true);
     try {
       const photoUrl = photoFile ? await uploadDifferencePhoto(photoFile) : null;
-      await insertDifferenceReport({
-        store_id: selectedStore.id, store_name: selectedStore.name,
-        product_id: primaryProduct?.product.id || null, sku: primaryProduct?.product.sku || products[0].sku,
-        description: primaryProduct?.product.description || products[0].description, unit: primaryProduct?.product.unit || products[0].unit,
-        system_stock_at_report: primaryProduct?.systemStock || 0, physical_qty: physicalQty, photo_url: photoUrl,
-        notes: notes.trim() || null, reason,
-        request_data: { products, regularization_process: regularizationProcess || undefined, provisional_pending: reason === "regularizacion_provisional" ? provisionalPending : undefined, notes: notes.trim() || null },
-        operator_id: user.id, operator_name: user.full_name,
-      });
+      const requestData = { products, regularization_process: regularizationProcess || undefined, provisional_pending: reason === "regularizacion_provisional" ? provisionalPending : undefined, notes: notes.trim() || null };
+      if (reason === "cruce_sku" && primary && cross) {
+        // Un cruce representa dos productos, pero una sola atención y un solo
+        // número de ajuste. Se guardan dos líneas vinculadas por el mismo grupo.
+        const crossGroupId = crypto.randomUUID();
+        await insertDifferenceReports([
+          {
+            store_id: selectedStore.id, store_name: selectedStore.name,
+            product_id: primary.product.id, sku: primary.product.sku,
+            description: primary.product.description, unit: primary.product.unit,
+            system_stock_at_report: primary.systemStock, physical_qty: primaryPhysical, photo_url: photoUrl,
+            notes: notes.trim() || null, reason,
+            request_data: { ...requestData, cross_group_id: crossGroupId, cross_line_role: "principal" },
+            operator_id: user.id, operator_name: user.full_name,
+          },
+          {
+            store_id: selectedStore.id, store_name: selectedStore.name,
+            product_id: cross.product.id, sku: cross.product.sku,
+            description: cross.product.description, unit: cross.product.unit,
+            system_stock_at_report: cross.systemStock, physical_qty: qty(crossQty), photo_url: null,
+            notes: notes.trim() || null, reason,
+            request_data: { ...requestData, cross_group_id: crossGroupId, cross_line_role: "cruce" },
+            operator_id: user.id, operator_name: user.full_name,
+          },
+        ]);
+      } else {
+        await insertDifferenceReports([{
+          store_id: selectedStore.id, store_name: selectedStore.name,
+          product_id: primaryProduct?.product.id || null, sku: primaryProduct?.product.sku || products[0].sku,
+          description: primaryProduct?.product.description || products[0].description, unit: primaryProduct?.product.unit || products[0].unit,
+          system_stock_at_report: primaryProduct?.systemStock || 0, physical_qty: physicalQty, photo_url: photoUrl,
+          notes: notes.trim() || null, reason, request_data: requestData,
+          operator_id: user.id, operator_name: user.full_name,
+        }]);
+      }
       toast.success("Solicitud registrada. Podrás ver cuando sea atendida en Resumen.");
       resetForm();
     } catch (error) { toast.error("No se pudo guardar: " + (error instanceof Error ? error.message : String(error))); }
