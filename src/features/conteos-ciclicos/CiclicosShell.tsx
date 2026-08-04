@@ -103,8 +103,22 @@ type DashboardDayDetail = {
     horaInicio: string | null;
     horaFin: string | null;
     duracion: number | null;
+    products: DashboardProductDetail[];
     difVal: number;
     differences: DashboardDifferenceDetail[];
+};
+
+type DashboardProductDetail = {
+    product_id: string;
+    sku: string;
+    description: string;
+    unit: string;
+    system_stock: number;
+    counted: number;
+    difference: number;
+    cost: number;
+    difVal: number;
+    contado: boolean;
 };
 
 type DashboardDifferenceDetail = {
@@ -292,6 +306,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [dashDayDetails, setDashDayDetails] = useState<Record<string, DashboardDayDetail[]>>({});
     const [expandedDashStoreId, setExpandedDashStoreId] = useState<string | null>(null);
     const [expandedDashDateKey, setExpandedDashDateKey] = useState<string | null>(null);
+    const [expandedDashProductsKey, setExpandedDashProductsKey] = useState<string | null>(null);
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
@@ -1225,7 +1240,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 dashP++;
             }
 
-            if (asgnRaw.length === 0) { setDashData([]); setDashDayDetails({}); setExpandedDashStoreId(null); setExpandedDashDateKey(null); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
+            if (asgnRaw.length === 0) { setDashData([]); setDashDayDetails({}); setExpandedDashStoreId(null); setExpandedDashDateKey(null); setExpandedDashProductsKey(null); setDashLoading(false); showMessage(`Sin asignaciones en ${dateFilter.from} → ${dateFilter.to}`, "error"); return; }
 
             // ── Paso 2: traer stores y products por IDs únicos ────────
             const uniqueStoreIds = [...new Set(asgnRaw.map((a: any) => a.store_id))];
@@ -1376,15 +1391,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 const totalContados = ok + sobrantes + faltantes;
                 const eri = totalContados > 0 ? Math.round((ok / totalContados) * 100) : 0;
 
+                const products: DashboardProductDetail[] = [];
                 const differences: DashboardDifferenceDetail[] = [];
                 for (const [pid, entry] of prodMap) {
-                    if (!entry.contado) continue;
                     const asgForPid = g.asgns.find((a: any) => a.product_id === pid);
                     const info = prodInfoMap.get(pid);
                     const costo = parseCost(asgForPid?.cyclic_products?.cost ?? info?.cost);
                     const diff = r2(entry.total_counted - entry.system_stock);
-                    if (diff === 0) continue;
-                    differences.push({
+                    const productDetail: DashboardProductDetail = {
                         product_id: pid,
                         sku: info?.sku || String(asgForPid?.sku || pid),
                         description: info?.description || "",
@@ -1394,8 +1408,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                         difference: diff,
                         cost: costo,
                         difVal: r2(diff * costo),
+                        contado: entry.contado,
+                    };
+                    products.push(productDetail);
+                    if (!entry.contado) continue;
+                    if (diff === 0) continue;
+                    differences.push({
+                        ...productDetail,
                     });
                 }
+                products.sort((a, b) => a.sku.localeCompare(b.sku));
                 differences.sort((a, b) => Math.abs(b.difVal) - Math.abs(a.difVal) || a.sku.localeCompare(b.sku));
                 const difValDay = r2(differences.reduce((sum, item) => sum + item.difVal, 0));
 
@@ -1409,7 +1431,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 // 2. Fallback para datos históricos antes del fix del bug: contó todos los productos
                 const cumplioPorReconteo = flagsForGroup.has("__recount_done__");
                 const cumplio = cumplioPorReconteo || (noContados === 0 && total > 0);
-                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, difVal: difValDay, differences });
+                dayMetrics.push({ store_id: g.store_id, store_name: g.store_name, date: g.date, ok, sobrantes, faltantes, noContados, total, eri, cumplio, horaInicio, horaFin, duracion, products, difVal: difValDay, differences });
             }
 
             const rows: DashboardRow[] = [];
@@ -1497,6 +1519,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setDashDayDetails(dayDetailsByStore);
             setExpandedDashStoreId(null);
             setExpandedDashDateKey(null);
+            setExpandedDashProductsKey(null);
             setDashData(rows);
         } finally {
             setDashLoading(false);
@@ -7605,17 +7628,28 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                                     {(dashDayDetails[r.store_id] || []).map(day => {
                                                                                         const dateKey = `${day.store_id}__${day.date}`;
                                                                                         const dateExpanded = expandedDashDateKey === dateKey;
+                                                                                        const productsExpanded = expandedDashProductsKey === dateKey;
                                                                                         return <Fragment key={dateKey}>
                                                                                         <tr className="hover:bg-slate-50">
                                                                                             <td className="border p-2 font-semibold">
-                                                                                                <button
-                                                                                                    type="button"
-                                                                                                    onClick={() => setExpandedDashDateKey(prev => prev === dateKey ? null : dateKey)}
-                                                                                                    className="text-left font-bold text-blue-700 underline underline-offset-2 hover:text-blue-900"
-                                                                                                    title="Ver sólo las diferencias de esta fecha"
-                                                                                                >
-                                                                                                    {dateExpanded ? "▾ " : "▸ "}{day.date.split("-").reverse().join("/")}
-                                                                                                </button>
+                                                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                                                    <button
+                                                                                                        type="button"
+                                                                                                        onClick={() => setExpandedDashDateKey(prev => prev === dateKey ? null : dateKey)}
+                                                                                                        className="text-left font-bold text-blue-700 underline underline-offset-2 hover:text-blue-900"
+                                                                                                        title="Ver sólo las diferencias de esta fecha"
+                                                                                                    >
+                                                                                                        {dateExpanded ? "▾ " : "▸ "}{day.date.split("-").reverse().join("/")}
+                                                                                                    </button>
+                                                                                                    <button
+                                                                                                        type="button"
+                                                                                                        onClick={() => setExpandedDashProductsKey(prev => prev === dateKey ? null : dateKey)}
+                                                                                                        className="rounded-lg border border-slate-300 px-2 py-1 text-[10px] font-black text-slate-600 hover:bg-slate-100"
+                                                                                                        title="Ver todos los productos del requerimiento diario"
+                                                                                                    >
+                                                                                                        {productsExpanded ? "Ocultar productos" : "Productos"}
+                                                                                                    </button>
+                                                                                                </div>
                                                                                             </td>
                                                                                             <td className="border p-2 text-right">{day.total}</td>
                                                                                             <td className="border p-2 text-right font-semibold text-green-700">{day.ok}</td>
@@ -7663,6 +7697,45 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                                                                 </table>
                                                                                                             </div>
                                                                                                         )}
+                                                                                                    </div>
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        )}
+                                                                                        {productsExpanded && (
+                                                                                            <tr>
+                                                                                                <td colSpan={9} className="border bg-blue-50/40 p-3">
+                                                                                                    <div className="rounded-xl border bg-white p-3">
+                                                                                                        <p className="mb-2 font-bold text-slate-900">Productos del requerimiento del {day.date.split("-").reverse().join("/")}</p>
+                                                                                                        <div className="overflow-x-auto">
+                                                                                                            <table className="w-full min-w-[820px] text-xs">
+                                                                                                                <thead className="bg-slate-100 text-slate-600">
+                                                                                                                    <tr>
+                                                                                                                        <th className="border p-2 text-left">Código</th>
+                                                                                                                        <th className="border p-2 text-left">Descripción</th>
+                                                                                                                        <th className="border p-2 text-left">UM</th>
+                                                                                                                        <th className="border p-2 text-right">Stock sistema</th>
+                                                                                                                        <th className="border p-2 text-right">Contado</th>
+                                                                                                                        <th className="border p-2 text-right">Diferencia</th>
+                                                                                                                        <th className="border p-2 text-right">Dif. valorizada</th>
+                                                                                                                        <th className="border p-2 text-center">Estado</th>
+                                                                                                                    </tr>
+                                                                                                                </thead>
+                                                                                                                <tbody>
+                                                                                                                    {day.products.map(item => (
+                                                                                                                        <tr key={`${dateKey}-product-${item.product_id}`}>
+                                                                                                                            <td className="border p-2 font-semibold">{item.sku}</td>
+                                                                                                                            <td className="border p-2">{item.description || "—"}</td>
+                                                                                                                            <td className="border p-2">{item.unit || "—"}</td>
+                                                                                                                            <td className="border p-2 text-right">{formatNumber(item.system_stock)}</td>
+                                                                                                                            <td className="border p-2 text-right">{item.contado ? formatNumber(item.counted) : "—"}</td>
+                                                                                                                            <td className={`border p-2 text-right font-bold ${item.difference === 0 ? "text-green-700" : item.difference < 0 ? "text-red-600" : "text-blue-700"}`}>{item.contado ? `${item.difference > 0 ? "+" : ""}${formatNumber(item.difference)}` : "—"}</td>
+                                                                                                                            <td className={`border p-2 text-right font-bold ${item.difVal === 0 ? "text-green-700" : item.difVal < 0 ? "text-red-600" : "text-blue-700"}`}>{item.contado ? formatMoney(item.difVal) : "—"}</td>
+                                                                                                                            <td className={`border p-2 text-center font-bold ${item.contado ? "text-green-700" : "text-amber-700"}`}>{item.contado ? "Contado" : "Pendiente"}</td>
+                                                                                                                        </tr>
+                                                                                                                    ))}
+                                                                                                                </tbody>
+                                                                                                            </table>
+                                                                                                        </div>
                                                                                                     </div>
                                                                                                 </td>
                                                                                             </tr>

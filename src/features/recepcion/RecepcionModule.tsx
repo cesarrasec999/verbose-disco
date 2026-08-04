@@ -257,7 +257,10 @@ function writeRequestCache(key: string, rows: ReceptionRequest[]) {
     try { localStorage.setItem(fullKey, payload); } catch {}
   }
 }
-function rqKey(req: ReceptionRequest) { return req.erp_inv_request_id || req.doc_number || req.inv_request_no || req.id; }
+// Un requerimiento puede tener varias guías/documentos en RMS. La clave de
+// consolidación debe ser el requerimiento; la guía queda como información
+// secundaria dentro de la fila agrupada.
+function rqKey(req: ReceptionRequest) { return req.inv_request_no || req.erp_inv_request_id || req.doc_number || req.id; }
 function groupedStatus(items: ReceptionRequest[]): ReceptionRequest["reception_status"] {
   if (items.length > 0 && items.every(item => item.reception_status === "completed")) return "completed";
   if (items.some(item => item.reception_status === "in_progress" || item.reception_status === "completed")) return "in_progress";
@@ -280,6 +283,8 @@ function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] 
       ...base,
       id: sorted.map(item => item.id).join("|"),
       erp_inv_request_id: sorted.map(item => item.erp_inv_request_id).join(", "),
+      inv_request_no: [...new Set(sorted.map(item => textValue(item.inv_request_no)).filter(Boolean))].join(", ") || base.inv_request_no,
+      doc_number: [...new Set(sorted.map(item => textValue(item.doc_number)).filter(Boolean))].join(", ") || base.doc_number,
       line_count: sorted.reduce((sum, item) => sum + num(item.line_count), 0),
       qty_requested_total: sorted.reduce((sum, item) => sum + num(item.qty_requested_total), 0),
       qty_pending_total: sorted.reduce((sum, item) => sum + num(item.qty_pending_total), 0),
@@ -294,6 +299,9 @@ function buildRequestGroups(items: ReceptionRequest[]): ReceptionRequestGroup[] 
   }).sort((a, b) =>
     String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))
   );
+}
+function requestGuides(req: ReceptionRequestGroup) {
+  return [...new Set(req.child_requests.map(item => textValue(item.doc_number)).filter(Boolean))].join(", ") || "-";
 }
 function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
 function dateTimeForExcel(v: string | null) {
@@ -759,7 +767,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     let q = supabase
       .from("reception_requests")
       .select("*")
-      .eq("status_code", "T")
+      // RMS puede dejar el estado de tránsito en status_code o en erp_status;
+      // no se debe exigir guía/documento para que aparezca el requerimiento.
+      .or("status_code.eq.T,erp_status.eq.T")
       .order("creation_date", { ascending: false })
       .range(offset, offset + PENDING_REQUESTS_PAGE_SIZE - 1)
       .abortSignal(signal);
@@ -1949,7 +1959,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const pendingRequestsByStore = useMemo(() => {
     const grouped = new Map<string, ReceptionRequestGroup[]>();
     for (const request of scopedRequestGroups) {
-      if (!request.child_requests.some(item => (item.erp_status ?? item.status_code) === "T")) continue;
+      if (!request.child_requests.some(item => item.erp_status === "T" || item.status_code === "T")) continue;
       const key = request.destination_store_code || request.destination_store_name || "SIN_TIENDA";
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key)!.push(request);
@@ -1966,26 +1976,24 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   async function exportPendingRequestsExcel() {
     setExportingPendingRequests(true);
     try {
-      const exportRows = pendingRequestsByStore.flatMap(group => group.rows.flatMap(request =>
-        request.child_requests.map(item => ({
-          Tienda: item.destination_store_name || item.destination_store_code || group.name,
-          "Código tienda": item.destination_store_code || "",
-          "Requerimiento": item.inv_request_no || "",
-          "Guía / documento": item.doc_number || "",
-          "Estado RMS": "En tránsito",
-          "Fecha requerimiento": dateTimeForExcel(item.creation_date),
-          "Fecha tránsito": dateTimeForExcel(item.request_date),
-          "Tienda origen": item.source_store_name || item.source_store_code || "",
-          "Código origen": item.source_store_code || "",
-          Motivo: item.reason || "",
-          "Líneas": num(item.line_count),
-          "Cantidad solicitada": num(item.qty_requested_total),
-          "Cantidad pendiente": num(item.qty_pending_total),
-          "Estado recepción": item.reception_status === "completed" ? "Completado" : item.reception_status === "in_progress" ? "En proceso" : "Pendiente",
-          "Recepcionado por": item.completed_by_name || "",
-          Observaciones: item.notes || "",
-        }))
-      ));
+      const exportRows = pendingRequestsByStore.flatMap(group => group.rows.map(request => ({
+        Tienda: request.destination_store_name || request.destination_store_code || group.name,
+        "Código tienda": request.destination_store_code || "",
+        Requerimiento: requestRequirementLabel(request),
+        "Guías / documentos": requestGuides(request),
+        "Estado RMS": "En tránsito",
+        "Fecha requerimiento": dateTimeForExcel(request.creation_date),
+        "Fecha tránsito": dateTimeForExcel(request.request_date),
+        "Tienda origen": request.source_store_name || request.source_store_code || "",
+        "Código origen": request.source_store_code || "",
+        Motivo: request.reason || "",
+        "Líneas": num(request.line_count),
+        "Cantidad solicitada": num(request.qty_requested_total),
+        "Cantidad pendiente": num(request.qty_pending_total),
+        "Estado recepción": request.reception_status === "completed" ? "Completado" : request.reception_status === "in_progress" ? "En proceso" : "Pendiente",
+        "Recepcionado por": request.completed_by_name || "",
+        Observaciones: request.notes || "",
+      })));
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "Pendientes recepción");
       const selectedStore = destStoreOptions.find(store => store.code === storeFilter)?.name || "todas_las_tiendas";
@@ -2390,7 +2398,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                       <thead className="bg-slate-50 text-left text-[11px] font-black uppercase text-slate-500">
                         <tr>
                           <th className="px-4 py-3">Requerimiento</th>
-                          <th className="px-4 py-3">Guía</th>
+                          <th className="px-4 py-3">Guías / documentos</th>
                           <th className="px-4 py-3">Origen</th>
                           <th className="px-4 py-3">Fecha tránsito</th>
                           <th className="px-4 py-3 text-right">Líneas</th>
@@ -2399,15 +2407,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                         </tr>
                       </thead>
                       <tbody>
-                        {group.rows.flatMap(request => request.child_requests).map(item => (
-                          <tr key={item.id} className="border-t border-slate-100">
-                            <td className="px-4 py-3 font-black text-slate-900">{item.inv_request_no || "-"}</td>
-                            <td className="px-4 py-3 font-bold text-slate-600">{item.doc_number || "-"}</td>
-                            <td className="px-4 py-3 text-slate-600">{item.source_store_name || item.source_store_code || "-"}</td>
-                            <td className="px-4 py-3 text-slate-600">{dateShort(item.request_date || item.creation_date)}</td>
-                            <td className="px-4 py-3 text-right font-bold text-slate-700">{fmt(num(item.line_count))}</td>
-                            <td className="px-4 py-3 text-right font-black text-slate-900">{fmt(num(item.qty_requested_total))}</td>
-                            <td className="px-4 py-3"><StatusBadge status={item.reception_status} /></td>
+                        {group.rows.map(request => (
+                          <tr key={request.id} className="border-t border-slate-100 hover:bg-teal-50">
+                            <td className="px-4 py-3 font-black text-slate-900">
+                              <button type="button" onClick={() => void openRequest(request)} className="text-left text-teal-700 underline underline-offset-2 hover:text-teal-900">
+                                {requestRequirementLabel(request) || "Sin número"}
+                              </button>
+                            </td>
+                            <td className="px-4 py-3 font-bold text-slate-600">{requestGuides(request)}</td>
+                            <td className="px-4 py-3 text-slate-600">{request.source_store_name || request.source_store_code || "-"}</td>
+                            <td className="px-4 py-3 text-slate-600">{dateShort(request.request_date || request.creation_date)}</td>
+                            <td className="px-4 py-3 text-right font-bold text-slate-700">{fmt(num(request.line_count))}</td>
+                            <td className="px-4 py-3 text-right font-black text-slate-900">{fmt(num(request.qty_requested_total))}</td>
+                            <td className="px-4 py-3"><StatusBadge status={request.reception_status} /></td>
                           </tr>
                         ))}
                       </tbody>
