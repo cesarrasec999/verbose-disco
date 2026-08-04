@@ -415,13 +415,11 @@ export default function ChecklistModule() {
         const c = cMap.get(s.id) || { cumplio: 0, no_cumplio: 0, justificado: 0, pct: 0 };
         const e = eMap.get(s.id) || { eri: 0, session_count: 0 };
         const y = yMap.get(s.id) || { eri: 0, counted_items: 0 };
-        // No penalizar con cero a una fuente que no tiene datos en el periodo.
-        // Solo se promedian los indicadores que realmente tienen registros.
-        const scoreParts: number[] = [];
-        const checklistItems = Number(c.cumplio || 0) + Number(c.no_cumplio || 0) + Number(c.justificado || 0);
-        if (checklistItems > 0) scoreParts.push(Number(c.pct || 0));
+        // La auditoría de existencia solo entra al promedio cuando tiene
+        // sesiones. El checklist siempre participa y el cíclico sin datos
+        // participa como 0, según la regla del indicador.
+        const scoreParts: number[] = [Number(c.pct || 0), Number(y.eri || 0)];
         if (Number(e.session_count || 0) > 0) scoreParts.push(Number(e.eri || 0));
-        if (Number(y.counted_items || 0) > 0) scoreParts.push(Number(y.eri || 0));
         const combined = scoreParts.length > 0
           ? Math.round(scoreParts.reduce((sum, value) => sum + value, 0) / scoreParts.length)
           : 0;
