@@ -1024,7 +1024,6 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       Tienda: row.store_name,
       VentaAcumulada: row.sales_amount,
       CostoVentaAcumulado: row.cost_amount,
-      CostoVentaProyectada: row.inventory_budget_cost,
       PresupuestoInventario: row.inventory_budget,
       ValorizadoInventarioFechaCorte: row.inventory_value_cutoff,
       CumplimientoFechaCorte: row.inventory_budget > 0 ? (row.inventory_value_cutoff / row.inventory_budget) * 100 : 0,
@@ -1535,13 +1534,12 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                 <Formula>Presupuesto = costo venta proyectado x 1.2. La primera parte compara el presupuesto con la fecha de corte; la segunda compara el inventario actual.</Formula>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1650px] text-sm">
+                <table className="w-full min-w-[1500px] text-sm">
                   <thead className="bg-slate-100 text-xs text-slate-600">
                     <tr>
                       <th onClick={() => toggleSort("store_name")} className="cursor-pointer select-none border p-2 text-left hover:bg-slate-200">Tienda{sortIcon("store_name")}</th>
                       <th onClick={() => toggleSort("sales")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Venta acumulada{sortIcon("sales")}</th>
                       <th onClick={() => toggleSort("cost_accumulated")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta acumulada{sortIcon("cost_accumulated")}</th>
-                      <th onClick={() => toggleSort("budget_cost")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Costo venta proyectada{sortIcon("budget_cost")}</th>
                       <th onClick={() => toggleSort("budget")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Presupuesto inventarios{sortIcon("budget")}</th>
                       <th onClick={() => toggleSort("inventory_value_cutoff")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Inv. Valorizado {shortDateLabel(reportDate)}{sortIcon("inventory_value_cutoff")}</th>
                       <th onClick={() => toggleSort("cutoff_compliance")} className="cursor-pointer select-none border p-2 text-right hover:bg-slate-200">Cumplimiento %{sortIcon("cutoff_compliance")}</th>
@@ -1557,7 +1555,6 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                         <td className="border p-2 font-black">{row.store_name}</td>
                         <td className="border p-2 text-right font-black">{money(row.sales_amount)}</td>
                         <td className="border p-2 text-right font-black">{money(row.cost_amount)}</td>
-                        <td className="border p-2 text-right font-black">{money(row.inventory_budget_cost)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_budget)}</td>
                         <td className="border p-2 text-right font-black">{money(row.inventory_value_cutoff)}</td>
                         <td className={`border p-2 text-right font-black ${row.inventory_budget > 0 && row.inventory_value_cutoff / row.inventory_budget >= 1 ? "text-blue-700" : "text-red-600"}`}>{percent(row.inventory_budget > 0 ? (row.inventory_value_cutoff / row.inventory_budget) * 100 : 0)}</td>
@@ -1567,7 +1564,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
                         <td className={`border p-2 text-right font-black ${row.inventory_vs_budget >= 0 ? "text-blue-700" : "text-red-600"}`}>{money(row.inventory_vs_budget)}</td>
                       </tr>
                     ))}
-                    {salesRows.length === 0 && <tr><td colSpan={11} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
+                    {salesRows.length === 0 && <tr><td colSpan={10} className="p-8 text-center text-slate-400">Actualiza para calcular presupuesto.</td></tr>}
                   </tbody>
                 </table>
               </div>
