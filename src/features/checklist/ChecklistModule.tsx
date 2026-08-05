@@ -585,8 +585,10 @@ export default function ChecklistModule() {
       const auditSessionStoreById = new Map(auditSessionRows.map(row => [String(row.id), String(row.store_id)]));
       const readInChunks = async (table: string, select: string, column: string, values: string[]) => {
         const rows: any[] = [];
-        for (let i = 0; i < values.length; i += 500) {
-          const chunk = values.slice(i, i + 500);
+        // Mantener los filtros IN pequeños evita que la URL de PostgREST
+        // supere el límite del servidor y deje fuera conteos del período.
+        for (let i = 0; i < values.length; i += 100) {
+          const chunk = values.slice(i, i + 100);
           rows.push(...await readPages((from, to) => supabase.from(table).select(select).in(column, chunk).range(from, to)));
         }
         return rows;
@@ -720,8 +722,8 @@ export default function ChecklistModule() {
         ...[...cyclicValueByProduct.keys()].map(key => key.split("|")[1]),
       ].filter(Boolean))];
       for (const general of generalByStore.values()) {
-        for (let i = 0; i < sampledProductIds.length; i += 500) {
-          const chunk = sampledProductIds.slice(i, i + 500);
+        for (let i = 0; i < sampledProductIds.length; i += 100) {
+          const chunk = sampledProductIds.slice(i, i + 100);
           const snapshotRows = await readPages((from, to) => supabase
             .from("general_inventory_stock_snapshot")
             .select("product_id,system_stock,cost")
