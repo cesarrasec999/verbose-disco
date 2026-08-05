@@ -158,8 +158,9 @@ export async function fetchDifferenceReports(params: FetchReportsParams): Promis
 
 export async function updateDifferenceReport(
   id: string,
-  payload: { reason: DifferenceReason; physical_qty: number | null },
+  payload: { reason: DifferenceReason; physical_qty: number | null; cross_physical_qty?: number | null },
   groupId?: string,
+  linkedId?: string,
 ): Promise<void> {
   if (groupId) {
     const { error: groupError } = await supabase
@@ -174,6 +175,14 @@ export async function updateDifferenceReport(
     .eq("id", id)
     .eq("status", "pendiente");
   if (error) throw error;
+  if (groupId && linkedId && payload.cross_physical_qty !== undefined) {
+    const { error: linkedError } = await supabase
+      .from("inventory_difference_reports")
+      .update({ reason: payload.reason, physical_qty: payload.cross_physical_qty })
+      .eq("id", linkedId)
+      .eq("status", "pendiente");
+    if (linkedError) throw linkedError;
+  }
 }
 
 export async function regularizeReport(id: string, adjustmentNumber: string, validator: { id: string; name: string }, groupId?: string): Promise<void> {

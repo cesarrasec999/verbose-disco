@@ -91,6 +91,7 @@ export default function ResumenTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingReason, setEditingReason] = useState<DifferenceReason>("ajuste_inventario");
   const [editingPhysicalQty, setEditingPhysicalQty] = useState("");
+  const [editingCrossPhysicalQty, setEditingCrossPhysicalQty] = useState("");
   const [savingActionId, setSavingActionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -153,6 +154,10 @@ export default function ResumenTab() {
     setEditingId(report.id);
     setEditingReason(report.reason);
     setEditingPhysicalQty(report.physical_qty === null ? "" : String(report.physical_qty));
+    const crossLine = report.request_data?.cross_group_id
+      ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
+      : null;
+    setEditingCrossPhysicalQty(crossLine?.physical_qty === null || crossLine?.physical_qty === undefined ? "" : String(crossLine.physical_qty));
     setAdjustingId(null);
   }
 
@@ -168,10 +173,28 @@ export default function ResumenTab() {
       toast.error("La cantidad física debe ser un número mayor o igual a 0.");
       return;
     }
+    const crossLine = report.request_data?.cross_group_id
+      ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
+      : null;
+    const rawCrossPhysical = editingCrossPhysicalQty.trim();
+    if (editingReason === "cruce_sku" && crossLine && rawCrossPhysical === "") {
+      toast.error("Ingresa la cantidad fÃ­sica del segundo cÃ³digo del cruce.");
+      return;
+    }
+    const crossPhysicalQty = rawCrossPhysical === "" ? null : Number(rawCrossPhysical);
+    if (crossPhysicalQty !== null && (!Number.isFinite(crossPhysicalQty) || crossPhysicalQty < 0)) {
+      toast.error("La cantidad fÃ­sica del segundo cÃ³digo debe ser un nÃºmero mayor o igual a 0.");
+      return;
+    }
     if (!user) return;
     setSavingActionId(report.id);
     try {
-      await updateDifferenceReport(report.id, { reason: editingReason, physical_qty: physicalQty }, report.request_data?.cross_group_id);
+      await updateDifferenceReport(
+        report.id,
+        { reason: editingReason, physical_qty: physicalQty, cross_physical_qty: crossPhysicalQty },
+        report.request_data?.cross_group_id,
+        crossLine?.id,
+      );
       setEditingId(null);
       toast.success("Registro actualizado.");
       await loadReports();
@@ -306,6 +329,9 @@ export default function ResumenTab() {
             <tbody>
               {rows.flatMap(displayLines).map((report, displayIndex) => {
                 const diff = report.physical_qty === null ? null : report.physical_qty - report.system_stock_at_report;
+                const linkedReport = report.request_data?.cross_group_id
+                  ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
+                  : null;
                 return (
                   <tr key={`${report.id}-${report.request_data?.cross_line_role || "single"}-${displayIndex}`} className="border-b hover:bg-slate-50">
                     <td className="break-words p-2 font-black">{report.sku}</td>
@@ -342,6 +368,7 @@ export default function ResumenTab() {
                                   {Object.entries(REASON_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                                 </select>
                                 <input value={editingPhysicalQty} onChange={event => setEditingPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física" className="w-full rounded-lg border px-2 py-1 text-[10px]" />
+                                {editingReason === "cruce_sku" && linkedReport && <input value={editingCrossPhysicalQty} onChange={event => setEditingCrossPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder={`Cantidad física ${linkedReport.sku}`} className="w-full rounded-lg border px-2 py-1 text-[10px]" />}
                                 <div className="flex gap-1">
                                   <button onClick={() => void saveEdit(report)} disabled={savingActionId === report.id} className="flex-1 rounded-lg bg-blue-700 px-2 py-1 text-[10px] font-black text-white disabled:opacity-40">Guardar</button>
                                   <button onClick={() => setEditingId(null)} className="rounded-lg border px-2 py-1 text-[10px] font-black">X</button>
