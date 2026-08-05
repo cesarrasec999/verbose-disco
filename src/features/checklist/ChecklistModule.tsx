@@ -52,6 +52,7 @@ type GeneralInventoryReportRow = {
   finished_at: string | null;
   total_codes: number;
   ok_codes: number;
+  system_value: number;
   eri_pct: number;
   net_value_diff: number;
   sales_in_period: number | null;
@@ -547,7 +548,18 @@ export default function ChecklistModule() {
       const range = periodRange(existenciaPeriod);
       const dateTo = addDaysISO(range.toExclusive, -1);
       const storeIds = stores.map(store => store.id);
-      const [auditResponse, cyclicResponse, generalResponse] = await Promise.all([
+      const readPages = async (queryFactory: (from: number, to: number) => any) => {
+        const rows: any[] = [];
+        const pageSize = 1000;
+        for (let from = 0; ; from += pageSize) {
+          const { data, error } = await queryFactory(from, from + pageSize - 1);
+          if (error) throw error;
+          rows.push(...(data || []));
+          if (!data || data.length < pageSize) break;
+        }
+        return rows;
+      };
+      const [auditResponse, cyclicResponse, generalRows] = await Promise.all([
         supabase.rpc("get_checklist_existencia_summary", {
           p_store_ids: storeIds,
           p_from: localDateStartISO(range.from),
@@ -558,14 +570,76 @@ export default function ChecklistModule() {
           p_from: range.from,
           p_to: dateTo,
         }),
-        supabase.rpc("get_finished_general_inventory_report", {
+        readPages((from, to) => supabase.rpc("get_finished_general_inventory_report", {
           p_date_from: range.from,
           p_date_to: dateTo,
-        }),
+        }).range(from, to)),
       ]);
       if (auditResponse.error) throw auditResponse.error;
       if (cyclicResponse.error) throw cyclicResponse.error;
-      if (generalResponse.error) throw generalResponse.error;
+
+      const auditSessionRows = await readPages((from, to) => supabase
+        .from("audit_sessions")
+        .select("id,store_id")
+        .in("store_id", storeIds)
+        .eq("status", "finished")
+        .gte("started_at", localDateStartISO(range.from))
+        .lt("started_at", localDateStartISO(range.toExclusive))
+        .range(from, to));
+      const auditSessionIds = auditSessionRows.map(row => String(row.id)).filter(Boolean);
+      const auditSessionStoreById = new Map(auditSessionRows.map(row => [String(row.id), String(row.store_id)]));
+      const readInChunks = async (table: string, select: string, column: string, values: string[]) => {
+        const rows: any[] = [];
+        for (let i = 0; i < values.length; i += 500) {
+          const chunk = values.slice(i, i + 500);
+          rows.push(...await readPages((from, to) => supabase.from(table).select(select).in(column, chunk).range(from, to)));
+        }
+        return rows;
+      };
+      const [auditItems, auditCounts, cyclicAssignments] = await Promise.all([
+        readInChunks("audit_session_items", "id,session_id,product_id,system_stock,cost_snapshot", "session_id", auditSessionIds),
+        readInChunks("audit_counts", "item_id,session_id", "session_id", auditSessionIds),
+        readPages((from, to) => supabase
+          .from("cyclic_assignments")
+          .select("store_id,product_id,system_stock")
+          .in("store_id", storeIds)
+          .gte("assigned_date", range.from)
+          .lte("assigned_date", dateTo)
+          .range(from, to)),
+      ]);
+      const cyclicProductIds = [...new Set(cyclicAssignments.map(row => String(row.product_id || "")).filter(Boolean))];
+      const cyclicProducts = await readInChunks("cyclic_products", "id,cost", "id", cyclicProductIds);
+      const cyclicCostByProduct = new Map(cyclicProducts.map(row => [String(row.id), Number(row.cost || 0)]));
+      const countedAuditItemIds = new Set(auditCounts.map(row => String(row.item_id || "")).filter(Boolean));
+      const auditValueByProduct = new Map<string, number>();
+      for (const row of auditItems) {
+        if (!countedAuditItemIds.has(String(row.id))) continue;
+        const storeId = auditSessionStoreById.get(String(row.session_id));
+        const productId = String(row.product_id || "");
+        if (!storeId || !productId) continue;
+        const key = `${storeId}|${productId}`;
+        const value = Number(row.system_stock || 0) * Number(row.cost_snapshot || 0);
+        auditValueByProduct.set(key, Math.max(auditValueByProduct.get(key) || 0, value));
+      }
+      const auditValueByStore = new Map<string, number>();
+      for (const [key, value] of auditValueByProduct) {
+        const storeId = key.split("|")[0];
+        auditValueByStore.set(storeId, (auditValueByStore.get(storeId) || 0) + value);
+      }
+      const cyclicValueByProduct = new Map<string, number>();
+      for (const row of cyclicAssignments) {
+        const storeId = String(row.store_id || "");
+        const productId = String(row.product_id || "");
+        if (!storeId || !productId) continue;
+        const key = `${storeId}|${productId}`;
+        const value = Number(row.system_stock || 0) * (cyclicCostByProduct.get(productId) || 0);
+        cyclicValueByProduct.set(key, Math.max(cyclicValueByProduct.get(key) || 0, value));
+      }
+      const cyclicValueByStore = new Map<string, number>();
+      for (const [key, value] of cyclicValueByProduct) {
+        const storeId = key.split("|")[0];
+        cyclicValueByStore.set(storeId, (cyclicValueByStore.get(storeId) || 0) + value);
+      }
 
       const auditByStore = new Map<string, { eri: number; session_count: number; audited_items: number; ok_items: number }>(
         (auditResponse.data || []).map((row: any) => [String(row.store_id), {
@@ -583,11 +657,12 @@ export default function ChecklistModule() {
         }])
       );
       const generalByStore = new Map<string, GeneralInventoryReportRow>();
-      for (const raw of (generalResponse.data || []) as GeneralInventoryReportRow[]) {
+      for (const raw of generalRows as GeneralInventoryReportRow[]) {
         const row = {
           ...raw,
           total_codes: Number(raw.total_codes || 0),
           ok_codes: Number(raw.ok_codes || 0),
+          system_value: Number(raw.system_value || 0),
           eri_pct: Number(raw.eri_pct || 0),
           net_value_diff: Number(raw.net_value_diff || 0),
           sales_in_period: raw.sales_in_period === null || raw.sales_in_period === undefined ? null : Number(raw.sales_in_period),
@@ -603,6 +678,9 @@ export default function ChecklistModule() {
         const general = generalByStore.get(store.id);
         const totalCodes = Number(general?.total_codes || 0);
         const generalOkCodes = Number(general?.ok_codes || 0);
+        const generalValue = general ? Number(general.system_value || 0) : 0;
+        const auditSampleValue = auditValueByStore.get(store.id) || 0;
+        const cyclicSampleValue = cyclicValueByStore.get(store.id) || 0;
         const coveredCodes = audit.audited_items + cyclic.counted_items;
         const remainingCodes = Math.max(totalCodes - coveredCodes, 0);
         const remainingOkCodes = Math.max(generalOkCodes - audit.ok_items - cyclic.ok_items, 0);
@@ -611,6 +689,9 @@ export default function ChecklistModule() {
           : generalOkCodes / totalCodes * 100;
         const auditCoverage = totalCodes > 0 ? Math.min((audit.audited_items / totalCodes) * 100, 100) : null;
         const cyclicCoverage = totalCodes > 0 ? Math.min((cyclic.counted_items / totalCodes) * 100, 100) : null;
+        const auditValueCoverage = generalValue > 0 ? Math.min((auditSampleValue / generalValue) * 100, 100) : null;
+        const cyclicValueCoverage = generalValue > 0 ? Math.min((cyclicSampleValue / generalValue) * 100, 100) : null;
+        const combinedValueCoverage = generalValue > 0 ? Math.min(((auditSampleValue + cyclicSampleValue) / generalValue) * 100, 100) : null;
         const generalEri = general ? Number(general.eri_pct || 0) : null;
         return {
           TIENDA: store.name,
@@ -619,6 +700,12 @@ export default function ChecklistModule() {
           "ERI INVENTARIOS GENERALES": generalEri === null ? "" : generalEri,
           "DESVIACION SOBRE LA VENTA": general ? Number(general.net_value_diff || 0) : "",
           "% DESVIACION SOBRE LA VENTA": general?.deviation_over_sales_pct ?? "",
+          "VALORIZADO INVENTARIO GENERAL": general ? Number(generalValue.toFixed(2)) : "",
+          "VALORIZADO MUESTREADO AUDITORIA": general ? Number(auditSampleValue.toFixed(2)) : "",
+          "% VALORIZADO MUESTREADO AUDITORIA": auditValueCoverage === null ? "" : Number(auditValueCoverage.toFixed(2)),
+          "VALORIZADO MUESTREADO CICLICO": general ? Number(cyclicSampleValue.toFixed(2)) : "",
+          "% VALORIZADO MUESTREADO CICLICO": cyclicValueCoverage === null ? "" : Number(cyclicValueCoverage.toFixed(2)),
+          "% VALORIZADO MUESTREADO TOTAL": combinedValueCoverage === null ? "" : Number(combinedValueCoverage.toFixed(2)),
           "ERI ESTIMADO RESTO NO AUDITADO/NO CICLICO": remainingEri === null ? "" : Number(remainingEri.toFixed(2)),
           "COBERTURA AUDITORIA %": auditCoverage === null ? "" : Number(auditCoverage.toFixed(2)),
           "COBERTURA CONTEO CICLICO %": cyclicCoverage === null ? "" : Number(cyclicCoverage.toFixed(2)),
@@ -636,6 +723,7 @@ export default function ChecklistModule() {
       const sheet = XLSX.utils.json_to_sheet(consolidatedRows);
       sheet["!cols"] = [
         { wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 24 },
+        { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 26 },
         { wch: 34 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 18 }, { wch: 24 }, { wch: 28 }, { wch: 95 },
       ];
       const workbook = XLSX.utils.book_new();
