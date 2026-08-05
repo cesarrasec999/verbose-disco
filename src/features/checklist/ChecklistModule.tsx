@@ -48,6 +48,7 @@ type ChecklistExportEntry = ChecklistEntryRow & {
 };
 
 type GeneralInventoryReportRow = {
+  session_id: string;
   store_id: string;
   finished_at: string | null;
   total_codes: number;
@@ -559,16 +560,11 @@ export default function ChecklistModule() {
         }
         return rows;
       };
-      const [auditResponse, cyclicResponse, generalRows] = await Promise.all([
+      const [auditResponse, generalRows] = await Promise.all([
         supabase.rpc("get_checklist_existencia_summary", {
           p_store_ids: storeIds,
           p_from: localDateStartISO(range.from),
           p_to: localDateStartISO(range.toExclusive),
-        }),
-        supabase.rpc("get_cyclic_period_summary", {
-          p_store_ids: storeIds,
-          p_from: range.from,
-          p_to: dateTo,
         }),
         readPages((from, to) => supabase.rpc("get_finished_general_inventory_report", {
           p_date_from: range.from,
@@ -576,7 +572,6 @@ export default function ChecklistModule() {
         }).range(from, to)),
       ]);
       if (auditResponse.error) throw auditResponse.error;
-      if (cyclicResponse.error) throw cyclicResponse.error;
 
       const auditSessionRows = await readPages((from, to) => supabase
         .from("audit_sessions")
@@ -601,12 +596,14 @@ export default function ChecklistModule() {
         readInChunks("audit_counts", "item_id,session_id", "session_id", auditSessionIds),
         readPages((from, to) => supabase
           .from("cyclic_assignments")
-          .select("store_id,product_id,system_stock")
+          .select("id,store_id,product_id,system_stock,assigned_date")
           .in("store_id", storeIds)
           .gte("assigned_date", range.from)
           .lte("assigned_date", dateTo)
           .range(from, to)),
       ]);
+      const cyclicAssignmentIds = cyclicAssignments.map(row => String(row.id || "")).filter(Boolean);
+      const cyclicCounts = await readInChunks("cyclic_counts", "assignment_id,counted_quantity,location", "assignment_id", cyclicAssignmentIds);
       const cyclicProductIds = [...new Set(cyclicAssignments.map(row => String(row.product_id || "")).filter(Boolean))];
       const cyclicProducts = await readInChunks("cyclic_products", "id,cost", "id", cyclicProductIds);
       const cyclicCostByProduct = new Map(cyclicProducts.map(row => [String(row.id), Number(row.cost || 0)]));
@@ -626,14 +623,63 @@ export default function ChecklistModule() {
         const storeId = key.split("|")[0];
         auditValueByStore.set(storeId, (auditValueByStore.get(storeId) || 0) + value);
       }
+      const cyclicByAssignment = new Map(cyclicAssignments.map(row => [String(row.id), row]));
+      const cyclicCountsByAssignment = new Map<string, any[]>();
+      const cyclicFlagsByDay = new Map<string, Set<string>>();
+      const cyclicFlagValues = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
+      for (const count of cyclicCounts) {
+        const assignment = cyclicByAssignment.get(String(count.assignment_id));
+        if (!assignment) continue;
+        const dayKey = `${assignment.store_id}|${assignment.assigned_date}`;
+        if (cyclicFlagValues.has(String(count.location || ""))) {
+          const flags = cyclicFlagsByDay.get(dayKey) || new Set<string>();
+          flags.add(String(count.location));
+          cyclicFlagsByDay.set(dayKey, flags);
+          continue;
+        }
+        const counts = cyclicCountsByAssignment.get(String(count.assignment_id)) || [];
+        counts.push(count);
+        cyclicCountsByAssignment.set(String(count.assignment_id), counts);
+      }
+      const cyclicDays = new Map<string, { store_id: string; date: string; assignments: any[] }>();
+      for (const assignment of cyclicAssignments) {
+        const dayKey = `${assignment.store_id}|${assignment.assigned_date}`;
+        const day = cyclicDays.get(dayKey) || { store_id: String(assignment.store_id), date: String(assignment.assigned_date), assignments: [] };
+        day.assignments.push(assignment);
+        cyclicDays.set(dayKey, day);
+      }
+      const cyclicByStore = new Map<string, { eri: number; counted_items: number; ok_items: number }>();
       const cyclicValueByProduct = new Map<string, number>();
-      for (const row of cyclicAssignments) {
-        const storeId = String(row.store_id || "");
-        const productId = String(row.product_id || "");
-        if (!storeId || !productId) continue;
-        const key = `${storeId}|${productId}`;
-        const value = Number(row.system_stock || 0) * (cyclicCostByProduct.get(productId) || 0);
-        cyclicValueByProduct.set(key, Math.max(cyclicValueByProduct.get(key) || 0, value));
+      for (const [dayKey, day] of cyclicDays) {
+        const countedAssignmentIds = new Set(day.assignments.filter(assignment => (cyclicCountsByAssignment.get(String(assignment.id)) || []).length > 0).map(assignment => String(assignment.id)));
+        const products = new Map<string, { system_stock: number; total_counted: number; counted: boolean }>();
+        for (const assignment of day.assignments) {
+          const productId = String(assignment.product_id || "");
+          if (!productId) continue;
+          const current = products.get(productId) || { system_stock: Number(assignment.system_stock || 0), total_counted: 0, counted: false };
+          current.system_stock = Math.max(current.system_stock, Number(assignment.system_stock || 0));
+          if (countedAssignmentIds.has(String(assignment.id))) current.counted = true;
+          products.set(productId, current);
+        }
+        for (const assignment of day.assignments) {
+          const product = products.get(String(assignment.product_id || ""));
+          if (!product) continue;
+          for (const count of cyclicCountsByAssignment.get(String(assignment.id)) || []) product.total_counted += Number(count.counted_quantity || 0);
+        }
+        const noContados = [...products.values()].filter(product => !product.counted).length;
+        const cumplio = (cyclicFlagsByDay.get(dayKey) || new Set<string>()).has("__recount_done__") || (noContados === 0 && products.size > 0);
+        if (!cumplio) continue;
+        const stats = cyclicByStore.get(day.store_id) || { eri: 0, counted_items: 0, ok_items: 0 };
+        for (const [productId, product] of products) {
+          if (!product.counted) continue;
+          stats.counted_items += 1;
+          if (product.total_counted - product.system_stock === 0) stats.ok_items += 1;
+          const key = `${day.store_id}|${productId}`;
+          const value = product.system_stock * (cyclicCostByProduct.get(productId) || 0);
+          cyclicValueByProduct.set(key, Math.max(cyclicValueByProduct.get(key) || 0, value));
+        }
+        stats.eri = stats.counted_items > 0 ? (stats.ok_items / stats.counted_items) * 100 : 0;
+        cyclicByStore.set(day.store_id, stats);
       }
       const cyclicValueByStore = new Map<string, number>();
       for (const [key, value] of cyclicValueByProduct) {
@@ -646,13 +692,6 @@ export default function ChecklistModule() {
           eri: Number(row.eri || 0),
           session_count: Number(row.session_count || 0),
           audited_items: Number(row.audited_items || 0),
-          ok_items: Number(row.ok_items || 0),
-        }])
-      );
-      const cyclicByStore = new Map<string, { eri: number; counted_items: number; ok_items: number }>(
-        (cyclicResponse.data || []).map((row: any) => [String(row.store_id), {
-          eri: Number(row.eri || 0),
-          counted_items: Number(row.counted_items || 0),
           ok_items: Number(row.ok_items || 0),
         }])
       );
@@ -670,6 +709,42 @@ export default function ChecklistModule() {
         };
         const existing = generalByStore.get(String(row.store_id));
         if (!existing || String(row.finished_at || "") > String(existing.finished_at || "")) generalByStore.set(String(row.store_id), row);
+      }
+
+      // El valorizado muestreado debe compararse contra la misma fotografía
+      // del inventario general, no contra el stock de la asignación cíclica.
+      // Solo se consultan los códigos muestreados y se leen por páginas.
+      const generalSampleValueByKey = new Map<string, number>();
+      const sampledProductIds = [...new Set([
+        ...auditItems.filter(row => countedAuditItemIds.has(String(row.id))).map(row => String(row.product_id || "")),
+        ...[...cyclicValueByProduct.keys()].map(key => key.split("|")[1]),
+      ].filter(Boolean))];
+      for (const general of generalByStore.values()) {
+        for (let i = 0; i < sampledProductIds.length; i += 500) {
+          const chunk = sampledProductIds.slice(i, i + 500);
+          const snapshotRows = await readPages((from, to) => supabase
+            .from("general_inventory_stock_snapshot")
+            .select("product_id,system_stock,cost")
+            .eq("session_id", general.session_id)
+            .in("product_id", chunk)
+            .range(from, to));
+          for (const row of snapshotRows) {
+            const key = `${general.store_id}|${String(row.product_id || "")}`;
+            generalSampleValueByKey.set(key, Number(row.system_stock || 0) * Number(row.cost || 0));
+          }
+        }
+      }
+      auditValueByStore.clear();
+      for (const key of auditValueByProduct.keys()) {
+        const storeId = key.split("|")[0];
+        if (!generalSampleValueByKey.has(key)) continue;
+        auditValueByStore.set(storeId, (auditValueByStore.get(storeId) || 0) + (generalSampleValueByKey.get(key) || 0));
+      }
+      cyclicValueByStore.clear();
+      for (const key of cyclicValueByProduct.keys()) {
+        const storeId = key.split("|")[0];
+        if (!generalSampleValueByKey.has(key)) continue;
+        cyclicValueByStore.set(storeId, (cyclicValueByStore.get(storeId) || 0) + (generalSampleValueByKey.get(key) || 0));
       }
 
       const consolidatedRows = stores.map(store => {
