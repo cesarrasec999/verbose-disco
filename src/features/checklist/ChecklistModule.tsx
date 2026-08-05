@@ -47,6 +47,17 @@ type ChecklistExportEntry = ChecklistEntryRow & {
   updated_at: string;
 };
 
+type GeneralInventoryReportRow = {
+  store_id: string;
+  finished_at: string | null;
+  total_codes: number;
+  ok_codes: number;
+  eri_pct: number;
+  net_value_diff: number;
+  sales_in_period: number | null;
+  deviation_over_sales_pct: number | null;
+};
+
 type PeriodType = "dia" | "mes" | "rango";
 type PeriodState = { type: PeriodType; date: string; month: string; from: string; to: string };
 
@@ -203,6 +214,7 @@ export default function ChecklistModule() {
   const [resumenRows, setResumenRows] = useState<ResumenRow[]>([]);
   const [resumenLoading, setResumenLoading] = useState(false);
   const [downloadingDetail, setDownloadingDetail] = useState(false);
+  const [downloadingEriConsolidated, setDownloadingEriConsolidated] = useState(false);
 
   const canManageChecklist = user?.role === "Administrador" || user?.role === "Supervisor";
 
@@ -528,6 +540,115 @@ export default function ChecklistModule() {
     }
   }
 
+  async function downloadEriConsolidated() {
+    if (stores.length === 0) return;
+    setDownloadingEriConsolidated(true);
+    try {
+      const range = periodRange(existenciaPeriod);
+      const dateTo = addDaysISO(range.toExclusive, -1);
+      const storeIds = stores.map(store => store.id);
+      const [auditResponse, cyclicResponse, generalResponse] = await Promise.all([
+        supabase.rpc("get_checklist_existencia_summary", {
+          p_store_ids: storeIds,
+          p_from: localDateStartISO(range.from),
+          p_to: localDateStartISO(range.toExclusive),
+        }),
+        supabase.rpc("get_cyclic_period_summary", {
+          p_store_ids: storeIds,
+          p_from: range.from,
+          p_to: dateTo,
+        }),
+        supabase.rpc("get_finished_general_inventory_report", {
+          p_date_from: range.from,
+          p_date_to: dateTo,
+        }),
+      ]);
+      if (auditResponse.error) throw auditResponse.error;
+      if (cyclicResponse.error) throw cyclicResponse.error;
+      if (generalResponse.error) throw generalResponse.error;
+
+      const auditByStore = new Map<string, { eri: number; session_count: number; audited_items: number; ok_items: number }>(
+        (auditResponse.data || []).map((row: any) => [String(row.store_id), {
+          eri: Number(row.eri || 0),
+          session_count: Number(row.session_count || 0),
+          audited_items: Number(row.audited_items || 0),
+          ok_items: Number(row.ok_items || 0),
+        }])
+      );
+      const cyclicByStore = new Map<string, { eri: number; counted_items: number; ok_items: number }>(
+        (cyclicResponse.data || []).map((row: any) => [String(row.store_id), {
+          eri: Number(row.eri || 0),
+          counted_items: Number(row.counted_items || 0),
+          ok_items: Number(row.ok_items || 0),
+        }])
+      );
+      const generalByStore = new Map<string, GeneralInventoryReportRow>();
+      for (const raw of (generalResponse.data || []) as GeneralInventoryReportRow[]) {
+        const row = {
+          ...raw,
+          total_codes: Number(raw.total_codes || 0),
+          ok_codes: Number(raw.ok_codes || 0),
+          eri_pct: Number(raw.eri_pct || 0),
+          net_value_diff: Number(raw.net_value_diff || 0),
+          sales_in_period: raw.sales_in_period === null || raw.sales_in_period === undefined ? null : Number(raw.sales_in_period),
+          deviation_over_sales_pct: raw.deviation_over_sales_pct === null || raw.deviation_over_sales_pct === undefined ? null : Number(raw.deviation_over_sales_pct),
+        };
+        const existing = generalByStore.get(String(row.store_id));
+        if (!existing || String(row.finished_at || "") > String(existing.finished_at || "")) generalByStore.set(String(row.store_id), row);
+      }
+
+      const consolidatedRows = stores.map(store => {
+        const audit = auditByStore.get(store.id) || { eri: 0, session_count: 0, audited_items: 0, ok_items: 0 };
+        const cyclic = cyclicByStore.get(store.id) || { eri: 0, counted_items: 0, ok_items: 0 };
+        const general = generalByStore.get(store.id);
+        const totalCodes = Number(general?.total_codes || 0);
+        const generalOkCodes = Number(general?.ok_codes || 0);
+        const coveredCodes = audit.audited_items + cyclic.counted_items;
+        const remainingCodes = Math.max(totalCodes - coveredCodes, 0);
+        const remainingOkCodes = Math.max(generalOkCodes - audit.ok_items - cyclic.ok_items, 0);
+        const remainingEri = totalCodes === 0 ? null : remainingCodes > 0
+          ? (remainingOkCodes / remainingCodes) * 100
+          : generalOkCodes / totalCodes * 100;
+        const auditCoverage = totalCodes > 0 ? Math.min((audit.audited_items / totalCodes) * 100, 100) : null;
+        const cyclicCoverage = totalCodes > 0 ? Math.min((cyclic.counted_items / totalCodes) * 100, 100) : null;
+        const generalEri = general ? Number(general.eri_pct || 0) : null;
+        return {
+          TIENDA: store.name,
+          "ERI CONTEO CICLICO": cyclic.counted_items > 0 ? cyclic.eri : 0,
+          "ERI AUDITORIA": audit.session_count > 0 ? audit.eri : "",
+          "ERI INVENTARIOS GENERALES": generalEri === null ? "" : generalEri,
+          "DESVIACION SOBRE LA VENTA": general ? Number(general.net_value_diff || 0) : "",
+          "% DESVIACION SOBRE LA VENTA": general?.deviation_over_sales_pct ?? "",
+          "ERI ESTIMADO RESTO NO AUDITADO/NO CICLICO": remainingEri === null ? "" : Number(remainingEri.toFixed(2)),
+          "COBERTURA AUDITORIA %": auditCoverage === null ? "" : Number(auditCoverage.toFixed(2)),
+          "COBERTURA CONTEO CICLICO %": cyclicCoverage === null ? "" : Number(cyclicCoverage.toFixed(2)),
+          "CODIGOS INVENTARIO GENERAL": totalCodes || "",
+          "CODIGOS AUDITADOS": totalCodes ? audit.audited_items : "",
+          "CODIGOS CONTADOS CICLICO": totalCodes ? cyclic.counted_items : "",
+          "CODIGOS RESTANTES ANALIZADOS": totalCodes ? remainingCodes : "",
+          "ANALISIS ERI RESTANTE": general
+            ? `Para alcanzar el ERI general de ${Number(generalEri || 0).toFixed(2)}%, los ${remainingCodes} códigos restantes requerirían aproximadamente ${Number(remainingEri || 0).toFixed(2)}% de ERI (estimación sin solapamiento entre muestras).`
+            : "Sin inventario general finalizado en el período seleccionado.",
+        };
+      });
+
+      const XLSX = await import("xlsx");
+      const sheet = XLSX.utils.json_to_sheet(consolidatedRows);
+      sheet["!cols"] = [
+        { wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 24 },
+        { wch: 34 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 18 }, { wch: 24 }, { wch: 28 }, { wch: 95 },
+      ];
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, "ERI consolidado");
+      XLSX.writeFile(workbook, `eri_consolidado_${range.from}_a_${dateTo}.xlsx`);
+      toast.success("Excel ERI consolidado descargado.");
+    } catch (e: any) {
+      toast.error("Error descargando ERI consolidado: " + e.message);
+    } finally {
+      setDownloadingEriConsolidated(false);
+    }
+  }
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (!ready || !user) return <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</p>;
@@ -565,6 +686,9 @@ export default function ChecklistModule() {
                   <div className="flex flex-wrap gap-2">
                     <button onClick={() => void downloadChecklistDetail()} disabled={downloadingDetail} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40">
                       {downloadingDetail ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Descargar detalle Excel
+                    </button>
+                    <button onClick={() => void downloadEriConsolidated()} disabled={downloadingEriConsolidated} className="flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40">
+                      {downloadingEriConsolidated ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Excel ERI consolidado
                     </button>
                     <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
                       {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar
