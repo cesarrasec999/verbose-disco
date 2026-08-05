@@ -862,6 +862,7 @@ export default function ChecklistModule() {
         const rows = (generalSnapshotsByStore.get(store.id) || [])
           .filter(row => sampled === sampledKeys.has(`${store.id}|${row.product_id}`))
           .map(row => ({ row, value: generalValueByKey.get(`${store.id}|${row.product_id}`) || 0 }))
+          .filter(({ value }) => value > 0)
           .sort((a, b) => b.value - a.value || String(a.row.sku || a.row.product_id).localeCompare(String(b.row.sku || b.row.product_id), "es", { numeric: true, sensitivity: "base" }));
         let cumulative = 0;
         return rows.map(({ row, value }) => {
