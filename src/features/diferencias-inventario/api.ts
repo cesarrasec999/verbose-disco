@@ -175,11 +175,22 @@ export async function updateDifferenceReport(
     .eq("id", id)
     .eq("status", "pendiente");
   if (error) throw error;
-  if (groupId && linkedId && payload.cross_physical_qty !== undefined) {
+  if (groupId && payload.cross_physical_qty !== undefined) {
+    let targetLinkedId = linkedId;
+    if (!targetLinkedId) {
+      const { data: groupRows, error: groupRowsError } = await supabase
+        .from("inventory_difference_reports")
+        .select("id,request_data")
+        .eq("request_data->>cross_group_id", groupId)
+        .neq("id", id);
+      if (groupRowsError) throw groupRowsError;
+      targetLinkedId = (groupRows || []).find(row => (row.request_data as DifferenceRequestData | null)?.cross_line_role === "cruce")?.id;
+    }
+    if (!targetLinkedId) return;
     const { error: linkedError } = await supabase
       .from("inventory_difference_reports")
       .update({ reason: payload.reason, physical_qty: payload.cross_physical_qty })
-      .eq("id", linkedId)
+      .eq("id", targetLinkedId)
       .eq("status", "pendiente");
     if (linkedError) throw linkedError;
   }

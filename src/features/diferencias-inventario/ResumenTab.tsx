@@ -157,7 +157,9 @@ export default function ResumenTab() {
     const crossLine = report.request_data?.cross_group_id
       ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
       : null;
-    setEditingCrossPhysicalQty(crossLine?.physical_qty === null || crossLine?.physical_qty === undefined ? "" : String(crossLine.physical_qty));
+    const crossProduct = report.request_data?.products?.find(product => product.role === "cruce");
+    const crossPhysical = crossLine?.physical_qty ?? crossProduct?.quantity;
+    setEditingCrossPhysicalQty(crossPhysical === null || crossPhysical === undefined ? "" : String(crossPhysical));
     setAdjustingId(null);
   }
 
@@ -176,8 +178,9 @@ export default function ResumenTab() {
     const crossLine = report.request_data?.cross_group_id
       ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
       : null;
+    const crossProduct = report.request_data?.products?.find(product => product.role === "cruce");
     const rawCrossPhysical = editingCrossPhysicalQty.trim();
-    if (editingReason === "cruce_sku" && crossLine && rawCrossPhysical === "") {
+    if (editingReason === "cruce_sku" && (crossLine || crossProduct) && rawCrossPhysical === "") {
       toast.error("Ingresa la cantidad fÃ­sica del segundo cÃ³digo del cruce.");
       return;
     }
@@ -332,6 +335,8 @@ export default function ResumenTab() {
                 const linkedReport = report.request_data?.cross_group_id
                   ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
                   : null;
+                const linkedProduct = report.request_data?.products?.find(product => product.role === "cruce");
+                const linkedSku = linkedReport?.sku || linkedProduct?.sku;
                 return (
                   <tr key={`${report.id}-${report.request_data?.cross_line_role || "single"}-${displayIndex}`} className="border-b hover:bg-slate-50">
                     <td className="break-words p-2 font-black">{report.sku}</td>
@@ -367,8 +372,8 @@ export default function ResumenTab() {
                                 <select value={editingReason} onChange={event => setEditingReason(event.target.value as DifferenceReason)} className="w-full rounded-lg border px-2 py-1 text-[10px] font-bold">
                                   {Object.entries(REASON_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                                 </select>
+                                {editingReason === "cruce_sku" && linkedSku && <input value={editingCrossPhysicalQty} onChange={event => setEditingCrossPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física del código cruzado" className="w-full rounded-lg border px-2 py-1 text-[10px]" />}
                                 <input value={editingPhysicalQty} onChange={event => setEditingPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física" className="w-full rounded-lg border px-2 py-1 text-[10px]" />
-                                {editingReason === "cruce_sku" && linkedReport && <input value={editingCrossPhysicalQty} onChange={event => setEditingCrossPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder={`Cantidad física ${linkedReport.sku}`} className="w-full rounded-lg border px-2 py-1 text-[10px]" />}
                                 <div className="flex gap-1">
                                   <button onClick={() => void saveEdit(report)} disabled={savingActionId === report.id} className="flex-1 rounded-lg bg-blue-700 px-2 py-1 text-[10px] font-black text-white disabled:opacity-40">Guardar</button>
                                   <button onClick={() => setEditingId(null)} className="rounded-lg border px-2 py-1 text-[10px] font-black">X</button>
