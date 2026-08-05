@@ -10,6 +10,8 @@ import { canAccessModule } from "@/features/access/moduleAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
+import { fetchProductRotationsForSession } from "@/features/inventarios/api";
+import { normalizeCode } from "@/features/inventarios/utils";
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 
@@ -728,9 +730,18 @@ export default function ChecklistModule() {
         unit: string | null;
         system_stock: number;
         cost: number;
+        rotation: string;
       };
       const generalSnapshotsByStore = new Map<string, GeneralSnapshotRow[]>();
       const snapshotValueByStore = new Map<string, number>();
+      const rotationTotalsByStore = new Map<string, Map<string, {
+        totalValue: number;
+        sampledValue: number;
+        unsampledValue: number;
+        totalCodes: number;
+        sampledCodes: number;
+        unsampledCodes: number;
+      }>>();
       const sampledKeys = new Set([
         ...auditValueByProduct.keys(),
         ...cyclicValueByProduct.keys(),
@@ -743,6 +754,19 @@ export default function ChecklistModule() {
           .eq("session_id", general.session_id)
           .order("product_id", { ascending: true })
           .range(from, to));
+        const rotationBySku = await fetchProductRotationsForSession(supabase, {
+          session: {
+            id: general.session_id,
+            store_id: general.store_id,
+            name: stores.find(item => item.id === general.store_id)?.name || general.store_id,
+            status: "finished",
+            scheduled_date: general.finished_at,
+            finished_at: general.finished_at,
+            created_at: general.finished_at,
+          } as any,
+          stores,
+          skus: snapshotRows.map((row: any) => String(row.sku || "")),
+        });
         const normalizedRows = snapshotRows.map((row: any) => ({
           product_id: String(row.product_id || ""),
           sku: row.sku == null ? null : String(row.sku),
@@ -750,15 +774,44 @@ export default function ChecklistModule() {
           unit: row.unit == null ? null : String(row.unit),
           system_stock: Number(row.system_stock || 0),
           cost: Number(row.cost || 0),
+          rotation: rotationBySku.get(normalizeCode(String(row.sku || "")).toUpperCase()) || "SIN ROTACION",
         })).filter(row => row.product_id);
         generalSnapshotsByStore.set(String(general.store_id), normalizedRows);
         snapshotValueByStore.set(String(general.store_id), normalizedRows.reduce((sum, row) => sum + row.system_stock * row.cost, 0));
+        const rotationTotals = new Map<string, {
+          totalValue: number;
+          sampledValue: number;
+          unsampledValue: number;
+          totalCodes: number;
+          sampledCodes: number;
+          unsampledCodes: number;
+        }>();
         for (const row of normalizedRows) {
           const key = `${general.store_id}|${row.product_id}`;
           const value = row.system_stock * row.cost;
           generalValueByKey.set(key, value);
           if (sampledKeys.has(key)) generalSampleValueByKey.set(key, value);
+          const isSampled = sampledKeys.has(key);
+          const rotation = rotationTotals.get(row.rotation) || {
+            totalValue: 0,
+            sampledValue: 0,
+            unsampledValue: 0,
+            totalCodes: 0,
+            sampledCodes: 0,
+            unsampledCodes: 0,
+          };
+          rotation.totalValue += value;
+          rotation.totalCodes += 1;
+          if (isSampled) {
+            rotation.sampledValue += value;
+            rotation.sampledCodes += 1;
+          } else {
+            rotation.unsampledValue += value;
+            rotation.unsampledCodes += 1;
+          }
+          rotationTotals.set(row.rotation, rotation);
         }
+        rotationTotalsByStore.set(String(general.store_id), rotationTotals);
       }
       auditValueByStore.clear();
       for (const key of auditValueByProduct.keys()) {
@@ -848,12 +901,17 @@ export default function ChecklistModule() {
         CODIGO: string;
         DESCRIPCION: string;
         UNIDAD: string;
+        ROTACION: string;
         "STOCK SISTEMA": number;
         "COSTO UNITARIO": number;
         VALORIZADO: number;
         "VALORIZADO TOTAL ALMACEN": number;
         "% VALORIZADO ALMACEN": number;
         "% ACUMULADO": number;
+        "% ROTACION MUESTREADA / CODIGOS ALMACEN": number;
+        "% ROTACION NO MUESTREADA / CODIGOS ALMACEN": number;
+        "% ROTACION MUESTREADA / VALORIZADO ALMACEN": number;
+        "% ROTACION NO MUESTREADA / VALORIZADO ALMACEN": number;
       };
       const buildParetoRows = (sampled: boolean): ParetoExportRow[] => stores.flatMap(store => {
         const general = generalByStore.get(store.id);
@@ -867,17 +925,31 @@ export default function ChecklistModule() {
         let cumulative = 0;
         return rows.map(({ row, value }) => {
           cumulative += value / warehouseValue;
+          const rotation = rotationTotalsByStore.get(store.id)?.get(row.rotation) || {
+            totalValue: 0,
+            sampledValue: 0,
+            unsampledValue: 0,
+            totalCodes: 0,
+            sampledCodes: 0,
+            unsampledCodes: 0,
+          };
+          const totalGeneralCodes = Number(general.total_codes || 0);
           return {
             TIENDA: store.name,
             CODIGO: row.sku || row.product_id,
             DESCRIPCION: row.description || "",
             UNIDAD: row.unit || "",
+            ROTACION: row.rotation,
             "STOCK SISTEMA": Number(row.system_stock.toFixed(2)),
             "COSTO UNITARIO": Number(row.cost.toFixed(2)),
             VALORIZADO: Number(value.toFixed(2)),
             "VALORIZADO TOTAL ALMACEN": Number(warehouseValue.toFixed(2)),
             "% VALORIZADO ALMACEN": value / warehouseValue,
             "% ACUMULADO": cumulative,
+            "% ROTACION MUESTREADA / CODIGOS ALMACEN": totalGeneralCodes > 0 ? rotation.sampledCodes / totalGeneralCodes : 0,
+            "% ROTACION NO MUESTREADA / CODIGOS ALMACEN": totalGeneralCodes > 0 ? rotation.unsampledCodes / totalGeneralCodes : 0,
+            "% ROTACION MUESTREADA / VALORIZADO ALMACEN": warehouseValue > 0 ? rotation.sampledValue / warehouseValue : 0,
+            "% ROTACION NO MUESTREADA / VALORIZADO ALMACEN": warehouseValue > 0 ? rotation.unsampledValue / warehouseValue : 0,
           };
         });
       });
@@ -886,18 +958,19 @@ export default function ChecklistModule() {
       for (const paretoSheet of [sampledParetoSheet, nonSampledParetoSheet]) {
         const range = XLSX.utils.decode_range(paretoSheet["!ref"] || "A1:A1");
         for (let rowIndex = 1; rowIndex <= range.e.r; rowIndex += 1) {
-          for (const columnIndex of [4, 5, 6, 7]) {
+          for (const columnIndex of [5, 6, 7, 8]) {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "#,##0.00";
           }
-          for (const columnIndex of [8, 9]) {
+          for (const columnIndex of [9, 10, 11, 12, 13, 14]) {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "0.00%";
           }
         }
         paretoSheet["!cols"] = [
-          { wch: 28 }, { wch: 18 }, { wch: 48 }, { wch: 10 }, { wch: 14 },
-          { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 22 }, { wch: 16 },
+          { wch: 28 }, { wch: 18 }, { wch: 48 }, { wch: 10 }, { wch: 14 }, { wch: 14 },
+          { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 22 }, { wch: 16 }, { wch: 28 }, { wch: 32 },
+          { wch: 32 }, { wch: 34 },
         ];
       }
       const workbook = XLSX.utils.book_new();
