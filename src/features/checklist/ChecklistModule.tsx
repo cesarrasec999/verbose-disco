@@ -730,6 +730,7 @@ export default function ChecklistModule() {
         cost: number;
       };
       const generalSnapshotsByStore = new Map<string, GeneralSnapshotRow[]>();
+      const snapshotValueByStore = new Map<string, number>();
       const sampledKeys = new Set([
         ...auditValueByProduct.keys(),
         ...cyclicValueByProduct.keys(),
@@ -751,6 +752,7 @@ export default function ChecklistModule() {
           cost: Number(row.cost || 0),
         })).filter(row => row.product_id);
         generalSnapshotsByStore.set(String(general.store_id), normalizedRows);
+        snapshotValueByStore.set(String(general.store_id), normalizedRows.reduce((sum, row) => sum + row.system_stock * row.cost, 0));
         for (const row of normalizedRows) {
           const key = `${general.store_id}|${row.product_id}`;
           const value = row.system_stock * row.cost;
@@ -849,12 +851,13 @@ export default function ChecklistModule() {
         "STOCK SISTEMA": number;
         "COSTO UNITARIO": number;
         VALORIZADO: number;
+        "VALORIZADO TOTAL ALMACEN": number;
         "% VALORIZADO ALMACEN": number;
         "% ACUMULADO": number;
       };
       const buildParetoRows = (sampled: boolean): ParetoExportRow[] => stores.flatMap(store => {
         const general = generalByStore.get(store.id);
-        const warehouseValue = Number(general?.system_value || 0);
+        const warehouseValue = snapshotValueByStore.get(store.id) || 0;
         if (!general || warehouseValue <= 0) return [];
         const rows = (generalSnapshotsByStore.get(store.id) || [])
           .filter(row => sampled === sampledKeys.has(`${store.id}|${row.product_id}`))
@@ -871,6 +874,7 @@ export default function ChecklistModule() {
             "STOCK SISTEMA": Number(row.system_stock.toFixed(2)),
             "COSTO UNITARIO": Number(row.cost.toFixed(2)),
             VALORIZADO: Number(value.toFixed(2)),
+            "VALORIZADO TOTAL ALMACEN": Number(warehouseValue.toFixed(2)),
             "% VALORIZADO ALMACEN": value / warehouseValue,
             "% ACUMULADO": cumulative,
           };
@@ -881,18 +885,18 @@ export default function ChecklistModule() {
       for (const paretoSheet of [sampledParetoSheet, nonSampledParetoSheet]) {
         const range = XLSX.utils.decode_range(paretoSheet["!ref"] || "A1:A1");
         for (let rowIndex = 1; rowIndex <= range.e.r; rowIndex += 1) {
-          for (const columnIndex of [4, 5, 6]) {
+          for (const columnIndex of [4, 5, 6, 7]) {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "#,##0.00";
           }
-          for (const columnIndex of [7, 8]) {
+          for (const columnIndex of [8, 9]) {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "0.00%";
           }
         }
         paretoSheet["!cols"] = [
           { wch: 28 }, { wch: 18 }, { wch: 48 }, { wch: 10 }, { wch: 14 },
-          { wch: 16 }, { wch: 16 }, { wch: 22 }, { wch: 16 },
+          { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 22 }, { wch: 16 },
         ];
       }
       const workbook = XLSX.utils.book_new();
