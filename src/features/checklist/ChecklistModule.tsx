@@ -912,19 +912,41 @@ export default function ChecklistModule() {
         "% ROTACION NO MUESTREADA / CODIGOS ALMACEN": number;
         "% ROTACION MUESTREADA / VALORIZADO ALMACEN": number;
         "% ROTACION NO MUESTREADA / VALORIZADO ALMACEN": number;
+        "% ACUMULADO PARETO": number;
+        "% CODIGOS ACUMULADO PARETO": number;
       };
       const buildParetoRows = (sampled: boolean): ParetoExportRow[] => stores.flatMap(store => {
         const general = generalByStore.get(store.id);
         const warehouseValue = snapshotValueByStore.get(store.id) || 0;
         if (!general || warehouseValue <= 0) return [];
-        const rows = (generalSnapshotsByStore.get(store.id) || [])
-          .filter(row => sampled === sampledKeys.has(`${store.id}|${row.product_id}`))
+        const categoryRows = (generalSnapshotsByStore.get(store.id) || [])
+          .filter(row => sampled === sampledKeys.has(`${store.id}|${row.product_id}`));
+        const rows = categoryRows
           .map(row => ({ row, value: generalValueByKey.get(`${store.id}|${row.product_id}`) || 0 }))
           .filter(({ value }) => value > 0)
           .sort((a, b) => b.value - a.value || String(a.row.sku || a.row.product_id).localeCompare(String(b.row.sku || b.row.product_id), "es", { numeric: true, sensitivity: "base" }));
-        let cumulative = 0;
-        return rows.map(({ row, value }) => {
-          cumulative += value / warehouseValue;
+        const categoryValue = rows.reduce((sum, item) => sum + item.value, 0);
+        const categoryCodeCount = categoryRows.length;
+        // Para no muestreados se exporta el corte Pareto: los códigos de mayor
+        // valorizado hasta alcanzar al menos el 80% del valorizado de esa
+        // categoría. El porcentaje real de códigos queda visible en la hoja.
+        const paretoRows = sampled ? rows : (() => {
+          const selected: typeof rows = [];
+          let selectedValue = 0;
+          for (const item of rows) {
+            selected.push(item);
+            selectedValue += item.value;
+            if (categoryValue > 0 && selectedValue / categoryValue >= 0.8) break;
+          }
+          return selected;
+        })();
+        let cumulativeWarehouse = 0;
+        let cumulativePareto = 0;
+        let cumulativeCodes = 0;
+        return paretoRows.map(({ row, value }) => {
+          cumulativeWarehouse += value / warehouseValue;
+          cumulativePareto += categoryValue > 0 ? value / categoryValue : 0;
+          cumulativeCodes += categoryCodeCount > 0 ? 1 / categoryCodeCount : 0;
           const rotation = rotationTotalsByStore.get(store.id)?.get(row.rotation) || {
             totalValue: 0,
             sampledValue: 0,
@@ -945,11 +967,13 @@ export default function ChecklistModule() {
             VALORIZADO: Number(value.toFixed(2)),
             "VALORIZADO TOTAL ALMACEN": Number(warehouseValue.toFixed(2)),
             "% VALORIZADO ALMACEN": value / warehouseValue,
-            "% ACUMULADO": cumulative,
+            "% ACUMULADO": cumulativeWarehouse,
             "% ROTACION MUESTREADA / CODIGOS ALMACEN": totalGeneralCodes > 0 ? rotation.sampledCodes / totalGeneralCodes : 0,
             "% ROTACION NO MUESTREADA / CODIGOS ALMACEN": totalGeneralCodes > 0 ? rotation.unsampledCodes / totalGeneralCodes : 0,
             "% ROTACION MUESTREADA / VALORIZADO ALMACEN": warehouseValue > 0 ? rotation.sampledValue / warehouseValue : 0,
             "% ROTACION NO MUESTREADA / VALORIZADO ALMACEN": warehouseValue > 0 ? rotation.unsampledValue / warehouseValue : 0,
+            "% ACUMULADO PARETO": cumulativePareto,
+            "% CODIGOS ACUMULADO PARETO": cumulativeCodes,
           };
         });
       });
@@ -962,7 +986,7 @@ export default function ChecklistModule() {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "#,##0.00";
           }
-          for (const columnIndex of [9, 10, 11, 12, 13, 14]) {
+          for (const columnIndex of [9, 10, 11, 12, 13, 14, 15, 16]) {
             const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
             if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "0.00%";
           }
@@ -970,7 +994,7 @@ export default function ChecklistModule() {
         paretoSheet["!cols"] = [
           { wch: 28 }, { wch: 18 }, { wch: 48 }, { wch: 10 }, { wch: 14 }, { wch: 14 },
           { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 22 }, { wch: 16 }, { wch: 28 }, { wch: 32 },
-          { wch: 32 }, { wch: 34 },
+          { wch: 32 }, { wch: 34 }, { wch: 24 }, { wch: 28 },
         ];
       }
       const workbook = XLSX.utils.book_new();
