@@ -4046,7 +4046,6 @@ export default function InventariosPage() {
   }
 
   async function importLocations() {
-    if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId || !locationsFile || !locationsFileBuffer) {
       setMessage("Selecciona el Excel de ubicaciones.");
@@ -4104,7 +4103,7 @@ export default function InventariosPage() {
       setLocationsFile(null);
       setLocationsFileBuffer(null);
       if (locationsFileRef.current) locationsFileRef.current.value = "";
-      setMessage(`${rows.length} ubicaciones cargadas desde Excel.`);
+      setMessage(`${rows.length} ubicaciones cargadas desde Excel. El control de tickets no modifica stock ni conteos, incluso en sesiones finalizadas.`);
       await loadPreparationData(selectedSessionId);
     } catch (error) {
       setMessage("Error leyendo el Excel: " + (error instanceof Error ? error.message : String(error)));
@@ -7164,7 +7163,7 @@ export default function InventariosPage() {
             <section className="space-y-3 rounded-2xl border bg-white p-4 shadow-sm">
               <h2 className="font-black">Preparación</h2>
               <div>
-                <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
+                <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones (también después de finalizar)</label>
                 <input
                   ref={locationsFileRef}
                   type="file"
@@ -7176,7 +7175,7 @@ export default function InventariosPage() {
                   <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
                     <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                   </button>
-                  <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                  <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                   </button>
                 </div>
@@ -7489,7 +7488,7 @@ export default function InventariosPage() {
 
                 <div className="grid gap-4">
                   <div className="rounded-2xl border bg-slate-50 p-4">
-                    <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones</label>
+                    <label className="text-xs font-bold text-slate-500">Control de tickets / ubicaciones (también después de finalizar)</label>
                     <input
                       ref={locationsFileRef}
                       type="file"
@@ -7501,7 +7500,7 @@ export default function InventariosPage() {
                       <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
                         <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                       </button>
-                      <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || !selectedSessionId || isSelectedSessionFinished} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                      <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                         {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
                       </button>
                     </div>
