@@ -746,6 +746,13 @@ export default function ChecklistModule() {
         if (!generalSampleValueByKey.has(key)) continue;
         cyclicValueByStore.set(storeId, (cyclicValueByStore.get(storeId) || 0) + (generalSampleValueByKey.get(key) || 0));
       }
+      const combinedValueByStore = new Map<string, number>();
+      const uniqueSampleKeys = new Set([...auditValueByProduct.keys(), ...cyclicValueByProduct.keys()]);
+      for (const key of uniqueSampleKeys) {
+        const storeId = key.split("|")[0];
+        if (!generalSampleValueByKey.has(key)) continue;
+        combinedValueByStore.set(storeId, (combinedValueByStore.get(storeId) || 0) + (generalSampleValueByKey.get(key) || 0));
+      }
 
       const consolidatedRows = stores.map(store => {
         const audit = auditByStore.get(store.id) || { eri: 0, session_count: 0, audited_items: 0, ok_items: 0 };
@@ -766,7 +773,7 @@ export default function ChecklistModule() {
         const cyclicCoverage = totalCodes > 0 ? Math.min((cyclic.counted_items / totalCodes) * 100, 100) : null;
         const auditValueCoverage = generalValue > 0 ? Math.min((auditSampleValue / generalValue) * 100, 100) : null;
         const cyclicValueCoverage = generalValue > 0 ? Math.min((cyclicSampleValue / generalValue) * 100, 100) : null;
-        const combinedValueCoverage = generalValue > 0 ? Math.min(((auditSampleValue + cyclicSampleValue) / generalValue) * 100, 100) : null;
+        const combinedValueCoverage = generalValue > 0 ? Math.min(((combinedValueByStore.get(store.id) || 0) / generalValue) * 100, 100) : null;
         const generalEri = general ? Number(general.eri_pct || 0) : null;
         return {
           TIENDA: store.name,
