@@ -721,23 +721,41 @@ export default function ChecklistModule() {
       // del inventario general, no contra el stock de la asignación cíclica.
       // Solo se consultan los códigos muestreados y se leen por páginas.
       const generalSampleValueByKey = new Map<string, number>();
-      const sampledProductIds = [...new Set([
-        ...auditItems.filter(row => countedAuditItemIds.has(String(row.id))).map(row => String(row.product_id || "")),
-        ...[...cyclicValueByProduct.keys()].map(key => key.split("|")[1]),
-      ].filter(Boolean))];
+      type GeneralSnapshotRow = {
+        product_id: string;
+        sku: string | null;
+        description: string | null;
+        unit: string | null;
+        system_stock: number;
+        cost: number;
+      };
+      const generalSnapshotsByStore = new Map<string, GeneralSnapshotRow[]>();
+      const sampledKeys = new Set([
+        ...auditValueByProduct.keys(),
+        ...cyclicValueByProduct.keys(),
+      ]);
+      const generalValueByKey = new Map<string, number>();
       for (const general of generalByStore.values()) {
-        for (let i = 0; i < sampledProductIds.length; i += 100) {
-          const chunk = sampledProductIds.slice(i, i + 100);
-          const snapshotRows = await readPages((from, to) => supabase
-            .from("general_inventory_stock_snapshot")
-            .select("product_id,system_stock,cost")
-            .eq("session_id", general.session_id)
-            .in("product_id", chunk)
-            .range(from, to));
-          for (const row of snapshotRows) {
-            const key = `${general.store_id}|${String(row.product_id || "")}`;
-            generalSampleValueByKey.set(key, Number(row.system_stock || 0) * Number(row.cost || 0));
-          }
+        const snapshotRows = await readPages((from, to) => supabase
+          .from("general_inventory_stock_snapshot")
+          .select("product_id,sku,description,unit,system_stock,cost")
+          .eq("session_id", general.session_id)
+          .order("product_id", { ascending: true })
+          .range(from, to));
+        const normalizedRows = snapshotRows.map((row: any) => ({
+          product_id: String(row.product_id || ""),
+          sku: row.sku == null ? null : String(row.sku),
+          description: row.description == null ? null : String(row.description),
+          unit: row.unit == null ? null : String(row.unit),
+          system_stock: Number(row.system_stock || 0),
+          cost: Number(row.cost || 0),
+        })).filter(row => row.product_id);
+        generalSnapshotsByStore.set(String(general.store_id), normalizedRows);
+        for (const row of normalizedRows) {
+          const key = `${general.store_id}|${row.product_id}`;
+          const value = row.system_stock * row.cost;
+          generalValueByKey.set(key, value);
+          if (sampledKeys.has(key)) generalSampleValueByKey.set(key, value);
         }
       }
       auditValueByStore.clear();
@@ -753,7 +771,7 @@ export default function ChecklistModule() {
         cyclicValueByStore.set(storeId, (cyclicValueByStore.get(storeId) || 0) + (generalSampleValueByKey.get(key) || 0));
       }
       const combinedValueByStore = new Map<string, number>();
-      const uniqueSampleKeys = new Set([...auditValueByProduct.keys(), ...cyclicValueByProduct.keys()]);
+      const uniqueSampleKeys = new Set(sampledKeys);
       for (const key of uniqueSampleKeys) {
         const storeId = key.split("|")[0];
         if (!generalSampleValueByKey.has(key)) continue;
@@ -823,10 +841,66 @@ export default function ChecklistModule() {
         { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 26 },
         { wch: 34 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 18 }, { wch: 24 }, { wch: 28 },
       ];
+      type ParetoExportRow = {
+        TIENDA: string;
+        CODIGO: string;
+        DESCRIPCION: string;
+        UNIDAD: string;
+        "STOCK SISTEMA": number;
+        "COSTO UNITARIO": number;
+        VALORIZADO: number;
+        "% VALORIZADO ALMACEN": number;
+        "% ACUMULADO": number;
+      };
+      const buildParetoRows = (sampled: boolean): ParetoExportRow[] => stores.flatMap(store => {
+        const general = generalByStore.get(store.id);
+        const warehouseValue = Number(general?.system_value || 0);
+        if (!general || warehouseValue <= 0) return [];
+        const rows = (generalSnapshotsByStore.get(store.id) || [])
+          .filter(row => sampled === sampledKeys.has(`${store.id}|${row.product_id}`))
+          .map(row => ({ row, value: generalValueByKey.get(`${store.id}|${row.product_id}`) || 0 }))
+          .sort((a, b) => b.value - a.value || String(a.row.sku || a.row.product_id).localeCompare(String(b.row.sku || b.row.product_id), "es", { numeric: true, sensitivity: "base" }));
+        let cumulative = 0;
+        return rows.map(({ row, value }) => {
+          cumulative += value / warehouseValue;
+          return {
+            TIENDA: store.name,
+            CODIGO: row.sku || row.product_id,
+            DESCRIPCION: row.description || "",
+            UNIDAD: row.unit || "",
+            "STOCK SISTEMA": Number(row.system_stock.toFixed(2)),
+            "COSTO UNITARIO": Number(row.cost.toFixed(2)),
+            VALORIZADO: Number(value.toFixed(2)),
+            "% VALORIZADO ALMACEN": value / warehouseValue,
+            "% ACUMULADO": cumulative,
+          };
+        });
+      });
+      const sampledParetoSheet = XLSX.utils.json_to_sheet(buildParetoRows(true));
+      const nonSampledParetoSheet = XLSX.utils.json_to_sheet(buildParetoRows(false));
+      for (const paretoSheet of [sampledParetoSheet, nonSampledParetoSheet]) {
+        const range = XLSX.utils.decode_range(paretoSheet["!ref"] || "A1:A1");
+        for (let rowIndex = 1; rowIndex <= range.e.r; rowIndex += 1) {
+          for (const columnIndex of [4, 5, 6]) {
+            const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+            if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "#,##0.00";
+          }
+          for (const columnIndex of [7, 8]) {
+            const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+            if (paretoSheet[cellAddress] && typeof paretoSheet[cellAddress].v === "number") paretoSheet[cellAddress].z = "0.00%";
+          }
+        }
+        paretoSheet["!cols"] = [
+          { wch: 28 }, { wch: 18 }, { wch: 48 }, { wch: 10 }, { wch: 14 },
+          { wch: 16 }, { wch: 16 }, { wch: 22 }, { wch: 16 },
+        ];
+      }
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, sheet, "ERI consolidado");
+      XLSX.utils.book_append_sheet(workbook, sampledParetoSheet, "Pareto muestreados");
+      XLSX.utils.book_append_sheet(workbook, nonSampledParetoSheet, "Pareto no muestreados");
       XLSX.writeFile(workbook, `eri_consolidado_${range.from}_a_${dateTo}.xlsx`);
-      toast.success("Excel ERI consolidado descargado.");
+      toast.success("Excel ERI consolidado descargado con Paretos.");
     } catch (e: any) {
       toast.error("Error descargando ERI consolidado: " + e.message);
     } finally {
