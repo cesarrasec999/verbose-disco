@@ -930,16 +930,7 @@ export default function ChecklistModule() {
         // Para no muestreados se exporta el corte Pareto: los códigos de mayor
         // valorizado hasta alcanzar al menos el 80% del valorizado de esa
         // categoría. El porcentaje real de códigos queda visible en la hoja.
-        const paretoRows = sampled ? rows : (() => {
-          const selected: typeof rows = [];
-          let selectedValue = 0;
-          for (const item of rows) {
-            selected.push(item);
-            selectedValue += item.value;
-            if (categoryValue > 0 && selectedValue / categoryValue >= 0.8) break;
-          }
-          return selected;
-        })();
+        const paretoRows = sampled ? rows : rows.slice(0, Math.ceil(categoryCodeCount * 0.2));
         let cumulativeWarehouse = 0;
         let cumulativePareto = 0;
         let cumulativeCodes = 0;
