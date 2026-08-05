@@ -695,20 +695,20 @@ export default function ChecklistModule() {
         const generalEri = general ? Number(general.eri_pct || 0) : null;
         return {
           TIENDA: store.name,
-          "ERI CONTEO CICLICO": cyclic.counted_items > 0 ? cyclic.eri : 0,
-          "ERI AUDITORIA": audit.session_count > 0 ? audit.eri : "",
-          "ERI INVENTARIOS GENERALES": generalEri === null ? "" : generalEri,
+          "ERI CONTEO CICLICO": cyclic.counted_items > 0 ? cyclic.eri / 100 : 0,
+          "ERI AUDITORIA": audit.session_count > 0 ? audit.eri / 100 : "",
+          "ERI INVENTARIOS GENERALES": generalEri === null ? "" : generalEri / 100,
           "DESVIACION SOBRE LA VENTA": general ? Number(general.net_value_diff || 0) : "",
-          "% DESVIACION SOBRE LA VENTA": general?.deviation_over_sales_pct ?? "",
+          "% DESVIACION SOBRE LA VENTA": general?.deviation_over_sales_pct === null || general?.deviation_over_sales_pct === undefined ? "" : Number(general.deviation_over_sales_pct) / 100,
           "VALORIZADO INVENTARIO GENERAL": general ? Number(generalValue.toFixed(2)) : "",
           "VALORIZADO MUESTREADO AUDITORIA": general ? Number(auditSampleValue.toFixed(2)) : "",
-          "% VALORIZADO MUESTREADO AUDITORIA": auditValueCoverage === null ? "" : Number(auditValueCoverage.toFixed(2)),
+          "% VALORIZADO MUESTREADO AUDITORIA": auditValueCoverage === null ? "" : auditValueCoverage / 100,
           "VALORIZADO MUESTREADO CICLICO": general ? Number(cyclicSampleValue.toFixed(2)) : "",
-          "% VALORIZADO MUESTREADO CICLICO": cyclicValueCoverage === null ? "" : Number(cyclicValueCoverage.toFixed(2)),
-          "% VALORIZADO MUESTREADO TOTAL": combinedValueCoverage === null ? "" : Number(combinedValueCoverage.toFixed(2)),
-          "ERI ESTIMADO RESTO NO AUDITADO/NO CICLICO": remainingEri === null ? "" : Number(remainingEri.toFixed(2)),
-          "COBERTURA AUDITORIA %": auditCoverage === null ? "" : Number(auditCoverage.toFixed(2)),
-          "COBERTURA CONTEO CICLICO %": cyclicCoverage === null ? "" : Number(cyclicCoverage.toFixed(2)),
+          "% VALORIZADO MUESTREADO CICLICO": cyclicValueCoverage === null ? "" : cyclicValueCoverage / 100,
+          "% VALORIZADO MUESTREADO TOTAL": combinedValueCoverage === null ? "" : combinedValueCoverage / 100,
+          "ERI ESTIMADO RESTO NO AUDITADO/NO CICLICO": remainingEri === null ? "" : remainingEri / 100,
+          "COBERTURA AUDITORIA %": auditCoverage === null ? "" : auditCoverage / 100,
+          "COBERTURA CONTEO CICLICO %": cyclicCoverage === null ? "" : cyclicCoverage / 100,
           "CODIGOS INVENTARIO GENERAL": totalCodes || "",
           "CODIGOS AUDITADOS": totalCodes ? audit.audited_items : "",
           "CODIGOS CONTADOS CICLICO": totalCodes ? cyclic.counted_items : "",
@@ -721,6 +721,18 @@ export default function ChecklistModule() {
 
       const XLSX = await import("xlsx");
       const sheet = XLSX.utils.json_to_sheet(consolidatedRows);
+      const percentColumns = [1, 2, 3, 5, 8, 10, 11, 12, 13, 14];
+      const amountColumns = [4, 6, 7, 9];
+      for (let rowIndex = 1; rowIndex <= consolidatedRows.length; rowIndex += 1) {
+        for (const columnIndex of percentColumns) {
+          const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+          if (sheet[cellAddress] && typeof sheet[cellAddress].v === "number") sheet[cellAddress].z = "0.00%";
+        }
+        for (const columnIndex of amountColumns) {
+          const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+          if (sheet[cellAddress] && typeof sheet[cellAddress].v === "number") sheet[cellAddress].z = "#,##0.00";
+        }
+      }
       sheet["!cols"] = [
         { wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 24 },
         { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 26 },
