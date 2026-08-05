@@ -15,6 +15,8 @@ export type RequestProductDetail = {
   unit: string | null;
   system_stock: number;
   quantity: number;
+  /** Costo unitario capturado al registrar la solicitud. */
+  cost?: number;
 };
 
 export type DifferenceRequestData = {
@@ -38,6 +40,8 @@ export type DifferenceReport = {
   description: string | null;
   unit: string | null;
   system_stock_at_report: number;
+  /** Costo unitario asociado al registro; se conserva para consultas históricas. */
+  cost?: number | null;
   physical_qty: number | null;
   photo_url: string | null;
   notes: string | null;

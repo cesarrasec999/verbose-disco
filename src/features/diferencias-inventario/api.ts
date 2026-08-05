@@ -133,7 +133,27 @@ export async function fetchDifferenceReports(params: FetchReportsParams): Promis
   const from = (params.page - 1) * params.pageSize;
   const { data, error, count } = await query.range(from, from + params.pageSize - 1);
   if (error) throw error;
-  return { rows: (data || []) as DifferenceReport[], total: count || 0 };
+  const rawRows = (data || []) as DifferenceReport[];
+  const productIds = [...new Set(rawRows.map(row => row.product_id).filter(Boolean))] as string[];
+  const costByProductId = new Map<string, number>();
+  if (productIds.length > 0) {
+    const { data: products } = await supabase.from("cyclic_products").select("id,cost").in("id", productIds);
+    for (const product of products || []) costByProductId.set(String(product.id), Number(product.cost || 0));
+  }
+  const rows = rawRows.map(row => {
+    const products = row.request_data?.products || [];
+    const role = row.request_data?.cross_line_role;
+    const detail = (role ? products.find(product => product.role === role) : null)
+      || products.find(product => product.sku === row.sku);
+    const storedCost = detail?.cost;
+    return {
+      ...row,
+      // Los reportes nuevos llevan el costo dentro de request_data. Para los
+      // históricos se usa el costo actual del catálogo como respaldo.
+      cost: storedCost === undefined ? (row.product_id ? costByProductId.get(row.product_id) ?? 0 : 0) : Number(storedCost || 0),
+    };
+  });
+  return { rows, total: count || 0 };
 }
 
 export async function updateDifferenceReport(

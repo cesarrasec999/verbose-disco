@@ -8,7 +8,7 @@ import { canAccessModule } from "@/features/access/moduleAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
-import { formatDateTime, formatNumber } from "@/features/ciclicos/utils";
+import { formatDateTime, formatMoney, formatNumber } from "@/features/ciclicos/utils";
 import { deleteDifferenceReport, fetchDifferenceReports, regularizeReport, rejectReport, updateDifferenceReport } from "./api";
 import type { DifferenceReason, DifferenceReport, DifferenceStatus } from "./types";
 import { TabNav } from "./TabNav";
@@ -63,6 +63,7 @@ function displayLines(report: DifferenceReport): DifferenceReport[] {
     description: product.description,
     unit: product.unit,
     system_stock_at_report: product.system_stock,
+    cost: product.cost ?? report.cost ?? 0,
     physical_qty: product.quantity,
     photo_url: index === 0 ? report.photo_url : null,
     request_data: {
@@ -273,6 +274,7 @@ export default function ResumenTab() {
               {canValidate && <col style={{ width: "8%" }} />}
               <col style={{ width: "6%" }} />
               <col style={{ width: "6%" }} />
+              <col style={{ width: "6%" }} />
               <col style={{ width: "4%" }} />
               <col style={{ width: "4%" }} />
               <col style={{ width: "10%" }} />
@@ -290,6 +292,7 @@ export default function ResumenTab() {
                 {canValidate && <th className="p-2 text-left">Tienda</th>}
                 <th className="p-2">Stock al reportar</th>
                 <th className="p-2">Cant. física</th>
+                <th className="p-2">Costo</th>
                 <th className="p-2">Dif.</th>
                 <th className="p-2">Foto</th>
                 <th className="p-2 text-left">Observación</th>
@@ -311,6 +314,7 @@ export default function ResumenTab() {
                     {canValidate && <td className="break-words p-2">{report.store_name}</td>}
                     <td className="p-2 text-center">{formatNumber(report.system_stock_at_report)}</td>
                     <td className="p-2 text-center font-bold">{report.physical_qty === null ? "-" : formatNumber(report.physical_qty)}</td>
+                    <td className="p-2 text-center font-bold">{formatMoney(Number(report.cost || 0))}</td>
                     <td className={`p-2 text-center font-black ${diff === null ? "text-slate-400" : diff < 0 ? "text-red-600" : diff > 0 ? "text-blue-700" : "text-green-700"}`}>
                       {diff === null ? "-" : <>{diff > 0 ? "+" : ""}{formatNumber(diff)}</>}
                     </td>
@@ -397,7 +401,7 @@ export default function ResumenTab() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={canValidate ? 14 : 13} className="p-8 text-center text-sm text-slate-400">
+                  <td colSpan={canValidate ? 15 : 14} className="p-8 text-center text-sm text-slate-400">
                     {loading ? "Cargando..." : "Sin reportes."}
                   </td>
                 </tr>

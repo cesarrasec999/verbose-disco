@@ -82,7 +82,7 @@ export default function ReportarTab() {
     setter(rows => rows.map(row => row.id === id ? { ...row, ...patch } : row));
   }
   function productDetail(role: RequestProductDetail["role"], value: SelectedRequestProduct, quantity: number): RequestProductDetail {
-    return { role, product_id: value.product.id, sku: value.product.sku, description: value.product.description, unit: value.product.unit, system_stock: value.systemStock, quantity };
+    return { role, product_id: value.product.id, sku: value.product.sku, description: value.product.description, unit: value.product.unit, system_stock: value.systemStock, quantity, cost: Number(value.product.cost || 0) };
   }
 
   async function submit() {
