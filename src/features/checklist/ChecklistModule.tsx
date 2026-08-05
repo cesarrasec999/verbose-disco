@@ -706,16 +706,13 @@ export default function ChecklistModule() {
           "VALORIZADO MUESTREADO CICLICO": general ? Number(cyclicSampleValue.toFixed(2)) : "",
           "% VALORIZADO MUESTREADO CICLICO": cyclicValueCoverage === null ? "" : cyclicValueCoverage / 100,
           "% VALORIZADO MUESTREADO TOTAL": combinedValueCoverage === null ? "" : combinedValueCoverage / 100,
-          "ERI ESTIMADO RESTO NO AUDITADO/NO CICLICO": remainingEri === null ? "" : remainingEri / 100,
+          "ERI ESTIMADO RESTO": remainingEri === null ? "" : remainingEri / 100,
           "COBERTURA AUDITORIA %": auditCoverage === null ? "" : auditCoverage / 100,
           "COBERTURA CONTEO CICLICO %": cyclicCoverage === null ? "" : cyclicCoverage / 100,
           "CODIGOS INVENTARIO GENERAL": totalCodes || "",
           "CODIGOS AUDITADOS": totalCodes ? audit.audited_items : "",
           "CODIGOS CONTADOS CICLICO": totalCodes ? cyclic.counted_items : "",
           "CODIGOS RESTANTES ANALIZADOS": totalCodes ? remainingCodes : "",
-          "ANALISIS ERI RESTANTE": general
-            ? `Para alcanzar el ERI general de ${Number(generalEri || 0).toFixed(2)}%, los ${remainingCodes} códigos restantes requerirían aproximadamente ${Number(remainingEri || 0).toFixed(2)}% de ERI (estimación sin solapamiento entre muestras).`
-            : "Sin inventario general finalizado en el período seleccionado.",
         };
       });
 
@@ -736,7 +733,7 @@ export default function ChecklistModule() {
       sheet["!cols"] = [
         { wch: 30 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 24 },
         { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 26 },
-        { wch: 34 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 18 }, { wch: 24 }, { wch: 28 }, { wch: 95 },
+        { wch: 34 }, { wch: 20 }, { wch: 24 }, { wch: 24 }, { wch: 18 }, { wch: 24 }, { wch: 28 },
       ];
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, sheet, "ERI consolidado");
