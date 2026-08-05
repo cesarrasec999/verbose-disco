@@ -580,6 +580,8 @@ export default function ChecklistModule() {
         .eq("status", "finished")
         .gte("started_at", localDateStartISO(range.from))
         .lt("started_at", localDateStartISO(range.toExclusive))
+        .order("started_at", { ascending: true })
+        .order("id", { ascending: true })
         .range(from, to));
       const auditSessionIds = auditSessionRows.map(row => String(row.id)).filter(Boolean);
       const auditSessionStoreById = new Map(auditSessionRows.map(row => [String(row.id), String(row.store_id)]));
@@ -602,6 +604,8 @@ export default function ChecklistModule() {
           .in("store_id", storeIds)
           .gte("assigned_date", range.from)
           .lte("assigned_date", dateTo)
+          .order("assigned_date", { ascending: true })
+          .order("id", { ascending: true })
           .range(from, to)),
       ]);
       const cyclicAssignmentIds = cyclicAssignments.map(row => String(row.id || "")).filter(Boolean);
