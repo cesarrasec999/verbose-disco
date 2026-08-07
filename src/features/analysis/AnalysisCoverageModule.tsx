@@ -39,7 +39,10 @@ export default function AnalysisCoverageModule() {
   }, []);
 
   useEffect(() => {
-    if (ready && stores.length > 0 && rows.length === 0 && !loading) void generate();
+    if (!ready || stores.length === 0) return;
+    void loadCoverageOnly();
+    const timer = window.setInterval(() => void loadCoverageOnly(), 60_000);
+    return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, stores.length]);
 
@@ -51,6 +54,38 @@ export default function AnalysisCoverageModule() {
       result.push(...((data || []) as T[]));
       if (!data || data.length < 1000) return result;
     }
+  }
+
+  async function loadCoverageOnly() {
+    if (!stores.length) return;
+    setLoading(true);
+    try {
+      const totalByStore = new Map<string, Set<string>>();
+      await Promise.all(stores.map(async store => {
+        const sede = String(store.erp_sede || store.name || "");
+        const stockRows = await pages<any>((from, to) => supabase.from("stock_general").select("codsap").eq("sede", sede).range(from, to));
+        totalByStore.set(store.id, new Set(stockRows.map(row => norm(row.codsap)).filter(Boolean)));
+      }));
+
+      const assignments = await pages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").range(from, to));
+      const assignmentIds = assignments.map(row => String(row.id)).filter(Boolean);
+      const cyclicCounts: any[] = [];
+      for (let i = 0; i < assignmentIds.length; i += 100) cyclicCounts.push(...await pages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", assignmentIds.slice(i, i + 100)).range(from, to)));
+      const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
+      const sampledByStore = new Map<string, Set<string>>();
+      for (const assignment of assignments) if (countedAssignments.has(String(assignment.id))) { const set = sampledByStore.get(String(assignment.store_id)) || new Set<string>(); set.add(String(assignment.product_id)); sampledByStore.set(String(assignment.store_id), set); }
+
+      const sessions = await pages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").range(from, to));
+      const sessionIds = sessions.map(row => String(row.id)).filter(Boolean);
+      const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
+      const auditItems: any[] = []; const auditCounts: any[] = [];
+      for (let i = 0; i < sessionIds.length; i += 100) { const chunk = sessionIds.slice(i, i + 100); auditItems.push(...await pages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("session_id", chunk).range(from, to))); auditCounts.push(...await pages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("session_id", chunk).range(from, to))); }
+      const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
+      for (const item of auditItems) if (countedAuditItems.has(String(item.id))) { const storeId = sessionStore.get(String(item.session_id)); if (!storeId) continue; const set = sampledByStore.get(storeId) || new Set<string>(); set.add(String(item.product_id)); sampledByStore.set(storeId, set); }
+
+      setCoverage(stores.map(store => { const total = totalByStore.get(store.id)?.size || 0; const sampled = Math.min(total, sampledByStore.get(store.id)?.size || 0); return { store_id: store.id, store: store.name, rotation: "Todas", total, sampled, unsampled: Math.max(0, total - sampled), pct: total ? sampled / total * 100 : 0 }; }).sort((a, b) => b.pct - a.pct));
+      setMessage("Cobertura actualizada.");
+    } catch (error: any) { setMessage(`Error actualizando cobertura: ${error.message || error}`); } finally { setLoading(false); }
   }
 
   async function generate() {
@@ -121,5 +156,5 @@ export default function AnalysisCoverageModule() {
   }
 
   if (!ready) return <div className="p-8 text-center font-bold text-slate-400">Cargando...</div>;
-  return <div className="p-4 md:p-8"><div className="mx-auto max-w-7xl space-y-4"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4"><div><h2 className="text-2xl font-black">Cobertura y maestro de muestreo</h2><p className="text-sm font-semibold text-slate-500">Actualización automática con stock, rotación, conteo cíclico y auditorías.</p></div><div className="flex gap-2"><button onClick={() => void generate()} disabled={loading} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-40">{loading ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Actualizar</button><button onClick={downloadExcel} disabled={!rows.length} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><Download size={16} /> Maestro Excel</button></div></div>{message && <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-800">{message}</p>}<div className="rounded-2xl border bg-white p-4"><h3 className="mb-3 font-black">% de códigos muestreados por tienda</h3><div className="space-y-3">{coverage.map(row => <div key={`${row.store_id}-${row.total}`} className="grid grid-cols-[minmax(180px,260px)_1fr_90px] items-center gap-3 text-sm"><span className="truncate font-black">{row.store}</span><div className="h-7 overflow-hidden rounded-lg bg-slate-100"><div className="h-full rounded-lg bg-blue-600" style={{ width: `${Math.min(100, row.pct)}%` }} /></div><span className="text-right font-black">{row.pct.toFixed(2)}%</span></div>)}{!coverage.length && <p className="py-10 text-center font-bold text-slate-400">Presiona Actualizar para calcular la cobertura.</p>}</div></div></div></div>;
+  return <div className="p-4 md:p-8"><div className="mx-auto max-w-7xl space-y-4"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4"><div><h2 className="text-2xl font-black">Cobertura y maestro de muestreo</h2><p className="text-sm font-semibold text-slate-500">La cobertura se actualiza automáticamente; el maestro completo se carga solo al solicitarlo.</p></div><div className="flex flex-wrap gap-2"><button onClick={() => void loadCoverageOnly()} disabled={loading} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-40">{loading ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Actualizar cobertura</button><button onClick={() => void generate()} disabled={loading} className="flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-black text-slate-700 disabled:opacity-40"><RefreshCw size={16} /> Preparar maestro</button><button onClick={downloadExcel} disabled={!rows.length} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><Download size={16} /> Descargar Excel</button></div></div>{message && <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-800">{message}</p>}<div className="rounded-2xl border bg-white p-4"><h3 className="mb-3 font-black">% de códigos muestreados por tienda</h3><div className="space-y-3">{coverage.map(row => <div key={`${row.store_id}-${row.total}`} className="grid grid-cols-[minmax(180px,260px)_1fr_90px] items-center gap-3 text-sm"><span className="truncate font-black">{row.store}</span><div className="h-7 overflow-hidden rounded-lg bg-slate-100"><div className="h-full rounded-lg bg-blue-600" style={{ width: `${Math.min(100, row.pct)}%` }} /></div><span className="text-right font-black">{row.pct.toFixed(2)}%</span></div>)}{!coverage.length && <p className="py-10 text-center font-bold text-slate-400">Calculando cobertura...</p>}</div></div></div></div>;
 }
