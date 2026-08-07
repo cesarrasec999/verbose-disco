@@ -279,6 +279,11 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   const [historyMonth, setHistoryMonth] = useState(reportDate.slice(0, 7));
   const [historyFrom, setHistoryFrom] = useState(`${new Date().getFullYear()}-01-01`);
   const [historyTo, setHistoryTo] = useState(reportDate);
+  const [evolutionFilter, setEvolutionFilter] = useState<HistoryFilter>("month");
+  const [evolutionDate, setEvolutionDate] = useState(reportDate);
+  const [evolutionMonth, setEvolutionMonth] = useState(reportDate.slice(0, 7));
+  const [evolutionFrom, setEvolutionFrom] = useState(`${new Date().getFullYear()}-01-01`);
+  const [evolutionTo, setEvolutionTo] = useState(reportDate);
 
   const historyRange = useMemo(() => {
     if (historyFilter === "day") return { from: historyDate, to: historyDate };
@@ -288,6 +293,18 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     }
     return { from: historyFrom || historyTo, to: historyTo || historyFrom };
   }, [historyFilter, historyDate, historyMonth, historyFrom, historyTo]);
+  const evolutionRange = useMemo(() => {
+    if (evolutionFilter === "day") return { from: evolutionDate, to: evolutionDate };
+    if (evolutionFilter === "month") {
+      const start = new Date(`${evolutionMonth}-01T00:00:00`);
+      return { from: `${evolutionMonth}-01`, to: monthEndISO(start) };
+    }
+    return { from: evolutionFrom || evolutionTo, to: evolutionTo || evolutionFrom };
+  }, [evolutionFilter, evolutionDate, evolutionMonth, evolutionFrom, evolutionTo]);
+  const historyQueryRange = useMemo(() => ({
+    from: historyRange.from < evolutionRange.from ? historyRange.from : evolutionRange.from,
+    to: historyRange.to > evolutionRange.to ? historyRange.to : evolutionRange.to,
+  }), [historyRange.from, historyRange.to, evolutionRange.from, evolutionRange.to]);
 
   function updateQuery(patch: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -326,7 +343,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       user.role === "Validador"
     )
   );
-  const canSelectAllStores = Boolean(user && (user.can_access_all_stores || user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador"));
+  const canSelectAllStores = Boolean(user && (user.can_access_all_stores || canView));
 
   useEffect(() => {
     if (!user) return;
@@ -358,7 +375,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     if ((activeTab !== "stock" && activeTab !== "rotaciones") || !canView || !stores.length) return;
     void loadRotationHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, canView, stores.length, historyRange.from, historyRange.to, selectedStoreIds.join(",")]);
+  }, [activeTab, canView, stores.length, historyQueryRange.from, historyQueryRange.to, selectedStoreIds.join(",")]);
 
   const sortedSalesRows = useMemo(() => {
     if (!salesSort) return salesRows;
@@ -675,7 +692,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
 
   async function loadRotationHistory() {
     try {
-      const { from, to } = historyRange;
+      const { from, to } = historyQueryRange;
       if (!from || !to || from > to) {
         setRotationHistoryRows([]);
         return;
@@ -1052,8 +1069,10 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
 
   const valuationChart = useMemo(() => {
+    const barRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= historyRange.from && row.snapshot_date <= historyRange.to);
+    const lineRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= evolutionRange.from && row.snapshot_date <= evolutionRange.to);
     const byDate = new Map<string, Map<string, { name: string; value: number }>>();
-    for (const row of rotationHistoryRows) {
+    for (const row of lineRowsSource) {
       if (!byDate.has(row.snapshot_date)) byDate.set(row.snapshot_date, new Map());
       const storesForDate = byDate.get(row.snapshot_date)!;
       const key = row.store_key || row.store_name;
@@ -1064,15 +1083,20 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       });
     }
     const dates = [...byDate.keys()].sort();
-    const periodKeys = historyFilter === "month" ? dates : [...new Set(dates.map(date => date.slice(0, 7)))].sort();
+    const periodKeys = evolutionFilter === "month" ? dates : [...new Set(dates.map(date => date.slice(0, 7)))].sort();
     const periodStoreRows = new Map<string, Map<string, { name: string; value: number }>>();
     for (const period of periodKeys) {
-      const date = historyFilter === "month" ? period : dates.filter(item => item.startsWith(period)).at(-1);
+      const date = evolutionFilter === "month" ? period : dates.filter(item => item.startsWith(period)).at(-1);
       if (date) periodStoreRows.set(period, byDate.get(date) || new Map());
     }
-    const latestDate = dates.at(-1) || "";
+    const barDates = [...new Set(barRowsSource.map(row => row.snapshot_date))].sort();
+    const latestDate = barDates.at(-1) || "";
     const latestRows = new Map<string, { name: string; value: number }>();
-    for (const [key, row] of byDate.get(latestDate) || []) latestRows.set(key, row);
+    for (const row of barRowsSource.filter(item => item.snapshot_date === latestDate)) {
+      const key = row.store_key || row.store_name;
+      const current = latestRows.get(key);
+      latestRows.set(key, { name: row.store_name, value: (current?.value || 0) + row.inventory_value });
+    }
     const bars = [...latestRows.entries()]
       .map(([key, row]) => ({ key, ...row }))
       .sort((a, b) => b.value - a.value);
@@ -1083,7 +1107,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       values: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.value || 0),
     })).sort((a, b) => (b.values.at(-1) || 0) - (a.values.at(-1) || 0));
     return { latestDate, bars, periods: periodKeys, lines };
-  }, [rotationHistoryRows, historyFilter]);
+  }, [rotationHistoryRows, historyRange.from, historyRange.to, evolutionRange.from, evolutionRange.to, evolutionFilter]);
 
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
@@ -1227,6 +1251,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
             <h2 className="font-black text-slate-900">Evolución del valorizado</h2>
             <p className="text-xs font-semibold text-slate-500">Consulta las fotografías disponibles y compara el valorizado de las tiendas en el tiempo.</p>
           </div>
+          <h3 className="mt-4 text-sm font-black text-slate-800">Filtro del gráfico de barras</h3>
           <div className="flex flex-wrap items-end gap-3 rounded-2xl bg-slate-50 p-3">
             <div className="flex rounded-xl border bg-white p-1 text-xs font-black">
               {([["day", "Día"], ["month", "Mes"], ["range", "Rango"]] as [HistoryFilter, string][]).map(([key, label]) => (
@@ -1251,7 +1276,15 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           </div>
 
           <div className="rounded-2xl border p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Evolución mensual por tienda</h3><p className="text-xs font-semibold text-slate-500">Se toma el último día disponible de cada mes.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Evolución por tienda</h3><p className="text-xs font-semibold text-slate-500">En modo mes se muestra cada día disponible; en rango se toma el último día disponible de cada mes.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
+            <h4 className="mb-2 text-sm font-black text-slate-800">Filtro del gráfico evolutivo</h4>
+            <div className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl bg-slate-50 p-3">
+              <div className="flex rounded-xl border bg-white p-1 text-xs font-black">{([["day", "Día"], ["month", "Mes"], ["range", "Rango"]] as [HistoryFilter, string][]).map(([key, label]) => <button key={key} onClick={() => setEvolutionFilter(key)} className={`rounded-lg px-3 py-2 ${evolutionFilter === key ? "bg-slate-950 text-white" : "text-slate-600"}`}>{label}</button>)}</div>
+              {evolutionFilter === "day" && <label className="text-xs font-black text-slate-600">Fecha<input type="date" value={evolutionDate} onChange={e => setEvolutionDate(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
+              {evolutionFilter === "month" && <label className="text-xs font-black text-slate-600">Mes<input type="month" value={evolutionMonth} onChange={e => setEvolutionMonth(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
+              {evolutionFilter === "range" && <><label className="text-xs font-black text-slate-600">Desde<input type="date" value={evolutionFrom} onChange={e => setEvolutionFrom(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label><label className="text-xs font-black text-slate-600">Hasta<input type="date" value={evolutionTo} onChange={e => setEvolutionTo(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label></>}
+              <span className="text-xs font-bold text-slate-500">Disponible: {evolutionRange.from} al {evolutionRange.to}</span>
+            </div>
             {valuationChart.periods.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]} />)}</g>; })}{valuationChart.periods.map((period, i) => <text key={period} x={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{period}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
             <div className="mt-3 flex flex-wrap gap-3">{valuationChart.lines.slice(0, 12).map((line, index) => <span key={line.key} className="text-xs font-bold text-slate-600"><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"][index % 12] }} />{line.name}</span>)}</div>
           </div>
