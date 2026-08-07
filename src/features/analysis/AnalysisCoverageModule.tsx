@@ -1,10 +1,10 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { useEffect, useState } from "react";
 import { Download, Loader2, RefreshCw } from "lucide-react";
-import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 
@@ -145,16 +145,15 @@ export default function AnalysisCoverageModule() {
     } catch (error: any) { setMessage(`Error generando análisis: ${error.message || error}`); } finally { setLoading(false); }
   }
 
-  function downloadExcel() {
-    if (!rows.length) return;
-    const workbook = XLSX.utils.book_new();
-    const totalValue = rows.reduce((sum, row) => sum + row.value, 0); let cumulative = 0;
-    const detail = rows.map(row => { const pct = totalValue ? row.value / totalValue * 100 : 0; cumulative += pct; return { TIENDA: row.store, CODIGO: row.sku, DESCRIPCION: row.description, UNIDAD: row.unit, ROTACION: row.rotation, STOCK: row.stock, COSTO: row.cost, VALORIZADO: row.value, "% TOTAL": `${pct.toFixed(2)}%`, "% ACUMULADO": `${cumulative.toFixed(2)}%`, "MUESTREADO CICLICO": row.sampled_cyclic, "MUESTREADO AUDITORIA": row.sampled_audit, MUESTREADO: row.sampled }; });
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detail), "Maestro productos");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows.map(row => ({ TIENDA: row.store, ROTACION: row.rotation, "CODIGOS TOTALES": row.total, "MUESTREADOS": row.sampled, "NO MUESTREADOS": row.unsampled, "% MUESTREADO": `${row.pct.toFixed(2)}%` }))), "Resumen cobertura");
-    XLSX.writeFile(workbook, `maestro_muestreo_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  async function downloadExcel() {
+    setLoading(true); setMessage("Preparando Excel en el servidor...");
+    try {
+      const response = await fetch("/api/analisis/maestro-excel", { cache: "no-store" });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || `Error ${response.status}`);
+      const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `maestro_muestreo_${new Date().toISOString().slice(0, 10)}.xlsx`; link.click(); URL.revokeObjectURL(url); setMessage("Excel descargado.");
+    } catch (error: any) { setMessage(`Error descargando Excel: ${error.message || error}`); } finally { setLoading(false); }
   }
 
   if (!ready) return <div className="p-8 text-center font-bold text-slate-400">Cargando...</div>;
-  return <div className="p-4 md:p-8"><div className="mx-auto max-w-7xl space-y-4"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4"><div><h2 className="text-2xl font-black">Cobertura y maestro de muestreo</h2><p className="text-sm font-semibold text-slate-500">La cobertura se actualiza automáticamente; el maestro completo se carga solo al solicitarlo.</p></div><div className="flex flex-wrap gap-2"><button onClick={() => void loadCoverageOnly()} disabled={loading} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-40">{loading ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Actualizar cobertura</button><button onClick={() => void generate()} disabled={loading} className="flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-black text-slate-700 disabled:opacity-40"><RefreshCw size={16} /> Preparar maestro</button><button onClick={downloadExcel} disabled={!rows.length} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><Download size={16} /> Descargar Excel</button></div></div>{message && <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-800">{message}</p>}<div className="rounded-2xl border bg-white p-4"><h3 className="mb-3 font-black">% de códigos muestreados por tienda</h3><div className="space-y-3">{coverage.map(row => <div key={`${row.store_id}-${row.total}`} className="grid grid-cols-[minmax(180px,260px)_1fr_90px] items-center gap-3 text-sm"><span className="truncate font-black">{row.store}</span><div className="h-7 overflow-hidden rounded-lg bg-slate-100"><div className="h-full rounded-lg bg-blue-600" style={{ width: `${Math.min(100, row.pct)}%` }} /></div><span className="text-right font-black">{row.pct.toFixed(2)}%</span></div>)}{!coverage.length && <p className="py-10 text-center font-bold text-slate-400">Calculando cobertura...</p>}</div></div></div></div>;
+  return <div className="p-4 md:p-8"><div className="mx-auto max-w-7xl space-y-4"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4"><div><h2 className="text-2xl font-black">Cobertura y maestro de muestreo</h2><p className="text-sm font-semibold text-slate-500">La cobertura se actualiza automáticamente; el Excel se prepara en el servidor.</p></div><div className="flex flex-wrap gap-2"><button onClick={() => void loadCoverageOnly()} disabled={loading} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-black text-white disabled:opacity-40">{loading ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Actualizar cobertura</button><button onClick={() => void downloadExcel()} disabled={loading} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40"><Download size={16} /> Descargar Excel</button></div></div>{message && <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-800">{message}</p>}<div className="rounded-2xl border bg-white p-4"><h3 className="mb-3 font-black">% de códigos muestreados por tienda</h3><div className="space-y-3">{coverage.map(row => <div key={`${row.store_id}-${row.total}`} className="grid grid-cols-[minmax(180px,260px)_1fr_90px] items-center gap-3 text-sm"><span className="truncate font-black">{row.store}</span><div className="h-7 overflow-hidden rounded-lg bg-slate-100"><div className="h-full rounded-lg bg-blue-600" style={{ width: `${Math.min(100, row.pct)}%` }} /></div><span className="text-right font-black">{row.pct.toFixed(2)}%</span></div>)}{!coverage.length && <p className="py-10 text-center font-bold text-slate-400">Calculando cobertura...</p>}</div></div></div></div>;
 }
