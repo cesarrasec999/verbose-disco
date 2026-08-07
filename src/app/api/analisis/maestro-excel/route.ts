@@ -21,8 +21,8 @@ async function readPages<T>(factory: (from: number, to: number) => any) {
 
 async function readInChunks<T>(values: string[], loader: (chunk: string[]) => Promise<T[]>) {
   const result: T[] = [];
-  for (let i = 0; i < values.length; i += 100) {
-    const batch = values.slice(i, i + 100);
+  for (let i = 0; i < values.length; i += 500) {
+    const batch = values.slice(i, i + 500);
     result.push(...await loader(batch));
   }
   return result;
@@ -32,26 +32,39 @@ export async function GET() {
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   try {
     const stores = await readPages<any>((from, to) => supabase.from("stores").select("id,name,erp_sede,code,is_active").eq("is_active", true).order("name").range(from, to));
-    const products = await readPages<any>((from, to) => supabase.from("cyclic_products").select("id,sku,description,unit,cost").eq("is_active", true).range(from, to));
+    const stockByStore = new Map<string, any[]>();
+    const stockSkus = new Set<string>();
+    for (const store of stores) {
+      const sede = String(store.erp_sede || store.name || "");
+      const stockRows = await readPages<any>((from, to) => supabase.from("stock_general").select("codsap,stock").eq("sede", sede).range(from, to));
+      const positiveStockRows = stockRows.filter(row => Number(row.stock || 0) > 0);
+      stockByStore.set(String(store.id), positiveStockRows);
+      for (const row of positiveStockRows) { const sku = norm(row.codsap); if (sku) stockSkus.add(sku); }
+    }
+    const products: any[] = [];
+    const stockSkuList = [...stockSkus];
+    for (let i = 0; i < stockSkuList.length; i += 500) products.push(...await readPages<any>((from, to) => supabase.from("cyclic_products").select("id,sku,description,unit,cost").eq("is_active", true).in("sku", stockSkuList.slice(i, i + 500)).range(from, to)));
     const productBySku = new Map(products.map(product => [norm(product.sku), product]));
 
-    const assignments = await readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").range(from, to));
+    const productIds = products.map(product => String(product.id)).filter(Boolean);
+    const assignments = await readInChunks<any>(productIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").in("product_id", chunk).range(from, to)));
     const assignmentIds = assignments.map(row => String(row.id)).filter(Boolean);
     const cyclicCounts = await readInChunks<any>(assignmentIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", chunk).range(from, to)));
     const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
     const cyclicSampled = new Set(assignments.filter(row => countedAssignments.has(String(row.id))).map(row => `${row.store_id}|${row.product_id}`));
 
-    const sessions = await readPages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").range(from, to));
-    const sessionIds = sessions.map(row => String(row.id)).filter(Boolean); const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
-    const auditChunks = await readInChunks<any>(sessionIds, async chunk => (await readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("session_id", chunk).range(from, to))).concat(await readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("session_id", chunk).range(from, to))));
-    const auditItems = auditChunks.filter(row => row.product_id !== undefined); const auditCounts = auditChunks.filter(row => row.item_id !== undefined);
+    const auditItems = await readInChunks<any>(productIds, chunk => readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("product_id", chunk).range(from, to)));
+    const sessionIds = [...new Set(auditItems.map(row => String(row.session_id)).filter(Boolean))];
+    const sessions = await readInChunks<any>(sessionIds, chunk => readPages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").in("id", chunk).range(from, to)));
+    const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
+    const auditItemIds = auditItems.map(row => String(row.id)).filter(Boolean);
+    const auditCounts = await readInChunks<any>(auditItemIds, chunk => readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("item_id", chunk).range(from, to)));
     const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
     const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
 
     const detail: any[] = [];
     for (const store of stores) {
-      const sede = String(store.erp_sede || store.name || "");
-      const stockRows = await readPages<any>((from, to) => supabase.from("stock_general").select("codsap,stock").eq("sede", sede).range(from, to));
+      const stockRows = stockByStore.get(String(store.id)) || [];
       const sourceNames = [store.name, store.code, store.erp_sede].filter(Boolean).map(norm);
       const keys = [...new Set([...sourceNames, ...aliases.filter(alias => sourceNames.some(source => source.includes(norm(alias))))])];
       const rotations = await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category,period_month,store_key").in("store_key", keys).order("period_month", { ascending: false }).range(from, to));
