@@ -8,6 +8,10 @@ const norm = (value: unknown) => String(value || "").trim().toUpperCase().replac
 const skuOf = (value: unknown) => String(value || "").trim().toUpperCase();
 const FLAGS = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
 const aliases = ["ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS", "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO", "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA", "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD"];
+const latestClosedRotationPeriod = () => {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+};
 
 async function readPages<T>(factory: (from: number, to: number) => any) {
   const rows: T[] = [];
@@ -64,10 +68,11 @@ export async function GET() {
     const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
 
     const rotationByStore = new Map<string, Map<string, string>>();
+    const rotationCutoff = latestClosedRotationPeriod();
     await Promise.all(stores.map(async store => {
       const sourceNames = [store.name, store.code, store.erp_sede].filter(Boolean).map(norm);
       const keys = [...new Set([...sourceNames, ...aliases.filter(alias => sourceNames.some(source => source.includes(norm(alias))))])];
-      const rotations = await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category,period_month,store_key").in("store_key", keys).order("period_month", { ascending: false }).range(from, to));
+      const rotations = await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category,period_month,store_key").in("store_key", keys).lt("period_month", rotationCutoff).order("period_month", { ascending: false }).range(from, to));
       const bySku = new Map<string, string>();
       for (const row of rotations) if (!bySku.has(norm(row.product_code))) bySku.set(norm(row.product_code), String(row.rotation_category || "SIN ROTACION"));
       rotationByStore.set(String(store.id), bySku);
