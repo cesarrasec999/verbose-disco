@@ -46,19 +46,18 @@ export async function GET() {
     for (let i = 0; i < stockSkuList.length; i += 500) products.push(...await readPages<any>((from, to) => supabase.from("cyclic_products").select("id,sku,description,unit,cost").eq("is_active", true).in("sku", stockSkuList.slice(i, i + 500)).range(from, to)));
     const productBySku = new Map(products.map(product => [norm(product.sku), product]));
 
-    const productIds = products.map(product => String(product.id)).filter(Boolean);
-    const assignments = await readInChunks<any>(productIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").in("product_id", chunk).range(from, to)));
-    const assignmentIds = assignments.map(row => String(row.id)).filter(Boolean);
-    const cyclicCounts = await readInChunks<any>(assignmentIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", chunk).range(from, to)));
+    const cyclicCounts = await readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").range(from, to));
+    const assignmentIds = [...new Set(cyclicCounts.map(row => String(row.assignment_id)).filter(Boolean))];
+    const assignments = await readInChunks<any>(assignmentIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").in("id", chunk).range(from, to)));
     const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
     const cyclicSampled = new Set(assignments.filter(row => countedAssignments.has(String(row.id))).map(row => `${row.store_id}|${row.product_id}`));
 
-    const auditItems = await readInChunks<any>(productIds, chunk => readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("product_id", chunk).range(from, to)));
+    const auditCounts = await readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").range(from, to));
+    const auditItemIds = [...new Set(auditCounts.map(row => String(row.item_id)).filter(Boolean))];
+    const auditItems = await readInChunks<any>(auditItemIds, chunk => readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("id", chunk).range(from, to)));
     const sessionIds = [...new Set(auditItems.map(row => String(row.session_id)).filter(Boolean))];
     const sessions = await readInChunks<any>(sessionIds, chunk => readPages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").in("id", chunk).range(from, to)));
     const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
-    const auditItemIds = auditItems.map(row => String(row.id)).filter(Boolean);
-    const auditCounts = await readInChunks<any>(auditItemIds, chunk => readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("item_id", chunk).range(from, to)));
     const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
     const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
 

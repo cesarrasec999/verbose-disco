@@ -68,19 +68,21 @@ export default function AnalysisCoverageModule() {
         totalByStore.set(store.id, new Set(stockRows.filter(row => Number(row.stock || 0) > 0).map(row => norm(row.codsap)).filter(Boolean)));
       }));
 
-      const assignments = await pages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").range(from, to));
-      const assignmentIds = assignments.map(row => String(row.id)).filter(Boolean);
-      const cyclicCounts: any[] = [];
-      for (let i = 0; i < assignmentIds.length; i += 100) cyclicCounts.push(...await pages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", assignmentIds.slice(i, i + 100)).range(from, to)));
+      const cyclicCounts = await pages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").range(from, to));
+      const assignmentIds = [...new Set(cyclicCounts.map(row => String(row.assignment_id)).filter(Boolean))];
+      const assignments: any[] = [];
+      for (let i = 0; i < assignmentIds.length; i += 500) assignments.push(...await pages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").in("id", assignmentIds.slice(i, i + 500)).range(from, to)));
       const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
       const sampledByStore = new Map<string, Set<string>>();
       for (const assignment of assignments) if (countedAssignments.has(String(assignment.id))) { const set = sampledByStore.get(String(assignment.store_id)) || new Set<string>(); set.add(String(assignment.product_id)); sampledByStore.set(String(assignment.store_id), set); }
 
-      const sessions = await pages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").range(from, to));
-      const sessionIds = sessions.map(row => String(row.id)).filter(Boolean);
+      const auditCounts = await pages<any>((from, to) => supabase.from("audit_counts").select("item_id").range(from, to));
+      const auditItemIds = [...new Set(auditCounts.map(row => String(row.item_id)).filter(Boolean))];
+      const auditItems: any[] = [];
+      for (let i = 0; i < auditItemIds.length; i += 500) auditItems.push(...await pages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("id", auditItemIds.slice(i, i + 500)).range(from, to)));
+      const sessionIds = [...new Set(auditItems.map(row => String(row.session_id)).filter(Boolean))];
+      const sessions = await pages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").in("id", sessionIds).range(from, to));
       const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
-      const auditItems: any[] = []; const auditCounts: any[] = [];
-      for (let i = 0; i < sessionIds.length; i += 100) { const chunk = sessionIds.slice(i, i + 100); auditItems.push(...await pages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("session_id", chunk).range(from, to))); auditCounts.push(...await pages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("session_id", chunk).range(from, to))); }
       const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
       for (const item of auditItems) if (countedAuditItems.has(String(item.id))) { const storeId = sessionStore.get(String(item.session_id)); if (!storeId) continue; const set = sampledByStore.get(storeId) || new Set<string>(); set.add(String(item.product_id)); sampledByStore.set(storeId, set); }
 
