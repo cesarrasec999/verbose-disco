@@ -34,11 +34,13 @@ export async function GET() {
     const stores = await readPages<any>((from, to) => supabase.from("stores").select("id,name,erp_sede,code,is_active").eq("is_active", true).order("name").range(from, to));
     const stockByStore = new Map<string, any[]>();
     const stockSkus = new Set<string>();
-    for (const store of stores) {
+    const stockEntries = await Promise.all(stores.map(async store => {
       const sede = String(store.erp_sede || store.name || "");
       const stockRows = await readPages<any>((from, to) => supabase.from("stock_general").select("codsap,stock").eq("sede", sede).range(from, to));
-      const positiveStockRows = stockRows.filter(row => Number(row.stock || 0) > 0);
-      stockByStore.set(String(store.id), positiveStockRows);
+      return [String(store.id), stockRows.filter(row => Number(row.stock || 0) > 0)] as const;
+    }));
+    for (const [storeId, positiveStockRows] of stockEntries) {
+      stockByStore.set(storeId, positiveStockRows);
       for (const row of positiveStockRows) { const sku = norm(row.codsap); if (sku) stockSkus.add(sku); }
     }
     const products: any[] = [];
@@ -61,14 +63,20 @@ export async function GET() {
     const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
     const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
 
-    const detail: any[] = [];
-    for (const store of stores) {
-      const stockRows = stockByStore.get(String(store.id)) || [];
+    const rotationByStore = new Map<string, Map<string, string>>();
+    await Promise.all(stores.map(async store => {
       const sourceNames = [store.name, store.code, store.erp_sede].filter(Boolean).map(norm);
       const keys = [...new Set([...sourceNames, ...aliases.filter(alias => sourceNames.some(source => source.includes(norm(alias))))])];
       const rotations = await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category,period_month,store_key").in("store_key", keys).order("period_month", { ascending: false }).range(from, to));
-      const rotationBySku = new Map<string, string>();
-      for (const row of rotations) if (!rotationBySku.has(norm(row.product_code))) rotationBySku.set(norm(row.product_code), String(row.rotation_category || "SIN ROTACION"));
+      const bySku = new Map<string, string>();
+      for (const row of rotations) if (!bySku.has(norm(row.product_code))) bySku.set(norm(row.product_code), String(row.rotation_category || "SIN ROTACION"));
+      rotationByStore.set(String(store.id), bySku);
+    }));
+
+    const detail: any[] = [];
+    for (const store of stores) {
+      const stockRows = stockByStore.get(String(store.id)) || [];
+      const rotationBySku = rotationByStore.get(String(store.id)) || new Map<string, string>();
       for (const stock of stockRows) {
         const sku = skuOf(stock.codsap); const product = productBySku.get(norm(sku)); if (!product) continue;
         const productId = String(product.id); const value = Number(stock.stock || 0) * Number(product.cost || 0); const cyclic = cyclicSampled.has(`${store.id}|${productId}`); const audit = auditSampled.has(`${store.id}|${productId}`);
