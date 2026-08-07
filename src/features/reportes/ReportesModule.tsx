@@ -326,6 +326,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       user.role === "Validador"
     )
   );
+  const canSelectAllStores = Boolean(user && (user.can_access_all_stores || user.role === "Administrador" || user.role === "Supervisor" || user.role === "Validador"));
 
   useEffect(() => {
     if (!user) return;
@@ -336,12 +337,12 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         return;
       }
       const rows = (data || []) as Store[];
-      setStores(user?.can_access_all_stores ? rows : rows.filter(store => store.id === user?.store_id));
-      if (!user?.can_access_all_stores && user?.store_id && !storesParam) updateQuery({ stores: user.store_id });
+      setStores(canSelectAllStores ? rows : rows.filter(store => store.id === user?.store_id));
+      if (!canSelectAllStores && user?.store_id && !storesParam) updateQuery({ stores: user.store_id });
     }
     void loadStores();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, canSelectAllStores]);
 
   useEffect(() => {
     if (activeTab !== "rotaciones" || !canView) return;
@@ -353,7 +354,6 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     () => selectedStoreIds.length === 0 ? [] : stores.filter(store => selectedStoreIds.includes(store.id)),
     [stores, selectedStoreIds]
   );
-
   useEffect(() => {
     if ((activeTab !== "stock" && activeTab !== "rotaciones") || !canView || !stores.length) return;
     void loadRotationHistory();
@@ -1052,49 +1052,38 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
 
   const valuationChart = useMemo(() => {
-    const daily = new Map<string, Map<string, { date: string; name: string; value: number }>>();
+    const byDate = new Map<string, Map<string, { name: string; value: number }>>();
     for (const row of rotationHistoryRows) {
-      const month = row.snapshot_date.slice(0, 7);
-      if (!daily.has(month)) daily.set(month, new Map());
-      const storesForMonth = daily.get(month)!;
+      if (!byDate.has(row.snapshot_date)) byDate.set(row.snapshot_date, new Map());
+      const storesForDate = byDate.get(row.snapshot_date)!;
       const key = row.store_key || row.store_name;
-      const current = storesForMonth.get(`${key}|${row.snapshot_date}`);
-      storesForMonth.set(`${key}|${row.snapshot_date}`, {
-        date: row.snapshot_date,
+      const current = storesForDate.get(key);
+      storesForDate.set(key, {
         name: row.store_name,
         value: (current?.value || 0) + row.inventory_value,
       });
     }
-
-    const monthStoreRows = new Map<string, Map<string, { name: string; date: string; value: number }>>();
-    for (const [month, values] of daily) {
-      const latestByStore = new Map<string, { name: string; date: string; value: number }>();
-      for (const [compound, value] of values) {
-        const key = compound.split("|")[0];
-        const current = latestByStore.get(key);
-        if (!current || value.date > current.date) latestByStore.set(key, { ...value });
-      }
-      monthStoreRows.set(month, latestByStore);
+    const dates = [...byDate.keys()].sort();
+    const periodKeys = historyFilter === "month" ? dates : [...new Set(dates.map(date => date.slice(0, 7)))].sort();
+    const periodStoreRows = new Map<string, Map<string, { name: string; value: number }>>();
+    for (const period of periodKeys) {
+      const date = historyFilter === "month" ? period : dates.filter(item => item.startsWith(period)).at(-1);
+      if (date) periodStoreRows.set(period, byDate.get(date) || new Map());
     }
-    const months = [...monthStoreRows.keys()].sort();
-    const latestDate = [...rotationHistoryRows].map(row => row.snapshot_date).sort().at(-1) || "";
+    const latestDate = dates.at(-1) || "";
     const latestRows = new Map<string, { name: string; value: number }>();
-    for (const row of rotationHistoryRows.filter(item => item.snapshot_date === latestDate)) {
-      const key = row.store_key || row.store_name;
-      const current = latestRows.get(key);
-      latestRows.set(key, { name: row.store_name, value: (current?.value || 0) + row.inventory_value });
-    }
+    for (const [key, row] of byDate.get(latestDate) || []) latestRows.set(key, row);
     const bars = [...latestRows.entries()]
       .map(([key, row]) => ({ key, ...row }))
       .sort((a, b) => b.value - a.value);
-    const storeKeys = [...new Set(months.flatMap(month => [...(monthStoreRows.get(month)?.keys() || [])]))];
+    const storeKeys = [...new Set(periodKeys.flatMap(period => [...(periodStoreRows.get(period)?.keys() || [])]))];
     const lines = storeKeys.map(key => ({
       key,
-      name: months.map(month => monthStoreRows.get(month)?.get(key)?.name).find(Boolean) || key,
-      values: months.map(month => monthStoreRows.get(month)?.get(key)?.value || 0),
+      name: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.name).find(Boolean) || key,
+      values: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.value || 0),
     })).sort((a, b) => (b.values.at(-1) || 0) - (a.values.at(-1) || 0));
-    return { latestDate, bars, months, lines };
-  }, [rotationHistoryRows]);
+    return { latestDate, bars, periods: periodKeys, lines };
+  }, [rotationHistoryRows, historyFilter]);
 
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
@@ -1163,7 +1152,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
             <div className="relative min-w-72">
               <button
                 type="button"
-                disabled={!user?.can_access_all_stores || loading}
+                disabled={!canSelectAllStores || loading}
                 onClick={() => setStoreDropdownOpen(prev => !prev)}
                 className="w-full rounded-xl border px-3 py-2 text-left text-sm font-bold text-slate-900 bg-white disabled:opacity-50 flex items-center justify-between gap-2"
               >
@@ -1180,7 +1169,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setStoreDropdownOpen(false)} />
                   <div className="absolute right-0 z-20 mt-1 w-full min-w-72 max-h-72 overflow-y-auto rounded-xl border bg-white shadow-lg">
-                    {user?.can_access_all_stores && (
+                    {canSelectAllStores && (
                       <label className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 hover:bg-slate-50">
                         <input
                           type="checkbox"
@@ -1263,7 +1252,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
 
           <div className="rounded-2xl border p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Evolución mensual por tienda</h3><p className="text-xs font-semibold text-slate-500">Se toma el último día disponible de cada mes.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
-            {valuationChart.months.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución mensual del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]} />)}</g>; })}{valuationChart.months.map((month, i) => <text key={month} x={50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{month}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
+            {valuationChart.periods.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]} />)}</g>; })}{valuationChart.periods.map((period, i) => <text key={period} x={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{period}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
             <div className="mt-3 flex flex-wrap gap-3">{valuationChart.lines.slice(0, 12).map((line, index) => <span key={line.key} className="text-xs font-bold text-slate-600"><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"][index % 12] }} />{line.name}</span>)}</div>
           </div>
         </div>}
