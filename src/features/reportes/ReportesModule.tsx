@@ -13,6 +13,7 @@ import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ReportTab = "stock" | "rotaciones" | "ventas" | "presupuesto";
+type HistoryFilter = "day" | "month" | "range";
 
 type CyclicUser = {
   id: string;
@@ -70,18 +71,6 @@ type RotationBreakRow = {
   unit: string;
   stock: number;
   cost: number;
-};
-
-type InventorySnapshot = {
-  id: string;
-  snapshot_date: string;
-  snapshot_time: string;
-  source_name: string | null;
-  total_stores: number;
-  total_codes: number;
-  total_units: number;
-  total_value: number;
-  created_at: string;
 };
 
 type SalesDailyRow = {
@@ -283,11 +272,22 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
   const [rotationPeriod, setRotationPeriod] = useState(currentRotationPeriod().slice(0, 7));
   const [downloadingDetail, setDownloadingDetail] = useState(false);
-  const [snapshots, setSnapshots] = useState<InventorySnapshot[]>([]);
-  const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
-  const [selectedSnapshotRows, setSelectedSnapshotRows] = useState<ValuationRow[]>([]);
   const [rotationCoverage, setRotationCoverage] = useState<{ stores: number; checked: boolean }>({ stores: 0, checked: false });
   const [recalculating, setRecalculating] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("month");
+  const [historyDate, setHistoryDate] = useState(reportDate);
+  const [historyMonth, setHistoryMonth] = useState(reportDate.slice(0, 7));
+  const [historyFrom, setHistoryFrom] = useState(`${new Date().getFullYear()}-01-01`);
+  const [historyTo, setHistoryTo] = useState(reportDate);
+
+  const historyRange = useMemo(() => {
+    if (historyFilter === "day") return { from: historyDate, to: historyDate };
+    if (historyFilter === "month") {
+      const start = new Date(`${historyMonth}-01T00:00:00`);
+      return { from: `${historyMonth}-01`, to: monthEndISO(start) };
+    }
+    return { from: historyFrom || historyTo, to: historyTo || historyFrom };
+  }, [historyFilter, historyDate, historyMonth, historyFrom, historyTo]);
 
   function updateQuery(patch: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -344,29 +344,6 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   }, [user]);
 
   useEffect(() => {
-    if (!canView) return;
-    async function loadSnapshots() {
-      const { data, error } = await supabase
-        .from("inventory_valuation_snapshots")
-        .select("*")
-        .order("snapshot_date", { ascending: false })
-        .order("snapshot_time", { ascending: false })
-        .limit(80);
-      if (error) {
-        setMessage("Falta crear las tablas de historial de valorizado.");
-        return;
-      }
-      setSnapshots((data || []) as InventorySnapshot[]);
-    }
-    void loadSnapshots();
-  }, [canView]);
-
-  useEffect(() => {
-    if (selectedSnapshotId) void loadSnapshotRows(selectedSnapshotId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStoreIds]);
-
-  useEffect(() => {
     if (activeTab !== "rotaciones" || !canView) return;
     void checkRotationCoverage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -376,6 +353,12 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     () => selectedStoreIds.length === 0 ? [] : stores.filter(store => selectedStoreIds.includes(store.id)),
     [stores, selectedStoreIds]
   );
+
+  useEffect(() => {
+    if ((activeTab !== "stock" && activeTab !== "rotaciones") || !canView || !stores.length) return;
+    void loadRotationHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, canView, stores.length, historyRange.from, historyRange.to, selectedStoreIds.join(",")]);
 
   const sortedSalesRows = useMemo(() => {
     if (!salesSort) return salesRows;
@@ -520,77 +503,6 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     ));
   }
 
-  async function reloadSnapshots(selectId?: string) {
-    const { data, error } = await supabase
-      .from("inventory_valuation_snapshots")
-      .select("*")
-      .order("snapshot_date", { ascending: false })
-      .order("snapshot_time", { ascending: false })
-      .limit(80);
-    if (error) throw error;
-    setSnapshots((data || []) as InventorySnapshot[]);
-    if (selectId) await loadSnapshotRows(selectId);
-  }
-
-  async function loadSnapshotRows(snapshotId: string) {
-    setSelectedSnapshotId(snapshotId);
-    if (!snapshotId) {
-      setSelectedSnapshotRows([]);
-      return;
-    }
-    const query = supabase
-      .from("inventory_valuation_snapshot_stores")
-      .select("*")
-      .eq("snapshot_id", snapshotId)
-      .order("inventory_value", { ascending: false });
-    const { data, error } = await query;
-    if (error) {
-      setMessage("No se pudo cargar el historial: " + error.message);
-      return;
-    }
-    const rows = (data || [])
-      .filter(row => {
-        if (selectedStoreIds.length === 0) return true;
-        const selectedStoreObjs = stores.filter(item => selectedStoreIds.includes(item.id));
-        if (selectedStoreObjs.length === 0) return false;
-        const candidates = [row.store_id, row.store_name, row.sede].map(value => normalizeRotationStoreKey(String(value || "")));
-        return selectedStoreObjs.some(store => {
-          const storeKeys = [store.id, store.name, store.erp_sede, store.code].map(value => normalizeRotationStoreKey(String(value || "")));
-          return candidates.some(candidate => storeKeys.includes(candidate));
-        });
-      })
-      .map(row => ({
-      store_id: row.store_id || row.store_name,
-      store_name: row.store_name,
-      sede: row.sede || row.store_name,
-      codes_with_stock: Number(row.codes_with_stock || 0),
-      total_units: Number(row.total_units || 0),
-      inventory_value: Number(row.inventory_value || 0),
-      missing_cost_codes: Number(row.missing_cost_codes || 0),
-    }));
-    setSelectedSnapshotRows(rows);
-  }
-
-  async function deleteSnapshot(snapshot: InventorySnapshot) {
-    const label = `${snapshot.snapshot_date} ${String(snapshot.snapshot_time || "").slice(0, 5)}`;
-    if (!confirm(`Eliminar la fotografÃƒÂ­a ${label}?`)) return;
-    setLoading(true);
-    try {
-      const { error } = await supabase.from("inventory_valuation_snapshots").delete().eq("id", snapshot.id);
-      if (error) throw error;
-      if (selectedSnapshotId === snapshot.id) {
-        setSelectedSnapshotId("");
-        setSelectedSnapshotRows([]);
-      }
-      await reloadSnapshots();
-      setMessage("FotografÃƒÂ­a eliminada.");
-    } catch (error: unknown) {
-      setMessage("Error eliminando fotografÃƒÂ­a: " + errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function checkRotationCoverage() {
     if (!rotationPeriod) return;
     const periodMonth = `${rotationPeriod}-01`;
@@ -714,15 +626,13 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       setValuationRows(sortedValuation);
       setRotationRows([...rotationTotals.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.rotation.localeCompare(b.rotation)));
       setUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
-      // Los quiebres A/B/C y el histórico diario son exclusivos de la pestaña
-      // de rotaciones. Presupuesto/ventas llaman a loadReport como fallback
-      // para obtener valorizados, pero no deben disparar estas consultas pesadas.
+      // Los quiebres A/B/C son exclusivos de la pestaña de rotaciones.
+      // El histórico de valorizados alimenta los gráficos de stock y se carga
+      // de forma independiente según el filtro de fecha seleccionado.
       if (activeTab === "rotaciones") {
         await loadRotationBreaks(targetStores);
-        await loadRotationHistory();
       } else {
         setRotationBreakRows([]);
-        setRotationHistoryRows([]);
       }
       setProgress("");
       return sortedValuation;
@@ -765,16 +675,19 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
 
   async function loadRotationHistory() {
     try {
-      const periodDate = new Date(`${reportDate}T00:00:00`);
-      const from = monthStartISO(periodDate);
+      const { from, to } = historyRange;
+      if (!from || !to || from > to) {
+        setRotationHistoryRows([]);
+        return;
+      }
       let query = supabase
         .from("inventory_rotation_valuation_daily")
         .select("snapshot_date,store_key,store_name,rotation_category,codes_with_stock,total_units,inventory_value")
         .gte("snapshot_date", from)
-        .lte("snapshot_date", reportDate)
+        .lte("snapshot_date", to)
         .order("snapshot_date", { ascending: false })
         .order("inventory_value", { ascending: false })
-        .limit(800);
+        .limit(10000);
       if (selectedStores.length > 0) {
         const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
         query = query.in("store_key", allKeys);
@@ -1138,6 +1051,51 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     return acc;
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
 
+  const valuationChart = useMemo(() => {
+    const daily = new Map<string, Map<string, { date: string; name: string; value: number }>>();
+    for (const row of rotationHistoryRows) {
+      const month = row.snapshot_date.slice(0, 7);
+      if (!daily.has(month)) daily.set(month, new Map());
+      const storesForMonth = daily.get(month)!;
+      const key = row.store_key || row.store_name;
+      const current = storesForMonth.get(`${key}|${row.snapshot_date}`);
+      storesForMonth.set(`${key}|${row.snapshot_date}`, {
+        date: row.snapshot_date,
+        name: row.store_name,
+        value: (current?.value || 0) + row.inventory_value,
+      });
+    }
+
+    const monthStoreRows = new Map<string, Map<string, { name: string; date: string; value: number }>>();
+    for (const [month, values] of daily) {
+      const latestByStore = new Map<string, { name: string; date: string; value: number }>();
+      for (const [compound, value] of values) {
+        const key = compound.split("|")[0];
+        const current = latestByStore.get(key);
+        if (!current || value.date > current.date) latestByStore.set(key, { ...value });
+      }
+      monthStoreRows.set(month, latestByStore);
+    }
+    const months = [...monthStoreRows.keys()].sort();
+    const latestDate = [...rotationHistoryRows].map(row => row.snapshot_date).sort().at(-1) || "";
+    const latestRows = new Map<string, { name: string; value: number }>();
+    for (const row of rotationHistoryRows.filter(item => item.snapshot_date === latestDate)) {
+      const key = row.store_key || row.store_name;
+      const current = latestRows.get(key);
+      latestRows.set(key, { name: row.store_name, value: (current?.value || 0) + row.inventory_value });
+    }
+    const bars = [...latestRows.entries()]
+      .map(([key, row]) => ({ key, ...row }))
+      .sort((a, b) => b.value - a.value);
+    const storeKeys = [...new Set(months.flatMap(month => [...(monthStoreRows.get(month)?.keys() || [])]))];
+    const lines = storeKeys.map(key => ({
+      key,
+      name: months.map(month => monthStoreRows.get(month)?.get(key)?.name).find(Boolean) || key,
+      values: months.map(month => monthStoreRows.get(month)?.get(key)?.value || 0),
+    })).sort((a, b) => (b.values.at(-1) || 0) - (a.values.at(-1) || 0));
+    return { latestDate, bars, months, lines };
+  }, [rotationHistoryRows]);
+
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
   return (
@@ -1275,68 +1233,38 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
 
         {updatedAt && (activeTab === "stock" || activeTab === "rotaciones") && <p className="text-xs font-semibold text-slate-400">Ultima consulta: {updatedAt}</p>}
 
-        {activeTab === "stock" && <div className="rounded-2xl border bg-white p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="font-black text-slate-900">Historial de valorizados</h2>
-              <Formula>fotografia diaria = valorizado guardado a las 8:00 a. m. para comparar el stock historico.</Formula>
-              <p className="text-xs text-slate-500">Fotografias automaticas guardadas por la sincronizacion diaria de las 8:00 a. m.</p>
+        {activeTab === "stock" && <div className="space-y-4 rounded-2xl border bg-white p-4">
+          <div>
+            <h2 className="font-black text-slate-900">Evolución del valorizado</h2>
+            <p className="text-xs font-semibold text-slate-500">Consulta las fotografías disponibles y compara el valorizado de las tiendas en el tiempo.</p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3 rounded-2xl bg-slate-50 p-3">
+            <div className="flex rounded-xl border bg-white p-1 text-xs font-black">
+              {([["day", "Día"], ["month", "Mes"], ["range", "Rango"]] as [HistoryFilter, string][]).map(([key, label]) => (
+                <button key={key} onClick={() => setHistoryFilter(key)} className={`rounded-lg px-3 py-2 ${historyFilter === key ? "bg-slate-950 text-white" : "text-slate-600"}`}>{label}</button>
+              ))}
+            </div>
+            {historyFilter === "day" && <label className="text-xs font-black text-slate-600">Fecha<input type="date" value={historyDate} onChange={e => setHistoryDate(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
+            {historyFilter === "month" && <label className="text-xs font-black text-slate-600">Mes<input type="month" value={historyMonth} onChange={e => setHistoryMonth(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
+            {historyFilter === "range" && <><label className="text-xs font-black text-slate-600">Desde<input type="date" value={historyFrom} onChange={e => setHistoryFrom(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label><label className="text-xs font-black text-slate-600">Hasta<input type="date" value={historyTo} onChange={e => setHistoryTo(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label></>}
+            <span className="text-xs font-bold text-slate-500">Disponible: {historyRange.from} al {historyRange.to}</span>
+          </div>
+
+          <div className="rounded-2xl border p-4">
+            <h3 className="mb-3 font-black">Valorizado disponible — {valuationChart.latestDate || "sin datos"}</h3>
+            <div className="space-y-2">
+              {valuationChart.bars.map(row => {
+                const max = valuationChart.bars[0]?.value || 1;
+                return <div key={row.key} className="grid grid-cols-[minmax(140px,240px)_1fr_auto] items-center gap-3 text-xs"><span className="truncate font-black text-slate-700">{row.name}</span><div className="h-6 overflow-hidden rounded-lg bg-slate-100"><div className="h-full rounded-lg bg-blue-600" style={{ width: `${Math.max(1, (row.value / max) * 100)}%` }} /></div><span className="w-28 text-right font-black">{money(row.value)}</span></div>;
+              })}
+              {valuationChart.bars.length === 0 && <p className="py-8 text-center text-sm font-bold text-slate-400">No hay valorizados disponibles para el filtro seleccionado.</p>}
             </div>
           </div>
 
-          <div className="mt-3 grid gap-3 lg:grid-cols-[330px_1fr]">
-            <div className="overflow-hidden rounded-2xl border bg-white">
-              <div className="max-h-72 overflow-auto">
-                {snapshots.map(snapshot => (
-                  <div
-                    key={snapshot.id}
-                    className={`flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-sm ${selectedSnapshotId === snapshot.id ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50"}`}
-                    onClick={() => loadSnapshotRows(snapshot.id)}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="block font-black">{snapshot.snapshot_date} {String(snapshot.snapshot_time || "").slice(0, 5)}</span>
-                      <span className="block text-xs text-slate-500">{money(Number(snapshot.total_value || 0))} Ã‚Â· {number2(snapshot.total_stores)} tiendas</span>
-                    </div>
-                    <button
-                      className="rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
-                      disabled={loading}
-                      onClick={e => { e.stopPropagation(); void deleteSnapshot(snapshot); }}
-                    >
-                      Quitar
-                    </button>
-                  </div>
-                ))}
-                {snapshots.length === 0 && <div className="p-4 text-sm text-slate-400">Sin fotografÃƒÂ­as guardadas.</div>}
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-2xl border bg-white">
-              <div className="max-h-72 overflow-auto">
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-slate-100">
-                    <tr>
-                      <th className="border p-2 text-left">Tienda</th>
-                      <th className="border p-2 text-right">Codigos</th>
-                      <th className="border p-2 text-right">Unidades</th>
-                      <th className="border p-2 text-right">Valorizado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedSnapshotRows.map(row => (
-                      <tr key={row.store_id}>
-                        <td className="border p-2 font-bold">{row.store_name}</td>
-                        <td className="border p-2 text-right">{number2(row.codes_with_stock)}</td>
-                        <td className="border p-2 text-right">{number2(row.total_units)}</td>
-                        <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                      </tr>
-                    ))}
-                    {selectedSnapshotRows.length === 0 && (
-                      <tr><td colSpan={4} className="p-6 text-center text-slate-400">{selectedStoreIds.length > 0 ? "Selecciona una fotografía para ver esa tienda." : "Selecciona una fotografía para ver el resumen."}</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          <div className="rounded-2xl border p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Evolución mensual por tienda</h3><p className="text-xs font-semibold text-slate-500">Se toma el último día disponible de cada mes.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
+            {valuationChart.months.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución mensual del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]} />)}</g>; })}{valuationChart.months.map((month, i) => <text key={month} x={50 + (valuationChart.months.length === 1 ? 0 : i * (830 / (valuationChart.months.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{month}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
+            <div className="mt-3 flex flex-wrap gap-3">{valuationChart.lines.slice(0, 12).map((line, index) => <span key={line.key} className="text-xs font-bold text-slate-600"><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"][index % 12] }} />{line.name}</span>)}</div>
           </div>
         </div>}
 
