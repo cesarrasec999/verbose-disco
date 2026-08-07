@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const norm = (value: unknown) => String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 const skuOf = (value: unknown) => String(value || "").trim().toUpperCase();
@@ -19,6 +19,15 @@ async function readPages<T>(factory: (from: number, to: number) => any) {
   }
 }
 
+async function readInChunks<T>(values: string[], loader: (chunk: string[]) => Promise<T[]>) {
+  const result: T[] = [];
+  for (let i = 0; i < values.length; i += 100) {
+    const batch = values.slice(i, i + 100);
+    result.push(...await loader(batch));
+  }
+  return result;
+}
+
 export async function GET() {
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   try {
@@ -28,15 +37,14 @@ export async function GET() {
 
     const assignments = await readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").range(from, to));
     const assignmentIds = assignments.map(row => String(row.id)).filter(Boolean);
-    const cyclicCounts: any[] = [];
-    for (let i = 0; i < assignmentIds.length; i += 100) cyclicCounts.push(...await readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", assignmentIds.slice(i, i + 100)).range(from, to)));
+    const cyclicCounts = await readInChunks<any>(assignmentIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").in("assignment_id", chunk).range(from, to)));
     const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
     const cyclicSampled = new Set(assignments.filter(row => countedAssignments.has(String(row.id))).map(row => `${row.store_id}|${row.product_id}`));
 
     const sessions = await readPages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").range(from, to));
     const sessionIds = sessions.map(row => String(row.id)).filter(Boolean); const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
-    const auditItems: any[] = []; const auditCounts: any[] = [];
-    for (let i = 0; i < sessionIds.length; i += 100) { const chunk = sessionIds.slice(i, i + 100); auditItems.push(...await readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("session_id", chunk).range(from, to))); auditCounts.push(...await readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("session_id", chunk).range(from, to))); }
+    const auditChunks = await readInChunks<any>(sessionIds, async chunk => (await readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("session_id", chunk).range(from, to))).concat(await readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").in("session_id", chunk).range(from, to))));
+    const auditItems = auditChunks.filter(row => row.product_id !== undefined); const auditCounts = auditChunks.filter(row => row.item_id !== undefined);
     const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
     const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
 
