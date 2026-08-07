@@ -343,7 +343,10 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       user.role === "Validador"
     )
   );
-  const canSelectAllStores = Boolean(user && (user.can_access_all_stores || canView));
+  // En Análisis, el selector de tiendas es una segmentación de consulta. El
+  // acceso al módulo ya se valida arriba; no debe quedar bloqueado por el
+  // alcance operativo de la sesión.
+  const canSelectAllStores = Boolean(user && (embedded || user.can_access_all_stores || canView));
 
   useEffect(() => {
     if (!user) return;
