@@ -284,6 +284,8 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   const [evolutionMonth, setEvolutionMonth] = useState(reportDate.slice(0, 7));
   const [evolutionFrom, setEvolutionFrom] = useState(`${new Date().getFullYear()}-01-01`);
   const [evolutionTo, setEvolutionTo] = useState(reportDate);
+  const [barStoreIds, setBarStoreIds] = useState<string[]>([]);
+  const [evolutionStoreIds, setEvolutionStoreIds] = useState<string[]>([]);
 
   const historyRange = useMemo(() => {
     if (historyFilter === "day") return { from: historyDate, to: historyDate };
@@ -708,7 +710,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         .order("snapshot_date", { ascending: false })
         .order("inventory_value", { ascending: false })
         .limit(10000);
-      if (selectedStores.length > 0) {
+      if (selectedStores.length > 0 && activeTab !== "stock") {
         const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
         query = query.in("store_key", allKeys);
       }
@@ -1072,8 +1074,11 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
 
   const valuationChart = useMemo(() => {
-    const barRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= historyRange.from && row.snapshot_date <= historyRange.to);
-    const lineRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= evolutionRange.from && row.snapshot_date <= evolutionRange.to);
+    const barKeys = new Set(stores.filter(store => barStoreIds.includes(store.id)).flatMap(rotationStoreKeysForStore).map(normalizeRotationStoreKey));
+    const lineKeys = new Set(stores.filter(store => evolutionStoreIds.includes(store.id)).flatMap(rotationStoreKeysForStore).map(normalizeRotationStoreKey));
+    const matches = (row: RotationHistoryRow, ids: string[], keys: Set<string>) => ids.length === 0 || keys.has(normalizeRotationStoreKey(row.store_key)) || ids.some(id => id === row.store_key);
+    const barRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= historyRange.from && row.snapshot_date <= historyRange.to && matches(row, barStoreIds, barKeys));
+    const lineRowsSource = rotationHistoryRows.filter(row => row.snapshot_date >= evolutionRange.from && row.snapshot_date <= evolutionRange.to && matches(row, evolutionStoreIds, lineKeys));
     const byDate = new Map<string, Map<string, { name: string; value: number }>>();
     for (const row of lineRowsSource) {
       if (!byDate.has(row.snapshot_date)) byDate.set(row.snapshot_date, new Map());
@@ -1110,7 +1115,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       values: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.value || 0),
     })).sort((a, b) => (b.values.at(-1) || 0) - (a.values.at(-1) || 0));
     return { latestDate, bars, periods: periodKeys, lines };
-  }, [rotationHistoryRows, historyRange.from, historyRange.to, evolutionRange.from, evolutionRange.to, evolutionFilter]);
+  }, [rotationHistoryRows, stores, barStoreIds, evolutionStoreIds, historyRange.from, historyRange.to, evolutionRange.from, evolutionRange.to, evolutionFilter]);
 
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
@@ -1170,7 +1175,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           ))}
         </div>}
 
-        <div className="rounded-2xl border bg-white p-4">
+        {activeTab !== "stock" && <div className="rounded-2xl border bg-white p-4">
           <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
             <div>
               <p className="text-sm font-black text-slate-900">Filtro de tienda</p>
@@ -1235,7 +1240,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
               </div>
             )}
           </div>
-        </div>
+        </div>}
 
         {message && <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">{message}</div>}
         {progress && <div className="rounded-2xl border bg-white px-4 py-3 text-sm font-bold text-slate-700">{progress}</div>}
@@ -1264,6 +1269,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
             {historyFilter === "day" && <label className="text-xs font-black text-slate-600">Fecha<input type="date" value={historyDate} onChange={e => setHistoryDate(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
             {historyFilter === "month" && <label className="text-xs font-black text-slate-600">Mes<input type="month" value={historyMonth} onChange={e => setHistoryMonth(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
             {historyFilter === "range" && <><label className="text-xs font-black text-slate-600">Desde<input type="date" value={historyFrom} onChange={e => setHistoryFrom(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label><label className="text-xs font-black text-slate-600">Hasta<input type="date" value={historyTo} onChange={e => setHistoryTo(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label></>}
+            <label className="text-xs font-black text-slate-600">Tiendas<select multiple size={3} value={barStoreIds} onChange={e => setBarStoreIds([...e.target.selectedOptions].map(option => option.value))} className="mt-1 block min-w-64 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900">{stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
             <span className="text-xs font-bold text-slate-500">Disponible: {historyRange.from} al {historyRange.to}</span>
           </div>
 
@@ -1286,6 +1292,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
               {evolutionFilter === "day" && <label className="text-xs font-black text-slate-600">Fecha<input type="date" value={evolutionDate} onChange={e => setEvolutionDate(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
               {evolutionFilter === "month" && <label className="text-xs font-black text-slate-600">Mes<input type="month" value={evolutionMonth} onChange={e => setEvolutionMonth(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
               {evolutionFilter === "range" && <><label className="text-xs font-black text-slate-600">Desde<input type="date" value={evolutionFrom} onChange={e => setEvolutionFrom(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label><label className="text-xs font-black text-slate-600">Hasta<input type="date" value={evolutionTo} onChange={e => setEvolutionTo(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label></>}
+              <label className="text-xs font-black text-slate-600">Tiendas<select multiple size={3} value={evolutionStoreIds} onChange={e => setEvolutionStoreIds([...e.target.selectedOptions].map(option => option.value))} className="mt-1 block min-w-64 rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900">{stores.map(store => <option key={store.id} value={store.id}>{store.name}</option>)}</select></label>
               <span className="text-xs font-bold text-slate-500">Disponible: {evolutionRange.from} al {evolutionRange.to}</span>
             </div>
             {valuationChart.periods.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]} />)}</g>; })}{valuationChart.periods.map((period, i) => <text key={period} x={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{period}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
@@ -1432,31 +1439,6 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
             </div>
           </>
         )}
-
-        {activeTab === "stock" && <div className="rounded-2xl border bg-white">
-          <div className="border-b bg-slate-50 px-4 py-3">
-            <h2 className="font-black">Valorizado por tienda</h2>
-            <Formula>valorizado por tienda = sumatoria del stock actual x costo ERP por tienda.</Formula>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
-                <tr><th className="border p-2 text-left">Tienda</th><th className="border p-2 text-right">Codigos</th><th className="border p-2 text-right">Unidades</th><th className="border p-2 text-right">Valorizado</th></tr>
-              </thead>
-              <tbody>
-                {valuationRows.map(row => (
-                  <tr key={row.store_id} className="hover:bg-slate-50">
-                    <td className="border p-2 font-black">{row.store_name}</td>
-                    <td className="border p-2 text-right font-semibold">{number2(row.codes_with_stock)}</td>
-                    <td className="border p-2 text-right font-semibold">{number2(row.total_units)}</td>
-                    <td className="border p-2 text-right font-black">{money(row.inventory_value)}</td>
-                  </tr>
-                ))}
-                {valuationRows.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-slate-400">Actualiza para ver el valorizado por tienda.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </div>}
 
         {activeTab === "ventas" && (
           <>
