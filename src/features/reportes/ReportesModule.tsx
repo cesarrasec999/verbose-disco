@@ -239,7 +239,7 @@ function currentRotationPeriod() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-export default function ReportesModule({ activeTab, basePath = "/reportes" }: { activeTab: ReportTab; basePath?: string }) {
+export default function ReportesModule({ activeTab, basePath = "/reportes", embedded = false }: { activeTab: ReportTab; basePath?: string; embedded?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1142,7 +1142,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes" }: { 
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
-      <header className="sticky top-0 z-20 border-b bg-white px-4 py-3">
+      {!embedded && <header className="sticky top-0 z-20 border-b bg-white px-4 py-3">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <button onClick={() => { window.location.href = "/dashboard"; }} className="rounded-xl border p-2 text-slate-600 hover:bg-slate-50" title="Volver">
@@ -1167,10 +1167,19 @@ export default function ReportesModule({ activeTab, basePath = "/reportes" }: { 
             </button>
           </div>
         </div>
-      </header>
+      </header>}
+
+      {embedded && <div className="mx-auto flex max-w-7xl justify-end gap-2 px-4 pt-4">
+        <button onClick={refreshActiveTab} disabled={loading || !canView} className="rounded-xl bg-blue-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
+          <RefreshCw className={`mr-2 inline ${loading ? "animate-spin" : ""}`} size={16} />
+          {loading ? "Actualizando..." : "Actualizar"}
+        </button>
+        {activeTab === "presupuesto" && <button onClick={openBudgetReport} disabled={loading || salesRows.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-black text-white disabled:opacity-40">Reporte</button>}
+        <button onClick={exportExcel} disabled={loading} className="rounded-xl border bg-white px-4 py-2 text-sm font-black text-slate-700 disabled:opacity-40"><Download className="mr-2 inline" size={16} /> Excel</button>
+      </div>}
 
       <section className="mx-auto max-w-7xl space-y-4 p-4">
-        <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-4">
+        {!embedded && <div className="grid overflow-hidden rounded-2xl border bg-white p-1 shadow-sm md:grid-cols-4">
           {[
             ["stock", "Valorizado stock"],
             ["rotaciones", "Valorizado por rotaciones"],
@@ -1185,7 +1194,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes" }: { 
               {label}
             </Link>
           ))}
-        </div>
+        </div>}
 
         <div className="rounded-2xl border bg-white p-4">
           <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">

@@ -6,5 +6,5 @@ const tabs = new Set(["stock", "rotaciones", "ventas", "presupuesto"]);
 export default async function AnalysisReportPage({ params }: { params: Promise<{ tab: string }> }) {
   const { tab } = await params;
   if (!tabs.has(tab)) notFound();
-  return <ReportesModule basePath="/analisis/reportes" activeTab={tab as "stock" | "rotaciones" | "ventas" | "presupuesto"} />;
+  return <ReportesModule basePath="/analisis/reportes" embedded activeTab={tab as "stock" | "rotaciones" | "ventas" | "presupuesto"} />;
 }
