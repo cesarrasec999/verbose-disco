@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Boxes, ClipboardCheck, CreditCard, FileText, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { AlertTriangle, Boxes, ClipboardCheck, CreditCard, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -58,7 +58,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/creditos-cobranzas" | "/checklist" | "/diferencias-inventario";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/creditos-cobranzas" | "/checklist" | "/diferencias-inventario";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -77,7 +77,7 @@ const MODULES: Array<{
   { label: "Consulta", description: "Consulta de stock y codigos", destination: "/consulta-stock", icon: Search, accent: "bg-sky-600" },
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
-  { label: "Reportes", description: "Stock, rotaciones, ventas y presupuesto", destination: "/reportes", icon: FileText, accent: "bg-slate-900" },
+  { label: "Análisis", description: "Reportes de inventario y ERI consolidado", destination: "/analisis", icon: TrendingUp, accent: "bg-slate-900" },
   { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
@@ -96,6 +96,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/etiquetado-packing": "packing",
   "/consulta-stock": "consulta",
   "/reportes": "reports",
+  "/analisis": "analysis",
   "/no-inventariables": "reports_non_inventory",
   "/usuarios": "users",
   "/recepcion": "reception",
@@ -165,9 +166,9 @@ export default function LoginPage() {
       if (!cyclicModules.some(key => access.includes(key))) return false;
       return true;
     }
-    if (targetDestination === "/reportes") {
+    if (targetDestination === "/reportes" || targetDestination === "/analisis") {
       const access = userModuleAccess(user);
-      return access.includes("reports") || access.includes("reports_non_inventory") || access.includes("reports_results");
+      return access.includes("analysis") || access.includes("reports") || access.includes("reports_non_inventory") || access.includes("reports_results");
     }
     if (moduleKey && !userModuleAccess(user).includes(moduleKey)) return false;
     if (hasExplicitModuleAccess(user)) return true;

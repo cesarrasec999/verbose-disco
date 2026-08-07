@@ -186,7 +186,7 @@ function PeriodPicker({ label, value, onChange }: { label: string; value: Period
 
 // ─── Página ─────────────────────────────────────────────────────────────────
 
-export default function ChecklistModule() {
+export default function ChecklistModule({ analysisOnly = false }: { analysisOnly?: boolean }) {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [moduleDisabled, setModuleDisabled] = useState(false);
   const [ready, setReady] = useState(false);
@@ -220,16 +220,18 @@ export default function ChecklistModule() {
   const [downloadingDetail, setDownloadingDetail] = useState(false);
   const [downloadingEriConsolidated, setDownloadingEriConsolidated] = useState(false);
 
-  const canManageChecklist = user?.role === "Administrador" || user?.role === "Supervisor";
+  const canManageChecklist = !analysisOnly && (user?.role === "Administrador" || user?.role === "Supervisor");
 
   // ─── Init ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false;
     const stored = readStoredUser<CyclicUser>();
-    if (!stored || !canAccessModule(stored, "checklist")) { window.location.replace("/"); return; }
+    const hasAnalysisAccess = canAccessModule(stored, "analysis") || canAccessModule(stored, "reports") || canAccessModule(stored, "reports_results") || canAccessModule(stored, "reports_non_inventory");
+    if (!stored || !(analysisOnly ? hasAnalysisAccess : canAccessModule(stored, "checklist"))) { window.location.replace("/"); return; }
+    const accessKey = analysisOnly ? "analysis" : "checklist";
     fetchDisabledModules().then(disabled => {
-      if (!cancelled && isModuleBlockedForUser(disabled, "checklist", stored)) setModuleDisabled(true);
+      if (!cancelled && isModuleBlockedForUser(disabled, accessKey, stored)) setModuleDisabled(true);
     });
     Promise.resolve().then(() => { if (!cancelled) setUser(stored); });
     supabase.from("stores").select("id,code,name,erp_sede,is_active").eq("is_active", true).order("name")
@@ -239,7 +241,7 @@ export default function ChecklistModule() {
         setReady(true);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [analysisOnly]);
 
   useEffect(() => {
     if (!ready || !user) return;
@@ -1004,7 +1006,25 @@ export default function ChecklistModule() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (!ready || !user) return <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando...</p>;
-  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Checklist" />;
+  if (moduleDisabled) return <ModuleDisabledScreen moduleLabel={analysisOnly ? "Análisis" : "Checklist"} />;
+
+  if (analysisOnly) return (
+    <div className="p-4 md:p-8">
+      <div className="mx-auto max-w-6xl rounded-2xl border bg-white p-5 shadow-sm">
+        <div className="mb-5">
+          <p className="text-xs font-black uppercase tracking-wide text-slate-500">Módulo Análisis</p>
+          <h2 className="text-2xl font-black text-slate-950">ERI consolidado</h2>
+          <p className="text-sm font-semibold text-slate-500">Genera el consolidado de inventarios generales, auditorías y conteos cíclicos por período.</p>
+        </div>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <PeriodPicker label="Período ERI" value={existenciaPeriod} onChange={setExistenciaPeriod} />
+          <button onClick={() => void downloadEriConsolidated()} disabled={downloadingEriConsolidated} className="flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+            {downloadingEriConsolidated ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Descargar Excel ERI consolidado
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   const days = Array.from({ length: monthLastDate(historyMonth) }, (_, i) => i + 1);
 
@@ -1038,9 +1058,6 @@ export default function ChecklistModule() {
                   <div className="flex flex-wrap gap-2">
                     <button onClick={() => void downloadChecklistDetail()} disabled={downloadingDetail} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40">
                       {downloadingDetail ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Descargar detalle Excel
-                    </button>
-                    <button onClick={() => void downloadEriConsolidated()} disabled={downloadingEriConsolidated} className="flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2.5 text-sm font-black text-white disabled:opacity-40">
-                      {downloadingEriConsolidated ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} Excel ERI consolidado
                     </button>
                     <button onClick={() => void loadResumen()} disabled={resumenLoading} className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-black text-slate-700 disabled:opacity-40">
                       {resumenLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} Actualizar

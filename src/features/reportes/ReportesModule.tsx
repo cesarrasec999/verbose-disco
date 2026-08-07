@@ -239,7 +239,7 @@ function currentRotationPeriod() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) {
+export default function ReportesModule({ activeTab, basePath = "/reportes" }: { activeTab: ReportTab; basePath?: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -300,7 +300,7 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
   }
 
   function tabHref(tab: ReportTab) {
-    const base = `/reportes/${tab}`;
+    const base = `${basePath}/${tab}`;
     const qs = searchParams.toString();
     return qs ? `${base}?${qs}` : base;
   }
@@ -714,8 +714,16 @@ export default function ReportesModule({ activeTab }: { activeTab: ReportTab }) 
       setValuationRows(sortedValuation);
       setRotationRows([...rotationTotals.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.rotation.localeCompare(b.rotation)));
       setUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
-      await loadRotationBreaks(targetStores);
-      await loadRotationHistory();
+      // Los quiebres A/B/C y el histórico diario son exclusivos de la pestaña
+      // de rotaciones. Presupuesto/ventas llaman a loadReport como fallback
+      // para obtener valorizados, pero no deben disparar estas consultas pesadas.
+      if (activeTab === "rotaciones") {
+        await loadRotationBreaks(targetStores);
+        await loadRotationHistory();
+      } else {
+        setRotationBreakRows([]);
+        setRotationHistoryRows([]);
+      }
       setProgress("");
       return sortedValuation;
     } catch (error: unknown) {

@@ -27,6 +27,7 @@ const KILL_SWITCH_MODULES: { key: ModuleAccessKey; label: string }[] = [
   { key: "packing", label: "Etiquetado/Packing" },
   { key: "consulta", label: "Consulta" },
   { key: "reports", label: "Reportes" },
+  { key: "analysis", label: "Análisis" },
   { key: "reports_non_inventory", label: "No Inventariables" },
   { key: "users", label: "Usuarios" },
   { key: "reception", label: "Recepción" },

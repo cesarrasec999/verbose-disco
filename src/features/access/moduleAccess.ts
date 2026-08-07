@@ -11,6 +11,7 @@ export type ModuleAccessKey =
   | "reports_non_inventory"
   | "reports_results"
   | "reports"
+  | "analysis"
   | "locations"
   | "audit"
   | "general_inventory"
@@ -52,6 +53,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "general_inventory", label: "Inventarios", group: "Modulos" },
   { key: "consulta", label: "Consulta", group: "Modulos" },
   { key: "reports", label: "Reportes", group: "Modulos" },
+  { key: "analysis", label: "Análisis", group: "Modulos" },
   { key: "users", label: "Usuarios", group: "Administracion" },
   { key: "picking", label: "Picking", group: "Modulos" },
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
@@ -80,6 +82,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "general_inventory",
     "consulta",
     "reports",
+    "analysis",
     "picking",
     "packing",
     "ajustes_provisionales",
@@ -97,6 +100,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "general_inventory",
     "consulta",
     "reports",
+    "analysis",
     "picking",
     "packing",
     "ajustes_provisionales",
