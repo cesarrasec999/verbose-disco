@@ -6533,7 +6533,6 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                     { key: "registros", icon: ClipboardList, label: "Registros de conteo ciclico", permission: canViewCountRecords },
                                     { key: "resumen",   icon: BarChart3,     label: "Resumen por codigo", permission: canViewSummaryByCode },
                                     { key: "progreso",  icon: StoreIcon,     label: "Progreso tiendas", permission: canViewStoreProgress },
-                                    { key: "cobertura", icon: Boxes,         label: "Cobertura por tienda", permission: canViewStoreProgress },
                                     { key: "dashboard", icon: LineChart,     label: "Dashboard", permission: canViewCyclicDashboard },
                                 ] as const).filter(item => item.permission).map(item => (
                                     (() => {

@@ -23,13 +23,14 @@ export default function AnalysisLayout({ children }: { children: React.ReactNode
             <p className="text-xs font-black uppercase tracking-wide text-slate-500">Módulo independiente</p>
             <h1 className="text-xl font-black text-slate-950">Análisis</h1>
           </div>
-          <Link href="/analisis/eri" className={`rounded-xl px-4 py-2 text-sm font-black ${pathname.startsWith("/analisis/eri") ? "bg-slate-950 text-white" : "border text-slate-700 hover:bg-slate-50"}`}>ERI consolidado</Link>
         </header>
         <nav className="grid grid-cols-2 gap-2 rounded-2xl border bg-white p-2 md:grid-cols-4">
           {reportLinks.map(([key, label]) => {
             const active = pathname === `/analisis/reportes/${key}`;
             return <Link key={key} href={`/analisis/reportes/${key}`} className={`rounded-xl px-3 py-2 text-center text-sm font-black ${active ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{label}</Link>;
           })}
+          <Link href="/analisis/eri" className={`rounded-xl px-3 py-2 text-center text-sm font-black ${pathname.startsWith("/analisis/eri") ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>ERI consolidado</Link>
+          <Link href="/analisis/cobertura" className={`rounded-xl px-3 py-2 text-center text-sm font-black ${pathname.startsWith("/analisis/cobertura") ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>Cobertura y maestro</Link>
         </nav>
       </div>
       {children}

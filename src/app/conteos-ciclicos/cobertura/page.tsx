@@ -1,12 +1,7 @@
 "use client";
 
-import { Suspense } from "react";
-import CiclicosShell from "@/features/conteos-ciclicos/CiclicosShell";
+import { redirect } from "next/navigation";
 
 export default function ConteosCiclicosCoberturaPage() {
-  return (
-    <Suspense>
-      <CiclicosShell forcedTab="validador" forcedValTab="cobertura" />
-    </Suspense>
-  );
+  redirect("/analisis/cobertura");
 }
