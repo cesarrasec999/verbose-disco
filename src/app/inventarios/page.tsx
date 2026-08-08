@@ -6636,23 +6636,23 @@ export default function InventariosPage() {
     <tbody>${tableRows(deptRows)}</tbody>
   </table>
 
-  <h2>Distribucion de codigos por zona</h2>
+  <h2>Distribucion de codigos exhibidos y no exhibidos</h2>
   <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. En inventarios antiguos sin control cargado se muestra SIN ZONA. Cada codigo se cuenta una sola vez; si aparece en varias zonas se identifica como MULTIPLES ZONAS.</p>
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
     <tr>
-    ${metricCard("Codigos en TIENDA", number2(zoneCounts.get("TIENDA") || 0), "ok")}
-    ${metricCard("Codigos fuera de TIENDA", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
-    ${metricCard("% en TIENDA", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`)}
-    ${metricCard("Ubicaciones fuera de TIENDA", number2(ticketLocationsOutsideStoreZone), ticketLocationsOutsideStoreZone > 0 ? "warn" : "ok")}
+    ${metricCard("Codigos exhibidos", number2(zoneCounts.get("TIENDA") || 0), "ok")}
+    ${metricCard("% codigos exhibidos", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`, "ok")}
+    ${metricCard("Codigos no exhibidos", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
+    ${metricCard("% codigos no exhibidos", `${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%`, codesOutsideStoreZone > 0 ? "bad" : "ok")}
     </tr>
   </table>
-  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Codigos fuera de la zona TIENDA:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
+  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Exhibidos:</strong> ${number2(zoneCounts.get("TIENDA") || 0)} de ${number2(totalCodes)} (${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%). <strong>No exhibidos:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
   <table>
     <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
     <tbody>${zoneTableRows}</tbody>
   </table>
 
-  <h2>Top 20 codigos fuera de TIENDA por valorizado contado</h2>
+  <h2>Top 20 codigos no exhibidos por valorizado contado</h2>
   <p class="muted" style="margin:0 0 7px;line-height:1.45;">Ordenado de mayor a menor por valorizado contado: costo unitario multiplicado por la cantidad sumada del inventario.</p>
   <table>
     <thead><tr><th style="width:30px" class="num">#</th><th style="width:78px">Codigo</th><th>Descripcion</th><th style="width:90px">Zona</th><th class="num" style="width:62px">Contado</th><th class="num" style="width:62px">Costo</th><th class="num" style="width:85px">Valorizado contado</th></tr></thead>
