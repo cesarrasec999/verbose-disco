@@ -6295,9 +6295,13 @@ export default function InventariosPage() {
     const zoneRows: ZoneCountRow[] = [...zoneCounts.entries()]
       .map(([name, codes]) => ({ name, codes, percentage: summary.length > 0 ? (codes / summary.length) * 100 : 0 }))
       .sort((a, b) => b.codes - a.codes || a.name.localeCompare(b.name));
-    const codesExhibited = [...zonesByProduct.values()].filter(zones => [...zones].some(isExhibitedZone)).length;
-    const codesNotExhibited = [...zonesByProduct.values()].filter(zones => zones.size > 0 && ![...zones].some(isExhibitedZone)).length;
-    const codesWithKnownZone = codesExhibited + codesNotExhibited;
+    // Use the same summarized code population shown in the zone table. Count rows
+    // that exist only in the location records but not in the inventory summary
+    // separately, so the KPI and table never use different denominators.
+    const summarizedZones = [...zoneBySummaryProduct.values()];
+    const codesExhibited = summarizedZones.filter(isExhibitedZone).length;
+    const codesNotExhibited = summarizedZones.filter(zone => !isExhibitedZone(zone)).length;
+    const codesWithKnownZone = summarizedZones.length;
     const zoneTableRows = zoneRows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
