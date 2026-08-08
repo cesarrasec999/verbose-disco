@@ -6240,6 +6240,8 @@ export default function InventariosPage() {
       const normalized = String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
       return normalized || "SIN ZONA";
     };
+    const exhibitedZones = new Set(["TIENDA", "PISO_VENTA", "PISO_VENTA (1)", "PISO_VENTA (2)", "PASILLO_VENTA"]);
+    const isExhibitedZone = (zone: string) => exhibitedZones.has(zone);
     const [ticketLocationRows, countedLocationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "id,location_code,zone,is_active", selectedSession.id, "location_code"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,location_id,location_code", selectedSession.id, "sku"),
@@ -6271,9 +6273,11 @@ export default function InventariosPage() {
       const zones = zonesByProduct.get(productKey);
       const zone = !zones || zones.size === 0
         ? "SIN ZONA"
-        : zones.size === 1
-          ? [...zones][0]
-          : "MULTIPLES ZONAS";
+        : [...zones].some(isExhibitedZone)
+          ? "TIENDA"
+          : zones.size === 1
+            ? [...zones][0]
+            : "MULTIPLES ZONAS";
       zoneBySummaryProduct.set(productKey, zone);
     }
     const zoneCounts = new Map<string, number>();
@@ -6281,8 +6285,11 @@ export default function InventariosPage() {
     const zoneRows: ZoneCountRow[] = [...zoneCounts.entries()]
       .map(([name, codes]) => ({ name, codes, percentage: summary.length > 0 ? (codes / summary.length) * 100 : 0 }))
       .sort((a, b) => b.codes - a.codes || a.name.localeCompare(b.name));
-    const codesOutsideStoreZone = [...zoneBySummaryProduct.values()].filter(zone => zone !== "TIENDA").length;
-    const ticketLocationsOutsideStoreZone = activeTicketLocations.filter(row => normalizeReportZone(row.zone) !== "TIENDA").length;
+    const codesExhibited = [...zonesByProduct.values()].filter(zones => [...zones].some(isExhibitedZone)).length;
+    const codesNotExhibited = [...zonesByProduct.values()].filter(zones => zones.size > 0 && ![...zones].some(isExhibitedZone)).length;
+    const codesWithoutZone = Math.max(0, summary.length - codesExhibited - codesNotExhibited);
+    const codesWithKnownZone = codesExhibited + codesNotExhibited;
+    const ticketLocationsOutsideStoreZone = activeTicketLocations.filter(row => !isExhibitedZone(normalizeReportZone(row.zone))).length;
     const ticketLocationsWithoutZone = activeTicketLocations.filter(row => !String(row.zone || "").trim()).length;
     const zoneTableRows = zoneRows.map(row => `
       <tr>
@@ -6293,17 +6300,19 @@ export default function InventariosPage() {
     `).join("");
     const zoneControlNote = activeTicketLocations.length === 0
       ? "No se encontró control de tickets cargado para este inventario. Los códigos quedan identificados como SIN ZONA."
-      : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} tienen una zona distinta de TIENDA${ticketLocationsWithoutZone > 0 ? `, incluyendo ${number2(ticketLocationsWithoutZone)} sin zona en la segunda columna` : ""}.`;
+      : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} tienen una zona no exhibida${ticketLocationsWithoutZone > 0 ? `, incluyendo ${number2(ticketLocationsWithoutZone)} sin zona en la segunda columna` : ""}.`;
     const topOutsideStoreRows = summary
       .map(row => {
         const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
         return {
           row,
           zone: zoneBySummaryProduct.get(productKey) || "SIN ZONA",
+          hasKnownZone: zonesByProduct.has(productKey),
+          isExhibited: [...(zonesByProduct.get(productKey) || new Set<string>())].some(isExhibitedZone),
           inventoryValue: Number(row.counted || 0) * Number(row.cost || 0),
         };
       })
-      .filter(item => item.zone !== "TIENDA")
+      .filter(item => item.hasKnownZone && !item.isExhibited)
       .sort((a, b) => b.inventoryValue - a.inventoryValue || a.row.sku.localeCompare(b.row.sku))
       .slice(0, 20);
     const topOutsideStoreTableRows = topOutsideStoreRows.map((item, index) => `
@@ -6637,16 +6646,16 @@ export default function InventariosPage() {
   </table>
 
   <h2>Distribucion de codigos exhibidos y no exhibidos</h2>
-  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. En inventarios antiguos sin control cargado se muestra SIN ZONA. Cada codigo se cuenta una sola vez; si aparece en varias zonas se identifica como MULTIPLES ZONAS.</p>
+  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. Se consideran exhibidos TIENDA, PISO_Venta, PISO_Venta (1), PISO_Venta (2) y Pasillo_Venta. Si un codigo aparece en cualquiera de esas zonas, aunque tambien figure en otros almacenes, es exhibido. Si solo aparece en otras zonas, es no exhibido; los codigos sin zona se mantienen sin clasificar.</p>
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
     <tr>
-    ${metricCard("Codigos exhibidos", number2(zoneCounts.get("TIENDA") || 0), "ok")}
-    ${metricCard("% codigos exhibidos", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`, "ok")}
-    ${metricCard("Codigos no exhibidos", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
-    ${metricCard("% codigos no exhibidos", `${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%`, codesOutsideStoreZone > 0 ? "bad" : "ok")}
+    ${metricCard("Codigos exhibidos", number2(codesExhibited), "ok")}
+    ${metricCard("% codigos exhibidos", `${(codesWithKnownZone > 0 ? (codesExhibited / codesWithKnownZone) * 100 : 0).toFixed(2)}%`, "ok")}
+    ${metricCard("Codigos no exhibidos", number2(codesNotExhibited), codesNotExhibited > 0 ? "bad" : "ok")}
+    ${metricCard("% codigos no exhibidos", `${(codesWithKnownZone > 0 ? (codesNotExhibited / codesWithKnownZone) * 100 : 0).toFixed(2)}%`, codesNotExhibited > 0 ? "bad" : "ok")}
     </tr>
   </table>
-  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Exhibidos:</strong> ${number2(zoneCounts.get("TIENDA") || 0)} de ${number2(totalCodes)} (${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%). <strong>No exhibidos:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
+  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Exhibidos:</strong> ${number2(codesExhibited)} de ${number2(codesWithKnownZone)} (${(codesWithKnownZone > 0 ? (codesExhibited / codesWithKnownZone) * 100 : 0).toFixed(2)}%). <strong>No exhibidos:</strong> ${number2(codesNotExhibited)} de ${number2(codesWithKnownZone)} (${(codesWithKnownZone > 0 ? (codesNotExhibited / codesWithKnownZone) * 100 : 0).toFixed(2)}%). <strong>Sin zona:</strong> ${number2(codesWithoutZone)}.</div>
   <table>
     <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
     <tbody>${zoneTableRows}</tbody>
