@@ -227,6 +227,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [assignBusy, setAssignBusy] = useState(false);
     const [assignRecommendationsLoading, setAssignRecommendationsLoading] = useState(false);
     const [salesRecommendationsLoading, setSalesRecommendationsLoading] = useState(false);
+    const [nonAbcValueRecommendationsLoading, setNonAbcValueRecommendationsLoading] = useState(false);
     const assignSearchRequestRef = useRef(0);
     const [allStoreAssignmentSummary, setAllStoreAssignmentSummary] = useState<AllStoreAssignmentSummary[]>([]);
     const [allStoreSummaryLoading, setAllStoreSummaryLoading] = useState(false);
@@ -2940,6 +2941,61 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         }
     }
 
+    async function removeCommonRecommendationExclusions(storeId: string, assignedDate: string, rows: Product[]): Promise<Product[]> {
+        if (rows.length === 0) return rows;
+        const flags = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
+        const date = new Date(`${assignedDate}T00:00:00`);
+        date.setDate(date.getDate() - 365);
+        const fromDate = date.toISOString().slice(0, 10);
+        const recentDate = new Date(`${assignedDate}T00:00:00`);
+        recentDate.setDate(recentDate.getDate() - 3);
+        const recentFrom = recentDate.toISOString().slice(0, 10);
+        const productIds = new Set(rows.map(row => row.id));
+        const excluded = new Set<string>();
+
+        const { data: completed, error: completedError } = await supabase
+            .from("cyclic_completed_products")
+            .select("product_id")
+            .eq("store_id", storeId);
+        if (completedError) throw completedError;
+        for (const row of completed || []) if (productIds.has(String(row.product_id))) excluded.add(String(row.product_id));
+
+        const assignmentsInRange: any[] = [];
+        for (let from = 0; ; from += 1000) {
+            const { data, error } = await supabase
+                .from("cyclic_assignments")
+                .select("id,product_id,assigned_date")
+                .eq("store_id", storeId)
+                .gte("assigned_date", fromDate)
+                .lte("assigned_date", assignedDate)
+                .range(from, from + 999);
+            if (error) throw error;
+            assignmentsInRange.push(...(data || []));
+            if (!data || data.length < 1000) break;
+        }
+
+        const countedAssignmentIds = new Set<string>();
+        for (let i = 0; i < assignmentsInRange.length; i += 500) {
+            const chunk = assignmentsInRange.slice(i, i + 500).map(row => String(row.id));
+            const { data, error } = await supabase
+                .from("cyclic_counts")
+                .select("assignment_id,location")
+                .in("assignment_id", chunk);
+            if (error) throw error;
+            for (const row of data || []) if (!flags.has(String(row.location || ""))) countedAssignmentIds.add(String(row.assignment_id));
+        }
+        for (const row of assignmentsInRange) {
+            const productId = String(row.product_id || "");
+            if (!productIds.has(productId)) continue;
+            const assignmentDate = String(row.assigned_date || "");
+            const counted = countedAssignmentIds.has(String(row.id));
+            if (assignmentDate === assignedDate || counted || (!counted && assignmentDate >= recentFrom && assignmentDate < assignedDate)) {
+                excluded.add(productId);
+            }
+        }
+        return rows.filter(row => !excluded.has(row.id));
+    }
+
     async function loadSalesAssignmentRecommendations() {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
@@ -2955,7 +3011,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const { data, error } = await supabase.rpc("get_cyclic_sales_assignment_recommendations", {
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
-                p_limit: 30,
+                p_limit: 200,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion por ventas. Ejecuta la migracion de ventas de conteo ciclico en Supabase: " + error.message);
@@ -2978,20 +3034,80 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 recommendation_group: row.recommendation_group || "VENTA_ULTIMO_MES",
             })).filter(product => product.id && product.sku) as Product[];
 
+            const filteredRows = await removeCommonRecommendationExclusions(valStoreId, valDate, rows);
+            const finalRows = filteredRows.slice(0, 30);
             setAssignSearch("");
             setAssignUnitFilter("");
-            setAssignResults(rows);
-            setAssignSelectedIds(new Set(rows.map(product => product.id)));
-            const periodStart = rows[0]?.sales_period_start || "";
-            const periodEnd = rows[0]?.sales_period_end || "";
-            setAssignSearchNotice(rows.length > 0
-                ? `Recomendacion por ventas cargada: ${rows.length} codigos del ${periodStart} al ${periodEnd}, ordenados por mayor venta valorizada.`
+            setAssignResults(finalRows);
+            setAssignSelectedIds(new Set(finalRows.map(product => product.id)));
+            const periodStart = finalRows[0]?.sales_period_start || rows[0]?.sales_period_start || "";
+            const periodEnd = finalRows[0]?.sales_period_end || rows[0]?.sales_period_end || "";
+            setAssignSearchNotice(finalRows.length > 0
+                ? `Recomendacion por ventas cargada: ${finalRows.length} codigos del ${periodStart} al ${periodEnd}, ordenados por mayor venta valorizada.`
                 : "No se encontraron codigos con ventas en el ultimo mes y stock disponible para esta tienda."
             );
         } catch (error: any) {
             setAssignSearchNotice("No se pudo generar la recomendacion por ventas: " + (error?.message || error));
         } finally {
             setSalesRecommendationsLoading(false);
+        }
+    }
+
+    async function loadNonAbcValueAssignmentRecommendations() {
+        if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
+        if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
+        if (!valStoreId || valStoreId === ALL_STORES_VALUE) {
+            showMessage("Selecciona una tienda especifica para recomendar codigos.", "error");
+            return;
+        }
+        if (nonAbcValueRecommendationsLoading || assignRecommendationsLoading || salesRecommendationsLoading) return;
+
+        setNonAbcValueRecommendationsLoading(true);
+        setAssignSearchNotice("");
+        try {
+            // Se solicita un limite ABC muy alto para que el RPC excluya todos
+            // los A/B/C antes de devolver los 30 de mayor valorizado.
+            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations", {
+                p_store_id: valStoreId,
+                p_assigned_date: valDate,
+                p_a_limit: 100000,
+                p_other_limit: 30,
+            });
+            if (error) {
+                setAssignSearchNotice("No se pudo generar la recomendacion de valorizados no ABC: " + error.message);
+                return;
+            }
+            const rows = ((data || []) as any[])
+                .filter(row => String(row.recommendation_group || "") === "VALORIZADO")
+                .filter(row => !["A", "B", "C"].includes(String(row.rotation_category || "").trim().toUpperCase()))
+                .map(row => ({
+                    id: String(row.product_id || row.id || ""),
+                    sku: String(row.sku || ""),
+                    barcode: row.barcode || null,
+                    description: String(row.description || ""),
+                    unit: String(row.unit || ""),
+                    cost: Number(row.cost || 0),
+                    is_active: true,
+                    system_stock: Number(row.system_stock || 0),
+                    rotation_category: row.rotation_category || null,
+                    inventory_value: Number(row.inventory_value || 0),
+                    recommendation_group: "VALORIZADO_NO_ABC",
+                }))
+                .filter(product => product.id && product.sku)
+                .slice(0, 30) as Product[];
+
+            setAssignSearch("");
+            setAssignUnitFilter("");
+            setAssignResults(rows);
+            setAssignSelectedIds(new Set(rows.map(product => product.id)));
+            setAssignSearchNotice(rows.length > 0
+                ? `Recomendacion cargada: ${rows.length} productos de mayor valorizado sin rotacion A/B/C.`
+                : "No se encontraron productos valorizados fuera de A/B/C con stock disponible para esta tienda/fecha."
+            );
+        } catch (error: any) {
+            setAssignSearchNotice("No se pudo generar la recomendacion de valorizados no ABC: " + (error?.message || error));
+        } finally {
+            setNonAbcValueRecommendationsLoading(false);
         }
     }
 
@@ -7964,7 +8080,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         <button
                                             type="button"
                                             onClick={loadAssignmentRecommendations}
-                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-40"
                                         >
                                             {assignRecommendationsLoading ? "Calculando..." : "Recomendar 30 codigos"}
@@ -7975,13 +8091,24 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         <button
                                             type="button"
                                             onClick={loadSalesAssignmentRecommendations}
-                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-40"
                                         >
                                             {salesRecommendationsLoading ? "Calculando ventas..." : "Recomendar 30 más vendidos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
                                             Último mes calendario, ordenados por venta valorizada de mayor a menor
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={loadNonAbcValueAssignmentRecommendations}
+                                            disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
+                                            className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-xs font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-40"
+                                        >
+                                            {nonAbcValueRecommendationsLoading ? "Calculando valorizados..." : "Recomendar 30 valorizados no ABC"}
+                                        </button>
+                                        <span className="text-xs font-semibold text-slate-500">
+                                            Mayor valorizado con rotación distinta de A, B o C
                                         </span>
                                     </div>
                                     {assignSearchNotice && (
