@@ -40,7 +40,7 @@ type ResumenModuleProps = {
   observationDrafts: Record<string, string>;
   isSelectedSessionFinished: boolean;
   onGenerateGeneralInventoryReport: () => void;
-  onGenerateInventoryCategoryReport: () => void;
+  onGenerateInventoryCategoryReport: () => void | Promise<void>;
   onExportSummary: () => void;
   onSummaryQueryChange: (value: string) => void;
   onSummaryPageChange: (page: number) => void;

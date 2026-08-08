@@ -5928,6 +5928,13 @@ export default function InventariosPage() {
   async function markSummaryAsNonInventory(row: SummaryRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!selectedSessionId) return;
+    const confirmed = window.confirm(
+      `Vas a marcar ${row.sku} como "No inventariable".\n\n` +
+      "El codigo se excluira de los KPIs y del resumen de esta sesion. " +
+      "Esta accion no modifica el stock ERP, pero requiere reversarla manualmente si fue un error.\n\n" +
+      "¿Deseas continuar?"
+    );
+    if (!confirmed) return;
     const { error } = await supabase
       .from("general_inventory_non_inventory_products")
       .upsert({
