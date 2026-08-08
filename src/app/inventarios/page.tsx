@@ -6242,6 +6242,15 @@ export default function InventariosPage() {
     };
     const exhibitedZones = new Set(["TIENDA", "PISO_VENTA", "PISO_VENTA (1)", "PISO_VENTA (2)", "PASILLO_VENTA"]);
     const isExhibitedZone = (zone: string) => exhibitedZones.has(zone);
+    const isDiamanteSession = String(selectedSession.store_name || "").toUpperCase().includes("DIAMANTE");
+    const diamanteExhibitedLocations = new Set(["09", "174", "200", "20O"]);
+    const reportZoneForLocation = (rawZone: unknown, rawLocationCode: unknown) => {
+      const zone = normalizeReportZone(rawZone);
+      const locationKey = locationZoneKey(normalizeLocationCode(String(rawLocationCode || "")));
+      if (isDiamanteSession && zone === "SIN ZONA" && diamanteExhibitedLocations.has(locationKey)) return "TIENDA";
+      // A counted product without a zone in the ticket control is treated as warehouse.
+      return zone === "SIN ZONA" ? "ALMACEN" : zone;
+    };
     const [ticketLocationRows, countedLocationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "id,location_code,zone,is_active", selectedSession.id, "location_code"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,location_id,location_code", selectedSession.id, "sku"),
@@ -6250,7 +6259,7 @@ export default function InventariosPage() {
     const zoneByLocationId = new Map<string, string>();
     const zoneByLocationCode = new Map<string, string>();
     for (const row of activeTicketLocations) {
-      const zone = normalizeReportZone(row.zone);
+      const zone = reportZoneForLocation(row.zone, row.location_code || row.ticket);
       const locationId = String(row.id || "").trim();
       const locationCode = normalizeLocationCode(String(row.location_code || row.ticket || ""));
       if (locationId) zoneByLocationId.set(locationId, zone);
@@ -6289,8 +6298,11 @@ export default function InventariosPage() {
     const codesNotExhibited = [...zonesByProduct.values()].filter(zones => zones.size > 0 && ![...zones].some(isExhibitedZone)).length;
     const codesWithoutZone = Math.max(0, summary.length - codesExhibited - codesNotExhibited);
     const codesWithKnownZone = codesExhibited + codesNotExhibited;
-    const ticketLocationsOutsideStoreZone = activeTicketLocations.filter(row => !isExhibitedZone(normalizeReportZone(row.zone))).length;
+    const ticketLocationsOutsideStoreZone = activeTicketLocations.filter(row => !isExhibitedZone(reportZoneForLocation(row.zone, row.location_code || row.ticket))).length;
     const ticketLocationsWithoutZone = activeTicketLocations.filter(row => !String(row.zone || "").trim()).length;
+    const ticketLocationsBlankAsWarehouse = activeTicketLocations.filter(row =>
+      !String(row.zone || "").trim() && reportZoneForLocation(row.zone, row.location_code || row.ticket) === "ALMACEN"
+    ).length;
     const zoneTableRows = zoneRows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
@@ -6300,7 +6312,7 @@ export default function InventariosPage() {
     `).join("");
     const zoneControlNote = activeTicketLocations.length === 0
       ? "No se encontró control de tickets cargado para este inventario. Los códigos quedan identificados como SIN ZONA."
-      : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} tienen una zona no exhibida${ticketLocationsWithoutZone > 0 ? `, incluyendo ${number2(ticketLocationsWithoutZone)} sin zona en la segunda columna` : ""}.`;
+      : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} se clasifican como no exhibidas${ticketLocationsBlankAsWarehouse > 0 ? `, incluyendo ${number2(ticketLocationsBlankAsWarehouse)} sin zona clasificadas como ALMACEN` : ""}${isDiamanteSession ? ". En Diamante, las ubicaciones 09, 174 y 200/20O se clasifican como exhibidas." : ""}${ticketLocationsWithoutZone > ticketLocationsBlankAsWarehouse ? ` Quedan ${number2(ticketLocationsWithoutZone - ticketLocationsBlankAsWarehouse)} ubicaciones sin zona con una regla especial.` : ""}`;
     const topOutsideStoreRows = summary
       .map(row => {
         const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
@@ -6646,7 +6658,7 @@ export default function InventariosPage() {
   </table>
 
   <h2>Distribucion de codigos exhibidos y no exhibidos</h2>
-  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. Se consideran exhibidos TIENDA, PISO_Venta, PISO_Venta (1), PISO_Venta (2) y Pasillo_Venta. Si un codigo aparece en cualquiera de esas zonas, aunque tambien figure en otros almacenes, es exhibido. Si solo aparece en otras zonas, es no exhibido; los codigos sin zona se mantienen sin clasificar.</p>
+  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. Se consideran exhibidos TIENDA, PISO_Venta, PISO_Venta (1), PISO_Venta (2) y Pasillo_Venta. Si un codigo aparece en cualquiera de esas zonas, aunque tambien figure en otros almacenes, es exhibido. Si solo aparece en otras zonas, es no exhibido. Los registros contados sin zona se clasifican como ALMACEN; en Diamante, las ubicaciones 09, 174 y 200/20O se consideran exhibidas.</p>
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
     <tr>
     ${metricCard("Codigos exhibidos", number2(codesExhibited), "ok")}
