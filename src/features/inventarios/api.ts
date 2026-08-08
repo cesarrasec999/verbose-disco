@@ -284,6 +284,11 @@ function sessionRotationPeriod(session: InventorySession | null | undefined) {
   return `${year}-${month}-01`;
 }
 
+function currentMonthStartPeriod() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 export async function fetchProductRotationsForSession(
   supabase: SupabaseLike,
   params: {
@@ -297,14 +302,31 @@ export async function fetchProductRotationsForSession(
   const storeKeys = rotationStoreKeysForSession(params.session, params.stores);
   if (cleanSkus.length === 0 || storeKeys.length === 0) return rotations;
 
+  // El mes en curso todavía está incompleto. Para reportes de inventario se
+  // debe usar el último período mensual cerrado, sin mezclar categorías
+  // parciales que aún están recalculándose en ERP.
+  const currentPeriod = currentMonthStartPeriod();
+  const sessionPeriod = sessionRotationPeriod(params.session);
+  const { data: periodRows, error: periodError } = await supabase
+    .from("product_rotation_monthly")
+    .select("period_month")
+    .in("store_key", storeKeys)
+    .lt("period_month", currentPeriod)
+    .lte("period_month", sessionPeriod)
+    .order("period_month", { ascending: false })
+    .limit(1);
+  if (periodError) throw periodError;
+  const completePeriod = periodRows?.[0]?.period_month ? String(periodRows[0].period_month) : null;
+  if (!completePeriod) return rotations;
+
   for (let i = 0; i < cleanSkus.length; i += 500) {
     const { data, error } = await supabase
       .from("product_rotation_monthly")
       .select("product_code,rotation_category,period_month,store_key")
       .in("store_key", storeKeys)
       .in("product_code", cleanSkus.slice(i, i + 500))
-      .lte("period_month", sessionRotationPeriod(params.session))
-      .order("period_month", { ascending: false });
+      .eq("period_month", completePeriod)
+      .order("product_code", { ascending: true });
     if (error) throw error;
     for (const row of data || []) {
       const sku = normalizeCode(row.product_code).toUpperCase();
