@@ -316,12 +316,10 @@ export default function InventariosPage() {
   // lectura normal de la cámara.
   const iosFrameBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
-  const scannerPhotoInputRef = useRef<HTMLInputElement>(null);
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
   const iosFrameScanTimerRef = useRef<number | null>(null);
-  const [iosPhotoLoading, setIosPhotoLoading] = useState(false);
   const scannerContainerId = "inventory-scanner";
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
@@ -1699,37 +1697,6 @@ export default function InventariosPage() {
 
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
     return blob ? new File([blob], `${crop.name}.png`, { type: "image/png" }) : null;
-  }
-
-  async function decodeIosPhoto(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !scannerTargetRef.current) return;
-    setIosPhotoLoading(true);
-    try {
-      const { readBarcodes } = await import("zxing-wasm/reader");
-      const results = await readBarcodes(file, {
-        formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE", "QRCode"],
-        tryHarder: true,
-        tryRotate: true,
-        tryInvert: true,
-        maxNumberOfSymbols: 3,
-        textMode: "Plain",
-      });
-      const decodedText = results.find(result => result.isValid && result.text.trim())?.text.trim();
-      if (!decodedText) {
-        setMessage("No se detectó un código. Acerca la etiqueta y vuelve a tomar la foto.");
-        return;
-      }
-      const target = scannerTargetRef.current;
-      const activeRecountScanId = activeRecountScanIdRef.current;
-      await stopScanner();
-      await applyScannedValue(decodedText, target, activeRecountScanId);
-    } catch (error: any) {
-      setMessage("No se pudo decodificar la foto: " + (error?.message || error));
-    } finally {
-      setIosPhotoLoading(false);
-    }
   }
 
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
@@ -9005,27 +8972,6 @@ export default function InventariosPage() {
                 </div>
               )}
             </div>
-            {isIosDevice() && (
-              <div className="mt-3 space-y-2">
-                <input
-                  ref={scannerPhotoInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={decodeIosPhoto}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => scannerPhotoInputRef.current?.click()}
-                  disabled={iosPhotoLoading}
-                  className="w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-50"
-                >
-                  {iosPhotoLoading ? "Decodificando foto..." : "Tomar foto del código"}
-                </button>
-                <p className="text-center text-xs text-slate-500">Si Safari no lee en vivo, toma una foto cercana y bien iluminada.</p>
-              </div>
-            )}
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
             </button>
