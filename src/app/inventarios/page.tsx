@@ -1555,7 +1555,8 @@ export default function InventariosPage() {
   async function startHtml5Scanner(isCancelled: () => boolean) {
     const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
     if (isCancelled()) return;
-    const scanner = isIosDevice()
+    const isIos = isIosDevice();
+    const scanner = isIos
       ? new Html5Qrcode(scannerContainerId, {
         verbose: false,
         useBarCodeDetectorIfSupported: false,
@@ -1569,23 +1570,24 @@ export default function InventariosPage() {
           Html5QrcodeSupportedFormats.ITF,
           Html5QrcodeSupportedFormats.UPC_A,
           Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE,
         ],
       })
       : new Html5Qrcode(scannerContainerId);
     scannerRef.current = scanner;
     scannerBusyRef.current = false;
-    const isIos = isIosDevice();
     const scanConfig = isIos
       ? {
-        fps: 10,
-        qrbox: { width: 300, height: 180 },
+        // En iPhone el código puede quedar fuera del recuadro pequeño.
+        fps: 12,
+        qrbox: { width: 360, height: 260 },
         aspectRatio: 1.6,
         disableFlip: true,
         videoConstraints: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 },
-          frameRate: { ideal: 24, max: 30 },
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          frameRate: { ideal: 15, max: 24 },
         },
       }
       : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
@@ -1625,11 +1627,11 @@ export default function InventariosPage() {
       const { readBarcodes } = await import("zxing-wasm/reader");
       for (const file of frameFiles) {
         const results = await readBarcodes(file, {
-          formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE"],
+          formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE", "QRCode"],
           tryHarder: true,
           tryRotate: true,
           tryInvert: true,
-          tryDownscale: false,
+          tryDownscale: true,
           minLineCount: 1,
           maxNumberOfSymbols: 3,
           textMode: "Plain",
@@ -1653,10 +1655,12 @@ export default function InventariosPage() {
   async function buildIosFrameScanFiles(video: HTMLVideoElement) {
     const width = video.videoWidth;
     const height = video.videoHeight;
-    const box = { sx: width * 0.04, sy: height * 0.28, sw: width * 0.92, sh: height * 0.44 };
+    // No limitar la captura a la franja central: en Safari el vídeo puede
+    // mostrarse recortado y el código puede estar arriba o abajo del visor.
+    const box = { sx: width * 0.02, sy: height * 0.04, sw: width * 0.96, sh: height * 0.92 };
     const crops = [
-      { name: "box-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 1.55, contrast: 1.55 },
-      { name: "box-center", sx: box.sx, sy: box.sy + box.sh * 0.22, sw: box.sw, sh: box.sh * 0.56, scale: 2.1, contrast: 1.85 },
+      { name: "frame-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 1.25, contrast: 1.15 },
+      { name: "frame-center", sx: box.sx, sy: box.sy + box.sh * 0.18, sw: box.sw, sh: box.sh * 0.64, scale: 1.7, contrast: 1.45 },
     ];
     const files: File[] = [];
     for (const crop of crops) {
@@ -1702,7 +1706,7 @@ export default function InventariosPage() {
     try {
       const { readBarcodes } = await import("zxing-wasm/reader");
       const results = await readBarcodes(file, {
-        formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE"],
+        formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE", "QRCode"],
         tryHarder: true,
         tryRotate: true,
         tryInvert: true,
