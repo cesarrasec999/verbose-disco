@@ -6294,6 +6294,29 @@ export default function InventariosPage() {
     const zoneControlNote = activeTicketLocations.length === 0
       ? "No se encontró control de tickets cargado para este inventario. Los códigos quedan identificados como SIN ZONA."
       : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} tienen una zona distinta de TIENDA${ticketLocationsWithoutZone > 0 ? `, incluyendo ${number2(ticketLocationsWithoutZone)} sin zona en la segunda columna` : ""}.`;
+    const topOutsideStoreRows = summary
+      .map(row => {
+        const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+        return {
+          row,
+          zone: zoneBySummaryProduct.get(productKey) || "SIN ZONA",
+          inventoryValue: Number(row.counted || 0) * Number(row.cost || 0),
+        };
+      })
+      .filter(item => item.zone !== "TIENDA")
+      .sort((a, b) => b.inventoryValue - a.inventoryValue || a.row.sku.localeCompare(b.row.sku))
+      .slice(0, 20);
+    const topOutsideStoreTableRows = topOutsideStoreRows.map((item, index) => `
+      <tr>
+        <td class="num">${index + 1}</td>
+        <td>${escapeHtml(item.row.sku)}</td>
+        <td class="oneLine">${escapeHtml(item.row.description)}</td>
+        <td>${escapeHtml(item.zone)}</td>
+        <td class="num">${number2(item.row.counted)}</td>
+        <td class="num">${money(item.row.cost)}</td>
+        <td class="num warn">${money(item.inventoryValue)}</td>
+      </tr>
+    `).join("");
 
     type GroupRow = {
       name: string;
@@ -6538,22 +6561,6 @@ export default function InventariosPage() {
     </tr>
   </table>
 
-  <h2>Distribucion de codigos por zona</h2>
-  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. En inventarios antiguos sin control cargado se muestra SIN ZONA. Cada codigo se cuenta una sola vez; si aparece en varias zonas se identifica como MULTIPLES ZONAS.</p>
-  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
-    <tr>
-    ${metricCard("Codigos en TIENDA", number2(zoneCounts.get("TIENDA") || 0), "ok")}
-    ${metricCard("Codigos fuera de TIENDA", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
-    ${metricCard("% en TIENDA", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`)}
-    ${metricCard("Ubicaciones fuera de TIENDA", number2(ticketLocationsOutsideStoreZone), ticketLocationsOutsideStoreZone > 0 ? "warn" : "ok")}
-    </tr>
-  </table>
-  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Codigos fuera de la zona TIENDA:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
-  <table>
-    <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
-    <tbody>${zoneTableRows}</tbody>
-  </table>
-
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 12px;border-collapse:collapse;">
     <tr>
       <td style="padding:4px;width:50%;vertical-align:top;">
@@ -6627,6 +6634,29 @@ export default function InventariosPage() {
   <table>
     <thead><tr><th>Categoria</th><th class="num">Codigos</th><th class="num">Contados</th><th class="num">OK</th><th class="num">Falt.</th><th class="num">Sobr.</th><th class="num">ERI</th><th class="num">Av. val.</th><th class="num">Faltante S/</th><th class="num">Sobrante S/</th></tr></thead>
     <tbody>${tableRows(deptRows)}</tbody>
+  </table>
+
+  <h2>Distribucion de codigos por zona</h2>
+  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. En inventarios antiguos sin control cargado se muestra SIN ZONA. Cada codigo se cuenta una sola vez; si aparece en varias zonas se identifica como MULTIPLES ZONAS.</p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
+    <tr>
+    ${metricCard("Codigos en TIENDA", number2(zoneCounts.get("TIENDA") || 0), "ok")}
+    ${metricCard("Codigos fuera de TIENDA", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
+    ${metricCard("% en TIENDA", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`)}
+    ${metricCard("Ubicaciones fuera de TIENDA", number2(ticketLocationsOutsideStoreZone), ticketLocationsOutsideStoreZone > 0 ? "warn" : "ok")}
+    </tr>
+  </table>
+  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Codigos fuera de la zona TIENDA:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
+  <table>
+    <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
+    <tbody>${zoneTableRows}</tbody>
+  </table>
+
+  <h2>Top 20 codigos fuera de TIENDA por valorizado contado</h2>
+  <p class="muted" style="margin:0 0 7px;line-height:1.45;">Ordenado de mayor a menor por valorizado contado: costo unitario multiplicado por la cantidad sumada del inventario.</p>
+  <table>
+    <thead><tr><th style="width:30px" class="num">#</th><th style="width:78px">Codigo</th><th>Descripcion</th><th style="width:90px">Zona</th><th class="num" style="width:62px">Contado</th><th class="num" style="width:62px">Costo</th><th class="num" style="width:85px">Valorizado contado</th></tr></thead>
+    <tbody>${topOutsideStoreTableRows || `<tr><td colspan="7" class="muted">No hay codigos fuera de TIENDA.</td></tr>`}</tbody>
   </table>
   <div class="analystSign">
     Atentamente,<br>
