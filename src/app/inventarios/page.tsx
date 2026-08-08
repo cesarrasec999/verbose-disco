@@ -6214,7 +6214,7 @@ export default function InventariosPage() {
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
   }
 
-  function generateInventoryCategoryReport() {
+  async function generateInventoryCategoryReport() {
     if (!selectedSession) {
       setMessage("Selecciona un inventario para generar el Reporte IG.");
       return;
@@ -6223,6 +6223,77 @@ export default function InventariosPage() {
       setMessage("Carga o actualiza el resumen antes de generar el Reporte IG.");
       return;
     }
+
+    // Abrimos la ventana dentro del gesto del usuario para evitar que el
+    // navegador bloquee el informe mientras cargamos el control de tickets.
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setMessage("El navegador bloqueo el Reporte IG. Permite ventanas emergentes.");
+      return;
+    }
+    reportWindow.document.write("<p style=\"font-family:Arial;padding:24px\">Preparando Reporte IG...</p>");
+    reportWindow.document.close();
+    setMessage("Preparando Reporte IG y analizando zonas del control de tickets...");
+
+    type ZoneCountRow = { name: string; codes: number; percentage: number };
+    const normalizeReportZone = (value: unknown) => {
+      const normalized = String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+      return normalized || "SIN ZONA";
+    };
+    const [ticketLocationRows, countedLocationRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_locations", "id,location_code,zone,is_active", selectedSession.id, "location_code"),
+      loadPagedSessionRows("general_inventory_counts", "product_id,sku,location_id,location_code", selectedSession.id, "sku"),
+    ]);
+    const activeTicketLocations = ticketLocationRows.filter(row => row.is_active !== false);
+    const zoneByLocationId = new Map<string, string>();
+    const zoneByLocationCode = new Map<string, string>();
+    for (const row of activeTicketLocations) {
+      const zone = normalizeReportZone(row.zone);
+      const locationId = String(row.id || "").trim();
+      const locationCode = normalizeLocationCode(String(row.location_code || row.ticket || ""));
+      if (locationId) zoneByLocationId.set(locationId, zone);
+      if (locationCode) zoneByLocationCode.set(locationCode, zone);
+    }
+    const zonesByProduct = new Map<string, Set<string>>();
+    for (const row of countedLocationRows) {
+      const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+      if (!productKey) continue;
+      const locationId = String(row.location_id || "").trim();
+      const locationCode = normalizeLocationCode(String(row.location_code || ""));
+      const zone = (locationId && zoneByLocationId.get(locationId)) || (locationCode && zoneByLocationCode.get(locationCode)) || "SIN ZONA";
+      const zones = zonesByProduct.get(productKey) || new Set<string>();
+      zones.add(zone);
+      zonesByProduct.set(productKey, zones);
+    }
+    const zoneBySummaryProduct = new Map<string, string>();
+    for (const row of summary) {
+      const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+      const zones = zonesByProduct.get(productKey);
+      const zone = !zones || zones.size === 0
+        ? "SIN ZONA"
+        : zones.size === 1
+          ? [...zones][0]
+          : "MULTIPLES ZONAS";
+      zoneBySummaryProduct.set(productKey, zone);
+    }
+    const zoneCounts = new Map<string, number>();
+    for (const zone of zoneBySummaryProduct.values()) zoneCounts.set(zone, (zoneCounts.get(zone) || 0) + 1);
+    const zoneRows: ZoneCountRow[] = [...zoneCounts.entries()]
+      .map(([name, codes]) => ({ name, codes, percentage: summary.length > 0 ? (codes / summary.length) * 100 : 0 }))
+      .sort((a, b) => b.codes - a.codes || a.name.localeCompare(b.name));
+    const codesOutsideStoreZone = [...zoneBySummaryProduct.values()].filter(zone => zone !== "TIENDA").length;
+    const ticketLocationsOutsideStoreZone = activeTicketLocations.filter(row => normalizeReportZone(row.zone) !== "TIENDA").length;
+    const ticketLocationsWithoutZone = activeTicketLocations.filter(row => !String(row.zone || "").trim()).length;
+    const zoneTableRows = zoneRows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="num">${number2(row.codes)}</td>
+        <td class="num">${row.percentage.toFixed(2)}%</td>
+      </tr>
+    `).join("");
+    const zoneControlNote = activeTicketLocations.length === 0
+      ? "No se encontró control de tickets cargado para este inventario. Los códigos quedan identificados como SIN ZONA."
+      : `${number2(activeTicketLocations.length)} ubicaciones activas del control de tickets; ${number2(ticketLocationsOutsideStoreZone)} tienen una zona distinta de TIENDA${ticketLocationsWithoutZone > 0 ? `, incluyendo ${number2(ticketLocationsWithoutZone)} sin zona en la segunda columna` : ""}.`;
 
     type GroupRow = {
       name: string;
@@ -6467,6 +6538,22 @@ export default function InventariosPage() {
     </tr>
   </table>
 
+  <h2>Distribucion de codigos por zona</h2>
+  <p class="muted" style="margin:0 0 7px;line-height:1.45;">La zona se toma de la segunda columna del control de tickets. En inventarios antiguos sin control cargado se muestra SIN ZONA. Cada codigo se cuenta una sola vez; si aparece en varias zonas se identifica como MULTIPLES ZONAS.</p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0;border-collapse:collapse;">
+    <tr>
+    ${metricCard("Codigos en TIENDA", number2(zoneCounts.get("TIENDA") || 0), "ok")}
+    ${metricCard("Codigos fuera de TIENDA", number2(codesOutsideStoreZone), codesOutsideStoreZone > 0 ? "bad" : "ok")}
+    ${metricCard("% en TIENDA", `${(totalCodes > 0 ? ((zoneCounts.get("TIENDA") || 0) / totalCodes) * 100 : 0).toFixed(2)}%`)}
+    ${metricCard("Ubicaciones fuera de TIENDA", number2(ticketLocationsOutsideStoreZone), ticketLocationsOutsideStoreZone > 0 ? "warn" : "ok")}
+    </tr>
+  </table>
+  <div class="noteBox"><strong>Control de tickets:</strong> ${escapeHtml(zoneControlNote)}<br><strong>Codigos fuera de la zona TIENDA:</strong> ${number2(codesOutsideStoreZone)} de ${number2(totalCodes)} (${(totalCodes > 0 ? (codesOutsideStoreZone / totalCodes) * 100 : 0).toFixed(2)}%).</div>
+  <table>
+    <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
+    <tbody>${zoneTableRows}</tbody>
+  </table>
+
   <table width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 12px;border-collapse:collapse;">
     <tr>
       <td style="padding:4px;width:50%;vertical-align:top;">
@@ -6552,11 +6639,6 @@ export default function InventariosPage() {
 </body>
 </html>`;
 
-    const reportWindow = window.open("", "_blank");
-    if (!reportWindow) {
-      setMessage("El navegador bloqueo la ventana del reporte. Permite ventanas emergentes e intenta otra vez.");
-      return;
-    }
     reportWindow.document.open();
     reportWindow.document.write(html);
     reportWindow.document.close();
