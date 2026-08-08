@@ -6319,12 +6319,12 @@ export default function InventariosPage() {
       .filter(item => item.hasKnownZone && !item.isExhibited)
       .sort((a, b) => b.inventoryValue - a.inventoryValue || a.row.sku.localeCompare(b.row.sku))
       .slice(0, 20);
-    const topOutsideStoreTableRows = topOutsideStoreRows.map((item, index) => `
+    const topOutsideStoreTableRows = topOutsideStoreRows.map(item => `
       <tr>
-        <td class="num">${index + 1}</td>
         <td>${escapeHtml(item.row.sku)}</td>
         <td class="oneLine">${escapeHtml(item.row.description)}</td>
         <td>${escapeHtml(item.zone)}</td>
+        <td>${escapeHtml(item.row.unit || "-")}</td>
         <td class="num">${number2(item.row.counted)}</td>
         <td class="num">${money(item.row.cost)}</td>
         <td class="num warn">${money(item.inventoryValue)}</td>
@@ -6666,7 +6666,7 @@ export default function InventariosPage() {
   <h2>Top 20 codigos no exhibidos por valorizado contado</h2>
   <p class="muted" style="margin:0 0 7px;line-height:1.45;">Ordenado de mayor a menor por valorizado contado: costo unitario multiplicado por la cantidad sumada del inventario.</p>
   <table>
-    <thead><tr><th style="width:30px" class="num">#</th><th style="width:78px">Codigo</th><th>Descripcion</th><th style="width:90px">Zona</th><th class="num" style="width:62px">Contado</th><th class="num" style="width:62px">Costo</th><th class="num" style="width:85px">Valorizado contado</th></tr></thead>
+    <thead><tr><th style="width:78px">Codigo</th><th>Descripcion</th><th style="width:90px">Zona</th><th style="width:62px">Unidad</th><th class="num" style="width:62px">Contado</th><th class="num" style="width:62px">Costo</th><th class="num" style="width:85px">Valorizado contado</th></tr></thead>
     <tbody>${topOutsideStoreTableRows || `<tr><td colspan="7" class="muted">No hay codigos fuera de TIENDA.</td></tr>`}</tbody>
   </table>
   <div class="analystSign">
