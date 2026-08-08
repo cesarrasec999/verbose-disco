@@ -6386,6 +6386,24 @@ export default function InventariosPage() {
     const deptRows = aggregateBy("department");
     const rotationRows = aggregateBy("rotation_category");
     const totalCodes = summary.length;
+    const nonExhibitedCategoryCounts = new Map<string, number>();
+    for (const row of summary) {
+      const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+      const zones = zonesByProduct.get(productKey) || new Set<string>(["ALMACEN"]);
+      if ([...zones].some(isExhibitedZone)) continue;
+      const category = String(row.department || "SIN CATEGORIA").trim() || "SIN CATEGORIA";
+      nonExhibitedCategoryCounts.set(category, (nonExhibitedCategoryCounts.get(category) || 0) + 1);
+    }
+    const nonExhibitedCategoryRows = [...nonExhibitedCategoryCounts.entries()]
+      .map(([category, codes]) => ({ category, codes, percentage: totalCodes > 0 ? (codes / totalCodes) * 100 : 0 }))
+      .sort((a, b) => b.codes - a.codes || a.category.localeCompare(b.category));
+    const nonExhibitedCategoryTableRows = nonExhibitedCategoryRows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.category)}</td>
+        <td class="num">${number2(row.codes)}</td>
+        <td class="num">${row.percentage.toFixed(2)}%</td>
+      </tr>
+    `).join("");
     const totalDiffCodes = summary.filter(row => row.diff !== 0).length;
     const originallyCountedCodes = summary.filter(row => row.counted_original > 0).length;
     const recountedCodes = summary.filter(row => row.diff !== 0 && row.recount_status === "counted").length;
@@ -6661,6 +6679,12 @@ export default function InventariosPage() {
   <table>
     <thead><tr><th>Zona</th><th class="num">Codigos</th><th class="num">% del total de codigos</th></tr></thead>
     <tbody>${zoneTableRows}</tbody>
+  </table>
+
+  <h2>Categorias no exhibidas</h2>
+  <table>
+    <thead><tr><th>Categoria</th><th class="num">Codigos no exhibidos</th><th class="num">% del total de codigos</th></tr></thead>
+    <tbody>${nonExhibitedCategoryTableRows || `<tr><td colspan="3" class="muted">No hay categorias con codigos no exhibidos.</td></tr>`}</tbody>
   </table>
 
   <h2>Top 20 codigos no exhibidos por valorizado contado</h2>
