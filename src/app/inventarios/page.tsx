@@ -18,6 +18,7 @@ import {
   fetchNonInventorySkuSetForProducts,
   fetchOperatorCountsPage,
   fetchPagedSessionRows,
+  fetchProductSkusByBarcode,
   fetchProductCategories,
   fetchProductRotationsForSession,
   fetchStockGeneralBySkuForSession,
@@ -215,6 +216,7 @@ export default function InventariosPage() {
   const [operatorRecordsLoading, setOperatorRecordsLoading] = useState(false);
   const [countedLocationCodes, setCountedLocationCodes] = useState<string[]>([]);
   const [recordsQuery, setRecordsQuery] = useState("");
+  const [recordsBarcodeSearch, setRecordsBarcodeSearch] = useState<{ query: string; skus: string[] } | null>(null);
   const [recordsOperatorFilter, setRecordsOperatorFilter] = useState("");
   const [recordsZoneFilter, setRecordsZoneFilter] = useState("");
   const [locationCode, setLocationCode] = useState("");
@@ -258,6 +260,7 @@ export default function InventariosPage() {
   const [refreshingNonOkStock, setRefreshingNonOkStock] = useState(false);
   const [summaryHasPendingChanges, setSummaryHasPendingChanges] = useState(false);
   const [summaryQuery, setSummaryQuery] = useState("");
+  const [summaryBarcodeSearch, setSummaryBarcodeSearch] = useState<{ query: string; skus: string[] } | null>(null);
   const [summaryPage, setSummaryPage] = useState(1);
   const [validatorRecordsPage, setValidatorRecordsPage] = useState(1);
   const [pendingRecountPage, setPendingRecountPage] = useState(1);
@@ -357,6 +360,50 @@ export default function InventariosPage() {
   }, [recordsQuery, operator?.id]);
 
   useEffect(() => {
+    const query = normalizeCode(recordsQuery).toUpperCase();
+    if (!/^\d+$/.test(query) || !selectedSessionId) {
+      setRecordsBarcodeSearch(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchProductSkusByBarcode(supabase, query)
+        .then(skus => {
+          if (!cancelled) setRecordsBarcodeSearch({ query, skus });
+        })
+        .catch(() => {
+          if (!cancelled) setRecordsBarcodeSearch({ query, skus: [] });
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [recordsQuery, selectedSessionId]);
+
+  useEffect(() => {
+    const query = normalizeCode(summaryQuery).toUpperCase();
+    if (!/^\d+$/.test(query) || !selectedSessionId) {
+      setSummaryBarcodeSearch(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchProductSkusByBarcode(supabase, query)
+        .then(skus => {
+          if (!cancelled) setSummaryBarcodeSearch({ query, skus });
+        })
+        .catch(() => {
+          if (!cancelled) setSummaryBarcodeSearch({ query, skus: [] });
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [summaryQuery, selectedSessionId]);
+
+  useEffect(() => {
     if (!selectedSessionId || !operator?.id || isValidator || operatorMode !== "conteo") return;
     const timer = window.setTimeout(() => {
       void loadRecordsData(selectedSessionId, operator.id);
@@ -452,10 +499,11 @@ export default function InventariosPage() {
 
   const filteredCounts = useMemo(() => {
     const q = recordsQuery.trim();
+    const barcodeSkus = recordsBarcodeSearch?.query === normalizeCode(q).toUpperCase() ? new Set(recordsBarcodeSearch.skus) : null;
     const rows = counts.filter(row =>
       (!recordsOperatorFilter || row.operator_id === recordsOperatorFilter) &&
       (!recordsZoneFilter || locationZoneKey(row.location_code) === recordsZoneFilter) &&
-      recordMatchesQuery(row, q)
+      (recordMatchesQuery(row, q) || Boolean(barcodeSkus?.has(normalizeCode(row.sku).toUpperCase())))
     );
     return [...rows].sort((a, b) => {
       if (recordsSort.key === "location_code") {
@@ -469,7 +517,7 @@ export default function InventariosPage() {
         b[recordsSort.key];
       return compareValues(left ?? "", right ?? "", recordsSort.direction);
     });
-  }, [counts, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter]);
+  }, [counts, recordsBarcodeSearch, recordsOperatorFilter, recordsQuery, recordsSort, recordsZoneFilter]);
 
   const operatorRecordsTotalPages = Math.max(1, Math.ceil(operatorRecordsTotal / OPERATOR_RECORDS_PAGE_SIZE));
   const operatorRecordsFrom = operatorRecordsTotal === 0 ? 0 : ((operatorRecordsPage - 1) * OPERATOR_RECORDS_PAGE_SIZE) + 1;
@@ -601,18 +649,20 @@ export default function InventariosPage() {
 
   const filteredSummary = useMemo(() => {
     const q = summaryQuery.trim().toLowerCase();
+    const barcodeSkus = summaryBarcodeSearch?.query === normalizeCode(q).toUpperCase() ? new Set(summaryBarcodeSearch.skus) : null;
     const rows = summary.filter(row =>
       !q ||
       row.sku.toLowerCase().includes(q) ||
       row.description.toLowerCase().includes(q) ||
-      String(row.observation || "").toLowerCase().includes(q)
+      String(row.observation || "").toLowerCase().includes(q) ||
+      Boolean(barcodeSkus?.has(normalizeCode(row.sku).toUpperCase()))
     );
     return [...rows].sort((a, b) => {
       const left = summarySort.key === "observation" ? String(a.observation || "") : a[summarySort.key] ?? "";
       const right = summarySort.key === "observation" ? String(b.observation || "") : b[summarySort.key] ?? "";
       return compareValues(left, right, summarySort.direction);
     });
-  }, [summary, summaryQuery, summarySort]);
+  }, [summary, summaryBarcodeSearch, summaryQuery, summarySort]);
   const summaryTotalPages = Math.max(1, Math.ceil(filteredSummary.length / SUMMARY_PAGE_SIZE));
   const pagedSummary = useMemo(() => {
     const page = Math.min(summaryPage, summaryTotalPages);
@@ -7888,7 +7938,7 @@ export default function InventariosPage() {
                 </div>
                 <div className="mt-2 flex items-center rounded-xl border px-3 py-2">
                   <Search size={16} className="shrink-0 text-slate-400" />
-                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar codigo, descripcion o ubicacion" className="min-w-0 flex-1 px-2 text-sm outline-none" />
+                  <input value={recordsQuery} onChange={event => setRecordsQuery(event.target.value)} placeholder="Buscar código, UPC/ALU o descripción" className="min-w-0 flex-1 px-2 text-sm outline-none" />
                   {recordsQuery && (
                     <button type="button" onClick={() => setRecordsQuery("")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Limpiar busqueda">
                       <X size={14} />

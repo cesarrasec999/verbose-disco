@@ -169,7 +169,7 @@ export function ResumenModule({
               >
                 Siguiente
               </button>
-              <input value={summaryQuery} onChange={event => onSummaryQueryChange(event.target.value)} placeholder="Buscar codigo, descripcion u observacion" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
+              <input value={summaryQuery} onChange={event => onSummaryQueryChange(event.target.value)} placeholder="Buscar código, UPC/ALU, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
             </div>
           </div>
         </div>

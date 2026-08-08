@@ -111,9 +111,14 @@ export async function fetchOperatorCountsPage(
 
   if (queryText) {
     const term = `%${queryText}%`;
-    request = /^\d+$/.test(queryText)
-      ? request.or(`sku.ilike.${term}`)
-      : request.or(`sku.ilike.${term},description.ilike.${term},location_code.ilike.${term}`);
+    if (/^\d+$/.test(queryText)) {
+      const barcodeSkus = await fetchProductSkusByBarcode(supabase, queryText);
+      request = barcodeSkus.length > 0
+        ? request.in("sku", [...new Set([queryText, ...barcodeSkus])])
+        : request.or(`sku.ilike.${term}`);
+    } else {
+      request = request.or(`sku.ilike.${term},description.ilike.${term},location_code.ilike.${term}`);
+    }
   }
 
   const { data, error, count } = await request;
@@ -126,6 +131,24 @@ export async function fetchOperatorCountsPage(
   })) as CountRow[]);
 
   return { rows, total: Number(count || 0) };
+}
+
+/** Resolves UPC/ALU/product-barcode input to the product SKU used by count rows. */
+export async function fetchProductSkusByBarcode(supabase: SupabaseLike, rawQuery: string): Promise<string[]> {
+  const raw = normalizeCode(rawQuery).toUpperCase();
+  if (!/^\d+$/.test(raw)) return [];
+  const withoutLeadingZeros = raw.replace(/^0+(?=\d)/, "");
+  const variants = [...new Set([raw, withoutLeadingZeros])];
+  const [byUpc, byAlu, byProductBarcode] = await Promise.all([
+    supabase.from("codigos_barra").select("codsap").in("upc", variants).not("codsap", "is", null).limit(100),
+    supabase.from("codigos_barra").select("codsap").in("alu", variants).not("codsap", "is", null).limit(100),
+    supabase.from("cyclic_products").select("sku").in("barcode", variants).eq("is_active", true).limit(100),
+  ]);
+  return [...new Set([
+    ...(byUpc.data || []).map((row: any) => String(row.codsap || "").trim().toUpperCase()),
+    ...(byAlu.data || []).map((row: any) => String(row.codsap || "").trim().toUpperCase()),
+    ...(byProductBarcode.data || []).map((row: any) => String(row.sku || "").trim().toUpperCase()),
+  ].filter(Boolean))];
 }
 
 export async function fetchInventoryNonInventoryRows(
