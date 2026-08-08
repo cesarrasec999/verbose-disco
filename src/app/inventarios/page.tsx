@@ -312,10 +312,12 @@ export default function InventariosPage() {
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
+  const scannerPhotoInputRef = useRef<HTMLInputElement>(null);
   const torchOnRef = useRef(false);
   const activeRecountScanIdRef = useRef<string | null>(null);
   const scannerHistoryRef = useRef(false);
   const iosFrameScanTimerRef = useRef<number | null>(null);
+  const [iosPhotoLoading, setIosPhotoLoading] = useState(false);
   const scannerContainerId = "inventory-scanner";
 
   const canManageInventory = user?.role === "Administrador" || user?.role === "Validador";
@@ -1575,16 +1577,15 @@ export default function InventariosPage() {
     const isIos = isIosDevice();
     const scanConfig = isIos
       ? {
-        fps: 15,
-        qrbox: { width: 380, height: 190 },
+        fps: 10,
+        qrbox: { width: 300, height: 180 },
         aspectRatio: 1.6,
         disableFlip: true,
         videoConstraints: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 3840 },
-          height: { ideal: 2160 },
-          frameRate: { ideal: 30 },
-          resizeMode: "none",
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 24, max: 30 },
         },
       }
       : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
@@ -1601,26 +1602,14 @@ export default function InventariosPage() {
       },
       () => {}
     );
-    if (isIos) {
-      try {
-        await scanner.applyVideoConstraints?.({
-          width: { ideal: 3840 },
-          height: { ideal: 2160 },
-          frameRate: { ideal: 30 },
-          resizeMode: "none",
-        } as MediaTrackConstraints);
-      } catch {
-        // Safari puede rechazar 4K en algunos iPhone; en ese caso mantiene la mejor resolución disponible.
-      }
-      startIosFrameScanner();
-    }
+    if (isIos) startIosFrameScanner();
   }
 
   function startIosFrameScanner() {
     if (iosFrameScanTimerRef.current) window.clearInterval(iosFrameScanTimerRef.current);
     iosFrameScanTimerRef.current = window.setInterval(() => {
       void scanCurrentIosFrame();
-    }, 200);
+    }, 500);
   }
 
   async function scanCurrentIosFrame() {
@@ -1628,11 +1617,11 @@ export default function InventariosPage() {
     const video = document.querySelector<HTMLVideoElement>(`#${scannerContainerId} video`);
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
 
+    scannerBusyRef.current = true;
     try {
       const frameFiles = await buildIosFrameScanFiles(video);
       if (frameFiles.length === 0) return;
 
-      scannerBusyRef.current = true;
       const { readBarcodes } = await import("zxing-wasm/reader");
       for (const file of frameFiles) {
         const results = await readBarcodes(file, {
@@ -1654,8 +1643,9 @@ export default function InventariosPage() {
           return;
         }
       }
-      scannerBusyRef.current = false;
     } catch {
+      // Safari puede rechazar una captura concreta; se reintenta en el siguiente ciclo.
+    } finally {
       scannerBusyRef.current = false;
     }
   }
@@ -1665,12 +1655,8 @@ export default function InventariosPage() {
     const height = video.videoHeight;
     const box = { sx: width * 0.04, sy: height * 0.28, sw: width * 0.92, sh: height * 0.44 };
     const crops = [
-      { name: "box-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 2.4, contrast: 1.8 },
-      { name: "box-top", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
-      { name: "box-upper-middle", sx: box.sx, sy: box.sy + box.sh * 0.18, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
-      { name: "box-center", sx: box.sx, sy: box.sy + box.sh * 0.34, sw: box.sw, sh: box.sh * 0.32, scale: 4.5, contrast: 2.25 },
-      { name: "box-lower-middle", sx: box.sx, sy: box.sy + box.sh * 0.50, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
-      { name: "box-bottom", sx: box.sx, sy: box.sy + box.sh * 0.68, sw: box.sw, sh: box.sh * 0.32, scale: 4.2, contrast: 2.15 },
+      { name: "box-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 1.55, contrast: 1.55 },
+      { name: "box-center", sx: box.sx, sy: box.sy + box.sh * 0.22, sw: box.sw, sh: box.sh * 0.56, scale: 2.1, contrast: 1.85 },
     ];
     const files: File[] = [];
     for (const crop of crops) {
@@ -1685,8 +1671,9 @@ export default function InventariosPage() {
     crop: { name: string; sx: number; sy: number; sw: number; sh: number; scale: number; contrast: number }
   ) {
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(crop.sw * crop.scale));
-    canvas.height = Math.max(1, Math.round(crop.sh * crop.scale));
+    const scale = Math.min(crop.scale, 1600 / Math.max(1, crop.sw));
+    canvas.width = Math.max(1, Math.round(crop.sw * scale));
+    canvas.height = Math.max(1, Math.round(crop.sh * scale));
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return null;
     context.imageSmoothingEnabled = false;
@@ -1705,6 +1692,37 @@ export default function InventariosPage() {
 
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
     return blob ? new File([blob], `${crop.name}.png`, { type: "image/png" }) : null;
+  }
+
+  async function decodeIosPhoto(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !scannerTargetRef.current) return;
+    setIosPhotoLoading(true);
+    try {
+      const { readBarcodes } = await import("zxing-wasm/reader");
+      const results = await readBarcodes(file, {
+        formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE"],
+        tryHarder: true,
+        tryRotate: true,
+        tryInvert: true,
+        maxNumberOfSymbols: 3,
+        textMode: "Plain",
+      });
+      const decodedText = results.find(result => result.isValid && result.text.trim())?.text.trim();
+      if (!decodedText) {
+        setMessage("No se detectó un código. Acerca la etiqueta y vuelve a tomar la foto.");
+        return;
+      }
+      const target = scannerTargetRef.current;
+      const activeRecountScanId = activeRecountScanIdRef.current;
+      await stopScanner();
+      await applyScannedValue(decodedText, target, activeRecountScanId);
+    } catch (error: any) {
+      setMessage("No se pudo decodificar la foto: " + (error?.message || error));
+    } finally {
+      setIosPhotoLoading(false);
+    }
   }
 
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
@@ -8980,6 +8998,27 @@ export default function InventariosPage() {
                 </div>
               )}
             </div>
+            {isIosDevice() && (
+              <div className="mt-3 space-y-2">
+                <input
+                  ref={scannerPhotoInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={decodeIosPhoto}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => scannerPhotoInputRef.current?.click()}
+                  disabled={iosPhotoLoading}
+                  className="w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-black text-white disabled:opacity-50"
+                >
+                  {iosPhotoLoading ? "Decodificando foto..." : "Tomar foto del código"}
+                </button>
+                <p className="text-center text-xs text-slate-500">Si Safari no lee en vivo, toma una foto cercana y bien iluminada.</p>
+              </div>
+            )}
             <button onClick={() => stopScanner()} className="mt-3 w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700">
               Cerrar cámara
             </button>
