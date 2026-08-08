@@ -38,6 +38,8 @@ export type InventorySession = {
   manual_recount_enabled?: boolean | null;
   validation_enabled?: boolean | null;
   finished_at?: string | null;
+  finished_by?: string | null;
+  finished_by_name?: string | null;
   created_at?: string | null;
   frozen_total_value: number;
   notes?: string | null;

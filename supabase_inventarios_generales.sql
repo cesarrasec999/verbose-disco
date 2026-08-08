@@ -33,6 +33,12 @@ alter table general_inventory_sessions
 alter table general_inventory_sessions
   add column if not exists validation_enabled boolean not null default false;
 
+alter table general_inventory_sessions
+  add column if not exists finished_by uuid references cyclic_users(id) on delete set null;
+
+alter table general_inventory_sessions
+  add column if not exists finished_by_name text;
+
 create table if not exists general_inventory_operators (
   id uuid primary key default gen_random_uuid(),
   full_name text not null,

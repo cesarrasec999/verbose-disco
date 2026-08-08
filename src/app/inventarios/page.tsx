@@ -1943,7 +1943,24 @@ export default function InventariosPage() {
       setMessage("No se pudo cargar el reporte. Ejecuta el SQL get_finished_general_inventory_report en Supabase: " + error.message);
       return;
     }
-    setFinishedReportRows((data || []) as FinishedGeneralInventoryReportRow[]);
+    const reportRows = (data || []) as FinishedGeneralInventoryReportRow[];
+    // El RPC histórico no siempre incluye el nombre del usuario que finalizó
+    // la sesión. Lo completamos desde la tabla de sesiones para que el
+    // registro quede visible también en reportes generados con datos nuevos.
+    const sessionIds = [...new Set(reportRows.map(row => row.session_id).filter(Boolean))];
+    const finishedByName = new Map<string, string | null>();
+    for (let index = 0; index < sessionIds.length; index += 500) {
+      const chunk = sessionIds.slice(index, index + 500);
+      const { data: sessionRows } = await supabase
+        .from("general_inventory_sessions")
+        .select("id,finished_by_name")
+        .in("id", chunk);
+      (sessionRows || []).forEach(row => finishedByName.set(String(row.id), row.finished_by_name || null));
+    }
+    setFinishedReportRows(reportRows.map(row => ({
+      ...row,
+      finished_by_name: row.finished_by_name || finishedByName.get(row.session_id) || null,
+    })));
     setFinishedReportPage(1);
     setMessage(`Reporte cargado: ${(data || []).length} inventario(s) finalizado(s).`);
   }
@@ -1958,6 +1975,7 @@ export default function InventariosPage() {
       Tienda: row.store_name || "",
       FechaProgramada: dateOnly(row.scheduled_date),
       Finalizado: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
+      FinalizadoPor: row.finished_by_name || "",
       StockCongelado: row.stock_frozen_at ? new Date(row.stock_frozen_at).toLocaleString("es-PE") : "",
       DuracionMin: Number(row.duration_minutes || 0),
       CodigosTotales: Number(row.total_codes || 0),
@@ -4519,7 +4537,13 @@ export default function InventariosPage() {
     }
     const { error } = await supabase
       .from("general_inventory_sessions")
-      .update({ status: "finished", finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .update({
+        status: "finished",
+        finished_at: new Date().toISOString(),
+        finished_by: user?.id ?? null,
+        finished_by_name: user?.full_name ?? null,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", selectedSessionId);
     if (error) {
       setMessage("No se pudo finalizar: " + error.message);
@@ -4544,7 +4568,7 @@ export default function InventariosPage() {
     if (!confirmed) return;
     const { error } = await supabase
       .from("general_inventory_sessions")
-      .update({ status: nextStatus, finished_at: null, updated_at: new Date().toISOString() })
+      .update({ status: nextStatus, finished_at: null, finished_by: null, finished_by_name: null, updated_at: new Date().toISOString() })
       .eq("id", selectedSessionId);
     if (error) {
       setMessage("No se pudo desfinalizar: " + error.message);
@@ -7132,6 +7156,7 @@ export default function InventariosPage() {
                 <div>{selectedSession.store_name}</div>
                 <div>Estado: {statusLabel(selectedSession.status)}</div>
                 {selectedSession.stock_frozen_at && <div>Stock congelado: {new Date(selectedSession.stock_frozen_at).toLocaleString("es-PE")}</div>}
+                {selectedSession.finished_at && <div>Finalizado: {new Date(selectedSession.finished_at).toLocaleString("es-PE")}{selectedSession.finished_by_name ? ` por ${selectedSession.finished_by_name}` : ""}</div>}
               </div>
             )}
           </section>
@@ -7338,6 +7363,7 @@ export default function InventariosPage() {
                       <th className="border p-2 text-left">Inventario</th>
                       <th className="border p-2 text-left">Tienda</th>
                       <th className="border p-2 text-left">Finalizado</th>
+                      <th className="border p-2 text-left">Finalizado por</th>
                       <th className="border p-2 text-right">Codigos</th>
                       <th className="border p-2 text-right">Contados</th>
                       <th className="border p-2 text-right">OK</th>
@@ -7358,6 +7384,7 @@ export default function InventariosPage() {
                         <td className="border p-2 font-black text-slate-900">{row.inventory_name}</td>
                         <td className="border p-2 font-semibold">{row.store_name || "-"}</td>
                         <td className="border p-2">{row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "-"}</td>
+                        <td className="border p-2">{row.finished_by_name || "-"}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.total_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.counted_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold text-green-700">{number2(Number(row.ok_codes || 0))}</td>
@@ -7378,7 +7405,7 @@ export default function InventariosPage() {
                     ))}
                     {finishedReportRows.length === 0 && (
                       <tr>
-                        <td colSpan={15} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={16} className="p-8 text-center text-sm text-slate-400">
                           Genera el reporte para ver inventarios finalizados.
                         </td>
                       </tr>
@@ -7440,6 +7467,7 @@ export default function InventariosPage() {
                       <div>{selectedSession.store_name}</div>
                       <div>Estado: {statusLabel(selectedSession.status)}</div>
                       {selectedSession.stock_frozen_at && <div>Stock congelado: {new Date(selectedSession.stock_frozen_at).toLocaleString("es-PE")}</div>}
+                      {selectedSession.finished_at && <div>Finalizado: {new Date(selectedSession.finished_at).toLocaleString("es-PE")}{selectedSession.finished_by_name ? ` por ${selectedSession.finished_by_name}` : ""}</div>}
                     </div>
                   )}
                 </section>
