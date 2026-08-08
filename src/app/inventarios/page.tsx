@@ -311,6 +311,10 @@ export default function InventariosPage() {
   const [torchOn, setTorchOn] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
+  // Mantener separado el lector auxiliar de la bandera del callback de
+  // html5-qrcode. Si el WASM tarda o falla en Safari, no debe bloquear la
+  // lectura normal de la cámara.
+  const iosFrameBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
   const scannerPhotoInputRef = useRef<HTMLInputElement>(null);
   const torchOnRef = useRef(false);
@@ -1614,11 +1618,11 @@ export default function InventariosPage() {
   }
 
   async function scanCurrentIosFrame() {
-    if (!scannerTargetRef.current || scannerBusyRef.current) return;
+    if (!scannerTargetRef.current || scannerBusyRef.current || iosFrameBusyRef.current) return;
     const video = document.querySelector<HTMLVideoElement>(`#${scannerContainerId} video`);
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
 
-    scannerBusyRef.current = true;
+    iosFrameBusyRef.current = true;
     try {
       const frameFiles = await buildIosFrameScanFiles(video);
       if (frameFiles.length === 0) return;
@@ -1647,7 +1651,7 @@ export default function InventariosPage() {
     } catch {
       // Safari puede rechazar una captura concreta; se reintenta en el siguiente ciclo.
     } finally {
-      scannerBusyRef.current = false;
+      iosFrameBusyRef.current = false;
     }
   }
 
