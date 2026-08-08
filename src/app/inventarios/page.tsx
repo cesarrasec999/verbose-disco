@@ -6279,9 +6279,8 @@ export default function InventariosPage() {
     const zoneBySummaryProduct = new Map<string, string>();
     for (const row of summary) {
       const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
-      const zones = zonesByProduct.get(productKey) || new Set<string>(["ALMACEN"]);
-      zonesByProduct.set(productKey, zones);
-      const zone = zones.size === 0
+      const zones = zonesByProduct.get(productKey);
+      const zone = !zones || zones.size === 0
         ? "ALMACEN"
         : [...zones].some(isExhibitedZone)
           ? "TIENDA"
@@ -6290,18 +6289,24 @@ export default function InventariosPage() {
             : "MULTIPLES ZONAS";
       zoneBySummaryProduct.set(productKey, zone);
     }
+    const zoneByCountedProduct = new Map<string, string>();
+    for (const [productKey, zones] of zonesByProduct.entries()) {
+      const zone = [...zones].some(isExhibitedZone)
+        ? "TIENDA"
+        : zones.size === 1
+          ? [...zones][0]
+          : "MULTIPLES ZONAS";
+      zoneByCountedProduct.set(productKey, zone);
+    }
     const zoneCounts = new Map<string, number>();
-    for (const zone of zoneBySummaryProduct.values()) zoneCounts.set(zone, (zoneCounts.get(zone) || 0) + 1);
+    for (const zone of zoneByCountedProduct.values()) zoneCounts.set(zone, (zoneCounts.get(zone) || 0) + 1);
+    const countedCodesTotal = zoneByCountedProduct.size;
     const zoneRows: ZoneCountRow[] = [...zoneCounts.entries()]
-      .map(([name, codes]) => ({ name, codes, percentage: summary.length > 0 ? (codes / summary.length) * 100 : 0 }))
+      .map(([name, codes]) => ({ name, codes, percentage: countedCodesTotal > 0 ? (codes / countedCodesTotal) * 100 : 0 }))
       .sort((a, b) => b.codes - a.codes || a.name.localeCompare(b.name));
-    // Use the same summarized code population shown in the zone table. Count rows
-    // that exist only in the location records but not in the inventory summary
-    // separately, so the KPI and table never use different denominators.
-    const summarizedZones = [...zoneBySummaryProduct.values()];
-    const codesExhibited = summarizedZones.filter(isExhibitedZone).length;
-    const codesNotExhibited = summarizedZones.filter(zone => !isExhibitedZone(zone)).length;
-    const codesWithKnownZone = summarizedZones.length;
+    const codesExhibited = [...zoneByCountedProduct.values()].filter(isExhibitedZone).length;
+    const codesNotExhibited = [...zoneByCountedProduct.values()].filter(zone => !isExhibitedZone(zone)).length;
+    const codesWithKnownZone = countedCodesTotal;
     const zoneTableRows = zoneRows.map(row => `
       <tr>
         <td>${escapeHtml(row.name)}</td>
@@ -6390,16 +6395,20 @@ export default function InventariosPage() {
     const deptRows = aggregateBy("department");
     const rotationRows = aggregateBy("rotation_category");
     const totalCodes = summary.length;
-    const nonExhibitedCategoryCounts = new Map<string, number>();
+    const summaryByProductKey = new Map<string, SummaryRow>();
     for (const row of summary) {
       const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
-      const zones = zonesByProduct.get(productKey) || new Set<string>(["ALMACEN"]);
+      if (productKey) summaryByProductKey.set(productKey, row);
+    }
+    const nonExhibitedCategoryCounts = new Map<string, number>();
+    for (const [productKey, zones] of zonesByProduct.entries()) {
       if ([...zones].some(isExhibitedZone)) continue;
-      const category = String(row.department || "SIN CATEGORIA").trim() || "SIN CATEGORIA";
+      const row = summaryByProductKey.get(productKey);
+      const category = String(row?.department || "SIN CATEGORIA").trim() || "SIN CATEGORIA";
       nonExhibitedCategoryCounts.set(category, (nonExhibitedCategoryCounts.get(category) || 0) + 1);
     }
     const nonExhibitedCategoryRows = [...nonExhibitedCategoryCounts.entries()]
-      .map(([category, codes]) => ({ category, codes, percentage: totalCodes > 0 ? (codes / totalCodes) * 100 : 0 }))
+      .map(([category, codes]) => ({ category, codes, percentage: countedCodesTotal > 0 ? (codes / countedCodesTotal) * 100 : 0 }))
       .sort((a, b) => b.codes - a.codes || a.category.localeCompare(b.category));
     const nonExhibitedCategoryTableRows = nonExhibitedCategoryRows.map(row => `
       <tr>
