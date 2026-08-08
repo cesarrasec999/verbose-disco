@@ -1581,7 +1581,6 @@ export default function InventariosPage() {
         // En iPhone el código puede quedar fuera del recuadro pequeño.
         fps: 12,
         qrbox: { width: 360, height: 260 },
-        aspectRatio: 1.6,
         disableFlip: true,
         videoConstraints: {
           facingMode: { ideal: "environment" },
