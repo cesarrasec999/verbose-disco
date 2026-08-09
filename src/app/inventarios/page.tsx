@@ -6292,19 +6292,15 @@ export default function InventariosPage() {
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
         RECONTEO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
+        VALIDACION: showValidationSummary ? summaryQuantityStatusLabel(row.validation_qty, row.validation_status) : "",
       };
       return {
         ...base,
-        ...(showValidationSummary ? {
-          VALIDACION: summaryQuantityStatusLabel(row.validation_qty, row.validation_status),
-        } : {}),
         DIFERENCIA: row.diff,
         STATUS: summaryStatus(row),
         COSTO: row.cost,
         DIF_VALORIZADA: row.valueDiff,
-        ...(showValidationSummary ? {
-          VALIDADO: row.validated ? "SI" : "NO",
-        } : {}),
+        VALIDADO: showValidationSummary ? (row.validated ? "SI" : "NO") : "",
         OBSERVACION: row.observation || "",
       };
     });
