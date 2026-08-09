@@ -6234,12 +6234,61 @@ export default function InventariosPage() {
     setTimeout(() => reportWindow.print(), 500);
   }
 
-  function exportSummary() {
+  async function exportSummary() {
+    if (!selectedSession) {
+      setMessage("Selecciona un inventario para descargar el resumen.");
+      return;
+    }
+    setMessage("Preparando resumen Excel con zonas, categorias y rotaciones...");
+    const [ticketLocationRows, countedLocationRows] = await Promise.all([
+      loadPagedSessionRows("general_inventory_locations", "id,location_code,zone,is_active", selectedSession.id, "location_code"),
+      loadPagedSessionRows("general_inventory_counts", "product_id,sku,location_id,location_code", selectedSession.id, "sku"),
+    ]);
+    const normalizeReportZone = (value: unknown) => {
+      const normalized = String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+      return normalized || "SIN ZONA";
+    };
+    const exhibitedZones = new Set(["TIENDA", "PISO_VENTA", "PISO_VENTA (1)", "PISO_VENTA (2)", "PASILLO_VENTA"]);
+    const isDiamanteSession = String(selectedSession.store_name || "").toUpperCase().includes("DIAMANTE");
+    const diamanteExhibitedLocations = new Set(["09", "174", "200", "20O"]);
+    const reportZoneForLocation = (rawZone: unknown, rawLocationCode: unknown) => {
+      const zone = normalizeReportZone(rawZone);
+      const locationKey = locationZoneKey(normalizeLocationCode(String(rawLocationCode || "")));
+      if (isDiamanteSession && zone === "SIN ZONA" && diamanteExhibitedLocations.has(locationKey)) return "TIENDA";
+      return zone === "SIN ZONA" ? "ALMACEN" : zone;
+    };
+    const activeTicketLocations = ticketLocationRows.filter(row => row.is_active !== false);
+    const zoneByLocationId = new Map<string, string>();
+    const zoneByLocationCode = new Map<string, string>();
+    for (const row of activeTicketLocations) {
+      const zone = reportZoneForLocation(row.zone, row.location_code || row.ticket);
+      const locationId = String(row.id || "").trim();
+      const locationCode = normalizeLocationCode(String(row.location_code || row.ticket || ""));
+      if (locationId) zoneByLocationId.set(locationId, zone);
+      if (locationCode) zoneByLocationCode.set(locationCode, zone);
+    }
+    const zonesByProduct = new Map<string, Set<string>>();
+    for (const row of countedLocationRows) {
+      const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+      if (!productKey) continue;
+      const locationId = String(row.location_id || "").trim();
+      const locationCode = normalizeLocationCode(String(row.location_code || ""));
+      const zone = (locationId && zoneByLocationId.get(locationId)) || (locationCode && zoneByLocationCode.get(locationCode)) || "ALMACEN";
+      const zones = zonesByProduct.get(productKey) || new Set<string>();
+      zones.add(zone);
+      zonesByProduct.set(productKey, zones);
+    }
     const rows = summary.map(row => {
+      const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
+      const zones = zonesByProduct.get(productKey);
+      const exhibited = zones ? [...zones].some(zone => exhibitedZones.has(zone)) : null;
       const base = {
         CODIGO: row.sku,
         DESCRIPCION: row.description,
         UM: row.unit,
+        EXHIBIDO: exhibited === null ? "NO CONTADO" : exhibited ? "SI" : "NO",
+        CATEGORIA: row.department || "SIN CATEGORIA",
+        ROTACION: row.rotation_category || "SIN ROTACION",
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
         RECONTEO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
@@ -6262,6 +6311,7 @@ export default function InventariosPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Resumen");
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
+    setMessage("Resumen Excel descargado con exhibicion, categoria y rotacion.");
   }
 
   async function generateInventoryCategoryReport() {
