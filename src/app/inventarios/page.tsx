@@ -6292,15 +6292,19 @@ export default function InventariosPage() {
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
         RECONTEO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
-        VALIDACION: showValidationSummary ? summaryQuantityStatusLabel(row.validation_qty, row.validation_status) : "",
       };
       return {
         ...base,
+        ...(showValidationSummary ? {
+          VALIDACION: summaryQuantityStatusLabel(row.validation_qty, row.validation_status),
+        } : {}),
         DIFERENCIA: row.diff,
         STATUS: summaryStatus(row),
         COSTO: row.cost,
         DIF_VALORIZADA: row.valueDiff,
-        VALIDADO: showValidationSummary ? (row.validated ? "SI" : "NO") : "",
+        ...(showValidationSummary ? {
+          VALIDADO: row.validated ? "SI" : "NO",
+        } : {}),
         OBSERVACION: row.observation || "",
       };
     });
@@ -7009,7 +7013,7 @@ export default function InventariosPage() {
   <div class="signatures">
     <div class="signature">Firma asesor de almacen</div>
     <div class="signature">Firma lider de tienda</div>
-    <div class="signature">Firma validador de inventario</div>
+    <div class="signature">${selectedSession.validation_enabled ? "Firma validador de inventario" : "&nbsp;"}</div>
   </div>
 </body>
 </html>`;
