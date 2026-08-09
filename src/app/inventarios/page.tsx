@@ -6701,7 +6701,9 @@ export default function InventariosPage() {
     <tr>
     ${donut("CODIGOS CONTADOS", pct(originallyCountedCodes, totalCodes), "#0f172a", `${number2(originallyCountedCodes)} / ${number2(totalCodes)} codigos`)}
     ${donut("CODIGOS RECONTADOS", pct(recountedCodes, totalDiffCodes), "#7c3aed", `${number2(recountedCodes)} / ${number2(totalDiffCodes)} codigos con diferencia`)}
-    ${donut("CODIGOS VALIDADOS", pct(validatedCodes, totalDiffCodes), "#15803d", `${number2(validatedCodes)} / ${number2(totalDiffCodes)} codigos con diferencia`)}
+    ${selectedSession.validation_enabled
+      ? donut("CODIGOS VALIDADOS", pct(validatedCodes, totalDiffCodes), "#15803d", `${number2(validatedCodes)} / ${number2(totalDiffCodes)} codigos con diferencia`)
+      : '<td style="padding:4px;width:33.33%;vertical-align:top;"></td>'}
     </tr>
   </table>
 
@@ -7013,7 +7015,7 @@ export default function InventariosPage() {
   <div class="signatures">
     <div class="signature">Firma asesor de almacen</div>
     <div class="signature">Firma lider de tienda</div>
-    <div class="signature">${selectedSession.validation_enabled ? "Firma validador de inventario" : "&nbsp;"}</div>
+    <div class="signature">Firma validador de inventario</div>
   </div>
 </body>
 </html>`;
