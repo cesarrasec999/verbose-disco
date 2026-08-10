@@ -311,17 +311,14 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
 }
 
 function sessionRotationPeriod(session: InventorySession | null | undefined) {
-  const rawDate = session?.finished_at || session?.scheduled_date || session?.created_at || new Date().toISOString();
+  // La rotacion debe ser historica respecto al inventario programado. No
+  // usamos finished_at porque una sesion puede cerrarse dias despues.
+  const rawDate = session?.scheduled_date || session?.created_at || session?.finished_at || new Date().toISOString();
   const date = new Date(rawDate);
   if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 7) + "-01";
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   return `${year}-${month}-01`;
-}
-
-function currentMonthStartPeriod() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
 export async function fetchProductRotationsForSession(
@@ -340,14 +337,12 @@ export async function fetchProductRotationsForSession(
   // El mes en curso todavía está incompleto. Para reportes de inventario se
   // debe usar el último período mensual cerrado, sin mezclar categorías
   // parciales que aún están recalculándose en ERP.
-  const currentPeriod = currentMonthStartPeriod();
   const sessionPeriod = sessionRotationPeriod(params.session);
   const { data: periodRows, error: periodError } = await supabase
     .from("product_rotation_monthly")
     .select("period_month")
     .in("store_key", storeKeys)
-    .lt("period_month", currentPeriod)
-    .lte("period_month", sessionPeriod)
+    .lt("period_month", sessionPeriod)
     .order("period_month", { ascending: false })
     .limit(1);
   if (periodError) throw periodError;
