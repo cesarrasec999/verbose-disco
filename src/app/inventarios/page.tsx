@@ -6295,6 +6295,13 @@ export default function InventariosPage() {
       }
       return result;
     };
+    const formatSignedDifference = (value: number) => {
+      const normalized = Math.abs(value) < 0.000001 ? 0 : Number(value.toFixed(2));
+      const text = Number.isInteger(normalized)
+        ? String(normalized)
+        : normalized.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+      return normalized > 0 ? `+${text}` : text;
+    };
     const registerSampling = (productKey: unknown, counted: unknown, systemStock: unknown, type: string, dateValue: unknown) => {
       const key = String(productKey || "").trim().toUpperCase();
       if (!key || !differenceProductKeys.has(key)) return;
@@ -6302,7 +6309,7 @@ export default function InventariosPage() {
       const timestamp = new Date(date).getTime();
       if (!Number.isFinite(timestamp)) return;
       const diff = Number(counted || 0) - Number(systemStock || 0);
-      const result = Math.abs(diff) < 0.000001 ? "OK" : diff < 0 ? "FALTANTE" : "SOBRANTE";
+      const result = formatSignedDifference(diff);
       const current = latestSamplingByProduct.get(key);
       if (!current || timestamp > current.timestamp) latestSamplingByProduct.set(key, { result, type, date, timestamp });
     };
@@ -6312,7 +6319,7 @@ export default function InventariosPage() {
           .from("audit_sessions")
           .select("id,store_id,started_at,finished_at,status")
           .eq("store_id", selectedSession.store_id)
-          .neq("status", "cancelled")
+          .eq("status", "finished")
           .order("started_at", { ascending: false })
           .range(from, to));
         const auditSessionIds = auditSessions.map(row => String(row.id || "")).filter(Boolean);
@@ -6356,21 +6363,98 @@ export default function InventariosPage() {
             .order("assigned_date", { ascending: false })
             .range(from, to)));
         }
-        const cyclicAssignmentIds = cyclicAssignments.map(row => String(row.id || "")).filter(Boolean);
-        const cyclicAssignmentById = new Map(cyclicAssignments.map(row => [String(row.id), row]));
-        for (let i = 0; i < cyclicAssignmentIds.length; i += 500) {
-          const assignmentChunk = cyclicAssignmentIds.slice(i, i + 500);
-          const cyclicCounts = await readPagedRows((from, to) => supabase
-            .from("cyclic_counts")
-            .select("assignment_id,product_id,counted_quantity,location,counted_at")
-            .in("assignment_id", assignmentChunk)
-            .order("counted_at", { ascending: false })
-            .range(from, to));
-          for (const count of cyclicCounts) {
-            if (String(count.location || "").startsWith("__")) continue;
-            const assignment = cyclicAssignmentById.get(String(count.assignment_id || ""));
-            const productKey = String(count.product_id || assignment?.product_id || assignment?.cyclic_products?.sku || "");
-            registerSampling(productKey, count.counted_quantity, assignment?.system_stock, "CONTEO CICLICO", count.counted_at || assignment?.assigned_date);
+        if (cyclicAssignments.length > 0) {
+          // La condición de cumplimiento se calcula con TODOS los códigos del día,
+          // no solo con los códigos que tienen diferencia en el inventario general.
+          // Así evitamos marcar como válido un muestreo parcial.
+          const candidateDates = [...new Set(cyclicAssignments.map(row => String(row.assigned_date || "")).filter(Boolean))];
+          const allDayAssignments: any[] = [];
+          for (let i = 0; i < candidateDates.length; i += 100) {
+            const dateChunk = candidateDates.slice(i, i + 100);
+            allDayAssignments.push(...await readPagedRows((from, to) => supabase
+              .from("cyclic_assignments")
+              .select("id,product_id,system_stock,assigned_date")
+              .eq("store_id", selectedSession.store_id)
+              .in("assigned_date", dateChunk)
+              .order("assigned_date", { ascending: false })
+              .range(from, to)));
+          }
+          const allAssignmentIds = allDayAssignments.map(row => String(row.id || "")).filter(Boolean);
+          const allAssignmentById = new Map(allDayAssignments.map(row => [String(row.id), row]));
+          const countsByAssignment = new Map<string, any[]>();
+          const fulfilledDayKeys = new Set<string>();
+          const dayAssignments = new Map<string, any[]>();
+          for (const assignment of allDayAssignments) {
+            const dayKey = `${assignment.store_id || selectedSession.store_id}__${assignment.assigned_date}`;
+            const rows = dayAssignments.get(dayKey) || [];
+            rows.push(assignment);
+            dayAssignments.set(dayKey, rows);
+          }
+          const recountDoneDays = new Set<string>();
+          for (let i = 0; i < allAssignmentIds.length; i += 500) {
+            const assignmentChunk = allAssignmentIds.slice(i, i + 500);
+            const cyclicCounts = await readPagedRows((from, to) => supabase
+              .from("cyclic_counts")
+              .select("assignment_id,product_id,counted_quantity,location,counted_at")
+              .in("assignment_id", assignmentChunk)
+              .order("counted_at", { ascending: false })
+              .range(from, to));
+            for (const count of cyclicCounts) {
+              const assignmentId = String(count.assignment_id || "");
+              const assignment = allAssignmentById.get(assignmentId);
+              if (!assignment) continue;
+              const dayKey = `${assignment.store_id || selectedSession.store_id}__${assignment.assigned_date}`;
+              if (String(count.location || "") === "__recount_done__") recountDoneDays.add(dayKey);
+              if (String(count.location || "").startsWith("__")) continue;
+              const rows = countsByAssignment.get(assignmentId) || [];
+              rows.push(count);
+              countsByAssignment.set(assignmentId, rows);
+            }
+          }
+          for (const [dayKey, assignments] of dayAssignments) {
+            const assignedProducts = new Set(assignments.map(row => String(row.product_id || "")).filter(Boolean));
+            const countedProducts = new Set<string>();
+            for (const assignment of assignments) {
+              if ((countsByAssignment.get(String(assignment.id)) || []).length > 0) {
+                countedProducts.add(String(assignment.product_id || ""));
+              }
+            }
+            const allCounted = assignedProducts.size > 0 && [...assignedProducts].every(productId => countedProducts.has(productId));
+            if (recountDoneDays.has(dayKey) || allCounted) fulfilledDayKeys.add(dayKey);
+          }
+
+          // Consolidar todas las ubicaciones del mismo código/día antes de calcular
+          // la diferencia. Solo los días cumplidos pueden alimentar el último muestreo.
+          const sampleByProductDay = new Map<string, { productKey: string; counted: number; systemStock: number; date: string; timestamp: number }>();
+          for (const assignment of cyclicAssignments) {
+            const assignmentId = String(assignment.id || "");
+            const dayKey = `${assignment.store_id || selectedSession.store_id}__${assignment.assigned_date}`;
+            if (!fulfilledDayKeys.has(dayKey)) continue;
+            const counts = countsByAssignment.get(assignmentId) || [];
+            if (counts.length === 0) continue;
+            const productKey = String(assignment.product_id || assignment?.cyclic_products?.sku || "").trim().toUpperCase();
+            if (!productKey || !differenceProductKeys.has(productKey)) continue;
+            const sampleKey = `${productKey}__${dayKey}`;
+            const previous = sampleByProductDay.get(sampleKey) || {
+              productKey,
+              counted: 0,
+              systemStock: 0,
+              date: String(assignment.assigned_date || ""),
+              timestamp: new Date(String(assignment.assigned_date || "")).getTime(),
+            };
+            previous.counted += counts.reduce((sum, count) => sum + Number(count.counted_quantity || 0), 0);
+            previous.systemStock += Number(assignment.system_stock || 0);
+            for (const count of counts) {
+              const timestamp = new Date(String(count.counted_at || assignment.assigned_date || "")).getTime();
+              if (Number.isFinite(timestamp) && timestamp >= previous.timestamp) {
+                previous.timestamp = timestamp;
+                previous.date = String(count.counted_at || assignment.assigned_date || "");
+              }
+            }
+            sampleByProductDay.set(sampleKey, previous);
+          }
+          for (const sample of sampleByProductDay.values()) {
+            registerSampling(sample.productKey, sample.counted, sample.systemStock, "CONTEO CICLICO", sample.date);
           }
         }
       }
