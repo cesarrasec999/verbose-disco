@@ -6284,6 +6284,17 @@ export default function InventariosPage() {
     const differenceRows = summary.filter(row => row.diff !== 0);
     const differenceProductKeys = new Set(differenceRows.map(row => String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase()).filter(Boolean));
     const differenceProductIds = [...new Set(differenceRows.map(row => String(row.product_id || "").trim()).filter(Boolean))];
+    const toDayKey = (value: unknown) => {
+      const raw = String(value || "");
+      if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return "";
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    };
+    const sessionCreatedAt = selectedSession.created_at || selectedSession.scheduled_date || "";
+    const previousSessionBoundary = selectedSession.created_at || (selectedSession.scheduled_date ? `${selectedSession.scheduled_date}T23:59:59.999Z` : "");
+    const samplingToDay = toDayKey(sessionCreatedAt);
+    let samplingFromDay = "";
     const readPagedRows = async (buildQuery: (from: number, to: number) => any, pageSize = 1000): Promise<any[]> => {
       const result: any[] = [];
       for (let from = 0; ; from += pageSize) {
@@ -6295,6 +6306,9 @@ export default function InventariosPage() {
       }
       return result;
     };
+    const isSamplingDayInWindow = (day: string) => Boolean(day) &&
+      (!samplingFromDay || day >= samplingFromDay) &&
+      (!samplingToDay || day <= samplingToDay);
     const formatSignedDifference = (value: number) => {
       const normalized = Math.abs(value) < 0.000001 ? 0 : Number(value.toFixed(2));
       const text = Number.isInteger(normalized)
@@ -6308,6 +6322,7 @@ export default function InventariosPage() {
       const date = String(dateValue || "");
       const timestamp = new Date(date).getTime();
       if (!Number.isFinite(timestamp)) return;
+      if (!isSamplingDayInWindow(toDayKey(date))) return;
       const diff = Number(counted || 0) - Number(systemStock || 0);
       const result = formatSignedDifference(diff);
       const current = latestSamplingByProduct.get(key);
@@ -6315,15 +6330,28 @@ export default function InventariosPage() {
     };
     try {
       if (differenceProductIds.length > 0) {
-        const auditSessions = await readPagedRows((from, to) => supabase
+        if (previousSessionBoundary) {
+          const previousSessions = await readPagedRows((from, to) => supabase
+            .from("general_inventory_sessions")
+            .select("id,created_at,finished_at,status")
+            .eq("store_id", selectedSession.store_id)
+            .eq("status", "finished")
+            .not("finished_at", "is", null)
+            .lt("finished_at", previousSessionBoundary)
+            .order("finished_at", { ascending: false })
+            .range(from, to), 100);
+          samplingFromDay = toDayKey(previousSessions[0]?.finished_at || "");
+        }
+        const auditSessions = (await readPagedRows((from, to) => supabase
           .from("audit_sessions")
           .select("id,store_id,started_at,finished_at,status")
           .eq("store_id", selectedSession.store_id)
           .eq("status", "finished")
           .order("started_at", { ascending: false })
-          .range(from, to));
+          .range(from, to)))
+          .filter(row => isSamplingDayInWindow(toDayKey(row.finished_at || row.started_at)));
         const auditSessionIds = auditSessions.map(row => String(row.id || "")).filter(Boolean);
-        const auditSessionDateById = new Map(auditSessions.map(row => [String(row.id), String(row.started_at || "")]));
+        const auditSessionDateById = new Map(auditSessions.map(row => [String(row.id), String(row.finished_at || row.started_at || "")]));
         const auditItems: any[] = [];
         for (let i = 0; i < auditSessionIds.length; i += 100) {
           const sessionChunk = auditSessionIds.slice(i, i + 100);
@@ -6363,6 +6391,8 @@ export default function InventariosPage() {
             .order("assigned_date", { ascending: false })
             .range(from, to)));
         }
+        const cyclicAssignmentsInWindow = cyclicAssignments.filter(row => isSamplingDayInWindow(toDayKey(row.assigned_date)));
+        cyclicAssignments.splice(0, cyclicAssignments.length, ...cyclicAssignmentsInWindow);
         if (cyclicAssignments.length > 0) {
           // La condición de cumplimiento se calcula con TODOS los códigos del día,
           // no solo con los códigos que tienen diferencia en el inventario general.
