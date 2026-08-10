@@ -76,6 +76,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "cyclic_summary_by_code",
     "cyclic_store_progress",
     "cyclic_dashboard",
+    "reports_non_inventory",
     "reports_results",
     "locations",
     "audit",
