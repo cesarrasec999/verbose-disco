@@ -134,7 +134,6 @@ type FinishedGeneralInventoryReportRow = {
   store_name: string | null;
   scheduled_date: string | null;
   finished_at: string | null;
-  finished_by_name: string | null;
   stock_frozen_at: string | null;
   duration_minutes: number;
   total_codes: number;
@@ -1994,23 +1993,7 @@ export default function InventariosPage() {
       return;
     }
     const reportRows = (data || []) as FinishedGeneralInventoryReportRow[];
-    // El RPC histórico no siempre incluye el nombre del usuario que finalizó
-    // la sesión. Lo completamos desde la tabla de sesiones para que el
-    // registro quede visible también en reportes generados con datos nuevos.
-    const sessionIds = [...new Set(reportRows.map(row => row.session_id).filter(Boolean))];
-    const finishedByName = new Map<string, string | null>();
-    for (let index = 0; index < sessionIds.length; index += 500) {
-      const chunk = sessionIds.slice(index, index + 500);
-      const { data: sessionRows } = await supabase
-        .from("general_inventory_sessions")
-        .select("id,finished_by_name")
-        .in("id", chunk);
-      (sessionRows || []).forEach(row => finishedByName.set(String(row.id), row.finished_by_name || null));
-    }
-    setFinishedReportRows(reportRows.map(row => ({
-      ...row,
-      finished_by_name: row.finished_by_name || finishedByName.get(row.session_id) || null,
-    })));
+    setFinishedReportRows(reportRows);
     setFinishedReportPage(1);
     setMessage(`Reporte cargado: ${(data || []).length} inventario(s) finalizado(s).`);
   }
@@ -2025,7 +2008,6 @@ export default function InventariosPage() {
       Tienda: row.store_name || "",
       FechaProgramada: dateOnly(row.scheduled_date),
       Finalizado: row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "",
-      FinalizadoPor: row.finished_by_name || "",
       StockCongelado: row.stock_frozen_at ? new Date(row.stock_frozen_at).toLocaleString("es-PE") : "",
       DuracionMin: Number(row.duration_minutes || 0),
       CodigosTotales: Number(row.total_codes || 0),
@@ -7844,13 +7826,12 @@ export default function InventariosPage() {
               </div>
 
               <div className="overflow-x-auto rounded-2xl border">
-                <table className="w-full min-w-[1180px] text-[11px]">
+                  <table className="w-full min-w-[1100px] text-[11px]">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
                       <th className="border p-2 text-left">Inventario</th>
                       <th className="border p-2 text-left">Tienda</th>
                       <th className="border p-2 text-left">Finalizado</th>
-                      <th className="border p-2 text-left">Finalizado por</th>
                       <th className="border p-2 text-right">Codigos</th>
                       <th className="border p-2 text-right">Contados</th>
                       <th className="border p-2 text-right">OK</th>
@@ -7871,7 +7852,6 @@ export default function InventariosPage() {
                         <td className="border p-2 font-black text-slate-900">{row.inventory_name}</td>
                         <td className="border p-2 font-semibold">{row.store_name || "-"}</td>
                         <td className="border p-2">{row.finished_at ? new Date(row.finished_at).toLocaleString("es-PE") : "-"}</td>
-                        <td className="border p-2">{row.finished_by_name || "-"}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.total_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.counted_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold text-green-700">{number2(Number(row.ok_codes || 0))}</td>
@@ -7892,7 +7872,7 @@ export default function InventariosPage() {
                     ))}
                     {finishedReportRows.length === 0 && (
                       <tr>
-                        <td colSpan={16} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={15} className="p-8 text-center text-sm text-slate-400">
                           Genera el reporte para ver inventarios finalizados.
                         </td>
                       </tr>

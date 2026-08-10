@@ -257,9 +257,16 @@ manual_baseline as (
     ('GPC011 LIM - NARANJAL', date '2026-03-02'),
     ('GPC014 LIM - SURQUILLO', date '2026-03-09'),
     ('GPC015 JUN - HUANCAYO', date '2026-03-16'),
+    ('GPC016 LIM - LURIN', date '2026-03-29'),
     ('GPC017 LIM - ARRIOLA', date '2026-03-09'),
+    ('GPC018 LIM - VILLA EL SALVADOR', date '2026-03-19'),
     ('GPC020 LIM - CHORILLOS', date '2026-02-09'),
-    ('GPC023 ARE - MIRAFLORES', date '2026-03-02')
+    ('GPC021 LIM - PUENTE PIEDRA', date '2026-03-29'),
+    ('GPC022 LIM - HUACHIPA', date '2026-04-19'),
+    ('GPC023 ARE - MIRAFLORES', date '2026-03-02'),
+    ('GPC024 CAJ - CAJAMARCA', date '2026-03-01'),
+    ('GPC013 ARE - EVITAMIENTO', date '2026-03-15'),
+    ('GPC012 PIU - PIURA', date '2026-03-15')
   ) as t(store_name, baseline_date)
 ),
 period_bounds as (
