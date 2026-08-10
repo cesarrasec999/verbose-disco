@@ -289,8 +289,18 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
     }
     if (normalized.includes("DIAMANTE")) keys.add("CHI. DIAMANTE");
     if (normalized.includes("LEGUIA")) keys.add("CHI. LEGUIA");
-    if (normalized.includes("EVITAMIENTO")) keys.add("AREQUIPA NEW K 21");
-    if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) keys.add("AREQUIPA MIRAFLORES");
+    // Las claves usadas en product_rotation_monthly son EVITAMIENTO y
+    // MIRAFLORES. Conservamos las claves históricas por compatibilidad,
+    // pero siempre agregamos la clave real para que Reporte IG encuentre
+    // las rotaciones de Arequipa.
+    if (normalized.includes("EVITAMIENTO")) {
+      keys.add("EVITAMIENTO");
+      keys.add("AREQUIPA NEW K 21");
+    }
+    if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) {
+      keys.add("MIRAFLORES");
+      keys.add("AREQUIPA MIRAFLORES");
+    }
     if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
     if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
     if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
