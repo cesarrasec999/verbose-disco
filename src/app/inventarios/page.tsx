@@ -2015,7 +2015,9 @@ export default function InventariosPage() {
       CodigosOK: Number(row.ok_codes || 0),
       NoContados: Number(row.no_counted_codes || 0),
       Sobrantes: Number(row.surplus_codes || 0),
+      "Sobrante S/": Number(row.surplus_value || 0),
       Faltantes: Number(row.missing_codes || 0),
+      "Faltante S/": Number(row.missing_value || 0),
       CodigosDiferencia: Number(row.difference_codes || 0),
       ValorSistema: Number(row.system_value || 0),
       ValorContado: Number(row.counted_value || 0),
@@ -7826,7 +7828,7 @@ export default function InventariosPage() {
               </div>
 
               <div className="overflow-x-auto rounded-2xl border">
-                  <table className="w-full min-w-[1100px] text-[11px]">
+                  <table className="w-full min-w-[1260px] text-[11px]">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
                       <th className="border p-2 text-left">Inventario</th>
@@ -7837,7 +7839,9 @@ export default function InventariosPage() {
                       <th className="border p-2 text-right">OK</th>
                       <th className="border p-2 text-right">No contados</th>
                       <th className="border p-2 text-right">Sobrantes</th>
+                      <th className="border p-2 text-right">Sobrante S/</th>
                       <th className="border p-2 text-right">Faltantes</th>
+                      <th className="border p-2 text-right">Faltante S/</th>
                       <th className="border p-2 text-right">ERI</th>
                       <th className="border p-2 text-right">Valor sistema</th>
                       <th className="border p-2 text-right">Dif. neta</th>
@@ -7857,7 +7861,9 @@ export default function InventariosPage() {
                         <td className="border p-2 text-right font-bold text-green-700">{number2(Number(row.ok_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold">{number2(Number(row.no_counted_codes || 0))}</td>
                         <td className="border p-2 text-right font-bold text-blue-700">{number2(Number(row.surplus_codes || 0))}</td>
+                        <td className="border p-2 text-right font-black text-blue-700">{money(Number(row.surplus_value || 0))}</td>
                         <td className="border p-2 text-right font-bold text-red-700">{number2(Number(row.missing_codes || 0))}</td>
+                        <td className="border p-2 text-right font-black text-red-700">{money(Number(row.missing_value || 0))}</td>
                         <td className="border p-2 text-right font-black">{number2(Number(row.eri_pct || 0))}%</td>
                         <td className="border p-2 text-right font-black">{money(Number(row.system_value || 0))}</td>
                         <td className={`border p-2 text-right font-black ${Number(row.net_value_diff || 0) < 0 ? "text-red-700" : "text-blue-700"}`}>{money(Number(row.net_value_diff || 0))}</td>
@@ -7872,7 +7878,7 @@ export default function InventariosPage() {
                     ))}
                     {finishedReportRows.length === 0 && (
                       <tr>
-                        <td colSpan={15} className="p-8 text-center text-sm text-slate-400">
+                        <td colSpan={17} className="p-8 text-center text-sm text-slate-400">
                           Genera el reporte para ver inventarios finalizados.
                         </td>
                       </tr>
