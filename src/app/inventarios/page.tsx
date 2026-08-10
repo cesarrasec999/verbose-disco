@@ -6239,7 +6239,7 @@ export default function InventariosPage() {
       setMessage("Selecciona un inventario para descargar el resumen.");
       return;
     }
-    setMessage("Preparando resumen Excel con zonas, categorias y rotaciones...");
+    setMessage("Preparando resumen Excel con zonas, categorias, rotaciones y ultimo muestreo...");
     const [ticketLocationRows, countedLocationRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "id,location_code,zone,is_active", selectedSession.id, "location_code"),
       loadPagedSessionRows("general_inventory_counts", "product_id,sku,location_id,location_code", selectedSession.id, "sku"),
@@ -6278,10 +6278,111 @@ export default function InventariosPage() {
       zones.add(zone);
       zonesByProduct.set(productKey, zones);
     }
+    setMessage("Consultando el último muestreo de los códigos con diferencia...");
+    type LatestSampling = { result: string; type: string; date: string; timestamp: number };
+    const latestSamplingByProduct = new Map<string, LatestSampling>();
+    const differenceRows = summary.filter(row => row.diff !== 0);
+    const differenceProductKeys = new Set(differenceRows.map(row => String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase()).filter(Boolean));
+    const differenceProductIds = [...new Set(differenceRows.map(row => String(row.product_id || "").trim()).filter(Boolean))];
+    const readPagedRows = async (buildQuery: (from: number, to: number) => any, pageSize = 1000): Promise<any[]> => {
+      const result: any[] = [];
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await buildQuery(from, from + pageSize - 1);
+        if (error) throw error;
+        const pageRows = data || [];
+        result.push(...pageRows);
+        if (pageRows.length < pageSize) break;
+      }
+      return result;
+    };
+    const registerSampling = (productKey: unknown, counted: unknown, systemStock: unknown, type: string, dateValue: unknown) => {
+      const key = String(productKey || "").trim().toUpperCase();
+      if (!key || !differenceProductKeys.has(key)) return;
+      const date = String(dateValue || "");
+      const timestamp = new Date(date).getTime();
+      if (!Number.isFinite(timestamp)) return;
+      const diff = Number(counted || 0) - Number(systemStock || 0);
+      const result = Math.abs(diff) < 0.000001 ? "OK" : diff < 0 ? "FALTANTE" : "SOBRANTE";
+      const current = latestSamplingByProduct.get(key);
+      if (!current || timestamp > current.timestamp) latestSamplingByProduct.set(key, { result, type, date, timestamp });
+    };
+    try {
+      if (differenceProductIds.length > 0) {
+        const auditSessions = await readPagedRows((from, to) => supabase
+          .from("audit_sessions")
+          .select("id,store_id,started_at,finished_at,status")
+          .eq("store_id", selectedSession.store_id)
+          .neq("status", "cancelled")
+          .order("started_at", { ascending: false })
+          .range(from, to));
+        const auditSessionIds = auditSessions.map(row => String(row.id || "")).filter(Boolean);
+        const auditSessionDateById = new Map(auditSessions.map(row => [String(row.id), String(row.started_at || "")]));
+        const auditItems: any[] = [];
+        for (let i = 0; i < auditSessionIds.length; i += 100) {
+          const sessionChunk = auditSessionIds.slice(i, i + 100);
+          auditItems.push(...await readPagedRows((from, to) => supabase
+            .from("audit_session_items")
+            .select("id,session_id,product_id,system_stock")
+            .in("session_id", sessionChunk)
+            .range(from, to)));
+        }
+        const differenceProductIdSet = new Set(differenceProductIds);
+        const relevantAuditItems = auditItems.filter(row => differenceProductIdSet.has(String(row.product_id || "")));
+        const auditItemIds = relevantAuditItems.map(row => String(row.id || "")).filter(Boolean);
+        const auditItemById = new Map(relevantAuditItems.map(row => [String(row.id), row]));
+        for (let i = 0; i < auditItemIds.length; i += 500) {
+          const itemChunk = auditItemIds.slice(i, i + 500);
+          const auditCounts = await readPagedRows((from, to) => supabase
+            .from("audit_counts")
+            .select("item_id,session_id,product_id,quantity,counted_at")
+            .in("item_id", itemChunk)
+            .order("counted_at", { ascending: false })
+            .range(from, to));
+          for (const count of auditCounts) {
+            const item = auditItemById.get(String(count.item_id || ""));
+            const productKey = String(count.product_id || item?.product_id || "");
+            registerSampling(productKey, count.quantity, item?.system_stock, "AUDITORIA", count.counted_at || auditSessionDateById.get(String(count.session_id || "")));
+          }
+        }
+
+        const cyclicAssignments: any[] = [];
+        for (let i = 0; i < differenceProductIds.length; i += 500) {
+          const productChunk = differenceProductIds.slice(i, i + 500);
+          cyclicAssignments.push(...await readPagedRows((from, to) => supabase
+            .from("cyclic_assignments")
+            .select("id,product_id,system_stock,assigned_date,cyclic_products(sku)")
+            .eq("store_id", selectedSession.store_id)
+            .in("product_id", productChunk)
+            .order("assigned_date", { ascending: false })
+            .range(from, to)));
+        }
+        const cyclicAssignmentIds = cyclicAssignments.map(row => String(row.id || "")).filter(Boolean);
+        const cyclicAssignmentById = new Map(cyclicAssignments.map(row => [String(row.id), row]));
+        for (let i = 0; i < cyclicAssignmentIds.length; i += 500) {
+          const assignmentChunk = cyclicAssignmentIds.slice(i, i + 500);
+          const cyclicCounts = await readPagedRows((from, to) => supabase
+            .from("cyclic_counts")
+            .select("assignment_id,product_id,counted_quantity,location,counted_at")
+            .in("assignment_id", assignmentChunk)
+            .order("counted_at", { ascending: false })
+            .range(from, to));
+          for (const count of cyclicCounts) {
+            if (String(count.location || "").startsWith("__")) continue;
+            const assignment = cyclicAssignmentById.get(String(count.assignment_id || ""));
+            const productKey = String(count.product_id || assignment?.product_id || assignment?.cyclic_products?.sku || "");
+            registerSampling(productKey, count.counted_quantity, assignment?.system_stock, "CONTEO CICLICO", count.counted_at || assignment?.assigned_date);
+          }
+        }
+      }
+    } catch (error) {
+      setMessage("No se pudo consultar el último muestreo: " + (error instanceof Error ? error.message : String(error)));
+      return;
+    }
     const rows = summary.map(row => {
       const productKey = String(row.product_id || normalizeCode(row.sku || "")).trim().toUpperCase();
       const zones = zonesByProduct.get(productKey);
       const exhibited = zones ? [...zones].some(zone => exhibitedZones.has(zone)) : null;
+      const latestSampling = row.diff !== 0 ? latestSamplingByProduct.get(productKey) : undefined;
       const base = {
         CODIGO: row.sku,
         DESCRIPCION: row.description,
@@ -6289,6 +6390,9 @@ export default function InventariosPage() {
         EXHIBIDO: exhibited === null ? "NO CONTADO" : exhibited ? "SI" : "NO",
         CATEGORIA: row.department || "SIN CATEGORIA",
         ROTACION: row.rotation_category || "SIN ROTACION",
+        ULTIMO_MUESTREO_RESULTADO: latestSampling?.result || "",
+        ULTIMO_MUESTREO_TIPO: latestSampling?.type || "",
+        ULTIMO_MUESTREO_FECHA: latestSampling?.date ? new Date(latestSampling.date).toLocaleString("es-PE") : "",
         STOCK_SISTEMA: row.system_stock,
         CONTEO: row.counted_original,
         RECONTEO: summaryQuantityStatusLabel(row.recounted_qty, row.recount_status),
@@ -6311,7 +6415,7 @@ export default function InventariosPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Resumen");
     XLSX.writeFile(wb, `inventario_resumen_${selectedSession?.name || "sesion"}.xlsx`);
-    setMessage("Resumen Excel descargado con exhibicion, categoria y rotacion.");
+    setMessage("Resumen Excel descargado con exhibicion, categoria, rotacion y ultimo muestreo.");
   }
 
   async function generateInventoryCategoryReport() {
