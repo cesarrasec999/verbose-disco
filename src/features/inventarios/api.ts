@@ -274,7 +274,8 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
     "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
     "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
     "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
-    "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD",
+    "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "ABANCAY", "CORPORATIVO",
+    "CUSCO", "ICA", "TIENDA VIRTUAL", "CD",
   ];
   const keys = new Set<string>();
   const store = session?.store_id ? stores.find(item => item.id === session.store_id) : null;
@@ -304,6 +305,7 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
     if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
     if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
     if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
+    if (normalized.includes("CD GPC") || normalized === "CD") keys.add("CD-GPC");
   }
   return [...keys];
 }
