@@ -222,6 +222,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [assignSearch, setAssignSearch]     = useState("");
     const [assignResults, setAssignResults]   = useState<Product[]>([]);
     const [assignUnitFilter, setAssignUnitFilter] = useState("");
+    const [assignUnitOptions, setAssignUnitOptions] = useState<string[]>([]);
     const [assignSelectedIds, setAssignSelectedIds] = useState<Set<string>>(new Set());
     const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
@@ -541,6 +542,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
     useEffect(() => {
         if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar") return;
+        if (!assignSearch.trim() && assignUnitFilter) return;
         const timer = setTimeout(() => {
             void searchProductsForAssign(assignSearch);
         }, 1000);
@@ -1871,6 +1873,51 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         return [...codes];
     }
 
+    async function loadProductsByUnitInStock(unit: string): Promise<Product[]> {
+        const targetStores = activeAssignStores();
+        if (!unit || targetStores.length === 0) return [];
+        const stockCodes = await loadPositiveStockCodesForStores(targetStores);
+        if (stockCodes.length === 0) return [];
+
+        const rows: Product[] = [];
+        const seen = new Set<string>();
+        for (let i = 0; i < stockCodes.length; i += 500) {
+            const { data, error } = await supabase
+                .from("cyclic_products")
+                .select("*")
+                .eq("is_active", true)
+                .in("sku", stockCodes.slice(i, i + 500));
+            if (error) throw error;
+            for (const product of filterAssignableProducts((data || []) as Product[])) {
+                if (normalizeUnit(product.unit) !== normalizeUnit(unit) || seen.has(product.id)) continue;
+                seen.add(product.id);
+                rows.push(product);
+            }
+        }
+        return preferFullCodsapProducts(rows)
+            .sort((a, b) => String(a.description || "").localeCompare(String(b.description || "")) || fullProductCode(a.sku).localeCompare(fullProductCode(b.sku)))
+            .slice(0, 500);
+    }
+
+    async function handleAssignUnitChange(unit: string) {
+        setAssignUnitFilter(unit);
+        setAssignSearch("");
+        setAssignResults([]);
+        setAssignSelectedIds(new Set());
+        setAssignSearchNotice("");
+        if (!unit) return;
+        try {
+            const results = await loadProductsByUnitInStock(unit);
+            setAssignResults(results);
+            setAssignSelectedIds(new Set(results.slice(0, 30).map(product => product.id)));
+            setAssignSearchNotice(results.length > 0
+                ? `${results.length} productos con stock disponibles en UM ${unit}.`
+                : `No se encontraron productos con stock para la UM ${unit} en la tienda seleccionada.`);
+        } catch (error: any) {
+            setAssignSearchNotice("No se pudo cargar la unidad de medida: " + (error?.message || error));
+        }
+    }
+
     async function searchProductsByDescriptionInStock(words: string[], targetStores: Store[], limit = 500): Promise<Product[]> {
         if (words.length === 0 || targetStores.length === 0) return [];
         const stockCodes = await loadPositiveStockCodesForStores(targetStores);
@@ -2762,10 +2809,23 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         return selected ? [selected] : [];
     }
 
-    const assignUnitOptions = useMemo(() => {
-        const units = [...new Set(assignResults.map(product => normalizeUnit(product.unit)).filter(Boolean))];
-        return units.sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }));
-    }, [assignResults]);
+    useEffect(() => {
+        if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar") return;
+        let cancelled = false;
+        (async () => {
+            const { data } = await supabase
+                .from("cyclic_products")
+                .select("unit")
+                .eq("is_active", true)
+                .not("unit", "is", null)
+                .limit(10000);
+            if (cancelled) return;
+            const units = [...new Set((data || []).map(row => normalizeUnit(row.unit)).filter(Boolean))]
+                .sort((a, b) => a.localeCompare(b, "es", { numeric: true, sensitivity: "base" }));
+            setAssignUnitOptions(units);
+        })();
+        return () => { cancelled = true; };
+    }, [isMobileAccess, activeTab, valTab, valStoreId, stores]);
 
     const filteredAssignResults = useMemo(() => {
         const unit = normalizeUnit(assignUnitFilter);
@@ -8068,11 +8128,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         />
                                         <select
                                             value={assignUnitFilter}
-                                            onChange={e => setAssignUnitFilter(e.target.value)}
+                                            onChange={e => void handleAssignUnitChange(e.target.value)}
                                             disabled={assignUnitOptions.length === 0}
                                             className="w-full rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-800 disabled:opacity-40"
                                         >
-                                            <option value="">Todas las UM</option>
+                                            <option value="">Unidad de medida</option>
                                             {assignUnitOptions.map(unit => <option key={unit} value={unit}>{unit}</option>)}
                                         </select>
                                     </div>
