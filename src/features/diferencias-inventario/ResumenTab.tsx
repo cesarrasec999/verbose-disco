@@ -291,7 +291,7 @@ export default function ResumenTab() {
           </div>
         </div>
 
-        <div className="mt-4 overflow-hidden">
+        <div className="mt-4 hidden overflow-x-auto md:block">
           <table className="w-full table-fixed text-[11px] leading-tight">
             <colgroup>
               <col style={{ width: canValidate ? "7%" : "8%" }} />
@@ -440,6 +440,79 @@ export default function ResumenTab() {
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="mt-4 space-y-3 md:hidden">
+          {rows.flatMap(displayLines).map((report, displayIndex) => {
+            const diff = report.physical_qty === null ? null : report.physical_qty - report.system_stock_at_report;
+            const linkedReport = report.request_data?.cross_group_id
+              ? rows.find(item => item.request_data?.cross_group_id === report.request_data?.cross_group_id && item.id !== report.id)
+              : null;
+            const linkedProduct = report.request_data?.products?.find(product => product.role === "cruce");
+            const linkedSku = linkedReport?.sku || linkedProduct?.sku;
+            return (
+              <article key={`mobile-${report.id}-${report.request_data?.cross_line_role || "single"}-${displayIndex}`} className="rounded-2xl border bg-white p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-all text-base font-black text-slate-900">{report.sku}</p>
+                    <p className="mt-1 text-xs font-bold text-slate-700">{REASON_LABEL[report.reason] || report.reason}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${STATUS_BADGE[report.status]}`}>
+                    {STATUS_LABEL[report.status]}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-700">{report.description || "-"}</p>
+                <p className="mt-1 break-words text-xs text-slate-500">{requestDetail(report)}</p>
+                {canValidate && <p className="mt-2 text-xs font-bold text-slate-600">Tienda: {report.store_name || "-"}</p>}
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-xl bg-slate-50 p-2"><span className="block text-[10px] font-bold uppercase text-slate-500">Stock al reportar</span><b>{formatNumber(report.system_stock_at_report)}</b></div>
+                  <div className="rounded-xl bg-slate-50 p-2"><span className="block text-[10px] font-bold uppercase text-slate-500">Cant. física</span><b>{report.physical_qty === null ? "-" : formatNumber(report.physical_qty)}</b></div>
+                  <div className="rounded-xl bg-slate-50 p-2"><span className="block text-[10px] font-bold uppercase text-slate-500">Costo</span><b>{formatMoney(Number(report.cost || 0))}</b></div>
+                  <div className="rounded-xl bg-slate-50 p-2"><span className="block text-[10px] font-bold uppercase text-slate-500">Diferencia</span><b className={diff === null ? "text-slate-400" : diff < 0 ? "text-red-600" : diff > 0 ? "text-blue-700" : "text-green-700"}>{diff === null ? "-" : `${diff > 0 ? "+" : ""}${formatNumber(diff)}`}</b></div>
+                </div>
+                <div className="mt-3 space-y-1 border-t pt-2 text-xs text-slate-600">
+                  <p><b>Observación:</b> {report.notes || "-"}</p>
+                  <p><b>Operador:</b> {report.operator_name || "-"}</p>
+                  <p><b>Fecha:</b> {formatDateTime(report.created_at)}</p>
+                  <p><b># Ajuste:</b> {report.request_data?.cross_line_role === "cruce" ? "Línea vinculada" : report.adjustment_number || "-"}</p>
+                  {report.photo_url && <a href={report.photo_url} target="_blank" rel="noreferrer" className="inline-block font-bold text-blue-700 underline">Ver foto</a>}
+                </div>
+                {showActions && (
+                  <div className="mt-3 space-y-2 border-t pt-2">
+                    {report.request_data?.cross_line_role === "cruce" ? (
+                      <p className="text-xs font-bold text-slate-400">Acción en línea principal</p>
+                    ) : report.status === "pendiente" && (canValidate || report.operator_id === user?.id) ? (
+                      <>
+                        {editingId === report.id ? (
+                          <div className="space-y-2 rounded-xl bg-slate-50 p-2">
+                            <select value={editingReason} onChange={event => setEditingReason(event.target.value as DifferenceReason)} className="w-full rounded-lg border px-2 py-2 text-xs font-bold">
+                              {Object.entries(REASON_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                            </select>
+                            {editingReason === "cruce_sku" && linkedSku && <input value={editingCrossPhysicalQty} onChange={event => setEditingCrossPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física del código cruzado" className="w-full rounded-lg border px-2 py-2 text-xs" />}
+                            <input value={editingPhysicalQty} onChange={event => setEditingPhysicalQty(event.target.value)} type="number" min="0" step="any" placeholder="Cantidad física" className="w-full rounded-lg border px-2 py-2 text-xs" />
+                            <div className="flex gap-2"><button onClick={() => void saveEdit(report)} disabled={savingActionId === report.id} className="flex-1 rounded-lg bg-blue-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">Guardar</button><button onClick={() => setEditingId(null)} className="rounded-lg border px-3 py-2 text-xs font-black">Cancelar</button></div>
+                          </div>
+                        ) : (
+                          <button onClick={() => openEditPrompt(report)} disabled={savingActionId === report.id} className="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-blue-300 px-3 py-2 text-xs font-black text-blue-700 disabled:opacity-40"><Pencil size={13} /> Editar</button>
+                        )}
+                        {canValidate && (
+                          <>
+                            {adjustingId === report.id ? (
+                              <div className="flex gap-2"><input value={adjustmentNumberDraft} onChange={event => setAdjustmentNumberDraft(event.target.value)} placeholder="# ajuste" className="min-w-0 flex-1 rounded-lg border px-2 py-2 text-xs" /><button onClick={() => void confirmRegularize(report)} disabled={savingActionId === report.id} className="rounded-lg bg-green-700 px-3 py-2 text-xs font-black text-white disabled:opacity-40">OK</button><button onClick={() => setAdjustingId(null)} className="rounded-lg border px-3 py-2 text-xs font-black">X</button></div>
+                            ) : <button onClick={() => openAdjustmentPrompt(report.id)} disabled={savingActionId === report.id} className="w-full rounded-lg border border-green-300 px-3 py-2 text-xs font-black text-green-700 disabled:opacity-40">Regularizar</button>}
+                            <div className="grid grid-cols-2 gap-2"><button onClick={() => void handleReject(report)} disabled={savingActionId === report.id} className="rounded-lg border border-red-300 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40">Rechazar</button><button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"><Trash2 size={13} /> Eliminar</button></div>
+                          </>
+                        )}
+                      </>
+                    ) : canValidate ? (
+                      <div className="space-y-2"><p className="text-xs text-slate-400">{report.validated_by_name ? `Por ${report.validated_by_name}` : "-"}</p><button onClick={() => void handleDelete(report)} disabled={savingActionId === report.id} className="inline-flex w-full items-center justify-center gap-1 rounded-lg border border-red-300 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-40"><Trash2 size={13} /> Eliminar</button></div>
+                    ) : <span className="text-xs text-slate-400">-</span>}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+          {rows.length === 0 && <p className="rounded-xl border p-8 text-center text-sm text-slate-400">{loading ? "Cargando..." : "Sin reportes."}</p>}
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
