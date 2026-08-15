@@ -2639,7 +2639,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                               </td>
                               <td className="p-2">
                                 <p className="font-black text-slate-900">{row.productCode}</p>
-                                <p className="max-w-[160px] truncate text-slate-500">{row.description || "Sin descripcion"} {row.unit ? `· ${row.unit}` : ""}</p>
+                                <p className="max-w-[160px] whitespace-normal break-words leading-snug text-slate-500">{row.description || "Sin descripcion"} {row.unit ? `· ${row.unit}` : ""}</p>
                               </td>
                               <td className="p-2">
                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${kindBadge.cls}`}>{kindBadge.label}</span>
@@ -3065,7 +3065,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-black text-slate-900 text-sm">{line.product_code}</p>
-                          <p className="text-xs text-slate-500 truncate">{line.description}</p>
+                          <p className="text-xs text-slate-600 whitespace-normal break-words leading-snug">{line.description || "Sin descripcion"}</p>
                           {line.request_detail && (
                             <p className="mt-1 text-[11px] font-black text-slate-500">{line.request_detail}</p>
                           )}
