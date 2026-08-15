@@ -1107,7 +1107,12 @@ export default function InventariosPage() {
   const pendingLocations = useMemo(() => {
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
     return locations
-      .filter(location => !location.is_empty && !counted.has(normalizeLocationCode(location.location_code)))
+      .filter(location => {
+        const locationKeys = [location.location_code, location.ticket]
+          .map(normalizeLocationCode)
+          .filter(Boolean);
+        return !location.is_empty && !locationKeys.some(key => counted.has(key));
+      })
       .sort((a, b) => compareLocationByZone(a.location_code, b.location_code, pendingLocationSortDirection));
   }, [locations, countedLocationCodes, pendingLocationSortDirection]);
 
@@ -2062,11 +2067,11 @@ export default function InventariosPage() {
     }));
     setLocations(activeLocations);
 
-    const locationCodeById = new Map(activeLocations.map(row => [String(row.id), row.location_code]));
+    const locationKeysById = new Map(activeLocations.map(row => [String(row.id), [row.location_code, row.ticket || ""]]));
     const countedCodes = countRows.flatMap(row => [
       normalizeLocationCode(row.location_code),
-      locationCodeById.get(String(row.location_id || "")) || "",
-    ]).filter(Boolean);
+      ...(locationKeysById.get(String(row.location_id || "")) || []),
+    ]).map(normalizeLocationCode).filter(Boolean);
     setCountedLocationCodes([...new Set(countedCodes)]);
   }
 
@@ -3948,7 +3953,10 @@ export default function InventariosPage() {
       return;
     }
     const counted = new Set(countedLocationCodes.map(normalizeLocationCode));
-    if (counted.has(normalizeLocationCode(location.location_code))) {
+    const locationKeys = [location.location_code, location.ticket]
+      .map(normalizeLocationCode)
+      .filter(Boolean);
+    if (locationKeys.some(key => counted.has(key))) {
       setMessage("Esta ubicacion ya tiene registros y no puede marcarse como vacia.");
       return;
     }
