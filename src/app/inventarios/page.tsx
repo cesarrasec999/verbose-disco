@@ -1352,6 +1352,15 @@ export default function InventariosPage() {
     const reloadInventoryCounts = () => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
+        // La preparación muestra el estado del control de tickets a partir de
+        // `countedLocationCodes`. Antes solo se refrescaban registros,
+        // productividad y resumen; por eso una ubicación podía seguir como
+        // pendiente/vacía aunque acabara de registrarse un conteo en ella.
+        // Volver a leer solo ubicaciones y códigos mantiene el control
+        // sincronizado sin recalcular ni modificar stock/conteos.
+        if (validatorTab === "preparacion" && canManageInventory) {
+          void loadPreparationData(selectedSessionId);
+        }
         if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
         else if (validatorTab === "productividad") void loadProductivityData(selectedSessionId);
         else {
@@ -2037,15 +2046,24 @@ export default function InventariosPage() {
   async function loadPreparationData(sessionId: string) {
     const [locationRows, countRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "*", sessionId, "location_code"),
-      loadPagedSessionRows("general_inventory_counts", "location_code", sessionId, "location_code"),
+      // Incluimos location_id porque algunos registros históricos conservan
+      // la ubicación por FK aunque location_code haya quedado vacío.
+      loadPagedSessionRows("general_inventory_counts", "location_id,location_code", sessionId, "location_code"),
     ]);
 
-    setLocations((locationRows as InventoryLocation[]).filter(row => row.is_active !== false).map(row => ({
+    const activeLocations = (locationRows as InventoryLocation[]).filter(row => row.is_active !== false).map(row => ({
       ...row,
       location_code: normalizeLocationCode(row.location_code),
       ticket: row.ticket ? normalizeLocationCode(row.ticket) : row.ticket,
-    })));
-    setCountedLocationCodes([...new Set(countRows.map(row => normalizeLocationCode(row.location_code)).filter(Boolean))]);
+    }));
+    setLocations(activeLocations);
+
+    const locationCodeById = new Map(activeLocations.map(row => [String(row.id), row.location_code]));
+    const countedCodes = countRows.flatMap(row => [
+      normalizeLocationCode(row.location_code),
+      locationCodeById.get(String(row.location_id || "")) || "",
+    ]).filter(Boolean);
+    setCountedLocationCodes([...new Set(countedCodes)]);
   }
 
   async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null, gen?: number) {
