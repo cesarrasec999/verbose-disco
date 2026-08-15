@@ -1360,6 +1360,10 @@ export default function InventariosPage() {
         // sincronizado sin recalcular ni modificar stock/conteos.
         if (validatorTab === "preparacion" && canManageInventory) {
           void loadPreparationData(selectedSessionId);
+        } else {
+          // Si el conteo entra mientras el usuario está en otra pestaña,
+          // preparación no debe conservar una lista de ubicaciones antigua.
+          markSessionTabStale(selectedSessionId, "preparacion");
         }
         if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
         else if (validatorTab === "productividad") void loadProductivityData(selectedSessionId);
