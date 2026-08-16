@@ -69,7 +69,7 @@ BEGIN
         WHEN coalesce(st.name, st.erp_sede, '') ilike '%CD-GPC%' THEN '0'
         -- El ERP registra Cusco con la sede 1026 aunque la etiqueta comercial
         -- sea GPC027. Se conserva explícitamente para no mezclar sus ventas.
-        WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC027\b' THEN '1026'
+        WHEN left(upper(trim(coalesce(st.erp_sede, st.name, ''))), 6) = 'GPC027' THEN '1026'
         WHEN coalesce(st.erp_store_no, '') ~ '^[0-9]+$'
           THEN (1000 + st.erp_store_no::integer)::text
         WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC[0-9]+'
@@ -85,7 +85,7 @@ BEGIN
     LEFT JOIN public.store_movement_history smh
       ON smh.store_code = CASE
         WHEN coalesce(st.name, st.erp_sede, '') ilike '%CD-GPC%' THEN '0'
-        WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC027\b' THEN '1026'
+        WHEN left(upper(trim(coalesce(st.erp_sede, st.name, ''))), 6) = 'GPC027' THEN '1026'
         WHEN coalesce(st.erp_store_no, '') ~ '^[0-9]+$' THEN (1000 + st.erp_store_no::integer)::text
         WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC[0-9]+'
           THEN (1000 + substring(coalesce(st.erp_sede, st.name) from '^GPC0*([0-9]+)')::integer)::text
@@ -99,7 +99,7 @@ BEGIN
     ) min_sales
       ON min_sales.store_code = CASE
         WHEN coalesce(st.name, st.erp_sede, '') ilike '%CD-GPC%' THEN '0'
-        WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC027\b' THEN '1026'
+        WHEN left(upper(trim(coalesce(st.erp_sede, st.name, ''))), 6) = 'GPC027' THEN '1026'
         WHEN coalesce(st.erp_store_no, '') ~ '^[0-9]+$' THEN (1000 + st.erp_store_no::integer)::text
         WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC[0-9]+'
           THEN (1000 + substring(coalesce(st.erp_sede, st.name) from '^GPC0*([0-9]+)')::integer)::text
@@ -303,6 +303,13 @@ BEGIN
     avg_sales_documents_month = excluded.avg_sales_documents_month,
     history_months = excluded.history_months;
 
+  -- Borra aliases antiguos antes de reconstruir las claves afectadas. Esto evita
+  -- que el código analítico 1026 de Cusco conserve filas antiguas de ICA.
+  DELETE FROM public.product_rotation_store
+  WHERE store_code IN ('1000', '1025', '1026', '1027');
+  DELETE FROM public.product_rotation_summary
+  WHERE store_code IN ('1000', '1025', '1026', '1027');
+
   DELETE FROM public.product_rotation_store prs
   WHERE EXISTS (SELECT 1 FROM _rotation_net_documents_result r WHERE r.store_code = prs.store_code);
 
@@ -406,7 +413,7 @@ AS $$
     SELECT
       CASE
         WHEN coalesce(st.name, st.erp_sede, '') ilike '%CD-GPC%' THEN '0'
-        WHEN coalesce(st.erp_sede, st.name, '') ~* '^GPC027\b' THEN '1026'
+        WHEN left(upper(trim(coalesce(st.erp_sede, st.name, ''))), 6) = 'GPC027' THEN '1026'
         WHEN coalesce(st.erp_store_no, '') ~ '^[0-9]+$' THEN (1000 + st.erp_store_no::integer)::text
         ELSE (1000 + substring(coalesce(st.erp_sede, st.name) from '^GPC0*([0-9]+)')::integer)::text
       END AS store_code,
