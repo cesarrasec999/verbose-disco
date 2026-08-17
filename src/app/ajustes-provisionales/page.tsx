@@ -231,7 +231,7 @@ export default function AjustesProvisionalesPage() {
       "Regulariz. Provisional": r.qty_regulariz,
       Suma:                     r.total_qty,
       "Valor Total":            Number(r.total_value.toFixed(2)),
-      "Ultimo Ajuste":          r.last_date.slice(0, 10),
+      "Ultimo Ajuste":          formatSync(r.last_date),
       "Usuario ultimo ingreso provisional": r.last_user || "No informado",
       Documentos:               r.record_count,
     }));
@@ -477,7 +477,7 @@ export default function AjustesProvisionalesPage() {
                                 {fmtMoney(row.total_value)}
                               </td>
                               <td className="px-4 py-3 text-center text-slate-500 text-xs font-semibold whitespace-nowrap">
-                                {row.last_date.slice(0, 10)}
+                                {formatSync(row.last_date)}
                               </td>
                               <td className="px-4 py-3 text-left text-slate-500 text-xs font-semibold max-w-[220px]">
                                 <span className="line-clamp-2 leading-snug">{row.last_user || "No informado"}</span>
