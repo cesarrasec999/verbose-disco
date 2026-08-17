@@ -56,6 +56,8 @@ type ResumenModuleProps = {
   onForceRefreshNonOkStock?: () => void;
   canEditFinishedStock?: boolean;
   onEditSystemStock?: (row: SummaryRow) => void;
+  canEditFinishedQuantity?: boolean;
+  onEditFinishedQuantity?: (row: SummaryRow, mode: "count" | "recount" | "validation") => void;
 };
 
 export function ResumenModule({
@@ -90,6 +92,8 @@ export function ResumenModule({
   onForceRefreshNonOkStock,
   canEditFinishedStock,
   onEditSystemStock,
+  canEditFinishedQuantity,
+  onEditFinishedQuantity,
 }: ResumenModuleProps) {
   const okCount = summary.filter(row => row.diff === 0 && row.counted > 0).length;
   const maxDifferenceValue = Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1);
@@ -228,9 +232,50 @@ export function ResumenModule({
                       number2(row.system_stock)
                     )}
                   </td>
-                  <td className="p-2 text-center font-bold">{number2(row.counted_original)}</td>
-                  <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)}</td>
-                  {showValidationSummary && <td className="p-2 text-center font-bold">{summaryQuantityStatusLabel(row.validation_qty, row.validation_status)}</td>}
+                  <td className="p-2 text-center font-bold">
+                    {canEditFinishedQuantity && row.recount_status !== "counted" && row.validation_status !== "counted" ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditFinishedQuantity?.(row, "count")}
+                        title="Editar conteo (inventario finalizado)"
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-2 py-1 font-bold text-amber-700 hover:bg-amber-50"
+                      >
+                        {number2(row.counted_original)} <Pencil size={12} />
+                      </button>
+                    ) : (
+                      number2(row.counted_original)
+                    )}
+                  </td>
+                  <td className="p-2 text-center font-bold">
+                    {canEditFinishedQuantity && row.recount_status === "counted" && row.validation_status !== "counted" ? (
+                      <button
+                        type="button"
+                        onClick={() => onEditFinishedQuantity?.(row, "recount")}
+                        title="Editar reconteo (inventario finalizado)"
+                        className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 px-2 py-1 font-bold text-indigo-700 hover:bg-indigo-50"
+                      >
+                        {summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)} <Pencil size={12} />
+                      </button>
+                    ) : (
+                      summaryQuantityStatusLabel(row.recounted_qty, row.recount_status)
+                    )}
+                  </td>
+                  {showValidationSummary && (
+                    <td className="p-2 text-center font-bold">
+                      {canEditFinishedQuantity && row.validation_status === "counted" ? (
+                        <button
+                          type="button"
+                          onClick={() => onEditFinishedQuantity?.(row, "validation")}
+                          title="Editar validación (inventario finalizado)"
+                          className="inline-flex items-center gap-1 rounded-lg border border-violet-200 px-2 py-1 font-bold text-violet-700 hover:bg-violet-50"
+                        >
+                          {summaryQuantityStatusLabel(row.validation_qty, row.validation_status)} <Pencil size={12} />
+                        </button>
+                      ) : (
+                        summaryQuantityStatusLabel(row.validation_qty, row.validation_status)
+                      )}
+                    </td>
+                  )}
                   <td className={`p-2 text-center font-black ${row.diff < 0 ? "text-red-600" : row.diff > 0 ? "text-blue-700" : "text-green-700"}`}>{number2(row.diff)}</td>
                   <td className="p-2 text-center">
                     <span className={`rounded-full px-2 py-1 text-[11px] font-black ${summaryStatus(row) === "OK" ? "bg-green-100 text-green-700" : summaryStatus(row) === "Faltante" ? "bg-red-100 text-red-700" : summaryStatus(row) === "Sobrante" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"}`}>

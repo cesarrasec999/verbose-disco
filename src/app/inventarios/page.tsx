@@ -229,6 +229,10 @@ export default function InventariosPage() {
   const [editingFinishedStockValue, setEditingFinishedStockValue] = useState("");
   const [editingFinishedStockNote, setEditingFinishedStockNote] = useState("");
   const [savingFinishedStockEdit, setSavingFinishedStockEdit] = useState(false);
+  const [editingFinishedQuantity, setEditingFinishedQuantity] = useState<{ row: SummaryRow; mode: "count" | "recount" | "validation" } | null>(null);
+  const [editingFinishedQuantityValue, setEditingFinishedQuantityValue] = useState("");
+  const [editingFinishedQuantityNote, setEditingFinishedQuantityNote] = useState("");
+  const [savingFinishedQuantityEdit, setSavingFinishedQuantityEdit] = useState(false);
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
@@ -5940,6 +5944,187 @@ export default function InventariosPage() {
     await loadSummary(selectedSessionId, true);
   }
 
+  // Edicion puntual del resultado de conteo/reconteo en una sesion finalizada.
+  // Se conserva el detalle por ubicacion: cuando hay varias filas, el ajuste
+  // se aplica primero a la fila mas reciente y, si es necesario, se reparte
+  // la reduccion entre las demas filas sin cambiar sus ubicaciones.
+  function openFinishedQuantityEdit(row: SummaryRow, mode: "count" | "recount" | "validation") {
+    if (!isSelectedSessionFinished) return;
+    if (user?.id !== FINISHED_STOCK_EDITOR_USER_ID) return;
+    const currentValue = mode === "validation"
+      ? Number(row.validation_qty ?? 0)
+      : mode === "recount"
+        ? Number(row.recounted_qty ?? 0)
+        : Number(row.counted_original || 0);
+    setEditingFinishedQuantity({ row, mode });
+    setEditingFinishedQuantityValue(String(currentValue));
+    setEditingFinishedQuantityNote("");
+  }
+
+  async function saveFinishedQuantityEdit() {
+    if (!editingFinishedQuantity || !selectedSessionId) return;
+    if (user?.id !== FINISHED_STOCK_EDITOR_USER_ID) return;
+    if (!isSelectedSessionFinished) {
+      setMessage("Esta edicion solo aplica a sesiones ya finalizadas.");
+      return;
+    }
+
+    const newValue = Number(editingFinishedQuantityValue);
+    if (!Number.isFinite(newValue) || newValue < 0) {
+      setMessage("Ingresa una cantidad valida (numero mayor o igual a 0).");
+      return;
+    }
+    const note = editingFinishedQuantityNote.trim();
+    if (!note) {
+      setMessage("El motivo del ajuste es obligatorio.");
+      return;
+    }
+
+    const modeLabel = editingFinishedQuantity.mode === "validation"
+      ? "validacion"
+      : editingFinishedQuantity.mode === "recount"
+        ? "reconteo"
+        : "conteo original";
+    const oldValue = editingFinishedQuantity.mode === "validation"
+      ? Number(editingFinishedQuantity.row.validation_qty ?? 0)
+      : editingFinishedQuantity.mode === "recount"
+        ? Number(editingFinishedQuantity.row.recounted_qty ?? 0)
+        : Number(editingFinishedQuantity.row.counted_original || 0);
+    if (newValue === oldValue) {
+      setMessage("La cantidad no cambio, no se guardo nada.");
+      setEditingFinishedQuantity(null);
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Vas a cambiar el ${modeLabel} de ${editingFinishedQuantity.row.sku} (${editingFinishedQuantity.row.description}) ` +
+      `de ${number2(oldValue)} a ${number2(newValue)} en un inventario YA FINALIZADO.\n\n` +
+      `Esto modifica el resultado, la diferencia valorizada y los indicadores de esta sesion. ` +
+      `Se conservaran las ubicaciones registradas y el cambio quedara marcado como ajuste manual.\n\n` +
+      `Motivo registrado: "${note}"\n\n¿Confirmas el cambio?`
+    );
+    if (!confirmed) return;
+
+    setSavingFinishedQuantityEdit(true);
+    try {
+      const now = new Date().toISOString();
+      let rows: any[] = [];
+      let winnerItemId: string | null = null;
+      let winnerItem: any = null;
+
+      if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") {
+        const itemTable = editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_items" : "general_inventory_recount_items";
+        const countTable = editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
+        const itemIdColumn = editingFinishedQuantity.mode === "validation" ? "validation_item_id" : "recount_item_id";
+        const { data: items, error: itemError } = await supabase
+          .from(itemTable)
+          .select("id,product_id,status,system_stock,cost_snapshot,updated_at,created_at")
+          .eq("session_id", selectedSessionId)
+          .eq("product_id", editingFinishedQuantity.row.product_id)
+          .eq("status", "counted");
+        if (itemError) throw itemError;
+        const itemRows = items || [];
+        const itemById = new Map(itemRows.map(item => [String(item.id), item]));
+        const itemIds = itemRows.map(item => String(item.id)).filter(Boolean);
+        if (itemIds.length === 0) throw new Error("No se encontro un reconteo contado para este codigo.");
+        const { data: recountRows, error: recountError } = await supabase
+          .from(countTable)
+          .select(`id,${itemIdColumn},quantity,updated_at,counted_at`)
+          .eq("session_id", selectedSessionId)
+          .in(itemIdColumn, itemIds);
+        if (recountError) throw recountError;
+        const candidates = (recountRows || []).filter(row => itemById.has(String((row as any)[itemIdColumn])));
+        candidates.sort((a, b) => {
+          const ta = new Date(a.updated_at || a.counted_at || 0).getTime() || 0;
+          const tb = new Date(b.updated_at || b.counted_at || 0).getTime() || 0;
+          if (tb !== ta) return tb - ta;
+          return String((b as any)[itemIdColumn]).localeCompare(String((a as any)[itemIdColumn]));
+        });
+        winnerItemId = String((candidates[0] as any)?.[itemIdColumn] || "");
+        if (!winnerItemId) throw new Error("No se encontro el detalle del reconteo para este codigo.");
+        winnerItem = itemById.get(winnerItemId) || null;
+        rows = candidates.filter(row => String((row as any)[itemIdColumn]) === winnerItemId);
+      } else {
+        const { data: countRows, error: countError } = await supabase
+          .from("general_inventory_counts")
+          .select("id,quantity,updated_at,counted_at")
+          .eq("session_id", selectedSessionId)
+          .eq("product_id", editingFinishedQuantity.row.product_id);
+        if (countError) throw countError;
+        rows = countRows || [];
+        rows.sort((a, b) => {
+          const ta = new Date(a.updated_at || a.counted_at || 0).getTime() || 0;
+          const tb = new Date(b.updated_at || b.counted_at || 0).getTime() || 0;
+          return tb - ta;
+        });
+        if (rows.length === 0) throw new Error("No se encontraron registros del conteo original para este codigo.");
+      }
+
+      const currentTotal = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+      if (currentTotal !== oldValue) {
+        console.warn("El resumen y los registros tienen cantidades distintas; se usara el total real de los registros.", { oldValue, currentTotal });
+      }
+      let remainingReduction = Math.max(0, currentTotal - newValue);
+      const updates: Array<{ id: string; quantity: number }> = [];
+      if (newValue >= currentTotal) {
+        const first = rows[0];
+        updates.push({ id: String(first.id), quantity: Number(first.quantity || 0) + (newValue - currentTotal) });
+      } else {
+        for (const row of rows) {
+          const current = Number(row.quantity || 0);
+          const reduction = Math.min(current, remainingReduction);
+          const next = current - reduction;
+          if (next !== current) updates.push({ id: String(row.id), quantity: next });
+          remainingReduction -= reduction;
+          if (remainingReduction <= 0) break;
+        }
+      }
+      if (remainingReduction > 0.000001) throw new Error("No se pudo distribuir la nueva cantidad sin dejar valores negativos.");
+
+      const table = editingFinishedQuantity.mode === "validation"
+        ? "general_inventory_validation_counts"
+        : editingFinishedQuantity.mode === "recount"
+          ? "general_inventory_recount_counts"
+          : "general_inventory_counts";
+      for (const update of updates) {
+        const payload: Record<string, unknown> = {
+          quantity: update.quantity,
+          updated_at: now,
+        };
+        if (editingFinishedQuantity.mode === "count" || editingFinishedQuantity.mode === "recount") payload.sync_origin = "manual-summary-edit";
+        if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") payload.note = note;
+        const { error } = await supabase.from(table).update(payload).eq("id", update.id).eq("session_id", selectedSessionId);
+        if (error) throw error;
+      }
+
+      if ((editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") && winnerItemId && winnerItem) {
+        const systemStock = Number(winnerItem.system_stock || editingFinishedQuantity.row.system_stock || 0);
+        const cost = Number(winnerItem.cost_snapshot || editingFinishedQuantity.row.cost || 0);
+        const { error: itemUpdateError } = await supabase
+          .from(editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_items" : "general_inventory_recount_items")
+          .update({
+            counted_qty: newValue,
+            diff_qty: newValue - systemStock,
+            value_diff: (newValue - systemStock) * cost,
+            updated_at: now,
+          })
+          .eq("id", winnerItemId)
+          .eq("session_id", selectedSessionId);
+        if (itemUpdateError) throw itemUpdateError;
+      }
+
+      markSessionTabStale(selectedSessionId, "resumen");
+      markSessionTabStale(selectedSessionId, "productividad");
+      setEditingFinishedQuantity(null);
+      setMessage(`${modeLabel[0].toUpperCase()}${modeLabel.slice(1)} de ${editingFinishedQuantity.row.sku} actualizado a ${number2(newValue)}.`);
+      await loadSummary(selectedSessionId, true);
+    } catch (error) {
+      setMessage(`No se pudo actualizar el ${modeLabel}: ` + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setSavingFinishedQuantityEdit(false);
+    }
+  }
+
   async function deleteCount(row: CountRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
@@ -9352,6 +9537,8 @@ export default function InventariosPage() {
               onForceRefreshNonOkStock={forceRefreshNonOkStock}
               canEditFinishedStock={user?.id === FINISHED_STOCK_EDITOR_USER_ID && isSelectedSessionFinished}
               onEditSystemStock={openFinishedStockEdit}
+              canEditFinishedQuantity={user?.id === FINISHED_STOCK_EDITOR_USER_ID && isSelectedSessionFinished}
+              onEditFinishedQuantity={openFinishedQuantityEdit}
             />
           )}
       </section>
@@ -9429,6 +9616,58 @@ export default function InventariosPage() {
                 {savingFinishedStockEdit ? "Guardando..." : "Guardar ajuste"}
               </button>
               <button onClick={() => setEditingFinishedStock(null)} disabled={savingFinishedStockEdit} className="rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingFinishedQuantity && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4">
+          <div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h3 className="font-black text-indigo-700">
+              Editar {editingFinishedQuantity.mode === "validation" ? "validación" : editingFinishedQuantity.mode === "recount" ? "reconteo" : "conteo"} (inventario finalizado)
+            </h3>
+            <p className="mt-1 whitespace-normal break-words text-sm text-slate-500">
+              {editingFinishedQuantity.row.sku} - {editingFinishedQuantity.row.description}
+            </p>
+            <p className="mt-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+              Se modificara únicamente el resultado de este código en esta sesión finalizada. Las ubicaciones y el stock de sistema no se cambian.
+              Si la sesión tiene validación final, se edita esa capa; si no, se edita el reconteo cuando existe y, de lo contrario, el conteo original.
+            </p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Cantidad actual</label>
+                <p className="text-sm font-bold text-slate-700">
+                  {number2(editingFinishedQuantity.mode === "validation" ? editingFinishedQuantity.row.validation_qty ?? 0 : editingFinishedQuantity.mode === "recount" ? editingFinishedQuantity.row.recounted_qty ?? 0 : editingFinishedQuantity.row.counted_original)}
+                </p>
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Nueva cantidad</label>
+                <input
+                  value={editingFinishedQuantityValue}
+                  onChange={event => setEditingFinishedQuantityValue(event.target.value)}
+                  placeholder="Nueva cantidad"
+                  inputMode="decimal"
+                  className="mt-1 w-full rounded-xl border px-3 py-3 text-sm font-bold"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase text-slate-500">Motivo del ajuste (obligatorio)</label>
+                <textarea
+                  value={editingFinishedQuantityNote}
+                  onChange={event => setEditingFinishedQuantityNote(event.target.value)}
+                  placeholder="Por qué se corrige este conteo o reconteo..."
+                  className="mt-1 min-h-16 w-full rounded-xl border px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+              <button onClick={saveFinishedQuantityEdit} disabled={savingFinishedQuantityEdit} className="rounded-xl bg-indigo-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                {savingFinishedQuantityEdit ? "Guardando..." : "Guardar ajuste"}
+              </button>
+              <button onClick={() => setEditingFinishedQuantity(null)} disabled={savingFinishedQuantityEdit} className="rounded-xl border px-4 py-3 text-sm font-black disabled:opacity-40">
                 Cancelar
               </button>
             </div>
