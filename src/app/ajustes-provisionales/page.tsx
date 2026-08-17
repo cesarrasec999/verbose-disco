@@ -229,7 +229,7 @@ export default function AjustesProvisionalesPage() {
       Unidad:                   r.unit || "",
       "Ajuste Provisional":     r.qty_ajuste,
       "Regulariz. Provisional": r.qty_regulariz,
-      Suma:                     r.total_qty,
+      Pendiente:                r.total_qty,
       "Valor Total":            Number(r.total_value.toFixed(2)),
       "Ultimo Ajuste":          formatSync(r.last_date),
       "Usuario ultimo ingreso provisional": r.last_user || "No informado",
@@ -376,7 +376,7 @@ export default function AjustesProvisionalesPage() {
               </div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Suma</div>
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Pendiente</div>
               <div className={`text-2xl font-black ${totalNeto >= 0 ? "text-blue-700" : "text-red-600"}`}>
                 {totalNeto >= 0 ? "+" : ""}{fmt(totalNeto)}
               </div>
@@ -441,7 +441,7 @@ export default function AjustesProvisionalesPage() {
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Unidad</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-green-600 whitespace-nowrap">Ajuste Prov.</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-amber-600 whitespace-nowrap">Regulariz. Prov.</th>
-                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-blue-600 whitespace-nowrap">Suma</th>
+                            <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-blue-600 whitespace-nowrap">Pendiente</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Valor</th>
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Último ajuste</th>
                             <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Usuario último ingreso</th>
@@ -545,7 +545,7 @@ export default function AjustesProvisionalesPage() {
                   </p>
                 </div>
                 <div className="text-center">
-                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Suma</p>
+                  <p className="text-[11px] text-slate-400 font-semibold mb-0.5">Pendiente</p>
                   <p className="text-2xl font-black text-blue-400">
                     +{fmt(totalNeto)}
                   </p>
