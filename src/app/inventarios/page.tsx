@@ -232,6 +232,7 @@ export default function InventariosPage() {
   const [editingFinishedQuantity, setEditingFinishedQuantity] = useState<{ row: SummaryRow; mode: "count" | "recount" | "validation" } | null>(null);
   const [editingFinishedQuantityValue, setEditingFinishedQuantityValue] = useState("");
   const [editingFinishedQuantityNote, setEditingFinishedQuantityNote] = useState("");
+  const [editingFinishedQuantityLocation, setEditingFinishedQuantityLocation] = useState("");
   const [savingFinishedQuantityEdit, setSavingFinishedQuantityEdit] = useState(false);
   const [finishedQuantityEditError, setFinishedQuantityEditError] = useState("");
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
@@ -5960,6 +5961,7 @@ export default function InventariosPage() {
     setEditingFinishedQuantity({ row, mode });
     setEditingFinishedQuantityValue(String(currentValue));
     setEditingFinishedQuantityNote("");
+    setEditingFinishedQuantityLocation("");
     setFinishedQuantityEditError("");
   }
 
@@ -6009,124 +6011,16 @@ export default function InventariosPage() {
 
     setSavingFinishedQuantityEdit(true);
     try {
-      const now = new Date().toISOString();
-      let rows: any[] = [];
-      let winnerItemId: string | null = null;
-      let winnerItem: any = null;
-
-      if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") {
-        const itemTable = editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_items" : "general_inventory_recount_items";
-        const countTable = editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
-        const itemIdColumn = editingFinishedQuantity.mode === "validation" ? "validation_item_id" : "recount_item_id";
-        const { data: items, error: itemError } = await supabase
-          .from(itemTable)
-          .select("id,product_id,status,system_stock,cost_snapshot,updated_at,created_at")
-          .eq("session_id", selectedSessionId)
-          .eq("product_id", editingFinishedQuantity.row.product_id)
-          .eq("status", "counted");
-        if (itemError) throw itemError;
-        const itemRows = items || [];
-        const itemById = new Map(itemRows.map(item => [String(item.id), item]));
-        const itemIds = itemRows.map(item => String(item.id)).filter(Boolean);
-        if (itemIds.length === 0) throw new Error("No se encontro un reconteo contado para este codigo.");
-        const { data: recountRows, error: recountError } = await supabase
-          .from(countTable)
-          .select(`id,${itemIdColumn},quantity,updated_at,counted_at`)
-          .eq("session_id", selectedSessionId)
-          .in(itemIdColumn, itemIds);
-        if (recountError) throw recountError;
-        const candidates = (recountRows || []).filter(row => itemById.has(String((row as any)[itemIdColumn])));
-        candidates.sort((a, b) => {
-          const ta = new Date(a.updated_at || a.counted_at || 0).getTime() || 0;
-          const tb = new Date(b.updated_at || b.counted_at || 0).getTime() || 0;
-          if (tb !== ta) return tb - ta;
-          return String((b as any)[itemIdColumn]).localeCompare(String((a as any)[itemIdColumn]));
-        });
-        winnerItemId = String((candidates[0] as any)?.[itemIdColumn] || "");
-        if (!winnerItemId) throw new Error("No se encontro el detalle del reconteo para este codigo.");
-        winnerItem = itemById.get(winnerItemId) || null;
-        rows = candidates.filter(row => String((row as any)[itemIdColumn]) === winnerItemId);
-      } else {
-        const { data: countRows, error: countError } = await supabase
-          .from("general_inventory_counts")
-          .select("id,quantity,updated_at,counted_at")
-          .eq("session_id", selectedSessionId)
-          .eq("product_id", editingFinishedQuantity.row.product_id);
-        if (countError) throw countError;
-        rows = countRows || [];
-        rows.sort((a, b) => {
-          const ta = new Date(a.updated_at || a.counted_at || 0).getTime() || 0;
-          const tb = new Date(b.updated_at || b.counted_at || 0).getTime() || 0;
-          return tb - ta;
-        });
-        if (rows.length === 0) throw new Error("No se encontraron registros del conteo original para este codigo.");
-      }
-
-      const currentTotal = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
-      if (currentTotal !== oldValue) {
-        console.warn("El resumen y los registros tienen cantidades distintas; se usara el total real de los registros.", { oldValue, currentTotal });
-      }
-      let remainingReduction = Math.max(0, currentTotal - newValue);
-      const updates: Array<{ id: string; quantity: number }> = [];
-      if (newValue >= currentTotal) {
-        const first = rows[0];
-        updates.push({ id: String(first.id), quantity: Number(first.quantity || 0) + (newValue - currentTotal) });
-      } else {
-        for (const row of rows) {
-          const current = Number(row.quantity || 0);
-          const reduction = Math.min(current, remainingReduction);
-          const next = current - reduction;
-          if (next !== current) updates.push({ id: String(row.id), quantity: next });
-          remainingReduction -= reduction;
-          if (remainingReduction <= 0) break;
-        }
-      }
-      if (remainingReduction > 0.000001) throw new Error("No se pudo distribuir la nueva cantidad sin dejar valores negativos.");
-
-      const table = editingFinishedQuantity.mode === "validation"
-        ? "general_inventory_validation_counts"
-        : editingFinishedQuantity.mode === "recount"
-          ? "general_inventory_recount_counts"
-          : "general_inventory_counts";
-      for (const update of updates) {
-        const payload: Record<string, unknown> = {
-          quantity: update.quantity,
-          updated_at: now,
-        };
-        // Se selecciona la fila actualizada para detectar el caso en que una
-        // politica RLS deje la operacion sin error pero sin modificar filas.
-        // Los metadatos de auditoria se intentan despues, sin bloquear el
-        // cambio de cantidad si una politica antigua no permite ese campo.
-        const { data: updatedRows, error } = await supabase
-          .from(table)
-          .update(payload)
-          .eq("id", update.id)
-          .eq("session_id", selectedSessionId)
-          .select("id");
-        if (error) throw error;
-        if (!updatedRows || updatedRows.length === 0) {
-          throw new Error("La base de datos no autorizo modificar esta fila de una sesión finalizada.");
-        }
-        if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") {
-          await supabase.from(table).update({ note }).eq("id", update.id).eq("session_id", selectedSessionId);
-        }
-      }
-
-      if ((editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") && winnerItemId && winnerItem) {
-        const systemStock = Number(winnerItem.system_stock || editingFinishedQuantity.row.system_stock || 0);
-        const cost = Number(winnerItem.cost_snapshot || editingFinishedQuantity.row.cost || 0);
-        const { error: itemUpdateError } = await supabase
-          .from(editingFinishedQuantity.mode === "validation" ? "general_inventory_validation_items" : "general_inventory_recount_items")
-          .update({
-            counted_qty: newValue,
-            diff_qty: newValue - systemStock,
-            value_diff: (newValue - systemStock) * cost,
-            updated_at: now,
-          })
-          .eq("id", winnerItemId)
-          .eq("session_id", selectedSessionId);
-        if (itemUpdateError) console.warn("No se pudo actualizar el resumen auxiliar del reconteo/validacion:", itemUpdateError.message);
-      }
+      const { error: editError } = await supabase.rpc("edit_finished_general_inventory_quantity", {
+        p_editor_id: user.id,
+        p_session_id: selectedSessionId,
+        p_mode: editingFinishedQuantity.mode,
+        p_product_id: editingFinishedQuantity.row.product_id,
+        p_new_quantity: newValue,
+        p_note: note,
+        p_location_code: editingFinishedQuantityLocation.trim() || null,
+      });
+      if (editError) throw editError;
 
       markSessionTabStale(selectedSessionId, "resumen");
       markSessionTabStale(selectedSessionId, "productividad");
@@ -9650,8 +9544,8 @@ export default function InventariosPage() {
               {editingFinishedQuantity.row.sku} - {editingFinishedQuantity.row.description}
             </p>
             <p className="mt-2 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
-              Se modificara únicamente el resultado de este código en esta sesión finalizada. Las ubicaciones y el stock de sistema no se cambian.
-              Si la sesión tiene validación final, se edita esa capa; si no, se edita el reconteo cuando existe y, de lo contrario, el conteo original.
+              Se modificará únicamente el resultado de este código en esta sesión finalizada. Las ubicaciones y el stock de sistema no se cambian.
+              Se edita la última capa disponible: validación, reconteo o conteo original. Si el código no tiene un registro de conteo original, debes indicar la ubicación para crear uno.
             </p>
             {finishedQuantityEditError && (
               <p className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-700">
@@ -9675,6 +9569,23 @@ export default function InventariosPage() {
                   className="mt-1 w-full rounded-xl border px-3 py-3 text-sm font-bold"
                 />
               </div>
+              {editingFinishedQuantity.mode === "count" && (
+                <div>
+                  <label className="text-xs font-black uppercase text-slate-500">Ubicación (obligatoria si no existe conteo)</label>
+                  <input
+                    value={editingFinishedQuantityLocation}
+                    onChange={event => setEditingFinishedQuantityLocation(event.target.value)}
+                    placeholder="Ej. 120"
+                    list="finished-quantity-location-options"
+                    className="mt-1 w-full rounded-xl border px-3 py-3 text-sm font-bold"
+                  />
+                  <datalist id="finished-quantity-location-options">
+                    {locations.filter(location => location.is_active !== false).map(location => (
+                      <option key={location.id} value={location.location_code} />
+                    ))}
+                  </datalist>
+                </div>
+              )}
               <div>
                 <label className="text-xs font-black uppercase text-slate-500">Motivo del ajuste (obligatorio)</label>
                 <textarea
