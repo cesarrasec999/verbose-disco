@@ -286,7 +286,7 @@ export default function AjustesProvisionalesPage() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto p-4 space-y-4">
+      <main className="w-full max-w-[1800px] mx-auto p-4 space-y-4">
 
         {/* ── Filtros ── */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4">
