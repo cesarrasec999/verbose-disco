@@ -27,6 +27,7 @@ type AggRow = {
   total_value: number;
   record_count: number;
   last_date: string;
+  last_user: string | null;
   total_rows?: number;
 };
 
@@ -231,12 +232,13 @@ export default function AjustesProvisionalesPage() {
       Suma:                     r.total_qty,
       "Valor Total":            Number(r.total_value.toFixed(2)),
       "Ultimo Ajuste":          r.last_date.slice(0, 10),
+      "Usuario ultimo ingreso provisional": r.last_user || "No informado",
       Documentos:               r.record_count,
     }));
     const ws = XLSX.utils.json_to_sheet(sheetData);
     ws["!cols"] = [
       { wch: 22 }, { wch: 18 }, { wch: 40 }, { wch: 10 },
-      { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 10 },
+      { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
@@ -442,7 +444,8 @@ export default function AjustesProvisionalesPage() {
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-blue-600 whitespace-nowrap">Suma</th>
                             <th className="px-4 py-2.5 text-right text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Valor</th>
                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Último ajuste</th>
-                            <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">Docs</th>
+                            <th className="px-4 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Usuario último ingreso</th>
+                             <th className="px-4 py-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">Docs</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -476,6 +479,9 @@ export default function AjustesProvisionalesPage() {
                               <td className="px-4 py-3 text-center text-slate-500 text-xs font-semibold whitespace-nowrap">
                                 {row.last_date.slice(0, 10)}
                               </td>
+                              <td className="px-4 py-3 text-left text-slate-500 text-xs font-semibold max-w-[220px]">
+                                <span className="line-clamp-2 leading-snug">{row.last_user || "No informado"}</span>
+                              </td>
                               <td className="px-4 py-3 text-center text-slate-400 text-xs font-bold">
                                 {row.record_count}
                               </td>
@@ -507,6 +513,7 @@ export default function AjustesProvisionalesPage() {
                             <td className="px-4 py-2.5 text-right font-black text-slate-700 tabular-nums text-sm whitespace-nowrap">
                               {fmtMoney(storeValue)}
                             </td>
+                            <td />
                             <td />
                             <td />
                           </tr>

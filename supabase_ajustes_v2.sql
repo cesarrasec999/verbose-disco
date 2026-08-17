@@ -6,11 +6,20 @@ CREATE INDEX IF NOT EXISTS idx_erm_adj_store_product
   ON erp_movements (source_type, store_code, product_code)
   INCLUDE (quantity, value_total, description, unit, reason);
 
+-- Usuario que originó el ajuste provisional en el ERP. Se conserva como
+-- texto para permitir nombre completo y, cuando no exista, el código de empleado.
+ALTER TABLE public.erp_movements
+  ADD COLUMN IF NOT EXISTS adjustment_user text;
+
+CREATE INDEX IF NOT EXISTS idx_erm_adj_latest_user
+  ON public.erp_movements (source_type, store_code, product_code, movement_date DESC)
+  WHERE source_type = 'ADJUSTMENT';
+
 -- ─── Función RPC con paginación ───────────────────────────────────────────────
 -- Parámetros opcionales: year_start, p_store (filtro por tienda), p_limit, p_offset
 -- total_rows: total antes del LIMIT, para que el frontend sepa si hay más páginas
 
-DROP FUNCTION IF EXISTS get_ajustes_provisionales(text);
+DROP FUNCTION IF EXISTS public.get_ajustes_provisionales(text, text, int, int);
 
 CREATE OR REPLACE FUNCTION get_ajustes_provisionales(
   year_start    text DEFAULT NULL,
@@ -29,6 +38,7 @@ RETURNS TABLE(
   total_value   float8,
   record_count  int,
   last_date     timestamptz,
+  last_user     text,
   total_rows    bigint
 )
 LANGUAGE sql
@@ -54,19 +64,34 @@ AS $$
       AND (p_store IS NULL OR em.store_code = p_store)
     GROUP BY em.store_code, em.product_code
     HAVING SUM(em.quantity) > 0
+  ), latest_provisional AS (
+    SELECT DISTINCT ON (em.store_code, em.product_code)
+      em.store_code::text AS store_code,
+      em.product_code::text AS product_code,
+      NULLIF(em.adjustment_user, '')::text AS last_user
+    FROM public.erp_movements em
+    WHERE em.source_type = 'ADJUSTMENT'
+      AND em.movement_date >= COALESCE(year_start::date, date_trunc('year', CURRENT_DATE)::date)
+      AND em.reason ILIKE '%PROVIS%'
+      AND em.reason NOT ILIKE '%REGULARIZ%'
+      AND em.quantity > 0
+    ORDER BY em.store_code, em.product_code,
+             em.movement_date DESC, em.updated_at DESC, em.movement_key DESC
   )
   SELECT
     b.store_code, b.product_code, b.description, b.unit,
     b.qty_ajuste, b.qty_regulariz, b.total_qty, b.total_value,
-    b.record_count, b.last_date,
+    b.record_count, b.last_date, lp.last_user,
     COUNT(*) OVER ()::bigint AS total_rows
   FROM base b
+  LEFT JOIN latest_provisional lp
+    ON lp.store_code = b.store_code AND lp.product_code = b.product_code
   ORDER BY b.store_code, b.last_date DESC
   LIMIT  p_limit
   OFFSET p_offset;
 $$;
 
-GRANT EXECUTE ON FUNCTION get_ajustes_provisionales(text, text, int, int)
+GRANT EXECUTE ON FUNCTION public.get_ajustes_provisionales(text, text, int, int)
   TO anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';
