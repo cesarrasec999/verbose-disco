@@ -233,6 +233,7 @@ export default function InventariosPage() {
   const [editingFinishedQuantityValue, setEditingFinishedQuantityValue] = useState("");
   const [editingFinishedQuantityNote, setEditingFinishedQuantityNote] = useState("");
   const [savingFinishedQuantityEdit, setSavingFinishedQuantityEdit] = useState(false);
+  const [finishedQuantityEditError, setFinishedQuantityEditError] = useState("");
   const [productCandidates, setProductCandidates] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productLookupMessage, setProductLookupMessage] = useState("");
@@ -5959,6 +5960,7 @@ export default function InventariosPage() {
     setEditingFinishedQuantity({ row, mode });
     setEditingFinishedQuantityValue(String(currentValue));
     setEditingFinishedQuantityNote("");
+    setFinishedQuantityEditError("");
   }
 
   async function saveFinishedQuantityEdit() {
@@ -6091,10 +6093,23 @@ export default function InventariosPage() {
           quantity: update.quantity,
           updated_at: now,
         };
-        if (editingFinishedQuantity.mode === "count" || editingFinishedQuantity.mode === "recount") payload.sync_origin = "manual-summary-edit";
-        if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") payload.note = note;
-        const { error } = await supabase.from(table).update(payload).eq("id", update.id).eq("session_id", selectedSessionId);
+        // Se selecciona la fila actualizada para detectar el caso en que una
+        // politica RLS deje la operacion sin error pero sin modificar filas.
+        // Los metadatos de auditoria se intentan despues, sin bloquear el
+        // cambio de cantidad si una politica antigua no permite ese campo.
+        const { data: updatedRows, error } = await supabase
+          .from(table)
+          .update(payload)
+          .eq("id", update.id)
+          .eq("session_id", selectedSessionId)
+          .select("id");
         if (error) throw error;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error("La base de datos no autorizo modificar esta fila de una sesión finalizada.");
+        }
+        if (editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") {
+          await supabase.from(table).update({ note }).eq("id", update.id).eq("session_id", selectedSessionId);
+        }
       }
 
       if ((editingFinishedQuantity.mode === "recount" || editingFinishedQuantity.mode === "validation") && winnerItemId && winnerItem) {
@@ -6110,7 +6125,7 @@ export default function InventariosPage() {
           })
           .eq("id", winnerItemId)
           .eq("session_id", selectedSessionId);
-        if (itemUpdateError) throw itemUpdateError;
+        if (itemUpdateError) console.warn("No se pudo actualizar el resumen auxiliar del reconteo/validacion:", itemUpdateError.message);
       }
 
       markSessionTabStale(selectedSessionId, "resumen");
@@ -6119,7 +6134,9 @@ export default function InventariosPage() {
       setMessage(`${modeLabel[0].toUpperCase()}${modeLabel.slice(1)} de ${editingFinishedQuantity.row.sku} actualizado a ${number2(newValue)}.`);
       await loadSummary(selectedSessionId, true);
     } catch (error) {
-      setMessage(`No se pudo actualizar el ${modeLabel}: ` + (error instanceof Error ? error.message : String(error)));
+      const detail = `No se pudo actualizar el ${modeLabel}: ` + (error instanceof Error ? error.message : String(error));
+      setFinishedQuantityEditError(detail);
+      setMessage(detail);
     } finally {
       setSavingFinishedQuantityEdit(false);
     }
@@ -9636,6 +9653,11 @@ export default function InventariosPage() {
               Se modificara únicamente el resultado de este código en esta sesión finalizada. Las ubicaciones y el stock de sistema no se cambian.
               Si la sesión tiene validación final, se edita esa capa; si no, se edita el reconteo cuando existe y, de lo contrario, el conteo original.
             </p>
+            {finishedQuantityEditError && (
+              <p className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-bold text-red-700">
+                {finishedQuantityEditError}
+              </p>
+            )}
             <div className="mt-4 space-y-3">
               <div>
                 <label className="text-xs font-black uppercase text-slate-500">Cantidad actual</label>
