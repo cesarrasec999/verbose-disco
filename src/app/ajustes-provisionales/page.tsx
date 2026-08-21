@@ -43,6 +43,7 @@ function fmtMoney(n: number) {
 
 function formatSync(iso: string) {
   return new Date(iso).toLocaleString("es-PE", {
+    timeZone: "America/Lima",
     hour12: false, day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
