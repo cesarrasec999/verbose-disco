@@ -338,6 +338,9 @@ function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString
 function dateTimeForExcel(v: string | null) {
   return v ? new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" }) : "";
 }
+function dateForExcel(v: string | null) {
+  return v ? new Date(v).toLocaleDateString("es-PE", { timeZone: "America/Lima" }) : "";
+}
 function timeShort(v: string | null) {
   if (!v) return "-";
   return new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
@@ -2016,7 +2019,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         "Guías / documentos": requestGuides(request),
         "Estado RMS": "En tránsito",
         "Fecha requerimiento": dateTimeForExcel(request.creation_date),
-        "Fecha tránsito": dateTimeForExcel(request.request_date),
+        "Fecha tránsito": dateForExcel(request.request_date),
         "Tienda origen": request.source_store_name || request.source_store_code || "",
         "Código origen": request.source_store_code || "",
         Motivo: request.reason || "",
