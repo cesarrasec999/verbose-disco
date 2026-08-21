@@ -335,9 +335,6 @@ function transitOnlyGroup(group: ReceptionRequestGroup): ReceptionRequestGroup |
   };
 }
 function dateShort(v: string | null) { return v ? new Date(v).toLocaleDateString("es-PE") : "-"; }
-function dateTimeForExcel(v: string | null) {
-  return v ? new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" }) : "";
-}
 function dateForExcel(v: string | null) {
   if (!v) return null;
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -2022,7 +2019,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   async function exportPendingRequestsExcel() {
     setExportingPendingRequests(true);
     try {
-      const exportRows = pendingRequestsByStore.flatMap(group => group.rows.map(request => ({
+      const pendingExportRequests = pendingRequestsByStore.flatMap(group => group.rows.map(request => ({ group, request })));
+      const exportRows = pendingExportRequests.map(({ group, request }) => ({
         Tienda: request.destination_store_name || request.destination_store_code || group.name,
         "Código tienda": request.destination_store_code || "",
         Requerimiento: requestRequirementLabel(request),
@@ -2039,8 +2037,26 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         "Estado recepción": request.reception_status === "completed" ? "Completado" : request.reception_status === "in_progress" ? "En proceso" : "Pendiente",
         "Recepcionado por": request.completed_by_name || "",
         Observaciones: request.notes || "",
-      })));
+      }));
       const workbook = XLSX.utils.book_new();
+      const summaryRows = [...pendingExportRequests]
+        .sort((a, b) => {
+          const dateDiff = new Date(a.request.request_date || a.request.creation_date || 0).getTime() -
+            new Date(b.request.request_date || b.request.creation_date || 0).getTime();
+          return dateDiff || requestRequirementLabel(a.request).localeCompare(requestRequirementLabel(b.request), "es");
+        })
+        .map(({ group, request }) => ({
+          "Fecha tránsito": dateForExcel(request.request_date || request.creation_date),
+          Tienda: request.destination_store_name || request.destination_store_code || group.name,
+          Requerimiento: requestRequirementLabel(request),
+          Motivo: request.reason || "",
+          "Cuenta de Requerimiento": 1,
+        }));
+      const summaryWorksheet = XLSX.utils.json_to_sheet(summaryRows);
+      for (let row = 2; row <= summaryRows.length + 1; row += 1) {
+        if (summaryWorksheet[`A${row}`]) summaryWorksheet[`A${row}`].z = "dd/mm/yyyy";
+      }
+      XLSX.utils.book_append_sheet(workbook, summaryWorksheet, "Resumen");
       const worksheet = XLSX.utils.json_to_sheet(exportRows);
       for (let row = 2; row <= exportRows.length + 1; row += 1) {
         if (worksheet[`F${row}`]) worksheet[`F${row}`].z = "dd/mm/yyyy";

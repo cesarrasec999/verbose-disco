@@ -49,6 +49,20 @@ function formatSync(iso: string) {
   });
 }
 
+function dateForExcel(iso: string | null) {
+  if (!iso) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(iso));
+  const year = Number(parts.find(part => part.type === "year")?.value);
+  const month = Number(parts.find(part => part.type === "month")?.value);
+  const day = Number(parts.find(part => part.type === "day")?.value);
+  return new Date(year, month - 1, day);
+}
+
 // erp_movements.store_code (lo que usa get_ajustes_provisionales) es
 // "1000 + numero real de tienda del ERP". Para casi todas las tiendas ese
 // numero coincide con el de la etiqueta "GPCxxx", excepto 4 que estan
@@ -236,12 +250,30 @@ export default function AjustesProvisionalesPage() {
       "Usuario ultimo ingreso provisional": r.last_user || "No informado",
       Documentos:               r.record_count,
     }));
+    const summaryRows = [...visibleAggregated]
+      .sort((a, b) => new Date(a.last_date).getTime() - new Date(b.last_date).getTime() ||
+        a.store_name.localeCompare(b.store_name, "es") || a.product_code.localeCompare(b.product_code, "es"))
+      .map(r => ({
+        "Ultimo Ajuste": dateForExcel(r.last_date),
+        Tienda: r.store_name,
+        Codigo: r.product_code,
+        Descripcion: r.description,
+        Pendiente: r.total_qty,
+        "Valor Total": Number(r.total_value.toFixed(2)),
+        "Usuario ultimo ingreso provisional": r.last_user || "No informado",
+        Documentos: r.record_count,
+      }));
+    const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
+    for (let row = 2; row <= summaryRows.length + 1; row += 1) {
+      if (summaryWs[`A${row}`]) summaryWs[`A${row}`].z = "dd/mm/yyyy";
+    }
     const ws = XLSX.utils.json_to_sheet(sheetData);
     ws["!cols"] = [
       { wch: 22 }, { wch: 18 }, { wch: 40 }, { wch: 10 },
       { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, summaryWs, "Resumen");
     XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
     XLSX.writeFile(wb, `ajustes-provisionales-${new Date().getFullYear()}.xlsx`);
   }
