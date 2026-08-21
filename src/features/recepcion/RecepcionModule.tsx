@@ -339,7 +339,17 @@ function dateTimeForExcel(v: string | null) {
   return v ? new Date(v).toLocaleString("es-PE", { dateStyle: "short", timeStyle: "medium" }) : "";
 }
 function dateForExcel(v: string | null) {
-  return v ? new Date(v).toLocaleDateString("es-PE", { timeZone: "America/Lima" }) : "";
+  if (!v) return null;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(v));
+  const year = Number(parts.find(part => part.type === "year")?.value);
+  const month = Number(parts.find(part => part.type === "month")?.value);
+  const day = Number(parts.find(part => part.type === "day")?.value);
+  return new Date(year, month - 1, day);
 }
 function timeShort(v: string | null) {
   if (!v) return "-";
@@ -2031,7 +2041,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         Observaciones: request.notes || "",
       })));
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows), "Pendientes recepción");
+      const worksheet = XLSX.utils.json_to_sheet(exportRows);
+      for (let row = 2; row <= exportRows.length + 1; row += 1) {
+        if (worksheet[`F${row}`]) worksheet[`F${row}`].z = "dd/mm/yyyy";
+        if (worksheet[`G${row}`]) worksheet[`G${row}`].z = "dd/mm/yyyy";
+      }
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Pendientes recepción");
       const selectedStore = destStoreOptions.find(store => store.code === storeFilter)?.name || "todas_las_tiendas";
       XLSX.writeFile(workbook, `pendientes_por_recepcion_${selectedStore.replace(/[^a-z0-9]+/gi, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
       toast.success(`${exportRows.length.toLocaleString("es-PE")} requerimientos pendientes exportados.`);
