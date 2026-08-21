@@ -2018,7 +2018,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         Requerimiento: requestRequirementLabel(request),
         "Guías / documentos": requestGuides(request),
         "Estado RMS": "En tránsito",
-        "Fecha requerimiento": dateTimeForExcel(request.creation_date),
+        "Fecha requerimiento": dateForExcel(request.creation_date),
         "Fecha tránsito": dateForExcel(request.request_date),
         "Tienda origen": request.source_store_name || request.source_store_code || "",
         "Código origen": request.source_store_code || "",
