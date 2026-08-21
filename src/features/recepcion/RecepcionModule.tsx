@@ -2050,7 +2050,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           Tienda: request.destination_store_name || request.destination_store_code || group.name,
           Requerimiento: requestRequirementLabel(request),
           Motivo: request.reason || "",
-          "Cuenta de Requerimiento": 1,
+          "Cuenta de Requerimiento": request.transfer_count || 1,
         }));
       const summaryWorksheet = XLSX.utils.json_to_sheet(summaryRows);
       for (let row = 2; row <= summaryRows.length + 1; row += 1) {
