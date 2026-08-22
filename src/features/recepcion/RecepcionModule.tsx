@@ -801,6 +801,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     } else {
       q = q.or("status_code.eq.T,status_code.eq.R,reception_status.in.(in_progress,completed)");
     }
+    // Las guías anuladas en RMS no deben reaparecer en listados históricos ni
+    // formar parte de una recepción agrupada.
+    q = q.neq("status_code", "X");
     if (codes.length > 0) q = q.in("destination_store_code", codes);
     return q;
   }
