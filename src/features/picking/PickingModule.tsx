@@ -112,6 +112,14 @@ type PickingPanel = "asignacion" | "resumen" | "reportes" | "registros" | "produ
 type LocationSort = "asc" | "desc";
 type ScannerTarget = "location" | "product" | null;
 type AssignmentProgressFilter = "todos" | "pendiente";
+type PickingLocationFilter = {
+  zone: string;
+  lineal: string;
+  metro: string;
+  nivel: string;
+};
+
+type ParsedPickingLocation = PickingLocationFilter;
 
 type ScanEntry = {
   location: string;
@@ -211,6 +219,13 @@ function isAssignmentComplete(assignment: PickingAssignment, pickedOverride?: nu
 
 function cleanLocationLabel(value: string) {
   return String(value || "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+function parsePickingLocation(value: string): ParsedPickingLocation | null {
+  const normalized = normalize(cleanLocationLabel(value)).replace(/[’‘'`]/g, "-");
+  const match = /^(\d{2})-([A-Z])-(\d{2})-(\d{2})$/.exec(normalized);
+  if (!match) return null;
+  return { zone: match[1], lineal: match[2], metro: match[3], nivel: match[4] };
 }
 
 function storeLabel(request: PickingRequest | null | undefined) {
@@ -330,6 +345,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   useEffect(() => { productivityDateToRef.current = productivityDateTo; }, [productivityDateTo]);
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
   const [locationSort, setLocationSort] = useState<LocationSort>("asc");
+  const [locationFilter, setLocationFilter] = useState<PickingLocationFilter>({ zone: "", lineal: "", metro: "", nivel: "" });
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [scannerRunning, setScannerRunning] = useState(false);
   const [codeMismatch, setCodeMismatch] = useState<{ expected: string; scanned: string } | null>(null);
@@ -395,6 +411,52 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     return grouped;
   }, [assignments]);
 
+  const parsedLocations = useMemo(() => {
+    const rows: ParsedPickingLocation[] = [];
+    for (const locations of Object.values(locationsByLine)) {
+      for (const location of locations) {
+        const parsed = parsePickingLocation(location);
+        if (parsed) rows.push(parsed);
+      }
+    }
+    return rows;
+  }, [locationsByLine]);
+
+  const locationFilterOptions = useMemo(() => {
+    const unique = (values: string[]) => [...new Set(values)].sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+    const zones = unique(parsedLocations.map(location => location.zone));
+    const lineales = locationFilter.zone
+      ? unique(parsedLocations.filter(location => location.zone === locationFilter.zone).map(location => location.lineal))
+      : [];
+    const metros = locationFilter.zone && locationFilter.lineal
+      ? unique(parsedLocations
+          .filter(location => location.zone === locationFilter.zone && location.lineal === locationFilter.lineal)
+          .map(location => location.metro))
+      : [];
+    const niveles = locationFilter.zone && locationFilter.lineal && locationFilter.metro
+      ? unique(parsedLocations
+          .filter(location => location.zone === locationFilter.zone && location.lineal === locationFilter.lineal && location.metro === locationFilter.metro)
+          .map(location => location.nivel))
+      : [];
+    return { zones, lineales, metros, niveles };
+  }, [locationFilter.lineal, locationFilter.metro, locationFilter.zone, parsedLocations]);
+
+  const locationFilteredLines = useMemo(() => {
+    if (!locationFilter.zone) return visibleLines;
+    return visibleLines.filter(line => {
+      const assigned = assignmentsByLine.get(line.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
+      if (Math.max(0, num(line.qty_requested) - assigned) <= 0) return false;
+      return (locationsByLine[line.id] || []).some(location => {
+        const parsed = parsePickingLocation(location);
+        if (!parsed || parsed.zone !== locationFilter.zone) return false;
+        if (locationFilter.lineal && parsed.lineal !== locationFilter.lineal) return false;
+        if (locationFilter.metro && parsed.metro !== locationFilter.metro) return false;
+        if (locationFilter.nivel && parsed.nivel !== locationFilter.nivel) return false;
+        return true;
+      });
+    });
+  }, [assignmentsByLine, locationFilter, locationsByLine, visibleLines]);
+
   const pickerNameById = useMemo(() => {
     const next = new Map<string, string>();
     for (const picker of pickers) next.set(picker.id, picker.full_name);
@@ -425,7 +487,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   );
 
   const assignedPickerOptions = useMemo(() => {
-    const visibleLineIds = new Set(visibleLines.map(line => line.id));
+    const visibleLineIds = new Set(locationFilteredLines.map(line => line.id));
     const grouped = new Map<string, string>();
     for (const assignment of assignments) {
       if (!visibleLineIds.has(assignment.line_id)) continue;
@@ -434,10 +496,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       grouped.set(key, assignmentPickerName(assignment));
     }
     return [...grouped.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, "es"));
-  }, [assignmentPickerName, assignments, visibleLines]);
+  }, [assignmentPickerName, assignments, locationFilteredLines]);
 
   const sortedVisibleLines = useMemo(() => {
-    return [...visibleLines].sort((a, b) => {
+    return [...locationFilteredLines].sort((a, b) => {
       const aAssigned = assignmentsByLine.get(a.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
       const bAssigned = assignmentsByLine.get(b.id)?.reduce((sum, item) => sum + num(item.assigned_qty), 0) || 0;
       const aPending = Math.max(0, num(a.qty_requested) - aAssigned);
@@ -450,7 +512,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       if (cmp !== 0) return locationSort === "asc" ? cmp : -cmp;
       return a.product_code.localeCompare(b.product_code, "es");
     });
-  }, [assignmentsByLine, locationSort, locationsByLine, visibleLines]);
+  }, [assignmentsByLine, locationFilteredLines, locationSort, locationsByLine]);
 
   const assignmentFilteredLines = useMemo(() => {
     return sortedVisibleLines.filter(line => {
@@ -1508,13 +1570,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setSelectedLineIds(prev => {
-        const allowed = new Set(visibleLines.map(line => line.id));
+        const allowed = new Set(assignmentFilteredLines.map(line => line.id));
         const next = new Set([...prev].filter(id => allowed.has(id)));
         return next.size === prev.size ? prev : next;
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [visibleLines]);
+  }, [assignmentFilteredLines]);
 
   async function assignSelectedLines() {
     if (!user || !selectedRequest || !selectedPickerId) {
@@ -2256,7 +2318,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-20 border-b bg-white px-4 py-3">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
+        <div className="mx-auto flex w-full max-w-[1800px] items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button onClick={() => window.location.href = "/"} className="rounded-xl border px-3 py-2 text-slate-700 hover:bg-slate-50" title="Menu principal">
               <Home size={18} />
@@ -2278,7 +2340,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         </div>
       </header>
 
-      <section className="mx-auto max-w-7xl p-4">
+      <section className="mx-auto w-full max-w-[1800px] p-4">
         {manager && <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm">
           <div>
             <p className="text-xs font-black uppercase text-slate-500">Ultima sincronizacion ERP Picking</p>
@@ -2625,6 +2687,81 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                       </div>
                     );
                   })()}
+
+                  <div className="mt-3 rounded-2xl border bg-white p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-black uppercase text-slate-500">Filtrar ubicacion para asignar</p>
+                        <p className="text-xs font-semibold text-slate-400">Selecciona en orden: zona, lineal, metro y nivel. El filtro muestra solo codigos pendientes por asignar.</p>
+                      </div>
+                      {(locationFilter.zone || locationFilter.lineal || locationFilter.metro || locationFilter.nivel) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLocationFilter({ zone: "", lineal: "", metro: "", nivel: "" });
+                            setSelectedLineIds(new Set());
+                          }}
+                          className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                        >
+                          Limpiar ubicacion
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <label className="text-xs font-black uppercase text-slate-500">
+                        Zona
+                        <select
+                          value={locationFilter.zone}
+                          onChange={event => setLocationFilter({ zone: event.target.value, lineal: "", metro: "", nivel: "" })}
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black normal-case text-slate-800"
+                        >
+                          <option value="">Todas las zonas</option>
+                          {locationFilterOptions.zones.map(zone => <option key={zone} value={zone}>{zone}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-black uppercase text-slate-500">
+                        Lineal
+                        <select
+                          value={locationFilter.lineal}
+                          disabled={!locationFilter.zone}
+                          onChange={event => setLocationFilter(prev => ({ ...prev, lineal: event.target.value, metro: "", nivel: "" }))}
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black normal-case text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                        >
+                          <option value="">Todos los lineales</option>
+                          {locationFilterOptions.lineales.map(lineal => <option key={lineal} value={lineal}>{lineal}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-black uppercase text-slate-500">
+                        Metro
+                        <select
+                          value={locationFilter.metro}
+                          disabled={!locationFilter.lineal}
+                          onChange={event => setLocationFilter(prev => ({ ...prev, metro: event.target.value, nivel: "" }))}
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black normal-case text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                        >
+                          <option value="">Todos los metros</option>
+                          {locationFilterOptions.metros.map(metro => <option key={metro} value={metro}>{metro}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-black uppercase text-slate-500">
+                        Nivel
+                        <select
+                          value={locationFilter.nivel}
+                          disabled={!locationFilter.metro}
+                          onChange={event => setLocationFilter(prev => ({ ...prev, nivel: event.target.value }))}
+                          className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm font-black normal-case text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                        >
+                          <option value="">Todos los niveles</option>
+                          {locationFilterOptions.niveles.map(nivel => <option key={nivel} value={nivel}>{nivel}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                    {locationFilter.zone && (
+                      <p className="mt-2 text-xs font-bold text-violet-700">
+                        {locationFilteredLines.length} codigo(s) pendiente(s) con la ubicacion seleccionada.
+                      </p>
+                    )}
+                  </div>
 
                   <div className="mt-4 overflow-hidden rounded-2xl border">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-white p-3">
