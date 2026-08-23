@@ -5623,10 +5623,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             };
             const exportRows = rows.map(row => {
                 const store = allStores.find(s => s.id === row.store_id);
-                const locationValue = isCdGpcStore(row.store_id || "")
+                const rowIsCdGpc = String(store?.name || store?.erp_sede || row.store_name || "").trim().toUpperCase() === "CD-GPC";
+                const locationValue = rowIsCdGpc
                     ? normalizeStructuredLocationValue(row.location)
                     : normalizeLocationValue(row.location);
-                const previousLocationValue = isCdGpcStore(row.store_id || "")
+                const previousLocationValue = rowIsCdGpc
                     ? normalizeStructuredLocationValue(row.previous_location)
                     : normalizeLocationValue(row.previous_location);
                 return {
