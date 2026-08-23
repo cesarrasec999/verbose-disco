@@ -97,7 +97,14 @@ type CdGpcLocationFilter = {
     invalidOnly: boolean;
 };
 
-const CD_GPC_LOCATION_PATTERN = /^(\d{2})-([A-Z])-(\d{2})-(\d{2})$/;
+type ParsedCdGpcLocation = {
+    zona: string;
+    lineal: string;
+    metro: string;
+    nivel: string;
+};
+
+const CD_GPC_LOCATION_PATTERN = /^(\d{2})-([A-Z][0-9]{0,2})-(\d{2})-(\d{2})$/;
 
 function normalizeLocationValue(value: string | null | undefined) {
     return String(value || "")
@@ -106,13 +113,17 @@ function normalizeLocationValue(value: string | null | undefined) {
         .replace(/[’‘'`]/g, "-");
 }
 
+function normalizeStructuredLocationValue(value: string | null | undefined) {
+    return normalizeLocationValue(value).replace(/\s+/g, "");
+}
+
 function parseCdGpcLocation(value: string | null | undefined) {
-    const match = CD_GPC_LOCATION_PATTERN.exec(normalizeLocationValue(value));
-    return match ? { zona: match[1], lineal: match[2], metro: match[3], nivel: match[4] } : null;
+    const match = CD_GPC_LOCATION_PATTERN.exec(normalizeStructuredLocationValue(value));
+    return match ? { zona: match[1], lineal: match[2], metro: match[3], nivel: match[4] } satisfies ParsedCdGpcLocation : null;
 }
 
 function isCdGpcLocationValid(value: string | null | undefined) {
-    return CD_GPC_LOCATION_PATTERN.test(normalizeLocationValue(value));
+    return CD_GPC_LOCATION_PATTERN.test(normalizeStructuredLocationValue(value));
 }
 
 type DashboardDayDetail = {
@@ -314,6 +325,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         nivel: "",
         invalidOnly: false,
     });
+    const [cdGpcFilterLocations, setCdGpcFilterLocations] = useState<ParsedCdGpcLocation[]>([]);
     const [locationsFile, setLocationsFile] = useState<File|null>(null);
     const [locationsFileName, setLocationsFileName] = useState("");
     const locationsInputRef = useRef<HTMLInputElement|null>(null);
@@ -324,6 +336,25 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     ]);
     const [locationEntryDraftRecords, setLocationEntryDraftRecords] = useState<LocationEntryDraftRecord[]>([]);
     const [editingLocationEntryRecordId, setEditingLocationEntryRecordId] = useState<string | null>(null);
+
+    const cdGpcFilterOptions = useMemo(() => {
+        const unique = (values: string[]) => [...new Set(values)].sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+        const matches = (location: ParsedCdGpcLocation) => location.zona === cdGpcLocationFilter.zona
+            && (!cdGpcLocationFilter.lineal || location.lineal === cdGpcLocationFilter.lineal)
+            && (!cdGpcLocationFilter.metro || location.metro === cdGpcLocationFilter.metro);
+        return {
+            zonas: unique(cdGpcFilterLocations.map(location => location.zona)),
+            lineales: cdGpcLocationFilter.zona
+                ? unique(cdGpcFilterLocations.filter(location => location.zona === cdGpcLocationFilter.zona).map(location => location.lineal))
+                : [],
+            metros: cdGpcLocationFilter.zona && cdGpcLocationFilter.lineal
+                ? unique(cdGpcFilterLocations.filter(location => matches(location)).map(location => location.metro))
+                : [],
+            niveles: cdGpcLocationFilter.zona && cdGpcLocationFilter.lineal && cdGpcLocationFilter.metro
+                ? unique(cdGpcFilterLocations.filter(location => matches(location)).map(location => location.nivel))
+                : [],
+        };
+    }, [cdGpcFilterLocations, cdGpcLocationFilter.lineal, cdGpcLocationFilter.metro, cdGpcLocationFilter.zona]);
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
@@ -552,6 +583,42 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setLocationStoreId(user.store_id);
         }
     }, [user, locationStoreId]);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!locationStoreId || !isCdGpcStore(locationStoreId)) {
+            setCdGpcFilterLocations([]);
+            return () => { cancelled = true; };
+        }
+        void (async () => {
+            try {
+                const rows: Array<{ location: string | null }> = [];
+                for (let from = 0; ; from += 1000) {
+                    const { data, error } = await supabase
+                        .from("product_locations")
+                        .select("location")
+                        .eq("store_id", locationStoreId)
+                        .eq("is_active", true)
+                        .not("location", "is", null)
+                        .range(from, from + 999);
+                    if (error) throw error;
+                    rows.push(...((data || []) as Array<{ location: string | null }>));
+                    if (!data || data.length < 1000) break;
+                }
+                if (cancelled) return;
+                const unique = new Map<string, ParsedCdGpcLocation>();
+                for (const row of rows) {
+                    const parsed = parseCdGpcLocation(row.location);
+                    if (!parsed) continue;
+                    unique.set(`${parsed.zona}-${parsed.lineal}-${parsed.metro}-${parsed.nivel}`, parsed);
+                }
+                setCdGpcFilterLocations([...unique.values()]);
+            } catch (error) {
+                if (!cancelled) console.warn("No se pudieron cargar opciones de ubicacion CD-GPC:", error);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [locationStoreId, allStores, allStoresRaw]);
 
     useEffect(() => {
         if (valStoreId) sessionStorage.setItem("cyclic_val_store", valStoreId);
@@ -4094,7 +4161,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[], source: "ciclico" | "auditoria" | "inventario general" | "manual" | "Recepcion" = "ciclico", storedQuantity?: number | null) {
-        const cleanLocations = [...new Set(locations.map(normalizeLocationValue).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        const cleanLocations = [...new Set(locations.map(location => normalizeLocationForStore(location, storeId)).filter(Boolean).filter(loc => !loc.startsWith("__")))];
         if (isCdGpcStore(storeId)) {
             const invalid = cleanLocations.find(location => !isCdGpcLocationValid(location));
             if (invalid) {
@@ -4139,7 +4206,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function replaceProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
-        const cleanLocations = [...new Set(locations.map(normalizeLocationValue).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        const cleanLocations = [...new Set(locations.map(location => normalizeLocationForStore(location, storeId)).filter(Boolean).filter(loc => !loc.startsWith("__")))];
         if (!productId || !sku || !storeId) return;
         if (isCdGpcStore(storeId) && cleanLocations.some(location => !isCdGpcLocationValid(location))) {
             showMessage(locationValidationMessage(cleanLocations.find(location => !isCdGpcLocationValid(location)) || ""), "error");
@@ -4793,15 +4860,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         return name === "CD-GPC";
     }
 
+    function normalizeLocationForStore(value: string | null | undefined, storeId = locationStoreId) {
+        return isCdGpcStore(storeId) ? normalizeStructuredLocationValue(value) : normalizeLocationValue(value);
+    }
+
     function locationValidationMessage(value: string) {
         const normalized = normalizeLocationValue(value);
         return normalized
-            ? `Ubicacion invalida: "${normalized}". Usa el formato 01-A-01-01 (zona 2 digitos, lineal una letra, metro y nivel de 2 digitos).`
-            : "Ingresa una ubicacion con el formato 01-A-01-01.";
+            ? `Ubicacion invalida: "${normalized}". Usa el formato 01-A-01-01 o 06-L4-01-01 (zona 2 digitos, lineal una letra y hasta 2 digitos, metro y nivel de 2 digitos).`
+            : "Ingresa una ubicacion con el formato 01-A-01-01 o 06-L4-01-01.";
     }
 
     function normalizeAndValidateLocation(value: string, storeId = locationStoreId) {
-        const normalized = normalizeLocationValue(value);
+        const normalized = normalizeLocationForStore(value, storeId);
         if (isCdGpcStore(storeId) && !isCdGpcLocationValid(normalized)) {
             showMessage(locationValidationMessage(value), "error");
             return null;
@@ -5334,7 +5405,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     function beginLocationEditing(rows: ProductLocation[]) {
         if (rows.length === 0) return;
         setLocationEditingIds(new Set(rows.map(row => row.id)));
-        setLocationEditDrafts(Object.fromEntries(rows.map(row => [row.id, normalizeLocationValue(row.location)])));
+        setLocationEditDrafts(Object.fromEntries(rows.map(row => [row.id, normalizeLocationForStore(row.location, row.store_id || "")] )));
     }
 
     function cancelLocationEditing() {
@@ -5455,14 +5526,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const dataRows = hasHeader ? body.slice(1) : body;
             const codeLocPairs = dataRows.map((row, rowIndex) => ({
                 code: fullProductCode(String(row[0] || "")),
-                location: normalizeLocationValue(String(row[1] || "")),
+                location: normalizeLocationForStore(String(row[1] || ""), locationStoreId),
                 rowNumber: rowIndex + (hasHeader ? 2 : 1),
             })).filter(row => row.code && row.location);
 
             if (isCdGpcStore(locationStoreId)) {
                 const invalid = codeLocPairs.find(row => !isCdGpcLocationValid(row.location));
                 if (invalid) {
-                    showMessage(`Excel rechazado: la fila ${invalid.rowNumber} tiene una ubicacion invalida ("${invalid.location}"). Usa el formato 01-A-01-01.`, "error");
+                    showMessage(`Excel rechazado: la fila ${invalid.rowNumber} tiene una ubicacion invalida ("${invalid.location}"). Usa el formato 01-A-01-01 o 06-L4-01-01.`, "error");
                     return;
                 }
             }
@@ -5552,6 +5623,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             };
             const exportRows = rows.map(row => {
                 const store = allStores.find(s => s.id === row.store_id);
+                const locationValue = isCdGpcStore(row.store_id || "")
+                    ? normalizeStructuredLocationValue(row.location)
+                    : normalizeLocationValue(row.location);
+                const previousLocationValue = isCdGpcStore(row.store_id || "")
+                    ? normalizeStructuredLocationValue(row.previous_location)
+                    : normalizeLocationValue(row.previous_location);
                 return {
                     "Fecha y hora": row.occurred_at || "",
                     Acción: actionLabels[row.action] || row.action || "",
@@ -5560,11 +5637,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     Código: row.sku || "",
                     Descripción: row.product_description || "",
                     UM: row.unit || "",
-                    Ubicación: row.location || "",
+                    Ubicación: locationValue,
                     "Cantidad guardada": row.stored_quantity ?? "",
                     Activa: row.is_active ? "Sí" : "No",
                     Fuente: row.source === "manual" ? "Recepcion" : row.source || "Recepcion",
-                    "Ubicación anterior": row.previous_location || "",
+                    "Ubicación anterior": previousLocationValue,
                     "Cantidad anterior": row.previous_stored_quantity ?? "",
                     "Activa anteriormente": row.previous_is_active === null || row.previous_is_active === undefined ? "" : row.previous_is_active ? "Sí" : "No",
                 };
@@ -9117,7 +9194,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                             <div>
                                                 <p className="text-sm font-black text-cyan-950">Filtro estructurado CD-GPC</p>
-                                                <p className="text-xs text-cyan-800">Zona · Lineal · Metro · Nivel. Ejemplo: 01-A-01-01.</p>
+                                                <p className="text-xs text-cyan-800">Zona · Lineal · Metro · Nivel. Ejemplos: 01-A-01-01 y 06-L4-01-01.</p>
                                             </div>
                                             <label className="inline-flex items-center gap-2 text-xs font-black text-amber-900">
                                                 <input type="checkbox" checked={cdGpcLocationFilter.invalidOnly} onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, invalidOnly: e.target.checked }))} />
@@ -9125,21 +9202,54 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             </label>
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                                            {([
-                                                ["zona", "Zona", 2], ["lineal", "Lineal", 1], ["metro", "Metro", 2], ["nivel", "Nivel", 2],
-                                            ] as const).map(([field, label, maxLength]) => (
-                                                <label key={field} className="text-xs font-bold text-cyan-950">
-                                                    {label}
-                                                    <input
-                                                        className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
-                                                        value={cdGpcLocationFilter[field]}
-                                                        maxLength={maxLength}
-                                                        disabled={cdGpcLocationFilter.invalidOnly}
-                                                        onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, [field]: e.target.value.toUpperCase().replace(field === "lineal" ? /[^A-Z]/g : /[^0-9]/g, "").slice(0, maxLength) }))}
-                                                        placeholder={field === "lineal" ? "A" : "01"}
-                                                    />
-                                                </label>
-                                            ))}
+                                            <label className="text-xs font-bold text-cyan-950">
+                                                Zona
+                                                <select
+                                                    className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
+                                                    value={cdGpcLocationFilter.zona}
+                                                    disabled={cdGpcLocationFilter.invalidOnly}
+                                                    onChange={e => setCdGpcLocationFilter({ zona: e.target.value, lineal: "", metro: "", nivel: "", invalidOnly: false })}
+                                                >
+                                                    <option value="">Todas las zonas</option>
+                                                    {cdGpcFilterOptions.zonas.map(option => <option key={option} value={option}>{option}</option>)}
+                                                </select>
+                                            </label>
+                                            <label className="text-xs font-bold text-cyan-950">
+                                                Lineal
+                                                <select
+                                                    className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
+                                                    value={cdGpcLocationFilter.lineal}
+                                                    disabled={cdGpcLocationFilter.invalidOnly || !cdGpcLocationFilter.zona}
+                                                    onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, lineal: e.target.value, metro: "", nivel: "", invalidOnly: false }))}
+                                                >
+                                                    <option value="">Todos los lineales</option>
+                                                    {cdGpcFilterOptions.lineales.map(option => <option key={option} value={option}>{option}</option>)}
+                                                </select>
+                                            </label>
+                                            <label className="text-xs font-bold text-cyan-950">
+                                                Metro
+                                                <select
+                                                    className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
+                                                    value={cdGpcLocationFilter.metro}
+                                                    disabled={cdGpcLocationFilter.invalidOnly || !cdGpcLocationFilter.lineal}
+                                                    onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, metro: e.target.value, nivel: "", invalidOnly: false }))}
+                                                >
+                                                    <option value="">Todos los metros</option>
+                                                    {cdGpcFilterOptions.metros.map(option => <option key={option} value={option}>{option}</option>)}
+                                                </select>
+                                            </label>
+                                            <label className="text-xs font-bold text-cyan-950">
+                                                Nivel
+                                                <select
+                                                    className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
+                                                    value={cdGpcLocationFilter.nivel}
+                                                    disabled={cdGpcLocationFilter.invalidOnly || !cdGpcLocationFilter.metro}
+                                                    onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, nivel: e.target.value, invalidOnly: false }))}
+                                                >
+                                                    <option value="">Todos los niveles</option>
+                                                    {cdGpcFilterOptions.niveles.map(option => <option key={option} value={option}>{option}</option>)}
+                                                </select>
+                                            </label>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
                                             <button type="button" className="rounded-xl bg-cyan-700 px-4 py-2 text-xs font-black text-white disabled:opacity-40" disabled={locationBusy} onClick={searchCdGpcLocations}>{locationBusy ? "Filtrando..." : "Aplicar filtro"}</button>

@@ -222,8 +222,8 @@ function cleanLocationLabel(value: string) {
 }
 
 function parsePickingLocation(value: string): ParsedPickingLocation | null {
-  const normalized = normalize(cleanLocationLabel(value)).replace(/[’‘'`]/g, "-");
-  const match = /^(\d{2})-([A-Z])-(\d{2})-(\d{2})$/.exec(normalized);
+  const normalized = normalize(cleanLocationLabel(value)).replace(/[’‘'`]/g, "-").replace(/\s+/g, "");
+  const match = /^(\d{2})-([A-Z][0-9]{0,2})-(\d{2})-(\d{2})$/.exec(normalized);
   if (!match) return null;
   return { zone: match[1], lineal: match[2], metro: match[3], nivel: match[4] };
 }
