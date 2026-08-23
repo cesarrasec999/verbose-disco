@@ -89,6 +89,32 @@ type MultiLocationSearchResult = {
     rows: ProductLocation[];
 };
 
+type CdGpcLocationFilter = {
+    zona: string;
+    lineal: string;
+    metro: string;
+    nivel: string;
+    invalidOnly: boolean;
+};
+
+const CD_GPC_LOCATION_PATTERN = /^(\d{2})-([A-Z])-(\d{2})-(\d{2})$/;
+
+function normalizeLocationValue(value: string | null | undefined) {
+    return String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[’‘'`]/g, "-");
+}
+
+function parseCdGpcLocation(value: string | null | undefined) {
+    const match = CD_GPC_LOCATION_PATTERN.exec(normalizeLocationValue(value));
+    return match ? { zona: match[1], lineal: match[2], metro: match[3], nivel: match[4] } : null;
+}
+
+function isCdGpcLocationValid(value: string | null | undefined) {
+    return CD_GPC_LOCATION_PATTERN.test(normalizeLocationValue(value));
+}
+
 type DashboardDayDetail = {
     store_id: string;
     store_name: string;
@@ -278,6 +304,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [locationStoreId, setLocationStoreId] = useState("");
     const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
     const [locationBusy, setLocationBusy] = useState(false);
+    const [selectedLocationIds, setSelectedLocationIds] = useState<Set<string>>(new Set());
+    const [locationEditingIds, setLocationEditingIds] = useState<Set<string>>(new Set());
+    const [locationEditDrafts, setLocationEditDrafts] = useState<Record<string, string>>({});
+    const [cdGpcLocationFilter, setCdGpcLocationFilter] = useState<CdGpcLocationFilter>({
+        zona: "",
+        lineal: "",
+        metro: "",
+        nivel: "",
+        invalidOnly: false,
+    });
     const [locationsFile, setLocationsFile] = useState<File|null>(null);
     const [locationsFileName, setLocationsFileName] = useState("");
     const locationsInputRef = useRef<HTMLInputElement|null>(null);
@@ -4058,7 +4094,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function upsertProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[], source: "ciclico" | "auditoria" | "inventario general" | "manual" | "Recepcion" = "ciclico", storedQuantity?: number | null) {
-        const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        const cleanLocations = [...new Set(locations.map(normalizeLocationValue).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        if (isCdGpcStore(storeId)) {
+            const invalid = cleanLocations.find(location => !isCdGpcLocationValid(location));
+            if (invalid) {
+                showMessage(locationValidationMessage(invalid), "error");
+                return;
+            }
+        }
         if (!productId || !sku || cleanLocations.length === 0) return;
         const now = new Date().toISOString();
         const normalizedSource = source === "manual" ? "Recepcion" : source;
@@ -4096,8 +4139,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function replaceProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
-        const cleanLocations = [...new Set(locations.map(loc => loc.trim().toUpperCase()).filter(Boolean).filter(loc => !loc.startsWith("__")))];
+        const cleanLocations = [...new Set(locations.map(normalizeLocationValue).filter(Boolean).filter(loc => !loc.startsWith("__")))];
         if (!productId || !sku || !storeId) return;
+        if (isCdGpcStore(storeId) && cleanLocations.some(location => !isCdGpcLocationValid(location))) {
+            showMessage(locationValidationMessage(cleanLocations.find(location => !isCdGpcLocationValid(location)) || ""), "error");
+            return;
+        }
 
         const { error: deactivateError } = await supabase
             .from("product_locations")
@@ -4740,6 +4787,82 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         loadValidadorData(valStoreId, valDate);
     }
 
+    function isCdGpcStore(storeId = locationStoreId) {
+        const store = [...allStoresRaw, ...allStores].find(row => row.id === storeId);
+        const name = String(store?.name || store?.erp_sede || "").trim().toUpperCase();
+        return name === "CD-GPC";
+    }
+
+    function locationValidationMessage(value: string) {
+        const normalized = normalizeLocationValue(value);
+        return normalized
+            ? `Ubicacion invalida: "${normalized}". Usa el formato 01-A-01-01 (zona 2 digitos, lineal una letra, metro y nivel de 2 digitos).`
+            : "Ingresa una ubicacion con el formato 01-A-01-01.";
+    }
+
+    function normalizeAndValidateLocation(value: string, storeId = locationStoreId) {
+        const normalized = normalizeLocationValue(value);
+        if (isCdGpcStore(storeId) && !isCdGpcLocationValid(normalized)) {
+            showMessage(locationValidationMessage(value), "error");
+            return null;
+        }
+        return normalized;
+    }
+
+    function cdGpcFilterHasValues() {
+        return cdGpcLocationFilter.invalidOnly || [
+            cdGpcLocationFilter.zona,
+            cdGpcLocationFilter.lineal,
+            cdGpcLocationFilter.metro,
+            cdGpcLocationFilter.nivel,
+        ].some(Boolean);
+    }
+
+    async function searchCdGpcLocations() {
+        if (!isCdGpcStore()) {
+            showMessage("Selecciona la tienda CD-GPC para usar este filtro.", "error");
+            return;
+        }
+        if (!cdGpcFilterHasValues()) {
+            showMessage("Selecciona al menos un campo del filtro o Ubicaciones invalidas.", "error");
+            return;
+        }
+        setLocationBusy(true);
+        try {
+            const rows: ProductLocation[] = [];
+            for (let from = 0; ; from += 1000) {
+                const { data, error } = await supabase
+                    .from("product_locations")
+                    .select("*, cyclic_products(sku,description,unit,cost)")
+                    .eq("store_id", locationStoreId)
+                    .eq("is_active", true)
+                    .order("location")
+                    .range(from, from + 999);
+                if (error) throw error;
+                rows.push(...((data || []) as ProductLocation[]));
+                if (!data || data.length < 1000) break;
+            }
+            const filtered = rows.filter(row => {
+                const parsed = parseCdGpcLocation(row.location);
+                if (cdGpcLocationFilter.invalidOnly) return !parsed;
+                if (!parsed) return false;
+                return (!cdGpcLocationFilter.zona || parsed.zona === cdGpcLocationFilter.zona)
+                    && (!cdGpcLocationFilter.lineal || parsed.lineal === cdGpcLocationFilter.lineal)
+                    && (!cdGpcLocationFilter.metro || parsed.metro === cdGpcLocationFilter.metro)
+                    && (!cdGpcLocationFilter.nivel || parsed.nivel === cdGpcLocationFilter.nivel);
+            });
+            setLocationResults(await hydrateLocationQuantities(filtered));
+            setSelectedLocationIds(new Set());
+            setLocationEditDrafts({});
+            setLocationEditingIds(new Set());
+            if (filtered.length === 0) showMessage("No se encontraron ubicaciones con ese filtro.", "info");
+        } catch (error: any) {
+            showMessage("Error consultando el filtro de ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
     async function buildLocationSearchResults(queryText: string): Promise<ProductLocation[]> {
         const term = queryText.trim();
         if (!term) return [];
@@ -5025,8 +5148,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function buildLocationEntryDraftsFromForm(): Promise<LocationEntryDraftRecord[] | null> {
-        const location = locationEntryLocation.trim().toUpperCase();
-        if (!location) { showMessage("Ingresa la ubicacion.", "error"); return null; }
+        const location = normalizeAndValidateLocation(locationEntryLocation, locationStoreId);
+        if (!location) return null;
+        if (location !== locationEntryLocation) setLocationEntryLocation(location);
 
         const records: LocationEntryDraftRecord[] = [];
         for (let i = 0; i < locationEntryProducts.length; i++) {
@@ -5186,14 +5310,97 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function saveLocationFromSearch(product: Product, location: string, storeId = locationStoreId) {
-        if (!location.trim()) return;
-        await upsertProductLocations(product.id, product.sku, storeId || "", [location], "Recepcion");
+        const clean = normalizeAndValidateLocation(location, storeId);
+        if (!clean) return;
+        await upsertProductLocations(product.id, product.sku, storeId || "", [clean], "Recepcion");
         showMessage("Ubicación guardada.", "success");
         await searchLocations();
     }
 
+    function toggleLocationSelection(id: string) {
+        setSelectedLocationIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    }
+
+    function toggleAllLocationSelection() {
+        setSelectedLocationIds(prev => prev.size === locationResults.length
+            ? new Set()
+            : new Set(locationResults.map(row => row.id)));
+    }
+
+    function beginLocationEditing(rows: ProductLocation[]) {
+        if (rows.length === 0) return;
+        setLocationEditingIds(new Set(rows.map(row => row.id)));
+        setLocationEditDrafts(Object.fromEntries(rows.map(row => [row.id, normalizeLocationValue(row.location)])));
+    }
+
+    function cancelLocationEditing() {
+        setLocationEditingIds(new Set());
+        setLocationEditDrafts({});
+    }
+
+    async function refreshLocationResults() {
+        if (isCdGpcStore() && cdGpcFilterHasValues()) await searchCdGpcLocations();
+        else if (locationSearch.trim()) await searchLocations();
+        else setLocationResults([]);
+    }
+
+    async function saveLocationEdits() {
+        const rows = locationResults.filter(row => locationEditingIds.has(row.id));
+        const normalizedRows = rows.map(row => ({ row, location: normalizeAndValidateLocation(locationEditDrafts[row.id] || "", row.store_id || "") }));
+        if (normalizedRows.some(item => !item.location)) return;
+        setLocationBusy(true);
+        try {
+            for (const { row, location } of normalizedRows) {
+                const now = new Date().toISOString();
+                let { error } = await supabase
+                    .from("product_locations")
+                    .update({ location, updated_by: user?.id || null, updated_at: now, last_source: "Recepcion", last_seen_at: now })
+                    .eq("id", row.id);
+                if (error && /last_source|last_seen_at/i.test(error.message)) {
+                    ({ error } = await supabase.from("product_locations").update({ location, updated_by: user?.id || null, updated_at: now }).eq("id", row.id));
+                }
+                if (error) throw error;
+            }
+            showMessage(`${normalizedRows.length} ubicacion${normalizedRows.length !== 1 ? "es" : ""} actualizada${normalizedRows.length !== 1 ? "s" : ""}.`, "success");
+            cancelLocationEditing();
+            setSelectedLocationIds(new Set());
+            await refreshLocationResults();
+        } catch (error: any) {
+            showMessage("Error actualizando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
+    async function deleteLocationRows(rows: ProductLocation[]) {
+        if (rows.length === 0) return;
+        if (!confirm(`¿Eliminar ${rows.length} ubicacion${rows.length !== 1 ? "es" : ""}? Se quitaran del maestro, pero quedara el historial.`)) return;
+        setLocationBusy(true);
+        try {
+            for (const row of rows) {
+                const { error } = await supabase
+                    .from("product_locations")
+                    .update({ is_active: false, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+                    .eq("id", row.id);
+                if (error) throw error;
+            }
+            showMessage(`${rows.length} ubicacion${rows.length !== 1 ? "es" : ""} eliminada${rows.length !== 1 ? "s" : ""}.`, "success");
+            setSelectedLocationIds(new Set());
+            cancelLocationEditing();
+            await refreshLocationResults();
+        } catch (error: any) {
+            showMessage("Error eliminando ubicaciones: " + (error?.message || error), "error");
+        } finally {
+            setLocationBusy(false);
+        }
+    }
+
     async function replaceProductLocation(row: ProductLocation, location: string) {
-        const clean = location.trim().toUpperCase();
+        const clean = normalizeAndValidateLocation(location, row.store_id || "");
         if (!clean) return;
         setLocationBusy(true);
         try {
@@ -5210,7 +5417,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             }
             if (error) throw error;
             showMessage("Ubicacion actualizada.", "success");
-            await searchLocations();
+            await refreshLocationResults();
         } catch (error: any) {
             showMessage("Error actualizando ubicacion: " + (error?.message || error), "error");
         } finally {
@@ -5228,7 +5435,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 .eq("id", row.id);
             if (error) throw error;
             showMessage("Ubicacion eliminada.", "success");
-            await searchLocations();
+            setSelectedLocationIds(prev => { const next = new Set(prev); next.delete(row.id); return next; });
+            await refreshLocationResults();
         } catch (error: any) {
             showMessage("Error eliminando ubicacion: " + (error?.message || error), "error");
         } finally {
@@ -5245,10 +5453,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const first = body[0]?.map(value => String(value || "").trim().toLowerCase()) || [];
             const hasHeader = first.some(cell => ["codigo", "código", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
             const dataRows = hasHeader ? body.slice(1) : body;
-            const codeLocPairs = dataRows.map(row => ({
+            const codeLocPairs = dataRows.map((row, rowIndex) => ({
                 code: fullProductCode(String(row[0] || "")),
-                location: String(row[1] || "").trim().toUpperCase(),
+                location: normalizeLocationValue(String(row[1] || "")),
+                rowNumber: rowIndex + (hasHeader ? 2 : 1),
             })).filter(row => row.code && row.location);
+
+            if (isCdGpcStore(locationStoreId)) {
+                const invalid = codeLocPairs.find(row => !isCdGpcLocationValid(row.location));
+                if (invalid) {
+                    showMessage(`Excel rechazado: la fila ${invalid.rowNumber} tiene una ubicacion invalida ("${invalid.location}"). Usa el formato 01-A-01-01.`, "error");
+                    return;
+                }
+            }
 
             const codes = [...new Set(codeLocPairs.map(row => row.code))];
             const prodMap = new Map<string, Product>();
@@ -8895,13 +9112,62 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         </div>
                                     </div>
                                 )}
+                                {isCdGpcStore() && (
+                                    <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-3 space-y-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                                <p className="text-sm font-black text-cyan-950">Filtro estructurado CD-GPC</p>
+                                                <p className="text-xs text-cyan-800">Zona · Lineal · Metro · Nivel. Ejemplo: 01-A-01-01.</p>
+                                            </div>
+                                            <label className="inline-flex items-center gap-2 text-xs font-black text-amber-900">
+                                                <input type="checkbox" checked={cdGpcLocationFilter.invalidOnly} onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, invalidOnly: e.target.checked }))} />
+                                                Ubicaciones invalidas
+                                            </label>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                                            {([
+                                                ["zona", "Zona", 2], ["lineal", "Lineal", 1], ["metro", "Metro", 2], ["nivel", "Nivel", 2],
+                                            ] as const).map(([field, label, maxLength]) => (
+                                                <label key={field} className="text-xs font-bold text-cyan-950">
+                                                    {label}
+                                                    <input
+                                                        className="mt-1 w-full rounded-xl border border-cyan-200 bg-white px-3 py-2 font-mono text-sm uppercase text-slate-900 disabled:bg-slate-100"
+                                                        value={cdGpcLocationFilter[field]}
+                                                        maxLength={maxLength}
+                                                        disabled={cdGpcLocationFilter.invalidOnly}
+                                                        onChange={e => setCdGpcLocationFilter(prev => ({ ...prev, [field]: e.target.value.toUpperCase().replace(field === "lineal" ? /[^A-Z]/g : /[^0-9]/g, "").slice(0, maxLength) }))}
+                                                        placeholder={field === "lineal" ? "A" : "01"}
+                                                    />
+                                                </label>
+                                            ))}
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button type="button" className="rounded-xl bg-cyan-700 px-4 py-2 text-xs font-black text-white disabled:opacity-40" disabled={locationBusy} onClick={searchCdGpcLocations}>{locationBusy ? "Filtrando..." : "Aplicar filtro"}</button>
+                                            <button type="button" className="rounded-xl border border-cyan-300 bg-white px-4 py-2 text-xs font-black text-cyan-900" onClick={() => { setCdGpcLocationFilter({ zona: "", lineal: "", metro: "", nivel: "", invalidOnly: false }); setLocationResults([]); setSelectedLocationIds(new Set()); }}>Limpiar filtro</button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             {locationSearchMode === "single" ? <div className="border rounded-2xl overflow-hidden">
+                                {canEditLocations && locationResults.length > 0 && (
+                                    <div className="flex flex-wrap items-center gap-2 border-b bg-slate-50 p-3 text-xs">
+                                        <span className="mr-auto font-black text-slate-600">{selectedLocationIds.size} de {locationResults.length} seleccionadas</span>
+                                        <button type="button" className="rounded-lg border bg-white px-3 py-1.5 font-bold" onClick={toggleAllLocationSelection}>{selectedLocationIds.size === locationResults.length ? "Quitar todo" : "Seleccionar todo"}</button>
+                                        <button type="button" className="rounded-lg border bg-white px-3 py-1.5 font-bold disabled:opacity-40" disabled={selectedLocationIds.size === 0 || locationBusy} onClick={() => beginLocationEditing(locationResults.filter(row => selectedLocationIds.has(row.id)))}>Editar seleccionadas</button>
+                                        {locationEditingIds.size > 0 && <>
+                                            <button type="button" className="rounded-lg bg-cyan-700 px-3 py-1.5 font-bold text-white disabled:opacity-40" disabled={locationBusy} onClick={saveLocationEdits}>Guardar cambios</button>
+                                            <button type="button" className="rounded-lg border bg-white px-3 py-1.5 font-bold" onClick={cancelLocationEditing}>Cancelar edicion</button>
+                                        </>}
+                                        <button type="button" className="rounded-lg border border-red-200 bg-white px-3 py-1.5 font-bold text-red-700 disabled:opacity-40" disabled={selectedLocationIds.size === 0 || locationBusy} onClick={() => deleteLocationRows(locationResults.filter(row => selectedLocationIds.has(row.id)))}>Eliminar seleccionadas</button>
+                                        {isCdGpcStore() && cdGpcFilterHasValues() && <button type="button" className="rounded-lg bg-red-600 px-3 py-1.5 font-bold text-white disabled:opacity-40" disabled={locationBusy} onClick={() => deleteLocationRows(locationResults)}>Eliminar bloque filtrado</button>}
+                                    </div>
+                                )}
                                 <div className="max-h-[460px] overflow-auto">
                                     <table className="w-full text-sm">
                                         <thead className="bg-slate-100 sticky top-0">
                                             <tr>
+                                                {canEditLocations && <th className="p-2 border text-center"><input type="checkbox" checked={locationResults.length > 0 && selectedLocationIds.size === locationResults.length} onChange={toggleAllLocationSelection} aria-label="Seleccionar todas" /></th>}
                                                 <th className="p-2 border text-left">Codigo</th>
                                                 <th className="p-2 border text-left">Descripcion</th>
                                                 <th className="p-2 border">Tienda</th>
@@ -8922,13 +9188,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 const store = allStores.find(s => s.id === row.store_id);
                                                 return (
                                                     <tr key={row.id}>
+                                                        {canEditLocations && <td className="p-2 border text-center"><input type="checkbox" checked={selectedLocationIds.has(row.id)} onChange={() => toggleLocationSelection(row.id)} aria-label={`Seleccionar ${productSku}`} /></td>}
                                                         <td className="p-2 border font-mono text-xs">{productSku}</td>
                                                         <td className="p-2 border text-slate-600">
                                                             <div>{productDescription}</div>
                                                             <div className="mt-1 text-xs font-black text-slate-900">UM: {productUnit}</div>
                                                         </td>
                                                         <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
-                                                        <td className="p-2 border font-bold text-slate-900">{row.location}</td>
+                                                        <td className="p-2 border font-bold text-slate-900">
+                                                            {locationEditingIds.has(row.id) ? <input className="w-full min-w-32 rounded-lg border border-cyan-300 px-2 py-1 font-mono text-sm uppercase text-slate-900" value={locationEditDrafts[row.id] || ""} onChange={e => setLocationEditDrafts(prev => ({ ...prev, [row.id]: e.target.value.toUpperCase() }))} /> : row.location}
+                                                        </td>
                                                         <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
                                                         <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
                                                         <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</td>
@@ -8936,11 +9205,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                             <td className="p-2 border text-center whitespace-nowrap">
                                                                 {canEditLocations ? (
                                                                 <>
-                                                                <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => {
-                                                                    const next = prompt("Nueva ubicacion", row.location);
-                                                                    if (next) void replaceProductLocation(row, next);
-                                                                }}>Editar</button>
-                                                                <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>
+                                                                {!locationEditingIds.has(row.id) ? <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => beginLocationEditing([row])}>Editar</button> : <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={saveLocationEdits}>Guardar</button>}
+                                                                {!locationEditingIds.has(row.id) && <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>}
                                                                 </>
                                                                 ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                             </td>
@@ -8948,7 +9214,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                     </tr>
                                                 );
                                             })}
-                                            {locationResults.length === 0 && <tr><td colSpan={isMobileAccess ? 7 : 8} className="p-6 text-center text-slate-400">Busca un producto para ver ubicaciones.</td></tr>}
+                                            {locationResults.length === 0 && <tr><td colSpan={isMobileAccess ? 7 : canEditLocations ? 9 : 8} className="p-6 text-center text-slate-400">Busca un producto para ver ubicaciones.</td></tr>}
                                         </tbody>
                                     </table>
                                 </div>
