@@ -271,7 +271,7 @@ function normalizeRotationStoreKey(value: string | null | undefined) {
 
 function rotationStoreKeysForSession(session: InventorySession | null | undefined, stores: Store[]) {
   const aliases = [
-    "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
+    "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORILLOS",
     "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
     "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
     "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "ABANCAY", "CORPORATIVO",
@@ -302,7 +302,7 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
       keys.add("MIRAFLORES");
       keys.add("AREQUIPA MIRAFLORES");
     }
-    if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
+    if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORILLOS");
     if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
     if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
     if (normalized.includes("CD GPC") || normalized === "CD") keys.add("CD-GPC");

@@ -181,7 +181,7 @@ function normalizeRotationStoreKey(value: string | null | undefined) {
 
 function rotationStoreKeysForStore(store: Store) {
   const aliases = [
-    "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
+    "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORILLOS",
     "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
     "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA", "HUAROCHIRI",
     "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD",
@@ -198,7 +198,7 @@ function rotationStoreKeysForStore(store: Store) {
     }
     if (normalized.includes("EVITAMIENTO")) keys.add("AREQUIPA NEW K 21");
     if (normalized.includes("ARE MIRAFLORES") || normalized.includes("MIRAFLORES")) keys.add("AREQUIPA MIRAFLORES");
-    if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORRILLOS");
+    if (normalized.includes("CHORILLOS") || normalized.includes("CHORRILLOS")) keys.add("CHORILLOS");
     if (normalized.includes("PTE PIEDRA") || normalized.includes("PUENTE PIEDRA")) keys.add("PTE PIEDRA");
     if (normalized.includes("CENTRO DISTRIBUCION") || normalized === "CD GPC" || normalized.endsWith(" CD")) keys.add("CD");
   }
