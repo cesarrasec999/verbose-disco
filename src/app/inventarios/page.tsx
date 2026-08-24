@@ -5920,22 +5920,47 @@ export default function InventariosPage() {
     if (!confirmed) return;
 
     setSavingFinishedStockEdit(true);
-    const { error } = await supabase
+    const snapshotFields = {
+      system_stock: newValue,
+      manually_adjusted: true,
+      adjusted_by: user?.id || null,
+      adjusted_at: new Date().toISOString(),
+      adjustment_note: note,
+    };
+    const { data: updatedSnapshotRows, error } = await supabase
       .from("general_inventory_stock_snapshot")
-      .update({
-        system_stock: newValue,
-        manually_adjusted: true,
-        adjusted_by: user?.id || null,
-        adjusted_at: new Date().toISOString(),
-        adjustment_note: note,
-      })
+      .update(snapshotFields)
       .eq("session_id", selectedSessionId)
-      .eq("product_id", editingFinishedStock.product_id);
+      .eq("product_id", editingFinishedStock.product_id)
+      .select("id");
     setSavingFinishedStockEdit(false);
 
     if (error) {
       setMessage("No se pudo guardar el ajuste de stock: " + error.message);
       return;
+    }
+
+    // Los productos con stock congelado 0 pueden no tener fila en el
+    // snapshot. En ese caso el UPDATE anterior no falla, pero tampoco cambia
+    // nada; creamos la fila para que el ajuste quede persistido y el resumen
+    // pueda mostrarlo inmediatamente.
+    if (!updatedSnapshotRows || updatedSnapshotRows.length === 0) {
+      const { error: insertError } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .upsert({
+          session_id: selectedSessionId,
+          product_id: editingFinishedStock.product_id,
+          sku: editingFinishedStock.sku,
+          description: editingFinishedStock.description,
+          unit: editingFinishedStock.unit,
+          cost: Number(editingFinishedStock.cost || 0),
+          frozen_at: new Date().toISOString(),
+          ...snapshotFields,
+        }, { onConflict: "session_id,product_id" });
+      if (insertError) {
+        setMessage("No se pudo crear el ajuste de stock: " + insertError.message);
+        return;
+      }
     }
 
     setEditingFinishedStock(null);
