@@ -183,7 +183,7 @@ function rotationStoreKeysForStore(store: Store) {
   const aliases = [
     "ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS",
     "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
-    "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
+    "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA", "HUAROCHIRI",
     "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD",
   ];
   const keys = new Set<string>();

@@ -275,7 +275,7 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
     "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO",
     "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA",
     "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "ABANCAY", "CORPORATIVO",
-    "CUSCO", "ICA", "TIENDA VIRTUAL", "CD",
+    "CUSCO", "ICA", "HUAROCHIRI", "TIENDA VIRTUAL", "CD",
   ];
   const keys = new Set<string>();
   const store = session?.store_id ? stores.find(item => item.id === session.store_id) : null;
@@ -346,7 +346,22 @@ export async function fetchProductRotationsForSession(
     .order("period_month", { ascending: false })
     .limit(1);
   if (periodError) throw periodError;
-  const completePeriod = periodRows?.[0]?.period_month ? String(periodRows[0].period_month) : null;
+  let completePeriod = periodRows?.[0]?.period_month ? String(periodRows[0].period_month) : null;
+  // Algunas sedes nuevas (por ejemplo Huarochirí) todavía no tienen un mes
+  // cerrado anterior, aunque ya exista una clasificación del mes de la sesión.
+  // En ese caso usamos el último periodo disponible para no presentar toda la
+  // sesión como "SIN ROTACION".
+  if (!completePeriod) {
+    const { data: fallbackRows, error: fallbackError } = await supabase
+      .from("product_rotation_monthly")
+      .select("period_month")
+      .in("store_key", storeKeys)
+      .lte("period_month", sessionPeriod)
+      .order("period_month", { ascending: false })
+      .limit(1);
+    if (fallbackError) throw fallbackError;
+    completePeriod = fallbackRows?.[0]?.period_month ? String(fallbackRows[0].period_month) : null;
+  }
   if (!completePeriod) return rotations;
 
   for (let i = 0; i < cleanSkus.length; i += 500) {
