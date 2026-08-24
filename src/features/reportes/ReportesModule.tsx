@@ -228,6 +228,13 @@ function currentRotationPeriod() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
+function lastClosedRotationPeriod() {
+  const now = new Date();
+  now.setDate(1);
+  now.setMonth(now.getMonth() - 1);
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 export default function ReportesModule({ activeTab, basePath = "/reportes", embedded = false }: { activeTab: ReportTab; basePath?: string; embedded?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -599,7 +606,9 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         const { data, error } = await supabase.rpc("get_stock_valuation_report", {
           p_sede: sede,
           p_rotation_store_keys: rotationStoreKeysForStore(store),
-          p_rotation_period: currentRotationPeriod(),
+          // El RPC toma el último período <= esta fecha. Pasamos el último
+          // mes cerrado para excluir por completo el ciclo en curso.
+          p_rotation_period: lastClosedRotationPeriod(),
         });
         if (error) throw error;
         const groups = (data || []) as StockValuationRpcRow[];
