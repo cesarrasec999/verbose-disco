@@ -471,7 +471,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           .select("product_code,rotation_category,period_month")
           .in("store_key", storeKeys)
           .in("rotation_category", ["A", "B", "C"])
-          .lte("period_month", currentRotationPeriod())
+          .lt("period_month", currentRotationPeriod())
           .order("period_month", { ascending: false })
           .range(page * PAGE, (page + 1) * PAGE - 1);
         if (error) throw error;
