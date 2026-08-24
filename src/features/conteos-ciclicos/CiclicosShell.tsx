@@ -5524,11 +5524,27 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const first = body[0]?.map(value => String(value || "").trim().toLowerCase()) || [];
             const hasHeader = first.some(cell => ["codigo", "código", "codsap", "sku"].includes(cell)) || first.some(cell => cell.includes("ubic"));
             const dataRows = hasHeader ? body.slice(1) : body;
-            const codeLocPairs = dataRows.map((row, rowIndex) => ({
+            const parsedCodeLocPairs = dataRows.map((row, rowIndex) => ({
                 code: fullProductCode(String(row[0] || "")),
                 location: normalizeLocationForStore(String(row[1] || ""), locationStoreId),
                 rowNumber: rowIndex + (hasHeader ? 2 : 1),
             })).filter(row => row.code && row.location);
+
+            // PostgREST rechaza un upsert si el mismo par
+            // (codigo, ubicacion) aparece dos veces dentro del mismo lote.
+            // Es comun que los Excel exportados repitan una fila; se conserva
+            // una sola y se informa cuantas fueron omitidas.
+            const seenCodeLocations = new Set<string>();
+            let duplicateCodeLocations = 0;
+            const codeLocPairs = parsedCodeLocPairs.filter(row => {
+                const key = `${row.code}__${row.location}`;
+                if (seenCodeLocations.has(key)) {
+                    duplicateCodeLocations += 1;
+                    return false;
+                }
+                seenCodeLocations.add(key);
+                return true;
+            });
 
             if (isCdGpcStore(locationStoreId)) {
                 const invalid = codeLocPairs.find(row => !isCdGpcLocationValid(row.location));
@@ -5576,7 +5592,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             }
             setLocationsFile(null);
             setLocationsFileName("");
-            showMessage(`${upsertRows.length} ubicaciones cargadas. No encontrados: ${codeLocPairs.length - upsertRows.length}.`, "success");
+            showMessage(`${upsertRows.length} ubicaciones cargadas. No encontrados: ${codeLocPairs.length - upsertRows.length}. Duplicadas omitidas: ${duplicateCodeLocations}.`, "success");
             if (locationsInputRef.current) locationsInputRef.current.value = "";
         } catch (error: any) {
             showMessage("Error cargando ubicaciones: " + (error?.message || error), "error");
