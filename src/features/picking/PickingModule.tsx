@@ -1552,11 +1552,18 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           )
           .map(row => {
             const countedQty = row.product_id ? quantityByProductLocation.get(`${row.product_id}__${normalize(row.location)}`) : undefined;
-            const quantity = countedQty ?? num(row.stored_quantity);
+            const hasStoredQuantity = row.stored_quantity !== null && row.stored_quantity !== undefined;
+            const quantity = countedQty ?? (hasStoredQuantity ? num(row.stored_quantity) : null);
             return { location: row.location, quantity };
           })
-          .filter(row => row.location && row.quantity > 0)
-          .map(row => `${row.location} (${formatQty(row.quantity)})`);
+          // Una ubicación activa registrada debe aparecer aunque todavía no
+          // tenga cantidad contada o stock almacenado. No se inventa un 0 ni
+          // se oculta la ubicación: solo mostramos la cantidad cuando existe
+          // y es positiva.
+          .filter(row => row.location)
+          .map(row => row.quantity !== null && row.quantity > 0
+            ? `${row.location} (${formatQty(row.quantity)})`
+            : row.location);
         next[line.id] = [...new Set(productLocations)].sort((a, b) => (
           locationSort === "asc" ? a.localeCompare(b, "es") : b.localeCompare(a, "es")
         ));
