@@ -6889,7 +6889,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const canValidateCyclic = canAssignProducts;
     const canManageLocations = Boolean(user && canUseLocationsModule && user.role !== "Operario");
     const canBulkManageLocations = canManageLocations && !isMobileAccess;
-    const canRegisterLocations = Boolean(user && canUseLocationsModule && (isMobileAccess || user.role !== "Operario"));
+    // Registrar una ubicación es una acción disponible para cualquier usuario
+    // que tenga acceso al módulo. La edición/eliminación y la carga masiva
+    // mantienen sus permisos separados en canEditLocations/canBulkManageLocations.
+    const canRegisterLocations = Boolean(user && canUseLocationsModule);
     const canEditLocations = canManageLocations && !isMobileAccess;
     const hasCyclicSubmodules = canAssignProducts || canViewCountRecords || canViewSummaryByCode || canViewStoreProgress || canViewCyclicDashboard;
     const hasReportSubmodules = canViewNonInventoryReports || canViewResultsReports;
