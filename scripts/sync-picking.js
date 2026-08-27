@@ -178,7 +178,12 @@ function requestLinesQuery() {
     LEFT JOIN PRODUCT p ON irl.SKU = p.SKU
     LEFT JOIN FILTER_VIEW fv ON irl.SKU = fv.SKU
     LEFT JOIN PRODUCT_UDF1 u ON fv.UDF1 = u.UDF1
-    WHERE ir.ReasonCode = 'T'
+    -- Picking debe incluir cualquier motivo que RMS genere para preparar
+    -- mercaderia (abastecimiento, venta urgente, despacho a clientes, etc.).
+    -- Antes se restringia a TRANSFERENCIA con solo dos flags y los demas
+    -- requerimientos nunca llegaban a Rasecorp. El modulo solo muestra los
+    -- registros activos (status A), por lo que una anulacion no es asignable.
+    WHERE ir.OutToStore IS NOT NULL
       AND (
         ir.StatusCode = 'A'
         OR (
@@ -188,10 +193,6 @@ function requestLinesQuery() {
             DATEADD(day, -30, GETDATE())
           )
         )
-      )
-      AND (
-        ir.IRFlag1 IN (2, 6)
-        OR UPPER(COALESCE(flag.IRFlag1Description, '')) IN ('ABASTECIMIENTO', 'ABASTECIMIENTO URGENTE')
       )
   `
 }
