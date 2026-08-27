@@ -13,6 +13,10 @@ const supabase = createClient(
 )
 
 const BATCH_SIZE = Number(process.env.PICKING_BATCH_SIZE || 500)
+// Los UUID serializados en el filtro `in` viajan en la URL de PostgREST.
+// 100 IDs se mantiene con holgura bajo el limite del proxy aun si el
+// upsert usa lotes mas grandes.
+const REQUEST_LOOKUP_BATCH_SIZE = 100
 const INTERVAL_MS = Number(process.env.PICKING_SYNC_INTERVAL_MS || 5 * 60 * 1000)
 const RETRY_ATTEMPTS = Number(process.env.PICKING_RETRY_ATTEMPTS || process.env.RETRY_ATTEMPTS || 3)
 const ACTIVE_LOOKBACK_DAYS = Number(process.env.PICKING_ACTIVE_LOOKBACK_DAYS || 0)
@@ -280,8 +284,8 @@ async function syncOnce() {
       // Se leen en lotes pequeños y se conserva exactamente el mismo mapa.
       const requestRows = []
       const requestErpIds = [...new Set(lines.map(row => row.erp_inv_request_id))]
-      for (let i = 0; i < requestErpIds.length; i += BATCH_SIZE) {
-        const requestIdBatch = requestErpIds.slice(i, i + BATCH_SIZE)
+      for (let i = 0; i < requestErpIds.length; i += REQUEST_LOOKUP_BATCH_SIZE) {
+        const requestIdBatch = requestErpIds.slice(i, i + REQUEST_LOOKUP_BATCH_SIZE)
         const { data } = await withRetry('Supabase: leer picking_requests', () => supabase
           .from('picking_requests')
           .select('id,erp_inv_request_id')
