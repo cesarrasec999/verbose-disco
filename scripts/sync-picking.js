@@ -194,10 +194,6 @@ function requestLinesQuery() {
         ir.StatusCode = 'A'
         OR (
           ir.StatusCode IN ('D', 'C', 'X', 'Y')
-          AND ir.CreationDate >= COALESCE(
-            CONVERT(datetime2, @activeSince),
-            DATEADD(day, -30, GETDATE())
-          )
         )
       )
   `
