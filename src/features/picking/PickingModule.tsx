@@ -328,6 +328,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [assignmentDate, setAssignmentDate] = useState(todayISO());
   const assignmentDateRef = useRef(assignmentDate);
   useEffect(() => { assignmentDateRef.current = assignmentDate; }, [assignmentDate]);
+  const [assignmentHistoryPage, setAssignmentHistoryPage] = useState(0);
+  const assignmentHistoryPageRef = useRef(assignmentHistoryPage);
+  useEffect(() => { assignmentHistoryPageRef.current = assignmentHistoryPage; }, [assignmentHistoryPage]);
+  const [assignmentHistoryTotal, setAssignmentHistoryTotal] = useState(0);
   const [pickingDate, setPickingDate] = useState(todayISO());
   const pickingDateRef = useRef(pickingDate);
   useEffect(() => { pickingDateRef.current = pickingDate; }, [pickingDate]);
@@ -361,7 +365,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const admin = user?.role === "Administrador";
   // Una fecha anterior en Asignación es una consulta de historial: muestra el
   // requerimiento aunque RMS ya lo haya recepcionado, pero sin permitir cambios.
-  const historicalAssignmentView = manager && panel === "asignacion" && !!assignmentDate && assignmentDate < todayISO();
+  const historicalAssignmentView = manager && panel === "asignacion" && (!assignmentDate || assignmentDate < todayISO());
+  const assignmentHistoryPages = Math.max(1, Math.ceil(assignmentHistoryTotal / 100));
 
   // Derivan del universo completo (filterSourceStores/filterReasons, ver loadData) y no
   // de `requests`, que ahora solo trae los requerimientos de la pestana/fecha activa: si
@@ -1081,10 +1086,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           // esta misma pestaña se convierte en historial de solo lectura y
           // conserva los requerimientos que RMS ya recepcionó.
           const day = assignmentDateRef.current;
-          const historicalDay = !!day && day < todayISO();
+          const historicalDay = !day || day < todayISO();
           let requestsQuery = supabase
             .from("picking_requests")
-            .select("*")
+            .select("*", { count: "exact" })
             .is("hidden_at", null)
             .order("creation_date", { ascending: false });
           if (!historicalDay) requestsQuery = requestsQuery.eq("status_code", "A");
@@ -1092,6 +1097,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
             const dayStart = `${day}T00:00:00.000Z`;
             const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
             requestsQuery = requestsQuery.gte("creation_date", dayStart).lt("creation_date", dayEnd);
+          } else {
+            const pageSize = 100;
+            const historyPage = assignmentHistoryPageRef.current;
+            requestsQuery = requestsQuery.range(historyPage * pageSize, (historyPage + 1) * pageSize - 1);
           }
           const requestsResp = await requestsQuery;
 
@@ -1102,6 +1111,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           }
 
           const requestRows = (requestsResp.data || []) as PickingRequest[];
+          setAssignmentHistoryTotal(!day ? (requestsResp.count || 0) : 0);
           setRequests(requestRows);
           if (!selectedRequestIdRef.current && requestRows[0]) setSelectedRequestId(requestRows[0].id);
 
@@ -1473,7 +1483,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       return;
     }
     void loadData(user);
-  }, [assignmentDate, user, manager, panel, loadData]);
+  }, [assignmentDate, assignmentHistoryPage, user, manager, panel, loadData]);
 
   const reportDateLoadedRef = useRef(false);
   useEffect(() => {
@@ -2480,7 +2490,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     type="date"
                     value={panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate}
                     onChange={event => {
-                      if (panel === "asignacion") setAssignmentDate(event.target.value);
+                      if (panel === "asignacion") {
+                        setAssignmentHistoryPage(0);
+                        setAssignmentDate(event.target.value);
+                      }
                       else if (panel === "resumen" || panel === "reportes") setReportDate(event.target.value);
                       else setRegistryDate(event.target.value);
                     }}
@@ -2489,7 +2502,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                   {(panel === "asignacion" ? assignmentDate : panel === "resumen" || panel === "reportes" ? reportDate : registryDate) && (
                     <button
                       onClick={() => {
-                        if (panel === "asignacion") setAssignmentDate("");
+                        if (panel === "asignacion") {
+                          setAssignmentHistoryPage(0);
+                          setAssignmentDate("");
+                        }
                         else if (panel === "resumen" || panel === "reportes") setReportDate("");
                         else setRegistryDate("");
                       }}
@@ -2616,8 +2632,17 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-black">{historicalAssignmentView ? "Historial de requerimientos" : "Requerimientos activos"}</h2>
+                <h2 className="font-black">{!assignmentDate ? "Historial completo" : historicalAssignmentView ? "Historial de requerimientos" : "Requerimientos activos"}</h2>
               </div>
+              {!assignmentDate && (
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-violet-50 px-3 py-2 text-xs font-bold text-violet-800">
+                  <span>{assignmentHistoryTotal.toLocaleString("es-PE")} requerimientos · página {assignmentHistoryPage + 1} de {assignmentHistoryPages}</span>
+                  <span className="flex gap-1">
+                    <button disabled={assignmentHistoryPage === 0} onClick={() => setAssignmentHistoryPage(page => Math.max(0, page - 1))} className="rounded border border-violet-200 bg-white px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">Anterior</button>
+                    <button disabled={assignmentHistoryPage + 1 >= assignmentHistoryPages} onClick={() => setAssignmentHistoryPage(page => Math.min(assignmentHistoryPages - 1, page + 1))} className="rounded border border-violet-200 bg-white px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">Siguiente</button>
+                  </span>
+                </div>
+              )}
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
                 {filteredRequests.map(request => {
                   const requestAssignments = assignments.filter(item => item.request_id === request.id);
