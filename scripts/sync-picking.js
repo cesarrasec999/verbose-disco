@@ -19,10 +19,6 @@ const BATCH_SIZE = Number(process.env.PICKING_BATCH_SIZE || 500)
 const REQUEST_LOOKUP_BATCH_SIZE = 100
 const INTERVAL_MS = Number(process.env.PICKING_SYNC_INTERVAL_MS || 5 * 60 * 1000)
 const RETRY_ATTEMPTS = Number(process.env.PICKING_RETRY_ATTEMPTS || process.env.RETRY_ATTEMPTS || 3)
-// RMS mantiene solicitudes historicas con estado activo. Picking trabaja con
-// los requerimientos recientes; acotar la ventana evita resincronizar miles
-// de documentos antiguos cada cinco minutos. Se puede ampliar por entorno.
-const ACTIVE_LOOKBACK_DAYS = Math.max(1, Number(process.env.PICKING_ACTIVE_LOOKBACK_DAYS || 30))
 const STATUS_FILE = path.join(__dirname, 'picking-sync-status.txt')
 const LOG_FILE = path.join(__dirname, 'picking-sync.log')
 const STATE_FILE = path.join(__dirname, 'picking-sync-state.json')
@@ -191,10 +187,9 @@ function requestLinesQuery() {
     -- requerimientos nunca llegaban a Rasecorp. El modulo solo muestra los
     -- registros activos (status A), por lo que una anulacion no es asignable.
     WHERE ir.OutToStore IS NOT NULL
-      AND ir.CreationDate >= COALESCE(
-        CONVERT(datetime2, @activeSince),
-        DATEADD(day, -30, GETDATE())
-      )
+      -- Operación diaria: solo requerimientos creados desde las 00:00 de hoy.
+      -- Los de ayer o anteriores no se vuelven a sincronizar para asignación.
+      AND ir.CreationDate >= CONVERT(date, GETDATE())
       AND (
         ir.StatusCode = 'A'
         OR (
@@ -262,20 +257,10 @@ function mapRequests(rows) {
 
 async function syncOnce() {
   let pool
-  const activeSince = ACTIVE_LOOKBACK_DAYS > 0
-    ? (() => {
-        const date = new Date()
-        date.setDate(date.getDate() - ACTIVE_LOOKBACK_DAYS)
-        return date
-      })()
-    : null
-  writeStatus(activeSince
-    ? `Reconciliando picking ERP desde ${localDateTime(activeSince)} hora local (activos + cerrados/aprobados recientes)`
-    : 'Reconciliando picking ERP: todos los activos + cerrados/aprobados de los ultimos 30 dias')
+  writeStatus('Reconciliando picking ERP: requerimientos creados desde hoy')
   try {
     pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
     const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()
-      .input('activeSince', sql.VarChar, activeSince ? sqlLocalDateTime(activeSince) : null)
       .query(requestLinesQuery()))
 
     const requests = mapRequests(result.recordset)
