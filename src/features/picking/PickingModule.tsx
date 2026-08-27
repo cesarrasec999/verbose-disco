@@ -968,6 +968,58 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       return all;
     }
 
+    // RMS puede marcar un requerimiento como recepcionado después de que el
+    // picador lo haya trabajado. El avance sigue siendo válido y debe verse en
+    // su fecha; por eso los reportes por día no dependen del estado actual de
+    // RMS. La pestaña de Asignación conserva su propio filtro: solo activos.
+    async function fetchPickingRowsForDate(date: string, picker?: CyclicUser) {
+      const dayStart = `${date}T00:00:00.000Z`;
+      const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const buildAssignmentsQuery = (legacy: boolean, identity?: "id" | "name") => (from: number, to: number) => {
+        let query = supabase
+          .from("picking_assignments")
+          .select("*")
+          .neq("status", "cancelado")
+          .order("created_at", { ascending: false })
+          .range(from, to);
+        query = legacy
+          ? query.is("picking_date", null).gte("created_at", dayStart).lt("created_at", dayEnd)
+          : query.eq("picking_date", date);
+        if (picker && identity === "id") query = query.eq("picker_id", picker.id);
+        if (picker && identity === "name") query = query.eq("picker_name", picker.full_name);
+        return query as unknown as Promise<{ data: PickingAssignment[] | null; error: unknown }>;
+      };
+
+      const queries: Array<Promise<PickingAssignment[]>> = [];
+      for (const legacy of [false, true]) {
+        if (picker) {
+          queries.push(fetchAll<PickingAssignment>(buildAssignmentsQuery(legacy, "id")));
+          queries.push(fetchAll<PickingAssignment>(buildAssignmentsQuery(legacy, "name")));
+        } else {
+          queries.push(fetchAll<PickingAssignment>(buildAssignmentsQuery(legacy)));
+        }
+      }
+      const assignmentRows = [...new Map((await Promise.all(queries)).flat().map(row => [row.id, row])).values()];
+      const requestIds = [...new Set(assignmentRows.map(row => row.request_id))];
+      if (!requestIds.length) return [] as Array<{ assignment: PickingAssignment; request: PickingRequest; line: PickingLine }>;
+
+      const [requestRows, lineRows] = await Promise.all([
+        fetchAll<PickingRequest>((from, to) =>
+          supabase.from("picking_requests").select("*").in("id", requestIds).is("hidden_at", null).range(from, to) as unknown as Promise<{ data: PickingRequest[] | null; error: unknown }>
+        ),
+        fetchAll<PickingLine>((from, to) =>
+          supabase.from("picking_request_lines").select("*").in("request_id", requestIds).range(from, to) as unknown as Promise<{ data: PickingLine[] | null; error: unknown }>
+        ),
+      ]);
+      const requestsById = new Map(requestRows.map(row => [row.id, row]));
+      const linesById = new Map(lineRows.map(row => [row.id, row]));
+      return assignmentRows.flatMap(assignment => {
+        const request = requestsById.get(assignment.request_id);
+        const line = linesById.get(assignment.line_id);
+        return request && line ? [{ assignment, request, line }] : [];
+      });
+    }
+
     const [usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
       supabase
         .from("cyclic_users")
@@ -1072,18 +1124,20 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           // o si no existe el primer scan del requerimiento, o si no created_at); la
           // resuelve get_picking_assignments_by_date en el servidor. p_date null (boton
           // "Limpiar fecha") reproduce el fetch completo original sin filtro de fecha.
-          const rpcResp = await supabase.rpc("get_picking_assignments_by_date", {
-            p_date: reportDateRef.current || null,
-          });
-
-          if (rpcResp.error) {
-            toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
-            setLoading(false);
-            return;
-          }
-
           type ReportRow = { assignment: PickingAssignment; request: PickingRequest; line: PickingLine };
-          const rows = (rpcResp.data || []) as ReportRow[];
+          const selectedReportDate = reportDateRef.current;
+          let rows: ReportRow[];
+          if (selectedReportDate) {
+            rows = await fetchPickingRowsForDate(selectedReportDate) as ReportRow[];
+          } else {
+            const rpcResp = await supabase.rpc("get_picking_assignments_by_date", { p_date: null });
+            if (rpcResp.error) {
+              toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
+              setLoading(false);
+              return;
+            }
+            rows = (rpcResp.data || []) as ReportRow[];
+          }
           const requestsById = new Map<string, PickingRequest>();
           const linesById = new Map<string, PickingLine>();
           const rowAssignments: PickingAssignment[] = [];
@@ -1166,20 +1220,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         // de asignaciones no canceladas a lo largo de meses) y se filtraba por fecha
         // recien en el navegador; ahora la base solo devuelve las filas del dia que
         // se esta mirando.
-        const rpcResp = await supabase.rpc("get_my_picking_assignments", {
-          p_picker_id: currentUser.id,
-          p_picker_name: currentUser.full_name,
-          p_date: pickingDateRef.current,
-        });
-
-        if (rpcResp.error) {
-          toast.error("No pude leer picking_requests. Ejecuta primero supabase_picking.sql.");
-          setLoading(false);
-          return;
-        }
-
         type MyAssignmentRow = { assignment: PickingAssignment; request: PickingRequest; line: PickingLine };
-        const rows = (rpcResp.data || []) as MyAssignmentRow[];
+        const rows = await fetchPickingRowsForDate(pickingDateRef.current, currentUser) as MyAssignmentRow[];
 
         const requestsById = new Map<string, PickingRequest>();
         const linesById = new Map<string, PickingLine>();
