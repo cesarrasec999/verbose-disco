@@ -274,11 +274,21 @@ async function syncOnce() {
     await upsert('picking_requests', requests, 'erp_inv_request_id')
 
     if (lines.length) {
-      const { data: requestRows } = await withRetry('Supabase: leer picking_requests', () => supabase
-        .from('picking_requests')
-        .select('id,erp_inv_request_id')
-        .in('erp_inv_request_id', [...new Set(lines.map(row => row.erp_inv_request_id))]))
-      const requestIdByErp = new Map((requestRows || []).map(row => [row.erp_inv_request_id, row.id]))
+      // Al incluir todos los motivos puede haber miles de requerimientos
+      // activos. PostgREST convierte .in() en parametros de URL: enviarlos
+      // todos juntos provoca 414 Request-URI Too Large en Cloudflare.
+      // Se leen en lotes pequeños y se conserva exactamente el mismo mapa.
+      const requestRows = []
+      const requestErpIds = [...new Set(lines.map(row => row.erp_inv_request_id))]
+      for (let i = 0; i < requestErpIds.length; i += BATCH_SIZE) {
+        const requestIdBatch = requestErpIds.slice(i, i + BATCH_SIZE)
+        const { data } = await withRetry('Supabase: leer picking_requests', () => supabase
+          .from('picking_requests')
+          .select('id,erp_inv_request_id')
+          .in('erp_inv_request_id', requestIdBatch))
+        requestRows.push(...(data || []))
+      }
+      const requestIdByErp = new Map(requestRows.map(row => [row.erp_inv_request_id, row.id]))
       const linesWithRequest = lines
         .map(row => ({ ...row, request_id: requestIdByErp.get(row.erp_inv_request_id) || null }))
         .filter(row => row.request_id)
