@@ -184,18 +184,15 @@ function requestLinesQuery() {
     -- Picking debe incluir cualquier motivo que RMS genere para preparar
     -- mercaderia (abastecimiento, venta urgente, despacho a clientes, etc.).
     -- Antes se restringia a TRANSFERENCIA con solo dos flags y los demas
-    -- requerimientos nunca llegaban a Rasecorp. El modulo solo muestra los
-    -- registros activos (status A), por lo que una anulacion no es asignable.
+    -- requerimientos nunca llegaban a Rasecorp.
     WHERE ir.OutToStore IS NOT NULL
-      -- Operación diaria: solo requerimientos creados desde las 00:00 de hoy.
-      -- Los de ayer o anteriores no se vuelven a sincronizar para asignación.
+      -- Operación aditiva: solo requerimientos creados desde las 00:00 de hoy.
+      -- No se vuelve a tocar el historial de Picking ni sus avances.
       AND ir.CreationDate >= CONVERT(date, GETDATE())
-      AND (
-        ir.StatusCode = 'A'
-        OR (
-          ir.StatusCode IN ('D', 'C', 'X', 'Y')
-        )
-      )
+      -- Solo se importan pendientes activos. Si RMS ya cerró, recepcionó o
+      -- anuló una solicitud, actualizarla aquí la sacaría de los reportes y
+      -- afectaría el avance histórico de los picadores.
+      AND ir.StatusCode = 'A'
   `
 }
 
