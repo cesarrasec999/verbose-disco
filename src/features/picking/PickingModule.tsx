@@ -1044,7 +1044,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         const filterOptionsResp = await supabase
           .from("picking_requests")
           .select("source_store_code,source_store_name,reason")
-          .eq("status_code", "A")
+          // Los motivos vigentes se cargan completos. Para no perder el
+          // historial operativo, tambien se mantienen en los filtros los tres
+          // motivos que Picking ya trabajaba antes de esta ampliacion.
+          .or("status_code.eq.A,reason.eq.ABASTECIMIENTO,reason.eq.ABASTECIMIENTO URGENTE,reason.ilike.*IMPORT*")
           .is("hidden_at", null);
 
         if (filterOptionsResp.error) {
