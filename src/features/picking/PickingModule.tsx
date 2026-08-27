@@ -359,6 +359,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
   const manager = canManagePicking(user);
   const admin = user?.role === "Administrador";
+  // Una fecha anterior en Asignación es una consulta de historial: muestra el
+  // requerimiento aunque RMS ya lo haya recepcionado, pero sin permitir cambios.
+  const historicalAssignmentView = manager && panel === "asignacion" && !!assignmentDate && assignmentDate < todayISO();
 
   // Derivan del universo completo (filterSourceStores/filterReasons, ver loadData) y no
   // de `requests`, que ahora solo trae los requerimientos de la pestana/fecha activa: si
@@ -1074,15 +1077,17 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         // sola carga, sin importar pestana ni fecha). Ver
         // supabase/migrations/20260720133000_picking_manager_scoped_queries.sql.
         if (panel === "asignacion") {
-          // Asignacion filtra picking_requests por su propio creation_date; fecha
-          // vacia (boton "Limpiar fecha") reproduce el fetch completo original.
+          // Para operar se muestran solo activos. Al elegir una fecha anterior,
+          // esta misma pestaña se convierte en historial de solo lectura y
+          // conserva los requerimientos que RMS ya recepcionó.
           const day = assignmentDateRef.current;
+          const historicalDay = !!day && day < todayISO();
           let requestsQuery = supabase
             .from("picking_requests")
             .select("*")
-            .eq("status_code", "A")
             .is("hidden_at", null)
             .order("creation_date", { ascending: false });
+          if (!historicalDay) requestsQuery = requestsQuery.eq("status_code", "A");
           if (day) {
             const dayStart = `${day}T00:00:00.000Z`;
             const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
@@ -1631,6 +1636,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [assignmentFilteredLines]);
 
   async function assignSelectedLines() {
+    if (historicalAssignmentView) {
+      toast.warning("El historial es solo consulta: no se pueden crear asignaciones en una fecha anterior.");
+      return;
+    }
     if (!user || !selectedRequest || !selectedPickerId) {
       toast.warning("Selecciona picador y codigos.");
       return;
@@ -1684,6 +1693,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function reassignSelectedAssignments() {
+    if (historicalAssignmentView) {
+      toast.warning("El historial es solo consulta: no se pueden reasignar avances anteriores.");
+      return;
+    }
     if (!manager || !user) return;
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
@@ -1721,6 +1734,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function removeSelectedAssignments() {
+    if (historicalAssignmentView) {
+      toast.warning("El historial es solo consulta: no se pueden quitar asignaciones anteriores.");
+      return;
+    }
     if (!manager || !user) return;
     const rows = selectedLineAssignments;
     if (rows.length === 0) {
@@ -1748,6 +1765,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function forceHideRequest(request: PickingRequest) {
+    if (historicalAssignmentView) {
+      toast.warning("El historial es solo consulta: no se pueden ocultar requerimientos anteriores.");
+      return;
+    }
     if (!admin || !user) {
       toast.warning("Solo el administrador puede forzar la eliminacion de requerimientos.");
       return;
@@ -2595,7 +2616,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           <div className="mt-4 grid gap-4 lg:grid-cols-[360px_1fr]">
             <aside className="rounded-2xl border bg-white p-3 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-black">Requerimientos activos</h2>
+                <h2 className="font-black">{historicalAssignmentView ? "Historial de requerimientos" : "Requerimientos activos"}</h2>
               </div>
               <div className="max-h-[68vh] space-y-2 overflow-auto pr-1">
                 {filteredRequests.map(request => {
@@ -2624,7 +2645,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     </button>
                   );
                 })}
-                {filteredRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">No hay requerimientos activos para esta sede.</p>}
+                {filteredRequests.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400">{historicalAssignmentView ? "No hay requerimientos en esta fecha para esta sede." : "No hay requerimientos activos para esta sede."}</p>}
               </div>
             </aside>
 
@@ -2639,8 +2660,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         Entrega: {selectedRequest.source_store_name || selectedRequest.source_store_code} | Requiere: {selectedRequest.destination_store_name || selectedRequest.destination_store_code}
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
+                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial de solo consulta</p>}
                     </div>
-                    {admin && (
+                    {admin && !historicalAssignmentView && (
                       <div className="flex flex-wrap gap-2">
                         <button onClick={() => forceHideRequest(selectedRequest)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-black text-red-700 hover:bg-red-100">
                           Forzar eliminacion
@@ -2699,13 +2721,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                           className="w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
                         />
                       </div>
-                      <button onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50">
+                      <button disabled={historicalAssignmentView} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Reasignar seleccionados ({selectedLineAssignments.length})
                       </button>
-                      <button onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50">
+                      <button disabled={historicalAssignmentView} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Quitar asignacion ({selectedLineAssignments.length})
                       </button>
-                      <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
+                      <button disabled={historicalAssignmentView} onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
                         <UserPlus size={16} />
                         <span className="ml-2">Asignar seleccionados ({selectedLineIds.size})</span>
                       </button>
