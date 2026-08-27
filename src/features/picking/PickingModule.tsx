@@ -1028,6 +1028,20 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       });
     }
 
+    async function fetchScansForAssignments(assignmentIds: string[]): Promise<PickingScan[]> {
+      const allScans: PickingScan[] = [];
+      // PostgREST coloca el filtro `in` en la URL. En un reporte diario puede
+      // haber cientos de asignaciones y una sola URL termina en Bad Request.
+      // Se consulta en lotes cortos y se conserva el historial completo.
+      for (let index = 0; index < assignmentIds.length; index += 100) {
+        const batch = assignmentIds.slice(index, index + 100);
+        allScans.push(...await fetchAll<PickingScan>((from, to) =>
+          supabase.from("picking_scans").select("*").in("assignment_id", batch).range(from, to) as unknown as Promise<{ data: PickingScan[] | null; error: unknown }>
+        ));
+      }
+      return allScans;
+    }
+
     const [usersResp, storesResp, syncResp, syncFallbackResp] = await Promise.all([
       supabase
         .from("cyclic_users")
@@ -1171,7 +1185,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           setAssignments(rowAssignments);
 
           const assignmentIds = rowAssignments.map(assignment => assignment.id);
-          const [linesResp, scansResp] = await Promise.all([
+          const [linesResp, reportScans] = await Promise.all([
             // Resumen necesita TODAS las lineas de cada requerimiento en pantalla (no
             // solo las asignadas) para el conteo "requerido vs asignado" y las filas
             // pendientes del Excel; Reportes solo usa lineas con asignacion, que ya
@@ -1183,15 +1197,14 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
             // asignacion en pantalla, sin filtrarlos de nuevo por fecha (una asignacion
             // puede completarse en un dia distinto al de su fecha efectiva).
             assignmentIds.length
-              ? supabase.from("picking_scans").select("*").in("assignment_id", assignmentIds)
-              : Promise.resolve({ data: [] as PickingScan[], error: null }),
+              ? fetchScansForAssignments(assignmentIds)
+              : Promise.resolve([] as PickingScan[]),
           ]);
 
           if (linesResp.error) toast.error("No pude leer lineas: " + linesResp.error.message);
-          if (scansResp.error) toast.error("No pude leer registros: " + scansResp.error.message);
 
           setLines(panel === "resumen" && linesResp.data ? (linesResp.data as PickingLine[]) : [...linesById.values()]);
-          setScans((scansResp.data || []) as PickingScan[]);
+          setScans(reportScans);
         } else {
           // Registros (un dia puntual) y Productividad (rango, puede venir con un solo
           // extremo o ninguno) comparten get_picking_scans_by_date_range. Ambos extremos
