@@ -319,7 +319,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [stockByLine, setStockByLine] = useState<Record<string, number>>({});
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
-  const [selectedReasonFilter, setSelectedReasonFilter] = useState("all");
+  const [selectedReasonFilters, setSelectedReasonFilters] = useState<string[]>([]);
+  const [reasonFilterMenuOpen, setReasonFilterMenuOpen] = useState(false);
   const [selectedOperatorReason, setSelectedOperatorReason] = useState("all");
   const [selectedRequesterStore, setSelectedRequesterStore] = useState("all");
   const [selectedReportPicker, setSelectedReportPicker] = useState("all");
@@ -389,10 +390,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   );
 
   const reasonFilteredRequests = useMemo(
-    () => selectedReasonFilter === "all"
+    () => selectedReasonFilters.length === 0
       ? sourceFilteredRequests
-      : sourceFilteredRequests.filter(request => normalize(request.reason) === selectedReasonFilter),
-    [sourceFilteredRequests, selectedReasonFilter]
+      : sourceFilteredRequests.filter(request => selectedReasonFilters.includes(normalize(request.reason))),
+    [sourceFilteredRequests, selectedReasonFilters]
   );
 
   const filteredRequests = useMemo(
@@ -2484,16 +2485,42 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                 ))}
               </select>
               <label className="text-xs font-black uppercase text-slate-500">Motivo</label>
-              <select
-                value={selectedReasonFilter}
-                onChange={event => setSelectedReasonFilter(event.target.value)}
-                className="rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
-              >
-                <option value="all">Todos los motivos</option>
-                {reasonOptions.map(option => (
-                  <option key={option.key} value={option.key}>{option.label}</option>
-                ))}
-              </select>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setReasonFilterMenuOpen(open => !open)}
+                  className="flex min-w-56 items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800 hover:bg-slate-50"
+                >
+                  <span className="truncate">{selectedReasonFilters.length === 0 ? "Todos los motivos" : selectedReasonFilters.length === 1 ? reasonOptions.find(option => option.key === selectedReasonFilters[0])?.label || "1 motivo" : `${selectedReasonFilters.length} motivos seleccionados`}</span>
+                  <span className="text-slate-400">v</span>
+                </button>
+                {reasonFilterMenuOpen && (
+                  <div className="absolute left-0 z-40 mt-2 w-72 rounded-xl border bg-white p-2 shadow-xl">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedReasonFilters([])}
+                      className="mb-1 w-full rounded-lg px-3 py-2 text-left text-sm font-black text-violet-700 hover:bg-violet-50"
+                    >
+                      Todos los motivos
+                    </button>
+                    <div className="max-h-72 overflow-auto">
+                      {reasonOptions.map(option => {
+                        const checked = selectedReasonFilters.includes(option.key);
+                        return (
+                          <label key={option.key} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => setSelectedReasonFilters(current => checked ? current.filter(key => key !== option.key) : [...current, option.key])}
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
               {panel === "productividad" ? (
                 <>
                   <label className="text-xs font-black uppercase text-slate-500">Desde</label>
