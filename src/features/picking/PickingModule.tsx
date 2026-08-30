@@ -1664,10 +1664,6 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }, [assignmentFilteredLines]);
 
   async function assignSelectedLines() {
-    if (historicalAssignmentView) {
-      toast.warning("El historial es solo consulta: no se pueden crear asignaciones en una fecha anterior.");
-      return;
-    }
     if (!user || !selectedRequest || !selectedPickerId) {
       toast.warning("Selecciona picador y codigos.");
       return;
@@ -2720,7 +2716,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         Entrega: {selectedRequest.source_store_name || selectedRequest.source_store_code} | Requiere: {selectedRequest.destination_store_name || selectedRequest.destination_store_code}
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
-                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial: solo se puede reasignar código sin picking registrado</p>}
+                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial: se puede asignar pendiente y reasignar solo sin picking registrado</p>}
                     </div>
                     {admin && !historicalAssignmentView && (
                       <div className="flex flex-wrap gap-2">
@@ -2787,7 +2783,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                       <button disabled={historicalAssignmentView} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Quitar asignacion ({selectedLineAssignments.length})
                       </button>
-                      <button disabled={historicalAssignmentView} onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
+                      <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
                         <UserPlus size={16} />
                         <span className="ml-2">Asignar seleccionados ({selectedLineIds.size})</span>
                       </button>
