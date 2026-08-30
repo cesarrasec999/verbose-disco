@@ -1775,20 +1775,30 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function removeSelectedAssignments() {
-    if (historicalAssignmentView) {
-      toast.warning("El historial es solo consulta: no se pueden quitar asignaciones anteriores.");
-      return;
-    }
     if (!manager || !user) return;
-    const rows = selectedLineAssignments;
-    if (rows.length === 0) {
-      toast.warning("Selecciona codigos con asignaciones para quitar.");
+    const candidates = selectedReassignableAssignments;
+    if (candidates.length === 0) {
+      toast.warning("Solo se pueden quitar asignaciones sin picking registrado.");
       return;
     }
-    const pickedRows = rows.filter(assignment => num(assignment.picked_qty) > 0);
-    if (pickedRows.length > 0) {
-      const confirmed = window.confirm(`Hay ${pickedRows.length} asignacion${pickedRows.length !== 1 ? "es" : ""} con picking registrado. Al quitar asignacion tambien se eliminaran esos registros. ¿Continuar?`);
-      if (!confirmed) return;
+
+    const scannedAssignmentIds = new Set<string>();
+    for (let index = 0; index < candidates.length; index += 100) {
+      const { data, error } = await supabase
+        .from("picking_scans")
+        .select("assignment_id")
+        .in("assignment_id", candidates.slice(index, index + 100).map(assignment => assignment.id));
+      if (error) {
+        toast.error("No pude validar los registros de picking: " + error.message);
+        return;
+      }
+      for (const scan of data || []) scannedAssignmentIds.add(scan.assignment_id);
+    }
+    const rows = candidates.filter(assignment => !scannedAssignmentIds.has(assignment.id));
+    const blocked = candidates.length - rows.length;
+    if (rows.length === 0) {
+      toast.warning("No se quitó ninguna asignación porque el picador ya registró el picking.");
+      return;
     }
 
     const ids = rows.map(assignment => assignment.id);
@@ -1801,7 +1811,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     const idSet = new Set(ids);
     setAssignments(prev => prev.filter(item => !idSet.has(item.id)));
     setScans(prev => prev.filter(item => !idSet.has(item.assignment_id)));
-    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} quitada${rows.length !== 1 ? "s" : ""}. Los codigos vuelven a quedar disponibles.`);
+    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} quitada${rows.length !== 1 ? "s" : ""}. Los codigos vuelven a quedar disponibles.${blocked ? ` ${blocked} con picking registrado no se modificaron.` : ""}`);
     await loadData(user);
   }
 
@@ -2716,7 +2726,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         Entrega: {selectedRequest.source_store_name || selectedRequest.source_store_code} | Requiere: {selectedRequest.destination_store_name || selectedRequest.destination_store_code}
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
-                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial: se puede asignar pendiente y reasignar solo sin picking registrado</p>}
+                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial: asignar, reasignar o quitar solo sin picking registrado</p>}
                     </div>
                     {admin && !historicalAssignmentView && (
                       <div className="flex flex-wrap gap-2">
@@ -2780,8 +2790,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                       <button disabled={selectedReassignableAssignments.length === 0} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Reasignar seleccionados ({selectedReassignableAssignments.length})
                       </button>
-                      <button disabled={historicalAssignmentView} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
-                        Quitar asignacion ({selectedLineAssignments.length})
+                      <button disabled={selectedReassignableAssignments.length === 0} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
+                        Quitar asignacion ({selectedReassignableAssignments.length})
                       </button>
                       <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
                         <UserPlus size={16} />
