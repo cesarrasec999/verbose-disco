@@ -489,6 +489,11 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     [assignmentProgressFilter, assignments, selectedAssignedPicker, selectedLineIds]
   );
 
+  const selectedReassignableAssignments = useMemo(
+    () => selectedLineAssignments.filter(assignment => num(assignment.picked_qty) <= 0),
+    [selectedLineAssignments]
+  );
+
   const selectedPicker = useMemo(
     () => pickers.find(picker => picker.id === selectedPickerId) || null,
     [pickers, selectedPickerId]
@@ -1716,21 +1721,38 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function reassignSelectedAssignments() {
-    if (historicalAssignmentView) {
-      toast.warning("El historial es solo consulta: no se pueden reasignar avances anteriores.");
-      return;
-    }
     if (!manager || !user) return;
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
       toast.warning("Selecciona el nuevo picador.");
       return;
     }
-    const rows = selectedLineAssignments.filter(assignment => (
+    const candidates = selectedReassignableAssignments.filter(assignment => (
       assignment.picker_id !== picker.id && normalize(assignment.picker_name) !== normalize(picker.full_name)
     ));
+    if (candidates.length === 0) {
+      toast.warning("Solo se pueden reasignar codigos sin picking registrado.");
+      return;
+    }
+
+    // picked_qty protege el caso normal; se valida tambien contra los escaneos
+    // antes de actualizar para que un registro reciente nunca se reasigne.
+    const scannedAssignmentIds = new Set<string>();
+    for (let index = 0; index < candidates.length; index += 100) {
+      const { data, error } = await supabase
+        .from("picking_scans")
+        .select("assignment_id")
+        .in("assignment_id", candidates.slice(index, index + 100).map(assignment => assignment.id));
+      if (error) {
+        toast.error("No pude validar los registros de picking: " + error.message);
+        return;
+      }
+      for (const scan of data || []) scannedAssignmentIds.add(scan.assignment_id);
+    }
+    const rows = candidates.filter(assignment => !scannedAssignmentIds.has(assignment.id));
+    const blocked = candidates.length - rows.length;
     if (rows.length === 0) {
-      toast.warning("Selecciona codigos con asignaciones de otro picador.");
+      toast.warning("No se reasignó ningún código porque el picador ya registró el picking.");
       return;
     }
 
@@ -1752,7 +1774,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     setAssignments(prev => prev.map(item => (
       rowIds.has(item.id) ? { ...item, picker_id: picker.id, picker_name: picker.full_name } : item
     )));
-    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} reasignada${rows.length !== 1 ? "s" : ""} a ${picker.full_name}.`);
+    toast.success(`${rows.length} asignacion${rows.length !== 1 ? "es" : ""} reasignada${rows.length !== 1 ? "s" : ""} a ${picker.full_name}.${blocked ? ` ${blocked} con picking registrado no se modificaron.` : ""}`);
     await loadData(user);
   }
 
@@ -2698,7 +2720,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         Entrega: {selectedRequest.source_store_name || selectedRequest.source_store_code} | Requiere: {selectedRequest.destination_store_name || selectedRequest.destination_store_code}
                       </p>
                       <p className="text-xs font-semibold text-slate-400">{dateText(selectedRequest.creation_date)}</p>
-                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial de solo consulta</p>}
+                      {historicalAssignmentView && <p className="mt-1 text-xs font-black text-violet-700">Historial: solo se puede reasignar código sin picking registrado</p>}
                     </div>
                     {admin && !historicalAssignmentView && (
                       <div className="flex flex-wrap gap-2">
@@ -2759,8 +2781,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                           className="w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
                         />
                       </div>
-                      <button disabled={historicalAssignmentView} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                        Reasignar seleccionados ({selectedLineAssignments.length})
+                      <button disabled={selectedReassignableAssignments.length === 0} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                        Reasignar seleccionados ({selectedReassignableAssignments.length})
                       </button>
                       <button disabled={historicalAssignmentView} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Quitar asignacion ({selectedLineAssignments.length})
