@@ -867,7 +867,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     return productsToFilter.filter(product => available.has(fullProductCode(product.sku)));
   }
 
-  async function refreshAuditItemStock(item: AuditItem, options: { forcePersist?: boolean } = {}): Promise<AuditItem> {
+  async function refreshAuditItemStock(item: AuditItem, options: { persist?: boolean } = {}): Promise<AuditItem> {
     const store = selectedStore || stores.find(s => s.id === session?.store_id);
     const sede = String(store?.erp_sede || store?.name || "").trim();
     const codsap = fullProductCode(item.sku);
@@ -886,9 +886,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
 
     const latestStock = Number(data?.stock || 0);
     const updatedItem = { ...item, system_stock: latestStock };
-    const hasSavedCount = counts.some(count => count.item_id === item.id || count.product_id === item.product_id);
-
-    if (!item.pending_extra && (options.forcePersist || !hasSavedCount) && Number(item.system_stock || 0) !== latestStock) {
+    // El escaneo debe mostrar el stock vivo, pero no puede alterar todavía la
+    // fotografía que usa el resumen: primero se registra el conteo y se sabe
+    // si el código queda OK contra esa fotografía original.
+    if (!item.pending_extra && options.persist && Number(item.system_stock || 0) !== latestStock) {
       const { error: updateError } = await supabase
         .from("audit_session_items")
         .update({ system_stock: latestStock })
@@ -1278,7 +1279,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     savingCountRef.current = true;
     setSavingCount(true);
     try {
-      const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem, { forcePersist: true }));
+      const storedItem = items.find(item => item.id === activeItem.id) || null;
+      const snapshotStock = Number(storedItem?.system_stock ?? activeItem.system_stock ?? 0);
+      const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem));
       const { error } = await supabase.from("audit_counts").insert({
         session_id: session.id,
         item_id: currentItem.id,
@@ -1294,10 +1297,29 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         setMessage("Error guardando conteo: " + error.message);
         return;
       }
+
+      const previousTotal = counts
+        .filter(count => count.item_id === currentItem.id)
+        .reduce((total, count) => total + Number(count.quantity || 0), 0);
+      const keepsOriginalSnapshot = storedItem !== null && previousTotal + quantity === snapshotStock;
+
+      // Solo se refresca la foto en el Resumen cuando el conteo conserva una
+      // diferencia. Un código OK mantiene su stock original de auditoría.
+      if (!keepsOriginalSnapshot && storedItem && Number(storedItem.system_stock || 0) !== Number(currentItem.system_stock || 0)) {
+        const { error: stockError } = await supabase
+          .from("audit_session_items")
+          .update({ system_stock: Number(currentItem.system_stock || 0) })
+          .eq("id", currentItem.id);
+        if (stockError) {
+          throw new Error("El conteo se guardó, pero no se pudo actualizar el stock del resumen: " + stockError.message);
+        }
+      }
       await upsertProductLocation(currentItem.product_id, currentItem.sku, location);
       await loadSessionData(session.id);
       setActiveItem(null);
-      setMessage(`Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. Stock sistema usado para el resumen: ${number2(currentItem.system_stock)}.`);
+      setMessage(keepsOriginalSnapshot
+        ? `Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. El código está OK y conserva el stock original de auditoría.`
+        : `Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. El resumen usa el stock actual: ${number2(currentItem.system_stock)}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Error guardando conteo.");
     } finally {
