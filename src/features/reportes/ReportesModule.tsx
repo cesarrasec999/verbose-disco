@@ -189,6 +189,15 @@ function rotationStoreKeysForStore(store: Store) {
   const keys = new Set<string>();
   const sources = [store.name, store.erp_sede, store.code].filter(Boolean) as string[];
   for (const source of sources) {
+    // product_rotation_monthly conserva la clave exacta que llega del ERP
+    // despues del ultimo guion (p. ej. "CHI. DIAMANTE", "EVITAMIENTO" y
+    // "GPC" para CD-GPC). No se puede reemplazar por la version normalizada:
+    // la comparacion SQL de store_key es literal.
+    const rawSource = String(source || "").trim().toUpperCase();
+    const lastHyphen = rawSource.lastIndexOf("-");
+    const erpRotationKey = (lastHyphen >= 0 ? rawSource.slice(lastHyphen + 1) : rawSource).trim();
+    if (erpRotationKey) keys.add(erpRotationKey);
+
     const normalized = normalizeRotationStoreKey(source);
     if (!normalized) continue;
     keys.add(normalized);
@@ -260,6 +269,8 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   const [rotationRows, setRotationRows] = useState<RotationRow[]>([]);
   const [rotationHistoryRows, setRotationHistoryRows] = useState<RotationHistoryRow[]>([]);
   const [rotationBreakRows, setRotationBreakRows] = useState<RotationBreakRow[]>([]);
+  const [loadingRotationBreaks, setLoadingRotationBreaks] = useState(false);
+  const [rotationBreakPage, setRotationBreakPage] = useState(0);
   const [salesRows, setSalesRows] = useState<SalesReportRow[]>([]);
   const [salesSort, setSalesSort] = useState<{ col: string; dir: "asc" | "desc" } | null>(null);
   const [updatedAt, setUpdatedAt] = useState("");
@@ -441,6 +452,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
   };
 
   async function loadRotationBreaks(targetStores: Store[]) {
+    setLoadingRotationBreaks(true);
     const breakRows: RotationBreakRow[] = [];
     const PAGE = 1000;
     const productCache = new Map<string, { description: string; unit: string; cost: number }>();
@@ -464,6 +476,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       }
     }
 
+    try {
     for (const store of targetStores) {
       const storeKeys = rotationStoreKeysForStore(store);
       const sede = String(store.erp_sede || store.name || "").trim();
@@ -478,7 +491,10 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           .select("product_code,rotation_category,period_month")
           .in("store_key", storeKeys)
           .in("rotation_category", ["A", "B", "C"])
-          .lt("period_month", currentRotationPeriod())
+          // La regla de rotaciones usa siempre el ultimo ciclo mensual
+          // completo. Consultar meses anteriores multiplicaba innecesariamente
+          // la lectura y podia devolver una categoria desactualizada.
+          .eq("period_month", lastClosedRotationPeriod())
           .order("period_month", { ascending: false })
           .range(page * PAGE, (page + 1) * PAGE - 1);
         if (error) throw error;
@@ -532,6 +548,11 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       b.cost - a.cost ||
       a.sku.localeCompare(b.sku, "es", { numeric: true, sensitivity: "base" })
     ));
+    setRotationBreakPage(0);
+    } finally {
+      setLoadingRotationBreaks(false);
+      setProgress("");
+    }
   }
 
   async function checkRotationCoverage() {
@@ -594,10 +615,16 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       const valuation: ValuationRow[] = [];
       const rotationTotals = new Map<string, RotationRow>();
 
-      for (let storeIndex = 0; storeIndex < targetStores.length; storeIndex += 1) {
-        const store = targetStores[storeIndex];
+      // Solo se reciben agregados por tienda/categoria. Procesar cuatro
+      // sedes a la vez evita la espera acumulada de decenas de RPCs sin
+      // saturar la base de datos con todas las tiendas en paralelo.
+      const CONCURRENT_STORES = 4;
+      for (let batchStart = 0; batchStart < targetStores.length; batchStart += CONCURRENT_STORES) {
+        const batch = targetStores.slice(batchStart, batchStart + CONCURRENT_STORES);
+        await Promise.all(batch.map(async (store, batchIndex) => {
+        const storeIndex = batchStart + batchIndex;
         const sede = String(store.erp_sede || store.name || "").trim();
-        if (!sede) continue;
+        if (!sede) return;
         setProgress(`Calculando ${storeIndex + 1}/${targetStores.length}: ${store.name}`);
 
         // El join stock x costo x rotacion y el GROUP BY se hacen en la BD
@@ -653,20 +680,16 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           inventory_value: inventoryValue,
           missing_cost_codes: missingCostCodes,
         });
+        }));
       }
 
       const sortedValuation = valuation.sort((a, b) => b.inventory_value - a.inventory_value || a.store_name.localeCompare(b.store_name));
       setValuationRows(sortedValuation);
       setRotationRows([...rotationTotals.values()].sort((a, b) => b.inventory_value - a.inventory_value || a.rotation.localeCompare(b.rotation)));
       setUpdatedAt(new Date().toLocaleString("es-PE", { hour12: false }));
-      // Los quiebres A/B/C son exclusivos de la pestaña de rotaciones.
-      // El histórico de valorizados alimenta los gráficos de stock y se carga
-      // de forma independiente según el filtro de fecha seleccionado.
-      if (activeTab === "rotaciones") {
-        await loadRotationBreaks(targetStores);
-      } else {
-        setRotationBreakRows([]);
-      }
+      // Los quiebres son un detalle y se cargan bajo demanda: no deben
+      // bloquear el valorizado principal, que devuelve solo agregados.
+      if (activeTab !== "rotaciones") setRotationBreakRows([]);
       setProgress("");
       return sortedValuation;
     } catch (error: unknown) {
@@ -1083,6 +1106,12 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     acc.value = r2(acc.value + row.cost);
     return acc;
   }, { a: 0, b: 0, c: 0, value: 0 }), [rotationBreakRows]);
+  const rotationBreakPageSize = 100;
+  const pagedRotationBreakRows = useMemo(
+    () => rotationBreakRows.slice(rotationBreakPage * rotationBreakPageSize, (rotationBreakPage + 1) * rotationBreakPageSize),
+    [rotationBreakRows, rotationBreakPage]
+  );
+  const rotationBreakPages = Math.max(1, Math.ceil(rotationBreakRows.length / rotationBreakPageSize));
 
   const valuationChart = useMemo(() => {
     const barKeys = new Set(stores.filter(store => barStoreIds.includes(store.id)).flatMap(rotationStoreKeysForStore).map(normalizeRotationStoreKey));
@@ -1382,7 +1411,16 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
 
             <div className="rounded-2xl border bg-white">
               <div className="border-b bg-slate-50 px-4 py-3">
-                <h2 className="font-black">Quiebres A/B/C sin stock</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-black">Quiebres A/B/C sin stock</h2>
+                  <button
+                    onClick={() => void loadRotationBreaks(stores.filter(store => store.is_active && (selectedStoreIds.length === 0 || selectedStoreIds.includes(store.id))))}
+                    disabled={loadingRotationBreaks || loading}
+                    className="rounded-xl border bg-white px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+                  >
+                    {loadingRotationBreaks ? "Cargando quiebres..." : "Cargar quiebres"}
+                  </button>
+                </div>
                 <Formula>quiebres = productos con rotacion A, B o C cuyo stock actual en tienda es 0.</Formula>
               </div>
               <div className="grid grid-cols-2 gap-3 border-b p-4 lg:grid-cols-4">
@@ -1405,7 +1443,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
                     </tr>
                   </thead>
                   <tbody>
-                    {rotationBreakRows.map(row => (
+                    {pagedRotationBreakRows.map(row => (
                       <tr key={`${row.store_id}-${row.sku}`} className="hover:bg-red-50/50">
                         <td className="border p-2 font-bold">{row.store_name}</td>
                         <td className={`border p-2 font-black ${row.rotation === "A" ? "text-red-600" : row.rotation === "B" ? "text-orange-600" : "text-blue-700"}`}>{row.rotation}</td>
@@ -1420,6 +1458,11 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
                   </tbody>
                 </table>
               </div>
+              {rotationBreakRows.length > rotationBreakPageSize && <div className="flex items-center justify-end gap-2 border-t p-3 text-sm font-bold">
+                <button onClick={() => setRotationBreakPage(page => Math.max(0, page - 1))} disabled={rotationBreakPage === 0} className="rounded-lg border px-3 py-1.5 disabled:opacity-40">Anterior</button>
+                <span>Página {rotationBreakPage + 1} de {rotationBreakPages}</span>
+                <button onClick={() => setRotationBreakPage(page => Math.min(rotationBreakPages - 1, page + 1))} disabled={rotationBreakPage >= rotationBreakPages - 1} className="rounded-lg border px-3 py-1.5 disabled:opacity-40">Siguiente</button>
+              </div>}
             </div>
 
             <div className="rounded-2xl border bg-white">
