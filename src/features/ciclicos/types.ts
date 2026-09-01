@@ -1,4 +1,5 @@
 export type Role = "Operario" | "Cajero" | "Validador" | "Supervisor" | "Administrador";
+export type CyclicCountType = "cyclic" | "leader" | "supervisor";
 export type TabKey = "operario" | "validador" | "ubicaciones";
 export type ValTabKey = "asignar" | "no_inventariables" | "registros" | "resumen" | "progreso" | "cobertura" | "dashboard" | "resultados";
 
@@ -69,6 +70,7 @@ export type Assignment = {
   system_stock: number;
   assigned_date: string;
   assigned_by: string | null;
+  count_type?: CyclicCountType;
   sku?: string;
   barcode?: string | null;
   description?: string;

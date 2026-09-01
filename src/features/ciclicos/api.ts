@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import type { Assignment, CountRecord } from "./types";
+import type { Assignment, CountRecord, CyclicCountType } from "./types";
 import { isSessionFlagLocation, r2 } from "./utils";
 
 type SupabaseLike = {
@@ -11,6 +11,7 @@ type FetchCyclicDayDataParams = {
   storeId: string;
   date: string;
   includeStoreName?: boolean;
+  countType?: CyclicCountType;
 };
 
 export type CyclicDayData = {
@@ -27,6 +28,7 @@ function mapAssignment(row: any, includeStoreName: boolean): Assignment {
     system_stock: Number(row.system_stock || 0),
     assigned_date: row.assigned_date,
     assigned_by: row.assigned_by,
+    count_type: row.count_type || "cyclic",
     sku: row.cyclic_products?.sku,
     barcode: row.cyclic_products?.barcode,
     description: row.cyclic_products?.description,
@@ -64,12 +66,14 @@ export async function fetchCyclicDayData(
     ? "*, cyclic_products(sku, barcode, description, unit, cost), stores(name)"
     : "*, cyclic_products(sku, barcode, description, unit, cost)";
 
-  const { data: assignmentRows, error: assignmentsError } = await supabase
+  let assignmentsQuery = supabase
     .from("cyclic_assignments")
     .select(select)
     .eq("store_id", params.storeId)
     .eq("assigned_date", params.date)
     .order("created_at");
+  if (params.countType) assignmentsQuery = assignmentsQuery.eq("count_type", params.countType);
+  const { data: assignmentRows, error: assignmentsError } = await assignmentsQuery;
   if (assignmentsError) throw assignmentsError;
 
   const assignments = ((assignmentRows || []) as any[]).map((row: any) => mapAssignment(row, Boolean(params.includeStoreName)));

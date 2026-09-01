@@ -23,6 +23,7 @@ import { fetchNonInventoryProducts } from "@/features/no-inventariables/api";
 import type {
     AllStoreAssignmentSummary,
     Assignment,
+    CyclicCountType,
     CountRecord,
     CyclicUser,
     DashboardRow,
@@ -103,6 +104,24 @@ type ParsedCdGpcLocation = {
     metro: string;
     nivel: string;
 };
+
+type CountTypeFilter = CyclicCountType | "all";
+
+const COUNT_TYPE_OPTIONS: Array<{ value: CyclicCountType; label: string }> = [
+    { value: "cyclic", label: "Conteo cíclico" },
+    { value: "leader", label: "Conteo líder" },
+    { value: "supervisor", label: "Conteo supervisor" },
+];
+
+function countTypeLabel(type: CyclicCountType | "all") {
+    return type === "all" ? "Todos los conteos" : COUNT_TYPE_OPTIONS.find(option => option.value === type)?.label || "Conteo cíclico";
+}
+
+function defaultCountTypeForUser(user: Pick<CyclicUser, "username" | "role">): CyclicCountType {
+    if (user.role === "Supervisor") return "supervisor";
+    const username = String(user.username || "").trim().toUpperCase();
+    return username.startsWith("LIDER") ? "leader" : "cyclic";
+}
 
 const CD_GPC_LOCATION_PATTERN = /^(\d{2})-([A-Z][0-9]{0,2})-(\d{2})-(\d{2})$/;
 
@@ -210,6 +229,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     // ─── Selector de tienda / fecha ─────────────────────────
     const [selectedStoreId, setSelectedStoreId] = useState("");
     const [selectedDate, setSelectedDate]       = useState(todayISO());
+    const [countType, setCountType] = useState<CyclicCountType>("cyclic");
 
     // ─── Asignaciones y conteos ─────────────────────────────
     const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -378,6 +398,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [expandedDashProductsKey, setExpandedDashProductsKey] = useState<string | null>(null);
     const [dashLoading, setDashLoading] = useState(false);
     const [dashStoreFilter, setDashStoreFilter] = useState("");
+    const [dashCountTypeFilter, setDashCountTypeFilter] = useState<CountTypeFilter>("all");
     const [globalExportLoading, setGlobalExportLoading] = useState(false);
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -420,6 +441,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 if (!u.is_active) { localStorage.removeItem("cyclic_user"); window.location.replace("/"); return; }
                 writeStoredUser(u);
                 setUser(u);
+                setCountType(defaultCountTypeForUser(u));
                 fetchDisabledModules().then(disabled => {
                     if (isModuleBlockedForUser(disabled, forcedTab === "ubicaciones" ? "locations" : "cyclic_count_take", u)) setModuleDisabled(true);
                 });
@@ -450,12 +472,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                         else setActiveTab(savedTab);
                     }
                     else {
-                        if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
+                        if (isMobileAccess) setActiveTab(u.role === "Operario" || u.role === "Supervisor" ? "operario" : "ubicaciones");
                         else if (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador") landOnValidador();
                         else setActiveTab("operario");
                     }
                 } else {
-                    if (isMobileAccess) setActiveTab(u.role === "Operario" ? "operario" : "ubicaciones");
+                    if (isMobileAccess) setActiveTab(u.role === "Operario" || u.role === "Supervisor" ? "operario" : "ubicaciones");
                     else if (u.role === "Validador" || u.role === "Supervisor" || u.role === "Administrador") landOnValidador();
                     else setActiveTab("operario");
                 }
@@ -486,11 +508,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
             } catch {
                 setUser(parsed);
+                setCountType(defaultCountTypeForUser(parsed));
                 fetchDisabledModules().then(disabled => {
                     if (isModuleBlockedForUser(disabled, forcedTab === "ubicaciones" ? "locations" : "cyclic_count_take", parsed)) setModuleDisabled(true);
                 });
                 if (forcedTab) setActiveTab(forcedTab);
-                else if (isMobileAccess) setActiveTab(parsed.role === "Operario" ? "operario" : "ubicaciones");
+                else if (isMobileAccess) setActiveTab(parsed.role === "Operario" || parsed.role === "Supervisor" ? "operario" : "ubicaciones");
                 else if (parsed.role === "Validador" || parsed.role === "Supervisor" || parsed.role === "Administrador") router.replace("/conteos-ciclicos");
                 else setActiveTab("operario");
             }
@@ -507,7 +530,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         if (forcedValTab === "resumen" && valStoreId && valStoreId !== ALL_STORES_VALUE && searchParams.get("from") !== "kpi") loadValidadorData(valStoreId, valDate);
         if (forcedValTab === "progreso") loadStoreProgress(dashDate);
         if (forcedValTab === "cobertura") loadStoreCoverage(dashDate);
-    }, [isForcedValidador, forcedValTab, user, valStoreId, valDate, dashDate]);
+    }, [isForcedValidador, forcedValTab, user, valStoreId, valDate, dashDate, countType]);
 
     useEffect(() => {
         if (!user) return;
@@ -520,10 +543,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
     useEffect(() => {
         if (!user) return;
-        if (user.role === "Operario") {
+        if (user.role === "Operario" || (isMobileAccess && user.role === "Supervisor")) {
             const sid = user.store_id || "";
-            setSelectedStoreId(sid);
-            if (sid) loadOperarioData(sid, selectedDate);
+            if (sid) {
+                setSelectedStoreId(sid);
+                loadOperarioData(sid, selectedDate);
+            }
         } else if (!isMobileAccess && (user.role === "Administrador" || user.role === "Validador" || user.role === "Supervisor")) {
             // Restaurar datos del validador si estaba en ese tab
             const savedTab      = sessionStorage.getItem("cyclic_active_tab");
@@ -544,16 +569,24 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         }
     }, [user, isMobileAccess]);
 
+    // Cambiar de tipo no mezcla avances ni flags: siempre recarga únicamente
+    // las asignaciones del tipo elegido para la misma tienda y fecha.
+    useEffect(() => {
+        if (!user || !selectedStoreId) return;
+        if (user.role !== "Operario" && !(isMobileAccess && user.role === "Supervisor") && user.role !== "Administrador") return;
+        void loadOperarioData(selectedStoreId, selectedDate);
+    }, [user, selectedStoreId, selectedDate, countType, isMobileAccess]);
+
     useEffect(() => {
         if (!isMobileAccess || !user) return;
         if (isForcedValidador) {
             // conteos-ciclicos no tiene vista movil — redirige a la vista que
             // si la tiene en vez de mostrar contenido que no corresponde a la URL.
-            router.replace(user.role === "Operario" ? "/dashboard" : "/ubicaciones");
+            router.replace(user.role === "Operario" || user.role === "Supervisor" ? "/dashboard" : "/ubicaciones");
             return;
         }
         if (activeTab !== "operario" && activeTab !== "ubicaciones") {
-            setActiveTab(user.role === "Operario" ? "operario" : "ubicaciones");
+            setActiveTab(user.role === "Operario" || user.role === "Supervisor" ? "operario" : "ubicaciones");
         }
     }, [isMobileAccess, user, activeTab]);
 
@@ -636,12 +669,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         setAssignResults([]);
         setAssignSelectedIds(new Set());
         setAssignSearchNotice("");
-    }, [activeTab, valTab, valStoreId, valDate]);
+    }, [activeTab, valTab, valStoreId, valDate, countType]);
 
     useEffect(() => {
         if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar" || valStoreId !== ALL_STORES_VALUE) return;
         loadAllStoreAssignmentSummary(valDate);
-    }, [isMobileAccess, activeTab, valTab, valStoreId, valDate, stores]);
+    }, [isMobileAccess, activeTab, valTab, valStoreId, valDate, stores, countType]);
 
     useEffect(() => {
         if (isMobileAccess || activeTab !== "validador" || valTab !== "asignar") return;
@@ -650,7 +683,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             void searchProductsForAssign(assignSearch);
         }, 1000);
         return () => clearTimeout(timer);
-    }, [isMobileAccess, assignSearch, activeTab, valTab, valStoreId, stores]);
+    }, [isMobileAccess, assignSearch, activeTab, valTab, valStoreId, stores, countType]);
 
     // realtime para operario
     useEffect(() => {
@@ -668,7 +701,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             if (timer) clearTimeout(timer);
             supabase.removeChannel(ch);
         };
-    }, [selectedStoreId, selectedDate, user]);
+    }, [selectedStoreId, selectedDate, user, countType]);
 
     // realtime para admin viendo tab operario
     useEffect(() => {
@@ -716,7 +749,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             if (timer) clearTimeout(timer);
             supabase.removeChannel(ch);
         };
-    }, [isMobileAccess, valStoreId, valDate, activeTab]);
+    }, [isMobileAccess, valStoreId, valDate, activeTab, countType]);
 
     // scanner overlay
     useEffect(() => {
@@ -813,6 +846,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         const { data: asgns } = await supabase
             .from("cyclic_assignments").select("id")
             .eq("store_id", storeId).eq("assigned_date", date)
+            .eq("count_type", countType)
             .order("id").limit(1);
         return asgns && asgns.length > 0 ? asgns[0].id : null;
     }
@@ -821,6 +855,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         const { data: asgns } = await supabase
             .from("cyclic_assignments").select("id, product_id")
             .eq("store_id", storeId).eq("assigned_date", date)
+            .eq("count_type", countType)
             .order("id").limit(1);
         if (!asgns || asgns.length === 0) return;
         const anchorId = asgns[0].id;
@@ -847,7 +882,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         // para asegurarse que no queden huérfanos de sesiones previas
         const { data: asgns } = await supabase
             .from("cyclic_assignments").select("id")
-            .eq("store_id", storeId).eq("assigned_date", date);
+            .eq("store_id", storeId).eq("assigned_date", date)
+            .eq("count_type", countType);
         if (!asgns || asgns.length === 0) return;
         const ids = asgns.map((a: any) => a.id);
         await supabase.from("cyclic_counts")
@@ -896,7 +932,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         const deduped = Array.from(dedupedMap.values());
         setAllStores(deduped);
         const active = deduped.filter(s => s.is_active);
-        if (user.can_access_all_stores) {
+        if (user.can_access_all_stores || user.role === "Supervisor") {
             setStores(active);
             const savedValStore = sessionStorage.getItem("cyclic_val_store");
             if (savedValStore === ALL_STORES_VALUE) {
@@ -905,6 +941,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 setValStoreId(savedValStore);
             } else if (active.length > 0) {
                 setValStoreId(active[0].id);
+            }
+            if (isMobileAccess && user.role === "Supervisor" && !selectedStoreId && active.length > 0) {
+                const defaultStoreId = user.store_id || active[0].id;
+                setSelectedStoreId(defaultStoreId);
+                void loadOperarioData(defaultStoreId, selectedDate);
             }
         } else {
             const mine = user.store_id ? active.filter(s => s.id === user.store_id) : [];
@@ -941,7 +982,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
     async function loadOperarioData(storeId: string, date: string) {
         if (!storeId) return;
-        const { assignments: rows, counts: enriched, sessionFlags } = await fetchCyclicDayData(supabase, { storeId, date });
+        const { assignments: rows, counts: enriched, sessionFlags } = await fetchCyclicDayData(supabase, { storeId, date, countType });
         setAssignments(rows);
 
         if (rows.length === 0) { setCounts([]); setSessionFinished(false); setRecountFinished(false); setShowRecount(false); return; }
@@ -994,7 +1035,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             await loadAllStoreAssignmentSummary(date);
             return;
         }
-        const { assignments: rows, counts: enriched } = await fetchCyclicDayData(supabase, { storeId, date, includeStoreName: true });
+        const { assignments: rows, counts: enriched } = await fetchCyclicDayData(supabase, { storeId, date, includeStoreName: true, countType });
         setAssignments(rows);
 
         if (rows.length === 0) { setCounts([]); return; }
@@ -1017,6 +1058,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     .from("cyclic_assignments")
                     .select("id,store_id,product_id,system_stock")
                     .eq("assigned_date", date)
+                    .eq("count_type", countType)
                     .in("store_id", [...targetStoreIds])
                     .range(page * PAGE, (page + 1) * PAGE - 1);
                 if (error) throw error;
@@ -1081,6 +1123,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     .from("cyclic_assignments")
                     .select("id, store_id")
                     .eq("assigned_date", date)
+                    .eq("count_type", countType)
                     .range(page * PAGE, (page + 1) * PAGE - 1);
                 if (error) break;
                 if (chunk && chunk.length > 0) asgnData = asgnData.concat(chunk);
@@ -1239,6 +1282,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     .from("cyclic_assignments")
                     .select("id, store_id")
                     .eq("assigned_date", date)
+                    .eq("count_type", countType)
                     .range(page * PAGE, (page + 1) * PAGE - 1);
                 if (error) break;
                 if (chunk && chunk.length > 0) asgnData = asgnData.concat(chunk);
@@ -1331,14 +1375,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             let asgnRaw: any[] = [];
             let dashP = 0;
             while (true) {
-                const { data: chunk, error: eA } = await supabase
+                let assignmentQuery = supabase
                     .from("cyclic_assignments")
                     .select("id, store_id, product_id, system_stock, assigned_date")
                     .gte("assigned_date", dateFilter.from)
                     .lte("assigned_date", dateFilter.to)
                     .order("assigned_date")
-                    .order("id")
-                    .range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
+                    .order("id");
+                if (dashCountTypeFilter !== "all") assignmentQuery = assignmentQuery.eq("count_type", dashCountTypeFilter);
+                const { data: chunk, error: eA } = await assignmentQuery.range(dashP * DASH_PAGE, (dashP + 1) * DASH_PAGE - 1);
                 if (eA) { console.error("loadDashboard asgn error", eA); showMessage("Error BD assignments: " + JSON.stringify(eA), "error"); break; }
                 if (!chunk || chunk.length === 0) break;
                 asgnRaw = asgnRaw.concat(chunk);
@@ -1668,6 +1713,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             .eq("store_id", asgn.store_id)
             .eq("product_id", asgn.product_id)
             .eq("assigned_date", asgn.assigned_date)
+            .eq("count_type", asgn.count_type || countType)
             .maybeSingle();
 
         if (existingError) throw existingError;
@@ -1689,6 +1735,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     system_stock: latestStock,
                     assigned_date: asgn.assigned_date,
                     assigned_by: user?.id || asgn.assigned_by,
+                    count_type: asgn.count_type || countType,
                 })
                 .select("id")
                 .single();
@@ -2466,6 +2513,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             .eq("store_id", selectedStoreId)
             .eq("product_id", product.id)
             .eq("assigned_date", selectedDate)
+            .eq("count_type", countType)
             .maybeSingle();
 
         const asgn: Assignment = {
@@ -2475,6 +2523,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             system_stock: Number(existing?.system_stock ?? stock),
             assigned_date: selectedDate,
             assigned_by: existing?.assigned_by ?? user.id,
+            count_type: countType,
             sku: product.sku,
             barcode: product.barcode,
             description: product.description,
@@ -3317,6 +3366,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                             .in("store_id", storeChunk)
                             .in("product_id", productChunk)
                             .eq("assigned_date", valDate)
+                            .eq("count_type", countType)
                             .order("store_id", { ascending: true })
                             .order("product_id", { ascending: true })
                             .range(from, from + pageSize - 1);
@@ -3343,6 +3393,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                         system_stock: stock,
                         assigned_date: valDate,
                         assigned_by: user?.id,
+                        count_type: countType,
                     });
                 }
             }
@@ -4241,12 +4292,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     async function assignProductLegacy(product: Product) {
         if (!valStoreId || !valDate) { showMessage("Selecciona tienda y fecha.", "error"); return; }
         const { data: existing } = await supabase.from("cyclic_assignments")
-            .select("id").eq("store_id", valStoreId).eq("product_id", product.id).eq("assigned_date", valDate).maybeSingle();
+                .select("id").eq("store_id", valStoreId).eq("product_id", product.id).eq("assigned_date", valDate).maybeSingle();
         if (existing) { showMessage("Este producto ya está asignado para esa tienda y fecha.", "error"); return; }
         const stock = await getSystemStockForStore(product.sku, valStoreId);
         const { error } = await supabase.from("cyclic_assignments").insert({
             store_id: valStoreId, product_id: product.id, system_stock: stock,
-            assigned_date: valDate, assigned_by: user?.id,
+            assigned_date: valDate, assigned_by: user?.id, count_type: countType,
         });
         if (error) { showMessage("Error al asignar: " + error.message, "error"); return; }
         showMessage("✅ \"" + product.sku + "\" asignado con stock sistema " + stock + ".", "success");
@@ -4447,7 +4498,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 const { data: ea } = await supabase.from("cyclic_assignments")
                     .select("id, store_id, product_id, system_stock")
                     .in("store_id", chunk)
-                    .eq("assigned_date", valDate);
+                    .eq("assigned_date", valDate)
+                    .eq("count_type", countType);
                 existingAsgns = existingAsgns.concat((ea || []) as ExistingAssignment[]);
             }
             const existingMap = new Map<string, ExistingAssignment>();
@@ -4508,7 +4560,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 if (existing) {
                     if (existing.system_stock !== draft.system_stock) toUpdate.push({ id: existing.id, system_stock: draft.system_stock });
                 } else {
-                    toInsert.push({ ...draft, assigned_date: valDate, assigned_by: user?.id });
+                    toInsert.push({ ...draft, assigned_date: valDate, assigned_by: user?.id, count_type: countType });
                 }
             }
 
@@ -5791,6 +5843,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     //  GENERAR CORREO HTML — INFORME GERENCIAL CONTEO CÍCLICO
     // ════════════════════════════════════════════════════════
     async function generateEmailHTML() {
+        if (dashCountTypeFilter === "all") {
+            showMessage("Selecciona un tipo de conteo para generar un correo separado.", "info");
+            return;
+        }
         if (filteredDashData.length === 0) { showMessage("Primero consulta el dashboard.", "error"); return; }
 
         const periodoLabel = dashPeriod === "dia"
@@ -6151,7 +6207,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         <p style="margin:2px 0 0;color:#64748b;font-size:10px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
       </div>
     </div>
-    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
+    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de ${countTypeLabel(dashCountTypeFilter)}</h1>
     <p style="margin:0;color:#93c5fd;font-size:13px;">Período: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
     <p style="margin:5px 0 0;color:#475569;font-size:11px;">Generado el ${today} · Área de Auditoría y Control de Inventarios</p>
   </div>
@@ -6740,14 +6796,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             return;
         }
         setResumenDbLoading(true);
-        const { data, error } = await supabase.rpc("get_cyclic_day_summary", { p_store_id: storeId, p_date: date });
+        const { data, error } = await supabase.rpc("get_cyclic_day_summary", { p_store_id: storeId, p_date: date, p_count_type: countType });
         setResumenDbLoading(false);
         if (!error && data) setResumenPorCodigo(data as ResumenRow[]);
     }
 
     useEffect(() => {
         void loadResumenPorCodigo();
-    }, [valStoreId, valDate]);
+    }, [valStoreId, valDate, countType]);
 
     // Resumen con overrides aplicados para el modo análisis
     const resumenConOverrides = useMemo((): ResumenRow[] => {
@@ -7268,6 +7324,17 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                         </div>
                     )}
 
+                    {activeTab === "validador" && valTab !== "dashboard" && (
+                        <select
+                            aria-label="Tipo de conteo"
+                            className="border rounded-xl px-3 py-2 text-sm font-semibold text-slate-900 bg-white"
+                            value={countType}
+                            onChange={e => setCountType(e.target.value as CyclicCountType)}
+                        >
+                            {COUNT_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                    )}
+
                     {/* Stats de tienda seleccionada en validador */}
                     {activeTab === "validador" && valTab !== "dashboard" && valTab !== "progreso" && valTab !== "resultados" && valStoreId && resumenStats.total > 0 && (
                         <div className="hidden md:flex items-center gap-3">
@@ -7333,7 +7400,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                 )}
                             </div>
                             <div className="grid w-full gap-2 md:flex md:w-auto md:items-center md:flex-wrap md:gap-3">
-                                {isAdmin && (
+                                {(isAdmin || isSupervisor) && (
                                     <select
                                         className="w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:w-auto"
                                         value={selectedStoreId}
@@ -7343,6 +7410,17 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         {allStores.filter(s => s.is_active).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                     </select>
                                 )}
+                                <select
+                                    className="w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:w-auto"
+                                    value={countType}
+                                    onChange={e => {
+                                        const nextType = e.target.value as CyclicCountType;
+                                        setCountType(nextType);
+                                        if (selectedStoreId) void loadOperarioData(selectedStoreId, selectedDate);
+                                    }}
+                                >
+                                    {COUNT_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                </select>
                                 <input type="date" className="w-full border rounded-2xl px-3 py-2 text-sm text-slate-900 bg-white md:w-auto" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); if (selectedStoreId) loadOperarioData(selectedStoreId, e.target.value); }} />
                                 <button
                                     className="flex w-full items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 disabled:opacity-40 md:w-auto"
@@ -7947,6 +8025,13 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             <input type="month" className="border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashMonth} onChange={e => setDashMonth(e.target.value)} />
                                         </div>
                                     )}
+                                    <div className="min-w-[190px]">
+                                        <label className="block text-xs font-semibold text-slate-600 mb-1">Tipo de conteo</label>
+                                        <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashCountTypeFilter} onChange={e => setDashCountTypeFilter(e.target.value as CountTypeFilter)}>
+                                            <option value="all">Todos los conteos</option>
+                                            {COUNT_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                        </select>
+                                    </div>
                                     <div className="flex-1 min-w-[160px]">
                                         <label className="block text-xs font-semibold text-slate-600 mb-1">Filtrar tienda</label>
                                         <select className="w-full border rounded-2xl p-3 text-sm text-slate-900 bg-white" value={dashStoreFilter} onChange={e => setDashStoreFilter(e.target.value)}>
@@ -8430,6 +8515,13 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900">Asignar productos para contar</h3>
                                     <p className="text-slate-500 text-sm mt-1">Busca un producto del maestro global y asígnalo a la tienda/fecha seleccionada. También puedes cargar masivamente por Excel.</p>
+                                </div>
+
+                                <div className="max-w-sm">
+                                    <label className="mb-1 block text-xs font-bold text-slate-600">Tipo de conteo a asignar</label>
+                                    <select value={countType} onChange={e => setCountType(e.target.value as CyclicCountType)} className="w-full rounded-2xl border bg-white p-3 text-sm font-semibold text-slate-800">
+                                        {COUNT_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                    </select>
                                 </div>
 
                                 <div className="space-y-2">
@@ -9972,7 +10064,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                         {/* Header del modal */}
                         <div className="flex items-center justify-between gap-4 px-6 py-4 border-b bg-white flex-shrink-0">
                             <div>
-                                <h3 className="text-lg font-bold text-slate-900">✉️ Correo — Conteo Cíclico</h3>
+                                <h3 className="text-lg font-bold text-slate-900">✉️ Correo — {countTypeLabel(dashCountTypeFilter === "all" ? "cyclic" : dashCountTypeFilter)}</h3>
                                 <p className="text-slate-500 text-xs mt-0.5">Ingresa los destinatarios y envía directo a Gmail.</p>
                             </div>
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0" onClick={() => setShowEmailModal(false)}>×</button>
@@ -10002,7 +10094,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         }
                                         // 2. Abrir Gmail con asunto y destinatarios listos
                                         const to = emailRecipients.trim();
-                                        const subject = encodeURIComponent(`Informe Conteo Cíclico — ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
+                                        const subject = encodeURIComponent(`Informe ${countTypeLabel(dashCountTypeFilter === "all" ? "cyclic" : dashCountTypeFilter)} — ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
                                         const gmail = `https://mail.google.com/mail/?view=cm&fs=1${to ? `&to=${encodeURIComponent(to)}` : ""}&su=${subject}`;
                                         setTimeout(() => window.open(gmail, "_blank"), 400);
                                         showMessage("📋 Se abrieron 2 pestañas: el informe y Gmail. Selecciona todo el informe (Ctrl+A), cópialo (Ctrl+C) y pégalo en el cuerpo del correo (Ctrl+V).", "info");

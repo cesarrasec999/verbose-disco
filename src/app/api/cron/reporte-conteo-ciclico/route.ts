@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
-import { buildDailyCyclicReportHTML, buildDailyDetailXlsxBuffer } from "@/lib/cyclicDailyReport";
+import { buildDailyCyclicReportHTML, buildDailyDetailXlsxBuffer, type DailyCyclicCountType } from "@/lib/cyclicDailyReport";
 
 // Corre 1 vez al dia (ver vercel.json, 13:00 UTC = 8:00 America/Lima) disparado
 // por Vercel Cron. Envia el mismo informe que el boton "Generar correo" del
@@ -66,15 +66,6 @@ export async function GET(request: Request) {
   const toOverride = url.searchParams.get("to");
 
   try {
-    const { html, subject, hasData } = await buildDailyCyclicReportHTML(supabase, date);
-
-    // Sin asignaciones ese dia (ej. domingo sin conteo programado): no se envia nada.
-    if (!hasData) {
-      return NextResponse.json({ ok: true, date, hasData, skipped: true });
-    }
-
-    const xlsxBuffer = await buildDailyDetailXlsxBuffer(supabase, date);
-
     const to = toOverride || process.env.REPORTE_CICLICOS_TO || DEFAULT_TO;
     const cc = toOverride ? undefined : (process.env.REPORTE_CICLICOS_CC || DEFAULT_CC);
 
@@ -85,22 +76,33 @@ export async function GET(request: Request) {
       auth: { user: gmailUser, pass: gmailPass },
     });
 
-    await transporter.sendMail({
-      from: `"Sistema de Conteo Cíclico" <${gmailUser}>`,
-      to,
-      cc,
-      subject,
-      html,
-      attachments: xlsxBuffer
-        ? [{
-            filename: `ciclicos_detalle_${date}.xlsx`,
-            content: xlsxBuffer,
-            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          }]
-        : undefined,
-    });
+    const results: Array<{ type: DailyCyclicCountType; sent: boolean; attached: boolean }> = [];
+    for (const type of ["cyclic", "leader", "supervisor"] as DailyCyclicCountType[]) {
+      const { html, subject, hasData } = await buildDailyCyclicReportHTML(supabase, date, type);
+      // Cada tipo se envía por separado; si ese día no tiene asignaciones no genera correo.
+      if (!hasData) {
+        results.push({ type, sent: false, attached: false });
+        continue;
+      }
+      const xlsxBuffer = await buildDailyDetailXlsxBuffer(supabase, date, type);
+      await transporter.sendMail({
+        from: `"Sistema de Conteo Cíclico" <${gmailUser}>`,
+        to,
+        cc,
+        subject,
+        html,
+        attachments: xlsxBuffer
+          ? [{
+              filename: `conteo_${type}_detalle_${date}.xlsx`,
+              content: xlsxBuffer,
+              contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            }]
+          : undefined,
+      });
+      results.push({ type, sent: true, attached: !!xlsxBuffer });
+    }
 
-    return NextResponse.json({ ok: true, date, hasData, to, cc, attached: !!xlsxBuffer, commit: DEPLOY_COMMIT });
+    return NextResponse.json({ ok: true, date, to, cc, results, commit: DEPLOY_COMMIT });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: message }, { status: 500 });

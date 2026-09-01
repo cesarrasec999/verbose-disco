@@ -22,9 +22,15 @@ type DayStoreRow = {
   cumplio: boolean;
 };
 
+export type DailyCyclicCountType = "cyclic" | "leader" | "supervisor";
+
+function countTypeLabel(type: DailyCyclicCountType) {
+  return type === "leader" ? "Conteo Líder" : type === "supervisor" ? "Conteo Supervisor" : "Conteo Cíclico";
+}
+
 type SkuAgg = { store_name: string; sku: string; description: string; totalDif: number; totalDifVal: number };
 
-type AssignmentRow = { id: string; store_id: string; product_id: string; system_stock: number; assigned_date: string };
+type AssignmentRow = { id: string; store_id: string; product_id: string; system_stock: number; assigned_date: string; count_type: DailyCyclicCountType };
 type EnrichedAssignmentRow = AssignmentRow & { stores: { name: string }; cyclic_products: { cost: number } };
 type CountRow = { assignment_id: string; counted_quantity: number; location: string; status?: string };
 type NameRow = { id: string; name: string };
@@ -47,12 +53,13 @@ async function fetchAllPages<T>(
   return all;
 }
 
-async function loadDayStoreRows(supabase: SupabaseClient, date: string): Promise<DayStoreRow[]> {
+async function loadDayStoreRows(supabase: SupabaseClient, date: string, countType: DailyCyclicCountType): Promise<DayStoreRow[]> {
   const asgnRaw = await fetchAllPages<AssignmentRow>((from, to) =>
     supabase
       .from("cyclic_assignments")
-      .select("id, store_id, product_id, system_stock, assigned_date")
+      .select("id, store_id, product_id, system_stock, assigned_date, count_type")
       .eq("assigned_date", date)
+      .eq("count_type", countType)
       .order("id")
       .range(from, to)
       .then(r => r.data)
@@ -182,15 +189,16 @@ async function loadDayStoreRows(supabase: SupabaseClient, date: string): Promise
   return rows;
 }
 
-async function loadTopSkuDiffs(supabase: SupabaseClient, date: string, storeNameById: Map<string, string>) {
+async function loadTopSkuDiffs(supabase: SupabaseClient, date: string, storeNameById: Map<string, string>, countType: DailyCyclicCountType) {
   const skuFaltMap = new Map<string, SkuAgg>();
   const skuSobMap = new Map<string, SkuAgg>();
 
   const asgnRows = await fetchAllPages<AssignmentRow>((from, to) =>
     supabase
       .from("cyclic_assignments")
-      .select("id, store_id, product_id, system_stock, assigned_date")
+      .select("id, store_id, product_id, system_stock, assigned_date, count_type")
       .eq("assigned_date", date)
+      .eq("count_type", countType)
       .range(from, to)
       .then(r => r.data)
   );
@@ -338,11 +346,13 @@ function barChartTable(
 
 export async function buildDailyCyclicReportHTML(
   supabase: SupabaseClient,
-  date: string
+  date: string,
+  countType: DailyCyclicCountType = "cyclic"
 ): Promise<{ html: string; subject: string; hasData: boolean }> {
-  const rows = await loadDayStoreRows(supabase, date);
+  const reportLabel = countTypeLabel(countType);
+  const rows = await loadDayStoreRows(supabase, date, countType);
   const storeNameById = new Map(rows.map(r => [r.store_id, r.store_name]));
-  const { topFaltantes, topSobrantes } = rows.length > 0 ? await loadTopSkuDiffs(supabase, date, storeNameById) : { topFaltantes: [] as SkuAgg[], topSobrantes: [] as SkuAgg[] };
+  const { topFaltantes, topSobrantes } = rows.length > 0 ? await loadTopSkuDiffs(supabase, date, storeNameById, countType) : { topFaltantes: [] as SkuAgg[], topSobrantes: [] as SkuAgg[] };
 
   const cumplidos = rows.filter(r => r.cumplio).length;
   const totalCumplimiento = rows.length;
@@ -428,7 +438,7 @@ export async function buildDailyCyclicReportHTML(
   const html = `<!DOCTYPE html>
 <html lang="es">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Informe Conteo Cíclico — ${periodoLabel}</title></head>
+<title>Informe ${reportLabel} — ${periodoLabel}</title></head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
 <div style="max-width:900px;margin:24px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,0.10);">
 
@@ -442,7 +452,7 @@ export async function buildDailyCyclicReportHTML(
         <p style="margin:2px 0 0;color:#64748b;font-size:10px;letter-spacing:1px;">SISTEMA DE CONTEO CÍCLICO</p>
       </div>
     </div>
-    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de Conteo Cíclico</h1>
+    <h1 style="margin:0 0 4px;color:#ffffff;font-size:20px;font-weight:800;line-height:1.2;">Informe de ${reportLabel}</h1>
     <p style="margin:0;color:#93c5fd;font-size:13px;">Fecha: <strong style="color:#ffffff;">${periodoLabel}</strong></p>
     <p style="margin:5px 0 0;color:#475569;font-size:11px;">Generado automáticamente el ${hoyLabel} · Área de Auditoría y Control de Inventarios</p>
   </div>
@@ -451,7 +461,7 @@ export async function buildDailyCyclicReportHTML(
 
     <p style="margin:0 0 20px;font-size:13px;color:#334155;line-height:1.6;">
       Estimado equipo,<br>
-      A continuación el <strong>resumen ejecutivo del conteo cíclico</strong> del día <strong>${periodoLabel}</strong>.
+      A continuación el <strong>resumen ejecutivo del ${reportLabel.toLowerCase()}</strong> del día <strong>${periodoLabel}</strong>.
       Revisar los resultados con los equipos de tienda y tomar acciones correctivas ante las diferencias identificadas.
     </p>
 
@@ -602,7 +612,7 @@ export async function buildDailyCyclicReportHTML(
 </body></html>`;
 
   const [yyyy, mm, dd] = date.split("-");
-  const subject = `Resumen Conteo Ciclico ${dd}.${mm}.${yyyy}`;
+  const subject = `Resumen ${reportLabel} ${dd}.${mm}.${yyyy}`;
 
   return { html, subject, hasData };
 }
@@ -613,12 +623,13 @@ type ProductDetailRow = { id: string; sku: string | null; description: string | 
  * Replica exportGlobal() (boton "Excel global" del dashboard) para un solo dia,
  * generando el .xlsx en memoria (sin canvas ni filesystem) para adjuntar al correo.
  */
-export async function buildDailyDetailXlsxBuffer(supabase: SupabaseClient, date: string): Promise<Buffer | null> {
+export async function buildDailyDetailXlsxBuffer(supabase: SupabaseClient, date: string, countType: DailyCyclicCountType = "cyclic"): Promise<Buffer | null> {
   const asgnRows = await fetchAllPages<AssignmentRow>((from, to) =>
     supabase
       .from("cyclic_assignments")
-      .select("id, store_id, product_id, system_stock, assigned_date")
+      .select("id, store_id, product_id, system_stock, assigned_date, count_type")
       .eq("assigned_date", date)
+      .eq("count_type", countType)
       .order("id")
       .range(from, to)
       .then(r => r.data)
