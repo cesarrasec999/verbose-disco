@@ -12,7 +12,7 @@ const SOURCE_THRESHOLDS: Record<string, number> = {
   picking_requests:         15,   // corre cada 5 min → alerta si pasan 15 min
   stock_general:            15,   // corre continuamente → alerta si pasan 15 min
   reception_requests:       15,   // corre cada 5 min → alerta si pasan 15 min
-  ajustes_provisionales:    15,   // corre cada 5 min → alerta si pasan 15 min
+  erp_movements:            15,   // fuente central, corre cada 5 min
   erp_store_sales_daily:    26 * 60, // corre una vez al día → alerta si pasan 26 horas
   erp_product_sales_daily:  26 * 60, // corre una vez al día → alerta si pasan 26 horas
   product_rotation_monthly: 26 * 60, // corre una vez al día → alerta si pasan 26 horas
@@ -22,7 +22,7 @@ const SOURCE_LABELS: Record<string, string> = {
   picking_requests:         "picking",
   stock_general:            "stock",
   reception_requests:       "recepción",
-  ajustes_provisionales:    "ajustes provisionales",
+  erp_movements:            "movimientos",
   erp_store_sales_daily:    "ventas por tienda",
   erp_product_sales_daily:  "ventas por producto",
   product_rotation_monthly: "rotación de productos",
