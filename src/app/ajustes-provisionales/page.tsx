@@ -151,7 +151,7 @@ export default function AjustesProvisionalesPage() {
           p_limit:    500,
           p_offset:   0,
         }),
-        supabase.from("erp_sync_status").select("synced_at").eq("id", "ajustes_provisionales").maybeSingle(),
+        supabase.from("erp_sync_status").select("synced_at").eq("id", "erp_movements").maybeSingle(),
       ]);
 
       if (syncRes.data?.synced_at) setLastSync(syncRes.data.synced_at as string);
@@ -377,7 +377,7 @@ export default function AjustesProvisionalesPage() {
           return (
             <div className={`rounded-2xl border px-4 py-3 shadow-sm ${syncStale ? "border-red-300 bg-red-50" : "bg-white"}`}>
               <p className={`text-xs font-black uppercase ${syncStale ? "text-red-600" : "text-slate-500"}`}>
-                {syncStale ? "⚠ Sincronizacion ERP Ajustes detenida" : "Ultima sincronizacion ERP Ajustes"}
+                {syncStale ? "⚠ Sincronizacion ERP Movimientos detenida" : "Ultima sincronizacion ERP Movimientos"}
               </p>
               <p className={`text-sm font-black ${syncStale ? "text-red-700" : "text-slate-900"}`}>
                 {lastSync ? formatSync(lastSync) : "Sin sincronizacion registrada"}
