@@ -742,19 +742,27 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         .gte("snapshot_date", from)
         .lte("snapshot_date", to)
         .order("snapshot_date", { ascending: false })
-        .order("inventory_value", { ascending: false })
-        .limit(10000);
+        .order("inventory_value", { ascending: false });
       if (selectedStores.length > 0 && activeTab !== "stock") {
         const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
         query = query.in("store_key", allKeys);
       }
-      const { data, error } = await query;
-      if (error) {
-        console.warn("No se pudo cargar historico por rotacion:", error.message);
-        setRotationHistoryRows([]);
-        return;
+      // Sin límite fijo: recorrer el histórico con páginas pequeñas evita que
+      // PostgREST tenga que materializar una respuesta masiva cuando se elige
+      // un rango amplio.
+      const PAGE = 1000;
+      const data: Array<Record<string, unknown>> = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const { data: pageRows, error } = await query.range(offset, offset + PAGE - 1);
+        if (error) {
+          console.warn("No se pudo cargar historico por rotacion:", error.message);
+          setRotationHistoryRows([]);
+          return;
+        }
+        data.push(...((pageRows || []) as Array<Record<string, unknown>>));
+        if (!pageRows || pageRows.length < PAGE) break;
       }
-      setRotationHistoryRows((data || []).map(row => ({
+      setRotationHistoryRows(data.map(row => ({
         snapshot_date: String(row.snapshot_date),
         store_key: String(row.store_key || ""),
         store_name: String(row.store_name || ""),
@@ -785,7 +793,14 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       }
       const selectedIsCdGpc = selectedStores.length > 0 && selectedStores.some(s => isCdGpcStoreName(s.name));
       const calculationStores = selectedIsCdGpc ? stores.filter(store => store.is_active) : targetStores;
-      const valuationFallback = (valuationRows.length === 0 ? await loadReport() : valuationRows) || [];
+      // Ventas y margen no necesitan consultar stock ni rotaciones. Antes se
+      // recalculaba el valorizado completo cuando el caché estaba vacío, por
+      // lo que una consulta simple de ventas podía terminar en timeout.
+      // Presupuesto sí requiere esos importes y conserva esa lectura.
+      const needsInventoryValuation = activeTab === "presupuesto";
+      const valuationFallback = needsInventoryValuation
+        ? ((valuationRows.length === 0 ? await loadReport() : valuationRows) || [])
+        : valuationRows;
       const salesStartDate = monthStartISO(new Date(`${reportDate}T00:00:00`));
       const salesEndDate = reportDate;
       const periodDate = new Date(`${reportDate}T00:00:00`);
@@ -810,9 +825,17 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         const allKeys = selectedStores.flatMap(s => rotationStoreKeysForStore(s));
         query = query.in("store_key", allKeys);
       }
-      const { data, error } = await query;
-      if (error) throw error;
-      const loadedSalesDates = [...new Set((data || []).map(row => isoDatePart(row.sales_date)).filter(Boolean))].sort();
+      // Las ventas crecen todos los días. Se leen por páginas para no depender
+      // del máximo de filas de la API ni llevar una respuesta enorme al cliente.
+      const PAGE = 500;
+      const data: Array<Record<string, unknown>> = [];
+      for (let offset = 0; ; offset += PAGE) {
+        const { data: pageRows, error } = await query.range(offset, offset + PAGE - 1);
+        if (error) throw error;
+        data.push(...((pageRows || []) as Array<Record<string, unknown>>));
+        if (!pageRows || pageRows.length < PAGE) break;
+      }
+      const loadedSalesDates = [...new Set(data.map(row => isoDatePart(row.sales_date)).filter(Boolean))].sort();
       const latestLoadedSalesDate = loadedSalesDates[loadedSalesDates.length - 1] || "";
 
       const storeByKey = new Map<string, Store>();
@@ -832,7 +855,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         });
       }
       let selectedDayRows = 0;
-      for (const row of data || []) {
+      for (const row of data) {
         const key = normalizeRotationStoreKey(String(row.store_key || row.store_name || ""));
         const store = storeByKey.get(key);
         if (!store) continue;
@@ -869,7 +892,9 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
         }
       }
       const currentValuationByStore = new Map(valuationFallback.map(row => [row.store_id, Number(row.inventory_value || 0)]));
-      const cutoffValuationByStore = await loadInventoryValueByStoreForDate(reportDate, valuationFallback);
+      const cutoffValuationByStore = needsInventoryValuation
+        ? await loadInventoryValueByStoreForDate(reportDate, valuationFallback)
+        : new Map<string, number>();
       const rows = [...grouped.values()].map(row => {
         const day = dayGrouped.get(row.store_id);
         const margin = row.sales_amount > 0 ? (row.sales_amount - row.cost_amount) / row.sales_amount : 0;
