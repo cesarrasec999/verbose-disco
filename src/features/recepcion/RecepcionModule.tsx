@@ -2464,12 +2464,13 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                     <span className="rounded-full bg-teal-100 px-2.5 py-1 text-xs font-black text-teal-700">Pendiente por recepción</span>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[760px] text-sm">
+                    <table className="w-full min-w-[880px] text-sm">
                       <thead className="bg-slate-50 text-left text-[11px] font-black uppercase text-slate-500">
                         <tr>
                           <th className="px-4 py-3">Requerimiento</th>
                           <th className="px-4 py-3">Guías / documentos</th>
                           <th className="px-4 py-3">Origen</th>
+                          <th className="px-4 py-3">Motivo</th>
                           <th className="px-4 py-3">Fecha tránsito</th>
                           <th className="px-4 py-3 text-right">Líneas</th>
                           <th className="px-4 py-3 text-right">Cantidad</th>
@@ -2486,6 +2487,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                             </td>
                             <td className="px-4 py-3 font-bold text-slate-600">{requestGuides(request)}</td>
                             <td className="px-4 py-3 text-slate-600">{request.source_store_name || request.source_store_code || "-"}</td>
+                            <td className="px-4 py-3"><ReasonBadge reason={request.reason} /></td>
                             <td className="px-4 py-3 text-slate-600">{dateShort(request.request_date || request.creation_date)}</td>
                             <td className="px-4 py-3 text-right font-bold text-slate-700">{fmt(num(request.line_count))}</td>
                             <td className="px-4 py-3 text-right font-black text-slate-900">{fmt(num(request.qty_requested_total))}</td>
