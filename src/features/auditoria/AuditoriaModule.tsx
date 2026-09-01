@@ -919,7 +919,16 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     // que al recargar la pagina.
     sessionStorage.setItem(AUDIT_SESSION_ID_KEY, row.id);
     setStoreId(row.store_id);
-    router.push(isMobileAccess ? "/auditoria/registro" : "/auditoria/registro/registros");
+    if (isMobileAccess) {
+      // En móvil ya estamos en /auditoria/registro cuando se elige una sesión.
+      // Navegar otra vez a la misma URL no desmonta la pantalla, por lo que la
+      // sesión quedaba sin cargar y obligaba a pasar por Resumen. Cargarla aquí
+      // también permite abrir la misma sesión desde otro celular con el usuario.
+      await loadSavedSession(row.id, user);
+      router.replace("/auditoria/registro");
+      return;
+    }
+    router.push("/auditoria/registro/registros");
   }
 
   function clearSelectedSession(nextStoreId?: string) {
