@@ -2006,6 +2006,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     for (const request of scopedRequestGroups) {
       const pendingRequest = transitOnlyGroup(request);
       if (!pendingRequest) continue;
+      if (reasonFilter !== "all" && normalizeReason(pendingRequest.reason) !== reasonFilter) continue;
       const key = pendingRequest.destination_store_code || pendingRequest.destination_store_name || "SIN_TIENDA";
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key)!.push(pendingRequest);
@@ -2017,7 +2018,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         rows: [...rows].sort((a, b) => String(b.creation_date || b.request_date || "").localeCompare(String(a.creation_date || a.request_date || ""))),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [scopedRequestGroups]);
+  }, [scopedRequestGroups, reasonFilter]);
 
   async function exportPendingRequestsExcel() {
     setExportingPendingRequests(true);
@@ -2364,11 +2365,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 </div>
               </>
             )}
-            {listPanel === "recepcion" && (
+            {(listPanel === "recepcion" || listPanel === "pendientes") && (
               <>
-                <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
+                {listPanel === "recepcion" && <input className="flex-1 min-w-[150px] border rounded-2xl px-4 py-2.5 text-sm bg-white text-slate-900"
                   placeholder="Buscar documento, tienda, código..."
-                  value={search} onChange={e => setSearch(e.target.value)} />
+                  value={search} onChange={e => setSearch(e.target.value)} />}
                 <select value={reasonFilter} onChange={e => setReasonFilter(e.target.value)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
                   <option value="all">Todos los motivos</option>
@@ -2376,19 +2377,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                     <option key={o.key} value={o.key}>{o.label}</option>
                   ))}
                 </select>
-                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
+                {listPanel === "recepcion" && <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
                   <option value="all">Todos</option>
                   <option value="pending">Pendiente</option>
                   <option value="in_progress">En proceso</option>
                   <option value="completed">Completados</option>
-                </select>
-                <select value={filterErpStatus} onChange={e => setFilterErpStatus(e.target.value as any)}
+                </select>}
+                {listPanel === "recepcion" && <select value={filterErpStatus} onChange={e => setFilterErpStatus(e.target.value as any)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
                   <option value="all">Estado en RMS</option>
                   <option value="transit">En tránsito en RMS</option>
                   <option value="received">Recibido en RMS</option>
-                </select>
+                </select>}
               </>
             )}
           </div>
