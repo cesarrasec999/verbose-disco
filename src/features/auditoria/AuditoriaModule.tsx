@@ -13,6 +13,7 @@ import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
+import { isIosDevice } from "@/features/inventarios/utils";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -319,8 +320,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [showEmailModal, setShowEmailModal] = useState(false);
   const scannerRef = useRef<any>(null);
   const scannerBusyRef = useRef(false);
+  const iosFrameBusyRef = useRef(false);
   const scannerTargetRef = useRef<ScannerTarget>(null);
   const scannerHistoryRef = useRef(false);
+  const iosFrameScanTimerRef = useRef<number | null>(null);
   const scannerContainerId = "audit-scanner";
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -468,29 +471,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     let cancelled = false;
     (async () => {
       try {
-        const { Html5Qrcode } = await import("html5-qrcode");
-        if (cancelled) return;
-        const scanner = new Html5Qrcode(scannerContainerId);
-        scannerRef.current = scanner;
-        scannerBusyRef.current = false;
-        await scanner.start(
-          { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 280, height: 190 }, aspectRatio: 1.6 },
-          async (decodedText: string) => {
-            if (scannerBusyRef.current) return;
-            scannerBusyRef.current = true;
-            const target = scannerTarget;
-            await stopScanner();
-            if (target === "product") {
-              setScanCode(decodedText);
-              await scanProduct(decodedText);
-            } else if (target === "location") {
-              setLocation(decodedText.trim().toUpperCase());
-              setMessage("Ubicación escaneada: " + decodedText.trim().toUpperCase());
-            }
-          },
-          () => {}
-        );
+        await startAuditScanner(() => cancelled);
       } catch (err: any) {
         setMessage(scannerPermissionMessage(err));
         await stopScanner();
@@ -498,6 +479,144 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     })();
     return () => { cancelled = true; void stopScanner(false); };
   }, [scannerTarget]);
+
+  async function startAuditScanner(isCancelled: () => boolean) {
+    const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+    if (isCancelled()) return;
+    const isIos = isIosDevice();
+    const scanner = isIos
+      ? new Html5Qrcode(scannerContainerId, {
+        verbose: false,
+        // Safari tiene una implementación parcial de BarcodeDetector. El
+        // decodificador del propio lector + ZXing es más estable en iPhone.
+        useBarCodeDetectorIfSupported: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.CODABAR,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+      })
+      : new Html5Qrcode(scannerContainerId);
+    scannerRef.current = scanner;
+    scannerBusyRef.current = false;
+    const scanConfig = isIos
+      ? {
+        fps: 12,
+        qrbox: { width: 360, height: 260 },
+        disableFlip: true,
+        videoConstraints: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          frameRate: { ideal: 15, max: 24 },
+        },
+      }
+      : { fps: 24, qrbox: { width: 300, height: 170 }, aspectRatio: 1.6, disableFlip: true };
+    await scanner.start(
+      { facingMode: "environment" },
+      scanConfig,
+      async (decodedText: string) => {
+        if (scannerBusyRef.current) return;
+        scannerBusyRef.current = true;
+        const target = scannerTargetRef.current;
+        await stopScanner();
+        await applyAuditScannedValue(decodedText, target);
+      },
+      () => {}
+    );
+    if (isIos) startIosFrameScanner();
+  }
+
+  async function applyAuditScannedValue(decodedText: string, target = scannerTargetRef.current) {
+    const clean = decodedText.trim();
+    if (target === "product") {
+      setScanCode(clean);
+      await scanProduct(clean);
+    } else if (target === "location") {
+      setLocation(clean.toUpperCase());
+      setMessage("Ubicación escaneada: " + clean.toUpperCase());
+    }
+  }
+
+  function startIosFrameScanner() {
+    if (iosFrameScanTimerRef.current) window.clearInterval(iosFrameScanTimerRef.current);
+    iosFrameScanTimerRef.current = window.setInterval(() => { void scanCurrentIosFrame(); }, 500);
+  }
+
+  async function scanCurrentIosFrame() {
+    if (!scannerTargetRef.current || scannerBusyRef.current || iosFrameBusyRef.current) return;
+    const video = document.querySelector<HTMLVideoElement>(`#${scannerContainerId} video`);
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+    iosFrameBusyRef.current = true;
+    try {
+      const files = await buildIosFrameScanFiles(video);
+      const { readBarcodes } = await import("zxing-wasm/reader");
+      for (const file of files) {
+        const results = await readBarcodes(file, {
+          formats: ["Code128", "Code39", "Code39Ext", "Code93", "Codabar", "ITF", "EAN13", "EAN8", "UPCA", "UPCE", "QRCode"],
+          tryHarder: true, tryRotate: true, tryInvert: true, tryDownscale: true,
+          minLineCount: 1, maxNumberOfSymbols: 3, textMode: "Plain",
+        });
+        const decoded = results.find(result => result.isValid && result.text.trim())?.text.trim();
+        if (decoded) {
+          scannerBusyRef.current = true;
+          const target = scannerTargetRef.current;
+          await stopScanner();
+          await applyAuditScannedValue(decoded, target);
+          return;
+        }
+      }
+    } catch {
+      // Safari puede rechazar una captura puntual; se reintenta en el próximo cuadro.
+    } finally {
+      iosFrameBusyRef.current = false;
+    }
+  }
+
+  async function buildIosFrameScanFiles(video: HTMLVideoElement) {
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    const box = { sx: width * 0.02, sy: height * 0.04, sw: width * 0.96, sh: height * 0.92 };
+    const crops = [
+      { name: "frame-full", sx: box.sx, sy: box.sy, sw: box.sw, sh: box.sh, scale: 1.25, contrast: 1.15 },
+      { name: "frame-center", sx: box.sx, sy: box.sy + box.sh * 0.18, sw: box.sw, sh: box.sh * 0.64, scale: 1.7, contrast: 1.45 },
+    ];
+    const files: File[] = [];
+    for (const crop of crops) {
+      const file = await buildEnhancedFrameFile(video, crop);
+      if (file) files.push(file);
+    }
+    return files;
+  }
+
+  async function buildEnhancedFrameFile(video: HTMLVideoElement, crop: { name: string; sx: number; sy: number; sw: number; sh: number; scale: number; contrast: number }) {
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(crop.scale, 1600 / Math.max(1, crop.sw));
+    canvas.width = Math.max(1, Math.round(crop.sw * scale));
+    canvas.height = Math.max(1, Math.round(crop.sh * scale));
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.imageSmoothingEnabled = false;
+    context.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.width, canvas.height);
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < image.data.length; index += 4) {
+      const gray = image.data[index] * 0.299 + image.data[index + 1] * 0.587 + image.data[index + 2] * 0.114;
+      const boosted = Math.max(0, Math.min(255, (gray - 128) * crop.contrast + 128));
+      image.data[index] = boosted;
+      image.data[index + 1] = boosted;
+      image.data[index + 2] = boosted;
+    }
+    context.putImageData(image, 0, 0);
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
+    return blob ? new File([blob], `${crop.name}.png`, { type: "image/png" }) : null;
+  }
 
   function openScanner(target: Exclude<ScannerTarget, null>) {
     if (!scannerHistoryRef.current) {
@@ -512,6 +631,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     scannerTargetRef.current = null;
     setTorchOn(false);
     setScannerTarget(null);
+    if (iosFrameScanTimerRef.current) {
+      window.clearInterval(iosFrameScanTimerRef.current);
+      iosFrameScanTimerRef.current = null;
+    }
     try {
       if (scannerRef.current) {
         const state = scannerRef.current.getState?.();
@@ -2684,7 +2807,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         )}
       </div>
 
-      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className="min-h-[280px] w-full" /></div></div></div>)}
+      {scannerTarget && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-black">{scannerTarget === "product" ? "Escanear producto" : "Escanear ubicación"}</h3><button onClick={toggleTorch} className={`rounded-lg border px-3 py-2 text-sm font-black ${torchOn ? "bg-yellow-400 text-slate-900" : "bg-slate-900 text-white"}`} title="Prender linterna"><Flashlight className="mr-2 inline" size={18} /> Linterna</button></div><div className="overflow-hidden rounded-xl bg-black"><div id={scannerContainerId} className={isIosDevice() ? "h-[340px] max-h-[48vh] min-h-[300px] w-full" : "min-h-[320px] w-full"} /></div></div></div>)}
       {editingCount && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><h3 className="font-black">Editar registro</h3><input value={editLocation} onChange={e => setEditLocation(e.target.value)} className="mt-4 w-full rounded-xl border px-3 py-3 text-sm" placeholder="Ubicación" /><input value={editQty} onChange={e => setEditQty(e.target.value)} className="mt-2 w-full rounded-xl border px-3 py-3 text-sm" type="number" placeholder="Cantidad" /><div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]"><button onClick={saveEdit} className="rounded-xl bg-green-700 px-4 py-3 text-sm font-bold text-white"><Save className="mr-2 inline" size={16} />Guardar</button><button onClick={() => setEditingCount(null)} className="rounded-xl border px-4 py-3 text-sm font-bold">Cancelar</button></div></div></div>)}
       {showEmailModal && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel flex w-full max-w-5xl flex-col rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-black">Informe de auditoría</h3><button onClick={() => setShowEmailModal(false)} className="rounded-lg border p-2"><XCircle size={18} /></button></div><div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[320px_1fr]"><div className="space-y-2 border-b p-4 md:border-b-0 md:border-r"><button onClick={downloadAuditReport} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white"><Download className="mr-2 inline" size={16} /> Descargar HTML</button><button onClick={openEmailDraft} className="w-full rounded-xl border px-4 py-3 text-sm font-black text-slate-700"><Mail className="mr-2 inline" size={16} /> Abrir correo</button><p className="text-xs text-slate-500">El informe usa tablas e imagen SVG embebida para que gráficos y dashboard sean compatibles al enviarlo.</p></div><iframe title="Informe auditoría" srcDoc={emailHTML} className="h-[60vh] w-full bg-slate-50 md:h-[72vh]" /></div></div></div>)}
       {manualProductCandidates.length > 1 && (<div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-3 sm:p-4"><div className="app-modal-panel w-full max-w-3xl rounded-2xl bg-white shadow-2xl"><div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3"><div><h3 className="font-black">Elige el codigo</h3><p className="text-xs text-slate-500">El codigo visible {visibleProductCode(manualProductCodePending)} coincide con mas de un codsap.</p></div><button onClick={() => setManualProductCandidates([])} className="rounded-lg border px-3 py-1 text-sm font-bold">Cerrar</button></div><div className="grid max-h-[70dvh] gap-3 overflow-auto p-4 md:grid-cols-2">{manualProductCandidates.map(product => (<button key={product.id} onClick={async () => { setManualProductCandidates([]); await openAuditProduct(product); }} className="rounded-xl border p-4 text-left hover:border-blue-600 hover:bg-blue-50"><div className="break-words text-sm font-black text-slate-900">{fullProductCode(product.sku)}</div><div className="text-xs font-bold text-slate-500">Visible: {visibleProductCode(product.sku)}</div><div className="mt-1 line-clamp-2 text-sm text-slate-600">{product.description}</div><div className="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-500 sm:grid-cols-3"><span>UM: {product.unit || "N/D"}</span><span>{money(product.cost)}</span><span>Stock: {number2(product.system_stock || 0)}</span></div></button>))}</div></div></div>)}
