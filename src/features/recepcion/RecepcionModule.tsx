@@ -743,6 +743,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   useEffect(() => {
     if (ready && user) void loadRequests();
   }, [reqDateFrom, reqDateTo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (ready && user) void loadRequests();
+  }, [filterStatus, filterErpStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Cargar requerimientos ─────────────────────────────────────────────────
 
@@ -778,6 +781,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   function buildReceptionQuery(
     signal: AbortSignal, codes: string[], searchText: string, offset: number, pageSize: number,
     fromIso: string, toIso: string, productRequestIds: string[] = [],
+    receptionStatus: typeof filterStatus = "all", erpStatusFilter: typeof filterErpStatus = "all",
   ) {
     let q = supabase
       .from("reception_requests")
@@ -804,6 +808,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     // Las guías anuladas en RMS no deben reaparecer en listados históricos ni
     // formar parte de una recepción agrupada.
     q = q.neq("status_code", "X");
+    // Aplicar el estado antes de paginar: filtrar solo después de traer los
+    // primeros 50 ocultaba el historial que sí permanecía en Supabase.
+    if (receptionStatus !== "all") q = q.eq("reception_status", receptionStatus);
+    if (erpStatusFilter === "transit") q = q.or("erp_status.eq.T,status_code.eq.T");
+    if (erpStatusFilter === "received") q = q.in("erp_status", ["V", "R", "E"]);
     if (codes.length > 0) q = q.in("destination_store_code", codes);
     return q;
   }
@@ -869,7 +878,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const productRequestIds = trimmedSearch ? await findRequestIdsByProductCode(trimmedSearch, signal) : [];
       if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
 
-      const { data, error } = await buildReceptionQuery(signal, codes, trimmedSearch, 0, pageSize, fromIso, toIso, productRequestIds);
+      const { data, error } = await buildReceptionQuery(
+        signal, codes, trimmedSearch, 0, pageSize, fromIso, toIso, productRequestIds,
+        filterStatus, filterErpStatus,
+      );
       if (signal.aborted || !mountedRef.current || seq !== loadSeq.current) return;
       if (error) throw error;
 
@@ -919,7 +931,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const trimmedSearch = search.trim();
       const productRequestIds = trimmedSearch ? await findRequestIdsByProductCode(trimmedSearch, signal) : [];
       if (signal.aborted || !mountedRef.current) return;
-      const { data, error } = await buildReceptionQuery(signal, codes, trimmedSearch, offset, pageSize, fromIso, toIso, productRequestIds);
+      const { data, error } = await buildReceptionQuery(
+        signal, codes, trimmedSearch, offset, pageSize, fromIso, toIso, productRequestIds,
+        filterStatus, filterErpStatus,
+      );
       if (signal.aborted || !mountedRef.current) return;
       if (error) throw error;
       const rows = (data || []) as ReceptionRequest[];
