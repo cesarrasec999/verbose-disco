@@ -58,7 +58,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/checklist" | "/diferencias-inventario";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/kardex" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/checklist" | "/diferencias-inventario";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -78,6 +78,7 @@ const MODULES: Array<{
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
   { label: "Análisis", description: "Reportes de inventario y ERI consolidado", destination: "/analisis", icon: TrendingUp, accent: "bg-slate-900" },
+  { label: "Kardex", description: "Movimientos ERP por fecha, tienda y código", destination: "/kardex", icon: Boxes, accent: "bg-blue-700" },
   { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
@@ -96,6 +97,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/consulta-stock": "consulta",
   "/reportes": "reports",
   "/analisis": "analysis",
+  "/kardex": "analysis",
   "/no-inventariables": "reports_non_inventory",
   "/usuarios": "users",
   "/recepcion": "reception",
@@ -164,7 +166,7 @@ export default function LoginPage() {
       if (!cyclicModules.some(key => access.includes(key))) return false;
       return true;
     }
-    if (targetDestination === "/reportes" || targetDestination === "/analisis") {
+    if (targetDestination === "/reportes" || targetDestination === "/analisis" || targetDestination === "/kardex") {
       const access = userModuleAccess(user);
       return access.includes("analysis") || access.includes("reports") || access.includes("reports_non_inventory") || access.includes("reports_results");
     }
