@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Boxes, ClipboardCheck, CreditCard, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { AlertTriangle, Boxes, ClipboardCheck, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -58,7 +58,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/creditos-cobranzas" | "/checklist" | "/diferencias-inventario";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/checklist" | "/diferencias-inventario";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -82,7 +82,6 @@ const MODULES: Array<{
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
   { label: "Ajustes Provisionales", description: "Ingresos y regularizaciones provisionales del ERP", destination: "/ajustes-provisionales", icon: TrendingUp, accent: "bg-indigo-600" },
-  { label: "Creditos y Cobranzas", description: "Control de documentacion de ventas a credito y notas de credito", destination: "/creditos-cobranzas", icon: CreditCard, accent: "bg-rose-600" },
   { label: "Checklist", description: "Checklist diario de auditoria de almacenes por tienda", destination: "/checklist", icon: ListChecks, accent: "bg-lime-600" },
   { label: "Diferencias de Inventario", description: "Reportar diferencias de stock con foto y seguimiento de regularizacion", destination: "/diferencias-inventario", icon: AlertTriangle, accent: "bg-red-600" },
 ];
@@ -101,7 +100,6 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/usuarios": "users",
   "/recepcion": "reception",
   "/ajustes-provisionales": "ajustes_provisionales",
-  "/creditos-cobranzas": "credit_sales",
   "/checklist": "checklist",
   "/diferencias-inventario": "inventory_differences",
 };
@@ -150,7 +148,7 @@ export default function LoginPage() {
     const moduleKey = DESTINATION_MODULE[targetDestination];
     if (targetDestination === "/diferencias-inventario") return true;
     // Módulos con acceso directo por clave — sin lógica de roles adicional
-    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales" || targetDestination === "/creditos-cobranzas") {
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales") {
       return userModuleAccess(user).includes(moduleKey);
     }
     if (targetDestination === "/dashboard") {
