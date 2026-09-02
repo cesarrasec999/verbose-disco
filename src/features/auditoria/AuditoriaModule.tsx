@@ -50,6 +50,7 @@ type Product = {
   id: string;
   sku: string;
   barcode: string | null;
+  erp_sku?: string | null;
   description: string;
   unit: string;
   cost: number;
@@ -313,6 +314,8 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [savingItemStockId, setSavingItemStockId] = useState<string | null>(null);
   const [savingCount, setSavingCount] = useState(false);
   const savingCountRef = useRef(false);
+  const auditCodesExcelInputRef = useRef<HTMLInputElement | null>(null);
+  const [importingAuditCodes, setImportingAuditCodes] = useState(false);
   const [leadAuditor, setLeadAuditor] = useState("");
   const [storeLeader, setStoreLeader] = useState("");
   const [warehouseAdvisor, setWarehouseAdvisor] = useState("");
@@ -1139,6 +1142,119 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     await loadSessionData(session.id);
     const omitted = selectedProducts.length - rows.length;
     setMessage(`${rows.length} productos agregados a la sesión.${omitted > 0 ? ` ${omitted} ya estaban en la fotografía y no se modificaron.` : ""}`);
+  }
+
+  async function importAuditItemsFromExcel(file: File | null) {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    if (!session || session.status !== "in_progress") { setMessage("Selecciona una sesión de auditoría en progreso antes de cargar el Excel."); return; }
+    if (!file) return;
+
+    setImportingAuditCodes(true);
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) throw new Error("El Excel no contiene hojas.");
+      const rawRows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[firstSheetName], { header: 1, defval: "" });
+      const inputCodes = [...new Set(rawRows
+        .slice(1) // La primera fila siempre es encabezado, según el formato solicitado.
+        .map(row => fullProductCode(row?.[0] as string | number | null | undefined))
+        .filter(Boolean))];
+      if (inputCodes.length === 0) throw new Error("No encontré códigos en la columna A debajo del encabezado.");
+
+      const candidatesByCode = new Map<string, Product[]>();
+      inputCodes.forEach(code => candidatesByCode.set(code, []));
+      for (let i = 0; i < inputCodes.length; i += 30) {
+        const chunk = inputCodes.slice(i, i + 30);
+        const clauses = chunk.flatMap(code => {
+          const safeCode = code.replace(/[^A-Za-z0-9_-]/g, "");
+          if (!safeCode) return [];
+          return [
+            `sku.ilike.%${safeCode}%`,
+            `erp_sku.eq.${safeCode}`,
+            `barcode.eq.${safeCode}`,
+          ];
+        });
+        if (clauses.length === 0) continue;
+        const { data, error } = await supabase
+          .from("cyclic_products")
+          .select("id,sku,erp_sku,barcode,description,unit,cost,is_active")
+          .eq("is_active", true)
+          .or(clauses.join(","))
+          .limit(500);
+        if (error) throw error;
+        for (const code of chunk) {
+          const normalizedCode = fullProductCode(code);
+          const visibleCode = cleanCode(normalizedCode);
+          const matches = ((data || []) as Product[]).filter(product => {
+            const sku = fullProductCode(product.sku);
+            const erpSku = fullProductCode(product.erp_sku || "");
+            const barcode = fullProductCode(product.barcode || "");
+            return sku === normalizedCode
+              || erpSku === normalizedCode
+              || barcode === normalizedCode
+              || (normalizedCode.length <= 5 && visibleProductCode(sku) === visibleCode);
+          });
+          candidatesByCode.set(code, preferFullCodsapProducts(matches));
+        }
+      }
+
+      const resolved: Product[] = [];
+      const missing: string[] = [];
+      const ambiguous: string[] = [];
+      for (const code of inputCodes) {
+        const matches = candidatesByCode.get(code) || [];
+        const exactMatches = matches.filter(product =>
+          fullProductCode(product.sku) === code
+          || fullProductCode(product.erp_sku || "") === code
+          || fullProductCode(product.barcode || "") === code
+        );
+        const candidates = exactMatches.length > 0 ? exactMatches : matches;
+        if (candidates.length === 0) {
+          missing.push(code);
+        } else if (candidates.length > 1) {
+          ambiguous.push(code);
+        } else {
+          resolved.push(candidates[0]);
+        }
+      }
+
+      const uniqueProducts = [...new Map(resolved.map(product => [product.id, product])).values()];
+      const existingProductIds = new Set(items.map(item => item.product_id));
+      const pendingProducts = uniqueProducts.filter(product => !existingProductIds.has(product.id));
+      let inserted = 0;
+      if (pendingProducts.length > 0) {
+        const stockMap = await getStockMap(pendingProducts);
+        const rows = pendingProducts.map(product => ({
+          session_id: session.id,
+          product_id: product.id,
+          source: "selected",
+          system_stock: Number(stockMap.get(fullProductCode(product.sku)) || 0),
+          cost_snapshot: Number(product.cost || 0),
+        }));
+        for (let i = 0; i < rows.length; i += 500) {
+          const { error } = await supabase
+            .from("audit_session_items")
+            .upsert(rows.slice(i, i + 500), { onConflict: "session_id,product_id", ignoreDuplicates: true });
+          if (error) throw error;
+        }
+        inserted = rows.length;
+      }
+
+      await loadSessionData(session.id);
+      const alreadyAssigned = uniqueProducts.length - pendingProducts.length;
+      const details = [
+        `Excel procesado: ${inserted} código${inserted === 1 ? "" : "s"} asignado${inserted === 1 ? "" : "s"}.`,
+        alreadyAssigned > 0 ? `${alreadyAssigned} ya estaba${alreadyAssigned === 1 ? "" : "n"} en la sesión.` : "",
+        missing.length > 0 ? `No encontrados (${missing.length}): ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? "…" : ""}.` : "",
+        ambiguous.length > 0 ? `Ambiguos (${ambiguous.length}): ${ambiguous.slice(0, 8).join(", ")}${ambiguous.length > 8 ? "…" : ""}.` : "",
+      ].filter(Boolean).join(" ");
+      setMessage(details);
+    } catch (error) {
+      setMessage("No se pudieron asignar los códigos del Excel: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setImportingAuditCodes(false);
+      if (auditCodesExcelInputRef.current) auditCodesExcelInputRef.current.value = "";
+    }
   }
 
   async function loadSessionData(sessionId: string) {
@@ -2324,6 +2440,26 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                   <button onClick={() => setSelected(new Set())} className="rounded-lg border px-3 py-1.5 text-xs font-semibold">Quitar todo</button>
                 </div>
                 <button onClick={addSelectedItems} disabled={!session || selected.size === 0} className="mt-3 w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-40"><Plus className="mr-2 inline" size={16} /> Agregar seleccionados</button>
+              </div>}
+
+              {canManageAudit && <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h2 className="font-black">Asignar códigos por Excel</h2>
+                <p className="mt-1 text-sm text-slate-500">Columna A: código. La primera fila debe ser el encabezado y no se asigna.</p>
+                <input
+                  ref={auditCodesExcelInputRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={event => void importAuditItemsFromExcel(event.target.files?.[0] || null)}
+                />
+                <button
+                  onClick={() => auditCodesExcelInputRef.current?.click()}
+                  disabled={!session || session.status !== "in_progress" || importingAuditCodes}
+                  className="mt-3 w-full rounded-xl bg-blue-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-40"
+                >
+                  {importingAuditCodes ? <Loader2 className="mr-2 inline animate-spin" size={16} /> : <FileText className="mr-2 inline" size={16} />}
+                  {importingAuditCodes ? "Asignando códigos..." : "Seleccionar Excel"}
+                </button>
               </div>}
             </section>
 
