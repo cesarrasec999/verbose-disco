@@ -8,6 +8,7 @@ import {
   Download,
   Home,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase/client";
@@ -34,6 +35,14 @@ type Movement = {
   reason: string | null;
   status: string | null;
   transfer_store_code: string | null;
+};
+
+type ProductCandidate = {
+  sku: string;
+  description: string | null;
+  unit: string | null;
+  barcode: string | null;
+  erp_sku: string | null;
 };
 
 const MOVEMENT_COLUMNS =
@@ -125,6 +134,22 @@ function dateForExcel(value: string) {
   );
 }
 
+function normalizeProductSearch(value: string) {
+  return value.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+function codeMatchRank(product: ProductCandidate, query: string) {
+  const code = String(product.sku || "").toUpperCase();
+  const barcode = String(product.barcode || "").toUpperCase();
+  const erpSku = String(product.erp_sku || "").toUpperCase();
+  const suffix = query.slice(-5);
+  if ([code, barcode, erpSku].includes(query)) return 0;
+  if ([code, barcode, erpSku].some((value) => value.endsWith(query))) return 1;
+  if ([code, barcode, erpSku].some((value) => value.endsWith(suffix))) return 2;
+  if ([code, barcode, erpSku].some((value) => value.includes(query))) return 3;
+  return 4;
+}
+
 export default function KardexPage() {
   const today = useMemo(localToday, []);
   const [user, setUser] = useState<CyclicUser | null>(null);
@@ -132,7 +157,14 @@ export default function KardexPage() {
   const [from, setFrom] = useState(() => addDays(localToday(), -30));
   const [to, setTo] = useState(today);
   const [storeCode, setStoreCode] = useState("");
-  const [productCode, setProductCode] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProduct, setSelectedProduct] =
+    useState<ProductCandidate | null>(null);
+  const [productCandidates, setProductCandidates] = useState<
+    ProductCandidate[]
+  >([]);
+  const [productSearchMessage, setProductSearchMessage] = useState("");
+  const [searchingProducts, setSearchingProducts] = useState(false);
   const [rows, setRows] = useState<Movement[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -173,6 +205,7 @@ export default function KardexPage() {
     return store ? erpStoreCode(store) || "" : "";
   }, [canViewAllStores, stores, user]);
   const effectiveStore = canViewAllStores ? storeCode : currentStoreCode;
+  const selectedProductCode = selectedProduct?.sku || "";
   const displayStores = useMemo(() => {
     const result = new Map<string, string>();
     for (const store of stores) {
@@ -181,6 +214,139 @@ export default function KardexPage() {
     }
     return result;
   }, [stores]);
+
+  useEffect(() => {
+    const query = normalizeProductSearch(productSearch);
+    if (
+      selectedProduct &&
+      normalizeProductSearch(selectedProduct.sku) === query
+    ) {
+      return;
+    }
+
+    setSelectedProduct(null);
+    setProductCandidates([]);
+    setProductSearchMessage("");
+    if (!query) return;
+    if (query.length < 3) {
+      setProductSearchMessage(
+        "Ingresa al menos 3 caracteres; usa 4 o 5 para buscar por los últimos dígitos del código.",
+      );
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setSearchingProducts(true);
+      try {
+        const candidates = new Map<string, ProductCandidate>();
+        const searchWords = productSearch
+          .trim()
+          .split(/\s+/)
+          .map((word) => word.replace(/[%,().]/g, ""))
+          .filter(Boolean)
+          .slice(0, 4);
+        const compactCode = query.replace(/\s+/g, "");
+        const looksLikeCode = /[0-9]/.test(compactCode);
+
+        const exactQueries = [
+          supabase
+            .from("cyclic_products")
+            .select("sku,description,unit,barcode,erp_sku")
+            .eq("sku", compactCode)
+            .limit(5),
+          supabase
+            .from("cyclic_products")
+            .select("sku,description,unit,barcode,erp_sku")
+            .eq("barcode", compactCode)
+            .limit(5),
+          supabase
+            .from("cyclic_products")
+            .select("sku,description,unit,barcode,erp_sku")
+            .eq("erp_sku", compactCode)
+            .limit(5),
+        ];
+
+        const responses = await Promise.all(exactQueries);
+        if (cancelled) return;
+        for (const response of responses) {
+          if (response.error) throw response.error;
+          for (const row of (response.data || []) as ProductCandidate[]) {
+            candidates.set(row.sku, row);
+          }
+        }
+
+        if (compactCode.length >= 4) {
+          const suffix = compactCode.slice(-5).replace(/[%,().]/g, "");
+          if (suffix) {
+            const { data, error } = await supabase
+              .from("cyclic_products")
+              .select("sku,description,unit,barcode,erp_sku")
+              .or(
+                `sku.ilike.%${suffix},barcode.ilike.%${suffix},erp_sku.ilike.%${suffix}`,
+              )
+              .limit(80);
+            if (cancelled) return;
+            if (error) throw error;
+            for (const row of (data || []) as ProductCandidate[]) {
+              candidates.set(row.sku, row);
+            }
+          }
+        }
+
+        if (!looksLikeCode && searchWords.length > 0) {
+          let descriptionQuery = supabase
+            .from("cyclic_products")
+            .select("sku,description,unit,barcode,erp_sku");
+          for (const word of searchWords) {
+            descriptionQuery = descriptionQuery.ilike(
+              "description",
+              `%${word}%`,
+            );
+          }
+          const { data, error } = await descriptionQuery.limit(80);
+          if (cancelled) return;
+          if (error) throw error;
+          for (const row of (data || []) as ProductCandidate[]) {
+            candidates.set(row.sku, row);
+          }
+        }
+
+        const result = [...candidates.values()]
+          .sort(
+            (a, b) =>
+              codeMatchRank(a, compactCode) - codeMatchRank(b, compactCode) ||
+              String(a.description || "").localeCompare(
+                String(b.description || ""),
+                "es",
+                { numeric: true, sensitivity: "base" },
+              ) ||
+              a.sku.localeCompare(b.sku, "es", { numeric: true }),
+          )
+          .slice(0, 40);
+        if (cancelled) return;
+        setProductCandidates(result);
+        setProductSearchMessage(
+          result.length
+            ? "Selecciona el código correcto antes de consultar sus movimientos."
+            : "No se encontraron coincidencias en el maestro de productos.",
+        );
+      } catch {
+        if (cancelled) return;
+        setProductCandidates([]);
+        setProductSearchMessage(
+          "No se pudo buscar el producto. Intenta nuevamente.",
+        );
+      } finally {
+        if (!cancelled) setSearchingProducts(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [productSearch, selectedProduct]);
 
   const buildQuery = useCallback(
     (count = false) => {
@@ -195,17 +361,21 @@ export default function KardexPage() {
       if (effectiveStore) query = query.eq("store_code", effectiveStore);
       // Código exacto: permite utilizar el índice tienda/código/fecha incluso
       // sobre un historial grande. El buscador no hace búsquedas globales lentas.
-      if (productCode.trim())
-        query = query.eq("product_code", productCode.trim().toUpperCase());
+      if (selectedProductCode)
+        query = query.eq("product_code", selectedProductCode);
       return query;
     },
-    [effectiveStore, from, productCode, to],
+    [effectiveStore, from, selectedProductCode, to],
   );
 
   const load = useCallback(
     async (targetPage = page) => {
       if (!from || !to || from > to) {
         toast.error("Selecciona un rango de fechas válido.");
+        return;
+      }
+      if (productSearch.trim() && !selectedProductCode) {
+        toast.info("Selecciona el código correcto antes de consultar Kardex.");
         return;
       }
       setLoading(true);
@@ -228,7 +398,7 @@ export default function KardexPage() {
         setLoading(false);
       }
     },
-    [buildQuery, from, page, to],
+    [buildQuery, from, page, productSearch, selectedProductCode, to],
   );
 
   useEffect(() => {
@@ -297,7 +467,7 @@ export default function KardexPage() {
       XLSX.utils.book_append_sheet(workbook, worksheet, "Kardex");
       XLSX.writeFile(
         workbook,
-        `kardex_${from}_a_${to}${productCode ? `_${productCode.trim()}` : ""}.xlsx`,
+        `kardex_${from}_a_${to}${selectedProductCode ? `_${selectedProductCode}` : ""}.xlsx`,
       );
       toast.success(
         `${allRows.length.toLocaleString("es-PE")} movimientos exportados.`,
@@ -309,7 +479,7 @@ export default function KardexPage() {
     } finally {
       setExporting(false);
     }
-  }, [buildQuery, displayStores, from, loaded, productCode, to]);
+  }, [buildQuery, displayStores, from, loaded, selectedProductCode, to]);
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -398,16 +568,34 @@ export default function KardexPage() {
               </div>
             )}
             <label className="text-xs font-bold uppercase tracking-wide text-slate-500">
-              Código
-              <input
-                value={productCode}
-                onChange={(event) => setProductCode(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void load(0);
-                }}
-                placeholder="Código exacto"
-                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-mono text-slate-900"
-              />
+              Código o descripción
+              <div className="mt-1.5 flex rounded-xl border border-slate-200 bg-white focus-within:ring-2 focus-within:ring-slate-200">
+                <input
+                  value={productSearch}
+                  onChange={(event) => {
+                    setProductSearch(event.target.value);
+                    setLoaded(false);
+                  }}
+                  placeholder="Código, últimos 4/5 o descripción"
+                  className="min-w-0 flex-1 rounded-xl px-3 py-2 text-sm text-slate-900 outline-none"
+                />
+                {productSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductSearch("");
+                      setSelectedProduct(null);
+                      setProductCandidates([]);
+                      setProductSearchMessage("");
+                      setLoaded(false);
+                    }}
+                    className="mr-1 rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Limpiar búsqueda de producto"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
             </label>
             <div className="flex gap-2">
               <button
@@ -432,9 +620,51 @@ export default function KardexPage() {
             </div>
           </div>
           <p className="mt-3 text-xs text-slate-500">
-            El código es exacto para mantener la consulta indexada. El Excel
-            incluye todas las filas del filtro, no solo la página visible.
+            Busca por código completo, últimos 4 o 5 dígitos, o descripción;
+            elige una coincidencia antes de cargar sus movimientos. La consulta
+            final usa el código exacto e índices. El Excel incluye todas las
+            filas del filtro, no solo la página visible.
           </p>
+          {(productSearchMessage || productCandidates.length > 0) && (
+            <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              {productSearchMessage && (
+                <p className="text-xs font-semibold text-slate-600">
+                  {searchingProducts
+                    ? "Buscando coincidencias..."
+                    : productSearchMessage}
+                </p>
+              )}
+              {productCandidates.length > 0 && (
+                <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+                  {productCandidates.map((product) => (
+                    <button
+                      key={product.sku}
+                      type="button"
+                      onClick={() => {
+                        setSelectedProduct(product);
+                        setProductSearch(product.sku);
+                        setProductCandidates([]);
+                        setProductSearchMessage(
+                          `Código elegido: ${product.sku}. Ahora puedes consultar sus movimientos.`,
+                        );
+                      }}
+                      className={`rounded-xl border p-3 text-left transition ${selectedProductCode === product.sku ? "border-emerald-600 bg-emerald-50" : "border-slate-200 bg-white hover:border-slate-400"}`}
+                    >
+                      <div className="font-mono text-sm font-black text-slate-900">
+                        {product.sku}
+                      </div>
+                      <div className="mt-1 line-clamp-2 text-xs font-semibold text-slate-700">
+                        {product.description || "Sin descripción"}
+                      </div>
+                      <div className="mt-1 text-[11px] font-medium text-slate-500">
+                        UM: {product.unit || "N/D"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
