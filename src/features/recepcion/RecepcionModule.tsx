@@ -510,7 +510,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // Filtros lista
   // storeFilter vive en la URL (?store=...) para conservarse al navegar entre
   // /recepcion, /recepcion/resumen y /recepcion/diferencias.
-  const storeFilter = searchParams.get("store") || "all";
+  const urlStoreFilter = searchParams.get("store") || "all";
+  // Mantener la selección de inmediato en el cliente. Depender solamente de
+  // useSearchParams hacía que, mientras router.replace actualizaba la URL, el
+  // select se volviera a pintar con el valor anterior.
+  const [storeFilter, setStoreFilter] = useState(urlStoreFilter);
   const [search, setSearch]             = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
   const [filterErpStatus, setFilterErpStatus] = useState<"all" | "transit" | "received">("all");
@@ -679,16 +683,20 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, []);
 
   function updateStoreFilter(value: string) {
+    setStoreFilter(value || "all");
     const params = new URLSearchParams(searchParams.toString());
     if (!value || value === "all") params.delete("store");
     else params.set("store", value);
     const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname);
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
   function tabHref(target: ListPanel) {
     const base = target === "recepcion" ? "/recepcion" : `/recepcion/${target}`;
-    const qs = searchParams.toString();
+    const params = new URLSearchParams(searchParams.toString());
+    if (storeFilter === "all") params.delete("store");
+    else params.set("store", storeFilter);
+    const qs = params.toString();
     return qs ? `${base}?${qs}` : base;
   }
 
@@ -717,6 +725,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setStoreFilter(urlStoreFilter); }, [urlStoreFilter]);
   useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (ready && user && listPanel === "diferencias") void loadDifferencesReport();
