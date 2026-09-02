@@ -4223,7 +4223,21 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         if (!productId || !sku || cleanLocations.length === 0) return;
         const now = new Date().toISOString();
         const normalizedSource = source === "manual" ? "Recepcion" : source;
-        const rows = cleanLocations.map(location => ({
+        const { data: existingRows, error: existingError } = await supabase
+            .from("product_locations")
+            .select("id,location,last_source,cyclic_registered,audit_registered,general_inventory_registered")
+            .eq("store_id", storeId)
+            .eq("product_id", productId)
+            .in("location", cleanLocations);
+        if (existingError) {
+            console.warn("No se pudieron leer ubicaciones existentes:", existingError.message);
+            return;
+        }
+        const existingByLocation = new Map((existingRows || []).map(row => [normalizeLocationForStore(String(row.location || ""), storeId), row as ProductLocation]));
+        const rows = cleanLocations.map(location => {
+            const existing = existingByLocation.get(location);
+            const hasLegacyNonCyclicSource = Boolean(existing?.last_source && existing.last_source !== "ciclico");
+            return {
             store_id: storeId || null,
             product_id: productId,
             sku: fullProductCode(sku),
@@ -4231,13 +4245,17 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             is_active: true,
             updated_by: user?.id || null,
             updated_at: now,
-            last_source: normalizedSource,
+            // Una ubicación puede venir de más de un módulo. El upsert no debe
+            // borrar la evidencia de inventario/auditoría/recepción al contarla
+            // después en cíclicos.
+            last_source: source === "ciclico" && hasLegacyNonCyclicSource ? existing!.last_source : normalizedSource,
             last_seen_at: now,
             ...(storedQuantity !== undefined ? { stored_quantity: storedQuantity } : {}),
-            cyclic_registered: source === "ciclico",
-            audit_registered: source === "auditoria",
-            general_inventory_registered: source === "inventario general",
-        }));
+            cyclic_registered: Boolean(existing?.cyclic_registered) || source === "ciclico",
+            audit_registered: Boolean(existing?.audit_registered) || source === "auditoria",
+            general_inventory_registered: Boolean(existing?.general_inventory_registered) || source === "inventario general",
+            };
+        });
         for (let i = 0; i < rows.length; i += 500) {
             const chunk = rows.slice(i, i + 500);
             let { error } = await supabase
@@ -4264,15 +4282,58 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             return;
         }
 
-        const { error: deactivateError } = await supabase
+        const { data: activeRows, error: activeRowsError } = await supabase
             .from("product_locations")
-            .update({ is_active: false, updated_by: user?.id || null, updated_at: new Date().toISOString() })
+            .select("id,location,last_source,cyclic_registered,audit_registered,general_inventory_registered")
             .eq("product_id", productId)
             .eq("store_id", storeId)
             .eq("is_active", true);
 
+        if (activeRowsError) {
+            console.warn("No se pudieron leer ubicaciones anteriores:", activeRowsError.message);
+            return;
+        }
+
+        const selectedLocations = new Set(cleanLocations);
+        const rowsToDeactivate: string[] = [];
+        const rowsToKeepBySource = new Map<string, string[]>();
+        for (const row of (activeRows || []) as ProductLocation[]) {
+            const location = normalizeLocationForStore(row.location, storeId);
+            if (selectedLocations.has(location)) continue;
+            const isCyclicLocation = row.cyclic_registered === true || row.last_source === "ciclico";
+            if (!isCyclicLocation) continue;
+
+            const retainedSource = row.general_inventory_registered
+                ? "inventario general"
+                : row.audit_registered
+                    ? "auditoria"
+                    : null;
+            if (retainedSource) {
+                const ids = rowsToKeepBySource.get(retainedSource) || [];
+                ids.push(row.id);
+                rowsToKeepBySource.set(retainedSource, ids);
+            } else {
+                rowsToDeactivate.push(row.id);
+            }
+        }
+
+        const now = new Date().toISOString();
+        const deactivateRequests = [
+            ...Array.from(rowsToKeepBySource.entries()).map(([last_source, ids]) => supabase
+                .from("product_locations")
+                .update({ cyclic_registered: false, last_source, updated_by: user?.id || null, updated_at: now })
+                .in("id", ids)),
+            ...(rowsToDeactivate.length > 0
+                ? [supabase
+                    .from("product_locations")
+                    .update({ is_active: false, cyclic_registered: false, updated_by: user?.id || null, updated_at: now })
+                    .in("id", rowsToDeactivate)]
+                : []),
+        ];
+        const results = await Promise.all(deactivateRequests);
+        const deactivateError = results.find(result => result.error)?.error;
         if (deactivateError) {
-            console.warn("No se pudieron desactivar ubicaciones anteriores:", deactivateError.message);
+            console.warn("No se pudieron actualizar ubicaciones cíclicas anteriores:", deactivateError.message);
             return;
         }
 
