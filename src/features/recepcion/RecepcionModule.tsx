@@ -90,6 +90,7 @@ type ReceptionDifferenceRow = {
   diffKey: string;
   kind: DifferenceKind;
   document: string;
+  reason: string | null;
   destinationStore: string;
   destinationStoreCode: string;
   sourceStore: string;
@@ -519,6 +520,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "in_progress" | "completed">("all");
   const [filterErpStatus, setFilterErpStatus] = useState<"all" | "transit" | "received">("all");
   const [reasonFilter, setReasonFilter] = useState("all");
+  // Este filtro pertenece solo al submódulo Diferencias. Mantenerlo separado
+  // evita que al cambiar de pestaña se alteren los filtros de recepción.
+  const [differenceReasonFilter, setDifferenceReasonFilter] = useState("all");
   // Acota la consulta a reception_requests por creation_date, igual que el
   // resto de modulos (reportes, diferencias) - antes se traia sin tope de
   // fecha (hasta 1000 filas por tienda via FILTERED_PAGE_SIZE), lo que hacia
@@ -1743,6 +1747,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           diffKey: report.id,
           kind: report.kind,
           document: requestDocumentLabel(req),
+          reason: req.reason,
           destinationStore: req.destination_store_name || req.destination_store_code,
           destinationStoreCode: req.destination_store_code,
           sourceStore: req.source_store_name || req.source_store_code,
@@ -1794,7 +1799,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }
 
   function exportDifferencesExcel() {
-    if (differenceRows.length === 0) { showMsg("No hay diferencias para exportar."); return; }
+    if (filteredDifferenceRows.length === 0) { showMsg("No hay diferencias para exportar."); return; }
     const kindLabel = (kind: DifferenceKind) =>
       kind === "sobrante" ? "Sobrante" : kind === "desmedro" ? "Desmedro" : "Faltante";
     const statusLabel = (status: RegularizationStatus) =>
@@ -1802,13 +1807,14 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         : status === "atendido" ? "Atendido"
           : status === "rechazado" ? "Rechazado"
             : "Pendiente";
-    const rows = differenceRows.map(row => {
+    const rows = filteredDifferenceRows.map(row => {
       const reg = regularizations.get(row.diffKey);
       const diffQty = row.kind === "desmedro" ? null : (row.kind === "sobrante" ? row.qty : -row.qty);
       return {
         "Tienda destino": row.destinationStore,
         Documento: row.document,
         "Tienda origen": row.sourceStore,
+        Motivo: row.reason || "Sin motivo",
         "Entregó guía": row.dispatchedByName || "",
         "Recepción completada": row.deliveredAt ? new Date(row.deliveredAt).toLocaleString("es-PE") : "",
         "Recibió": row.deliveredByName || "",
@@ -1948,7 +1954,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   function toggleSelectAllDiffRows() {
     setSelectedDiffKeys(prev => {
-      const allKeys = differenceRows.map(row => row.diffKey);
+      const allKeys = filteredDifferenceRows.map(row => row.diffKey);
       const allSelected = allKeys.length > 0 && allKeys.every(key => prev.has(key));
       return allSelected ? new Set() : new Set(allKeys);
     });
@@ -1958,7 +1964,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // si se marcaron todos con el checkbox del encabezado). Solo Administrador.
   async function deleteSelectedDifferenceReports() {
     if (!canDeleteRequests) return;
-    const keys = [...selectedDiffKeys];
+    // Nunca permitir que una accion masiva afecte filas ocultas por el
+    // filtro de motivo actual.
+    const visibleKeys = new Set(filteredDifferenceRows.map(row => row.diffKey));
+    const keys = [...selectedDiffKeys].filter(key => visibleKeys.has(key));
     if (keys.length === 0) return;
     const confirmed = window.confirm(
       `¿Eliminar ${keys.length} reporte(s) de diferencia seleccionados? Esta accion no se puede deshacer.`
@@ -2043,6 +2052,33 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [scopedRequestGroups, reasonFilter]);
+
+  const differenceReasonOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const row of differenceRows) {
+      const key = normalizeReason(row.reason);
+      if (!seen.has(key)) seen.set(key, row.reason || "");
+    }
+    return [...seen.entries()]
+      .map(([key, label]) => ({ key, label: label || "Sin motivo" }))
+      .sort((a, b) => a.label.localeCompare(b.label, "es"));
+  }, [differenceRows]);
+
+  const filteredDifferenceRows = useMemo(() => {
+    if (differenceReasonFilter === "all") return differenceRows;
+    return differenceRows.filter(row => normalizeReason(row.reason) === differenceReasonFilter);
+  }, [differenceReasonFilter, differenceRows]);
+
+  // Al cambiar el motivo se retiran las selecciones que ya no se ven. Esto
+  // protege las eliminaciones masivas de operar sobre otro bloque.
+  useEffect(() => {
+    const visibleKeys = new Set(filteredDifferenceRows.map(row => row.diffKey));
+    setSelectedDiffKeys(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set([...prev].filter(key => visibleKeys.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredDifferenceRows]);
 
   async function exportPendingRequestsExcel() {
     setExportingPendingRequests(true);
@@ -2193,13 +2229,13 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, [scopedRequestGroups]);
 
   const differenceStats = useMemo(() => {
-    const faltantes = differenceRows.filter(row => row.kind === "faltante").length;
-    const sobrantes = differenceRows.filter(row => row.kind === "sobrante").length;
-    const desmedros = differenceRows.filter(row => row.kind === "desmedro").length;
-    const netUnits = differenceRows.reduce((sum, row) => sum + (row.kind === "sobrante" ? row.qty : -row.qty), 0);
-    const stores = new Set(differenceRows.map(row => row.destinationStore)).size;
+    const faltantes = filteredDifferenceRows.filter(row => row.kind === "faltante").length;
+    const sobrantes = filteredDifferenceRows.filter(row => row.kind === "sobrante").length;
+    const desmedros = filteredDifferenceRows.filter(row => row.kind === "desmedro").length;
+    const netUnits = filteredDifferenceRows.reduce((sum, row) => sum + (row.kind === "sobrante" ? row.qty : -row.qty), 0);
+    const stores = new Set(filteredDifferenceRows.map(row => row.destinationStore)).size;
     return { faltantes, sobrantes, desmedros, netUnits, stores };
-  }, [differenceRows]);
+  }, [filteredDifferenceRows]);
 
   // Totales por línea desde los scans cargados
   const scanTotalByLine = useMemo(() => {
@@ -2416,6 +2452,15 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 </select>}
               </>
             )}
+            {listPanel === "diferencias" && (
+              <select value={differenceReasonFilter} onChange={e => setDifferenceReasonFilter(e.target.value)}
+                className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                <option value="all">Todos los motivos</option>
+                {differenceReasonOptions.map(option => (
+                  <option key={option.key || "sin-motivo"} value={option.key}>{option.label}</option>
+                ))}
+              </select>
+            )}
           </div>
 
           {listPanel === "recepcion" && <p className="text-xs text-slate-400 font-black px-1">{filteredRequests.length} requerimiento{filteredRequests.length !== 1 ? "s" : ""}</p>}
@@ -2433,7 +2478,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
             </div>
           )}
           {listPanel === "resumen" && <p className="text-xs text-slate-400 font-black px-1">{summaryRows.length} tienda{summaryRows.length !== 1 ? "s" : ""}</p>}
-          {listPanel === "diferencias" && <p className="text-xs text-slate-400 font-black px-1">{differenceRows.length} diferencia{differenceRows.length !== 1 ? "s" : ""}</p>}
+          {listPanel === "diferencias" && <p className="text-xs text-slate-400 font-black px-1">{filteredDifferenceRows.length} diferencia{filteredDifferenceRows.length !== 1 ? "s" : ""}</p>}
 
           {loading && <p className="text-center py-12 text-slate-400 font-bold">Cargando...</p>}
           {!loading && listPanel === "resumen" && (
@@ -2562,7 +2607,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                   </button>
                   <button
                     onClick={exportDifferencesExcel}
-                    disabled={loadingDifferences || differenceRows.length === 0}
+                    disabled={loadingDifferences || filteredDifferenceRows.length === 0}
                     className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-40"
                   >
                     Exportar Excel
@@ -2594,10 +2639,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
               </div>
 
               {loadingDifferences && <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando diferencias...</p>}
-              {!loadingDifferences && differenceRows.length === 0 && (
-                <p className="p-8 text-center text-sm font-bold text-slate-400">Sin diferencias reportadas en este rango.</p>
+              {!loadingDifferences && filteredDifferenceRows.length === 0 && (
+                <p className="p-8 text-center text-sm font-bold text-slate-400">
+                  {differenceRows.length === 0 ? "Sin diferencias reportadas en este rango." : "Sin diferencias para el motivo seleccionado."}
+                </p>
               )}
-              {!loadingDifferences && differenceRows.length > 0 && canDeleteRequests && (
+              {!loadingDifferences && filteredDifferenceRows.length > 0 && canDeleteRequests && (
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border bg-white p-3 shadow-sm">
                   <p className="text-xs font-bold text-slate-500">
                     {selectedDiffKeys.size > 0 ? `${selectedDiffKeys.size} seleccionado${selectedDiffKeys.size !== 1 ? "s" : ""}` : "Selecciona reportes para eliminarlos en bloque"}
@@ -2608,7 +2655,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                       onClick={toggleSelectAllDiffRows}
                       className="rounded-xl border px-3 py-2 text-xs font-black text-slate-600"
                     >
-                      {differenceRows.every(row => selectedDiffKeys.has(row.diffKey)) ? "Deseleccionar todos" : "Seleccionar todos"}
+                      {filteredDifferenceRows.every(row => selectedDiffKeys.has(row.diffKey)) ? "Deseleccionar todos" : "Seleccionar todos"}
                     </button>
                     <button
                       type="button"
@@ -2621,21 +2668,22 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                   </div>
                 </div>
               )}
-              {!loadingDifferences && differenceRows.length > 0 && (
+              {!loadingDifferences && filteredDifferenceRows.length > 0 && (
                 <div className="overflow-x-auto rounded-xl border">
-                  <table className="w-full min-w-[980px] text-left text-[11px]">
+                  <table className="w-full min-w-[1080px] text-left text-[11px]">
                     <thead>
                       <tr className="border-b bg-slate-50 text-[10px] font-black uppercase text-slate-500">
                         {canDeleteRequests && (
                           <th className="p-2 w-8">
                             <input
                               type="checkbox"
-                              checked={differenceRows.length > 0 && differenceRows.every(row => selectedDiffKeys.has(row.diffKey))}
+                              checked={filteredDifferenceRows.length > 0 && filteredDifferenceRows.every(row => selectedDiffKeys.has(row.diffKey))}
                               onChange={toggleSelectAllDiffRows}
                             />
                           </th>
                         )}
                         <th className="p-2">Tienda / Doc.</th>
+                        <th className="p-2">Motivo</th>
                         <th className="p-2">Entregó guía</th>
                         <th className="p-2">Recep. completada</th>
                         <th className="p-2">Código</th>
@@ -2651,7 +2699,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                       </tr>
                     </thead>
                     <tbody>
-                      {differenceRows.map(row => {
+                      {filteredDifferenceRows.map(row => {
                         const isProviderForRow = canViewAllStores || myStoreCodes.includes(row.sourceStoreCode);
                         const reg = regularizations.get(row.diffKey);
                         const status: RegularizationStatus = reg?.status || "pendiente";
@@ -2692,6 +2740,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                 <p className="font-black text-slate-900">{row.destinationStore}</p>
                                 <p className="text-slate-500">{row.document}</p>
                               </td>
+                              <td className="p-2"><ReasonBadge reason={row.reason} /></td>
                               <td className="p-2 font-bold text-slate-700">{row.dispatchedByName || "-"}</td>
                               <td className="p-2">
                                 {row.deliveredAt ? (
@@ -2728,7 +2777,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                             </tr>
                             {isOpen && (
                               <tr className="border-b bg-slate-50/70 last:border-0">
-                                <td colSpan={canDeleteRequests ? 14 : 13} className="p-3">
+                                <td colSpan={canDeleteRequests ? 15 : 14} className="p-3">
                                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-500">
                                     <span>Origen: <b className="text-slate-700">{row.sourceStore}</b></span>
                                     {reg?.attended_at && <span>Atendido: <b className="text-slate-700">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
