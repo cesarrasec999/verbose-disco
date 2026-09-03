@@ -15,7 +15,9 @@ import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
-const PAGE_SIZE = 100;
+// La pantalla solo renderiza 50 movimientos. Se solicita una fila adicional
+// únicamente para saber si existe otra página, sin ejecutar COUNT(*) global.
+const PAGE_SIZE = 50;
 
 type Movement = {
   movement_key: string;
@@ -195,8 +197,8 @@ export default function KardexPage() {
   const [productSearchMessage, setProductSearchMessage] = useState("");
   const [searchingProducts, setSearchingProducts] = useState(false);
   const [rows, setRows] = useState<Movement[]>([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
+  const [hasNextPage, setHasNextPage] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -378,10 +380,10 @@ export default function KardexPage() {
   }, [productSearch, selectedProduct]);
 
   const buildQuery = useCallback(
-    (count = false) => {
+    () => {
       let query = supabase
         .from("erp_movements")
-        .select(MOVEMENT_COLUMNS, count ? { count: "exact" } : undefined)
+        .select(MOVEMENT_COLUMNS)
         .gte("movement_date", `${from}T00:00:00-05:00`)
         .lt("movement_date", `${addDays(to, 1)}T00:00:00-05:00`)
         .order("movement_date", { ascending: false })
@@ -480,14 +482,14 @@ export default function KardexPage() {
       setLoading(true);
       try {
         const first = targetPage * PAGE_SIZE;
-        const { data, error, count } = await buildQuery(true).range(
+        const { data, error } = await buildQuery().range(
           first,
-          first + PAGE_SIZE - 1,
+          first + PAGE_SIZE,
         );
         if (error) throw error;
-        const pageRows = (data || []) as Movement[];
+        const pageRows = ((data || []) as Movement[]).slice(0, PAGE_SIZE);
         setRows(await enrichPersonnel(pageRows));
-        setTotal(count || 0);
+        setHasNextPage((data || []).length > PAGE_SIZE);
         setPage(targetPage);
         setLoaded(true);
       } catch (error) {
@@ -512,7 +514,7 @@ export default function KardexPage() {
       const XLSX = await import("xlsx");
       const allRows: Movement[] = [];
       for (let offset = 0; ; offset += 1000) {
-        const { data, error } = await buildQuery(false).range(
+        const { data, error } = await buildQuery().range(
           offset,
           offset + 999,
         );
@@ -590,8 +592,6 @@ export default function KardexPage() {
       setExporting(false);
     }
   }, [buildQuery, displayStores, enrichPersonnel, from, loaded, selectedProductCode, to]);
-
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   if (!user)
     return (
@@ -721,7 +721,7 @@ export default function KardexPage() {
               </button>
               <button
                 onClick={() => void exportExcel()}
-                disabled={!loaded || exporting || total === 0}
+                disabled={!loaded || exporting || rows.length === 0}
                 className="flex items-center justify-center gap-2 rounded-xl border border-emerald-600 px-4 py-2.5 text-sm font-bold text-emerald-700 disabled:opacity-50"
               >
                 <Download size={15} />
@@ -782,9 +782,7 @@ export default function KardexPage() {
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
             <p className="text-sm font-black text-slate-800">
-              {loaded
-                ? `${total.toLocaleString("es-PE")} movimientos`
-                : "Consulta Kardex"}
+              {loaded ? `${rows.length} movimientos en esta página` : "Consulta Kardex"}
             </p>
             {loaded && (
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
@@ -796,11 +794,11 @@ export default function KardexPage() {
                   <ChevronLeft size={16} />
                 </button>
                 <span>
-                  Página {page + 1} de {pageCount}
+                  Página {page + 1}
                 </span>
                 <button
                   onClick={() => void load(page + 1)}
-                  disabled={loading || page + 1 >= pageCount}
+                  disabled={loading || !hasNextPage}
                   className="rounded-lg border border-slate-200 p-1.5 disabled:opacity-40"
                 >
                   <ChevronRight size={16} />
