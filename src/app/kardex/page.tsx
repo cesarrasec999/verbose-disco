@@ -35,6 +35,18 @@ type Movement = {
   reason: string | null;
   status: string | null;
   transfer_store_code: string | null;
+  adjustment_user: string | null;
+  movement_employee?: string | null;
+  reception_employee?: string | null;
+  related_store_code?: string | null;
+};
+
+type ReceptionPersonnel = {
+  doc_number: string | null;
+  source_store_code: string | null;
+  destination_store_code: string | null;
+  dispatched_by_name: string | null;
+  completed_by_name: string | null;
 };
 
 type ProductCandidate = {
@@ -46,7 +58,7 @@ type ProductCandidate = {
 };
 
 const MOVEMENT_COLUMNS =
-  "movement_key,source_type,source_id,store_code,movement_date,operation,document_no,product_code,description,unit,cost,quantity,balance_after,value_total,reason,status,transfer_store_code";
+  "movement_key,source_type,source_id,store_code,movement_date,operation,document_no,product_code,description,unit,cost,quantity,balance_after,value_total,reason,status,transfer_store_code,adjustment_user";
 
 const GPC_STORE_NUMBER_OVERRIDES: Record<number, number> = {
   2: 4,
@@ -136,6 +148,10 @@ function dateForExcel(value: string) {
 
 function normalizeProductSearch(value: string) {
   return value.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+function normalizeDocument(value: string | null | undefined) {
+  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
 function codeMatchRank(product: ProductCandidate, query: string) {
@@ -368,6 +384,61 @@ export default function KardexPage() {
     [effectiveStore, from, selectedProductCode, to],
   );
 
+  const enrichPersonnel = useCallback(async (movements: Movement[]) => {
+    // Solo las transferencias requieren el cruce con Recepción. La página
+    // tiene como máximo 100 filas, por lo que el IN queda acotado y no se
+    // convierte en una consulta global sobre el historial.
+    const transferDocuments = [...new Set(
+      movements
+        .filter(row => (row.source_type === "SLIP_OUT" || row.source_type === "SLIP_IN") && row.document_no)
+        .map(row => row.document_no!)
+    )];
+    const personnelByDocument = new Map<string, ReceptionPersonnel>();
+
+    for (let index = 0; index < transferDocuments.length; index += 200) {
+      const { data, error } = await supabase
+        .from("reception_requests")
+        .select("doc_number,source_store_code,destination_store_code,dispatched_by_name,completed_by_name")
+        .in("doc_number", transferDocuments.slice(index, index + 200));
+      if (error) throw error;
+      for (const row of (data || []) as ReceptionPersonnel[]) {
+        const key = normalizeDocument(row.doc_number);
+        if (!key) continue;
+        const previous = personnelByDocument.get(key);
+        // Si existen varias transferencias agrupadas en el mismo documento,
+        // se conserva la que ya tiene recepción confirmada.
+        if (!previous || (!previous.completed_by_name && row.completed_by_name)) {
+          personnelByDocument.set(key, row);
+        }
+      }
+    }
+
+    return movements.map(row => {
+      const reception = personnelByDocument.get(normalizeDocument(row.document_no));
+      const movementEmployee = row.source_type === "ADJUSTMENT"
+        ? row.adjustment_user
+        : row.source_type === "SLIP_OUT"
+          ? reception?.dispatched_by_name || null
+          : row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
+            ? reception?.completed_by_name || null
+            : null;
+      return {
+        ...row,
+        movement_employee: movementEmployee,
+        reception_employee: row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
+          ? reception?.completed_by_name || null
+          : null,
+        related_store_code: row.transfer_store_code || (
+          row.source_type === "SLIP_OUT"
+            ? reception?.destination_store_code || null
+            : row.source_type === "SLIP_IN"
+              ? reception?.source_store_code || null
+              : null
+        ),
+      };
+    });
+  }, []);
+
   const load = useCallback(
     async (targetPage = page) => {
       if (!from || !to || from > to) {
@@ -386,7 +457,8 @@ export default function KardexPage() {
           first + PAGE_SIZE - 1,
         );
         if (error) throw error;
-        setRows((data || []) as Movement[]);
+        const pageRows = (data || []) as Movement[];
+        setRows(await enrichPersonnel(pageRows));
         setTotal(count || 0);
         setPage(targetPage);
         setLoaded(true);
@@ -398,7 +470,7 @@ export default function KardexPage() {
         setLoading(false);
       }
     },
-    [buildQuery, from, page, productSearch, selectedProductCode, to],
+    [buildQuery, enrichPersonnel, from, page, productSearch, selectedProductCode, to],
   );
 
   useEffect(() => {
@@ -418,7 +490,7 @@ export default function KardexPage() {
         );
         if (error) throw error;
         const batch = (data || []) as Movement[];
-        allRows.push(...batch);
+        allRows.push(...await enrichPersonnel(batch));
         if (batch.length < 1000) break;
       }
       const excelRows = allRows.map((row) => ({
@@ -427,6 +499,13 @@ export default function KardexPage() {
         Operación: row.operation,
         Documento: row.document_no || "",
         Motivo: row.reason || "",
+        "Empleado que realizó": row.movement_employee || "No informado por RMS",
+        "Recepcionado por": row.reception_employee || "",
+        "Ruta transferencia": row.related_store_code
+          ? row.source_type === "SLIP_OUT"
+            ? `${displayStores.get(row.store_code) || row.store_code} → ${displayStores.get(row.related_store_code) || row.related_store_code}`
+            : `${displayStores.get(row.related_store_code) || row.related_store_code} → ${displayStores.get(row.store_code) || row.store_code}`
+          : "",
         Código: row.product_code,
         Descripción: row.description || "",
         UM: row.unit || "",
@@ -453,6 +532,9 @@ export default function KardexPage() {
         { wch: 28 },
         { wch: 20 },
         { wch: 35 },
+        { wch: 30 },
+        { wch: 30 },
+        { wch: 42 },
         { wch: 18 },
         { wch: 55 },
         { wch: 10 },
@@ -479,7 +561,7 @@ export default function KardexPage() {
     } finally {
       setExporting(false);
     }
-  }, [buildQuery, displayStores, from, loaded, selectedProductCode, to]);
+  }, [buildQuery, displayStores, enrichPersonnel, from, loaded, selectedProductCode, to]);
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -623,7 +705,9 @@ export default function KardexPage() {
             Busca por código completo, últimos 4 o 5 dígitos, o descripción;
             elige una coincidencia antes de cargar sus movimientos. La consulta
             final usa el código exacto e índices. El Excel incluye todas las
-            filas del filtro, no solo la página visible.
+            filas del filtro, no solo la página visible. En transferencias se
+            muestra quien despachó y quien recepcionó; otros movimientos sin
+            empleado disponible se marcan como “No informado por RMS”.
           </p>
           {(productSearchMessage || productCandidates.length > 0) && (
             <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -706,6 +790,9 @@ export default function KardexPage() {
                     "Operación",
                     "Documento",
                     "Motivo",
+                    "Ruta transferencia",
+                    "Empleado que realizó",
+                    "Recepcionado por",
                     "Código",
                     "Descripción",
                     "UM",
@@ -742,6 +829,19 @@ export default function KardexPage() {
                     <td className="max-w-[230px] px-4 py-3 text-xs text-slate-600">
                       {row.reason || "—"}
                     </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-700">
+                      {row.related_store_code
+                        ? row.source_type === "SLIP_OUT"
+                          ? `${displayStores.get(row.store_code) || row.store_code} → ${displayStores.get(row.related_store_code) || row.related_store_code}`
+                          : `${displayStores.get(row.related_store_code) || row.related_store_code} → ${displayStores.get(row.store_code) || row.store_code}`
+                        : "—"}
+                    </td>
+                    <td className="max-w-[220px] px-4 py-3 text-xs font-semibold text-slate-700">
+                      {row.movement_employee || "No informado por RMS"}
+                    </td>
+                    <td className="max-w-[220px] px-4 py-3 text-xs font-semibold text-slate-700">
+                      {row.reception_employee || "—"}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-bold text-slate-800">
                       {row.product_code}
                     </td>
@@ -777,7 +877,7 @@ export default function KardexPage() {
                 {loaded && rows.length === 0 && (
                   <tr>
                     <td
-                      colSpan={13}
+                      colSpan={16}
                       className="px-4 py-12 text-center text-sm text-slate-500"
                     >
                       No hay movimientos para esos filtros.

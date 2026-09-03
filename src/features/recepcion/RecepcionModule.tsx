@@ -523,6 +523,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // Este filtro pertenece solo al submódulo Diferencias. Mantenerlo separado
   // evita que al cambiar de pestaña se alteren los filtros de recepción.
   const [differenceReasonFilter, setDifferenceReasonFilter] = useState("all");
+  const [differenceStatusFilter, setDifferenceStatusFilter] = useState<"all" | RegularizationStatus>("all");
   // Acota la consulta a reception_requests por creation_date, igual que el
   // resto de modulos (reportes, diferencias) - antes se traia sin tope de
   // fecha (hasta 1000 filas por tienda via FILTERED_PAGE_SIZE), lo que hacia
@@ -2065,9 +2066,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, [differenceRows]);
 
   const filteredDifferenceRows = useMemo(() => {
-    if (differenceReasonFilter === "all") return differenceRows;
-    return differenceRows.filter(row => normalizeReason(row.reason) === differenceReasonFilter);
-  }, [differenceReasonFilter, differenceRows]);
+    return differenceRows.filter(row => {
+      if (differenceReasonFilter !== "all" && normalizeReason(row.reason) !== differenceReasonFilter) return false;
+      const status = regularizations.get(row.diffKey)?.status || "pendiente";
+      return differenceStatusFilter === "all" || status === differenceStatusFilter;
+    });
+  }, [differenceReasonFilter, differenceStatusFilter, differenceRows, regularizations]);
 
   // Al cambiar el motivo se retiran las selecciones que ya no se ven. Esto
   // protege las eliminaciones masivas de operar sobre otro bloque.
@@ -2453,13 +2457,23 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
               </>
             )}
             {listPanel === "diferencias" && (
-              <select value={differenceReasonFilter} onChange={e => setDifferenceReasonFilter(e.target.value)}
-                className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
-                <option value="all">Todos los motivos</option>
-                {differenceReasonOptions.map(option => (
-                  <option key={option.key || "sin-motivo"} value={option.key}>{option.label}</option>
-                ))}
-              </select>
+              <>
+                <select value={differenceReasonFilter} onChange={e => setDifferenceReasonFilter(e.target.value)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Todos los motivos</option>
+                  {differenceReasonOptions.map(option => (
+                    <option key={option.key || "sin-motivo"} value={option.key}>{option.label}</option>
+                  ))}
+                </select>
+                <select value={differenceStatusFilter} onChange={e => setDifferenceStatusFilter(e.target.value as "all" | RegularizationStatus)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Todos los estados</option>
+                  <option value="pendiente">Pendiente</option>
+                  <option value="atendido">Atendido</option>
+                  <option value="regularizado">Regularizado</option>
+                  <option value="rechazado">Rechazado</option>
+                </select>
+              </>
             )}
           </div>
 
@@ -2641,7 +2655,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
               {loadingDifferences && <p className="p-8 text-center text-sm font-bold text-slate-400">Cargando diferencias...</p>}
               {!loadingDifferences && filteredDifferenceRows.length === 0 && (
                 <p className="p-8 text-center text-sm font-bold text-slate-400">
-                  {differenceRows.length === 0 ? "Sin diferencias reportadas en este rango." : "Sin diferencias para el motivo seleccionado."}
+                  {differenceRows.length === 0 ? "Sin diferencias reportadas en este rango." : "Sin diferencias para los filtros seleccionados."}
                 </p>
               )}
               {!loadingDifferences && filteredDifferenceRows.length > 0 && canDeleteRequests && (
