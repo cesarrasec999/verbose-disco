@@ -499,8 +499,6 @@ export default function KardexPage() {
         Operación: row.operation,
         Documento: row.document_no || "",
         Motivo: row.reason || "",
-        "Empleado que realizó": row.movement_employee || "No informado por RMS",
-        "Recepcionado por": row.reception_employee || "",
         "Ruta transferencia": row.related_store_code
           ? row.source_type === "SLIP_OUT"
             ? `${displayStores.get(row.store_code) || row.store_code} → ${displayStores.get(row.related_store_code) || row.related_store_code}`
@@ -520,6 +518,8 @@ export default function KardexPage() {
           ? displayStores.get(row.transfer_store_code) ||
             row.transfer_store_code
           : "",
+        "Empleado que realizó": row.movement_employee || "No informado por RMS",
+        "Recepcionado por": row.reception_employee || "",
       }));
       const worksheet = XLSX.utils.json_to_sheet(excelRows);
       for (let index = 2; index <= excelRows.length + 1; index += 1) {
@@ -780,9 +780,27 @@ export default function KardexPage() {
               </div>
             )}
           </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-left text-[11px] font-black uppercase tracking-wide text-slate-500">
+          <div className="overflow-hidden">
+            <table className="w-full table-fixed text-[10px] leading-tight xl:text-[11px]">
+              <colgroup>
+                <col className="w-[5%]" />
+                <col className="w-[5.5%]" />
+                <col className="w-[6.3%]" />
+                <col className="w-[6.3%]" />
+                <col className="w-[6.7%]" />
+                <col className="w-[8.5%]" />
+                <col className="w-[5.2%]" />
+                <col className="w-[17.8%]" />
+                <col className="w-[2.5%]" />
+                <col className="w-[3.7%]" />
+                <col className="w-[3.7%]" />
+                <col className="w-[4%]" />
+                <col className="w-[4.7%]" />
+                <col className="w-[4.7%]" />
+                <col className="w-[7.7%]" />
+                <col className="w-[7.7%]" />
+              </colgroup>
+              <thead className="bg-slate-50 text-left text-[9px] font-black uppercase leading-tight tracking-wide text-slate-500 xl:text-[10px]">
                 <tr>
                   {[
                     "Fecha y hora",
@@ -791,8 +809,6 @@ export default function KardexPage() {
                     "Documento",
                     "Motivo",
                     "Ruta transferencia",
-                    "Empleado que realizó",
-                    "Recepcionado por",
                     "Código",
                     "Descripción",
                     "UM",
@@ -801,8 +817,10 @@ export default function KardexPage() {
                     "Costo",
                     "Valor",
                     "Estado",
+                    "Empleado que realizó",
+                    "Recepcionado por",
                   ].map((label) => (
-                    <th key={label} className="whitespace-nowrap px-4 py-3">
+                    <th key={label} className="break-words px-1.5 py-2 xl:px-2">
                       {label}
                     </th>
                   ))}
@@ -814,63 +832,63 @@ export default function KardexPage() {
                     key={`${row.movement_key}-${row.movement_date}`}
                     className="hover:bg-slate-50"
                   >
-                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">
+                    <td className="break-words px-1.5 py-2 text-slate-600 xl:px-2">
                       {formatDateTime(row.movement_date)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-700">
+                    <td className="break-words px-1.5 py-2 font-semibold text-slate-700 xl:px-2">
                       {displayStores.get(row.store_code) || row.store_code}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-slate-800">
+                    <td className="break-words px-1.5 py-2 font-semibold text-slate-800 xl:px-2">
                       {row.operation}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-600">
+                    <td className="break-all px-1.5 py-2 font-mono text-[9px] text-slate-600 xl:px-2 xl:text-[10px]">
                       {row.document_no || "—"}
                     </td>
-                    <td className="max-w-[230px] px-4 py-3 text-xs text-slate-600">
+                    <td className="break-words px-1.5 py-2 text-slate-600 xl:px-2">
                       {row.reason || "—"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs font-semibold text-slate-700">
+                    <td className="break-words px-1.5 py-2 font-semibold text-slate-700 xl:px-2">
                       {row.related_store_code
                         ? row.source_type === "SLIP_OUT"
                           ? `${displayStores.get(row.store_code) || row.store_code} → ${displayStores.get(row.related_store_code) || row.related_store_code}`
                           : `${displayStores.get(row.related_store_code) || row.related_store_code} → ${displayStores.get(row.store_code) || row.store_code}`
                         : "—"}
                     </td>
-                    <td className="max-w-[220px] px-4 py-3 text-xs font-semibold text-slate-700">
-                      {row.movement_employee || "No informado por RMS"}
-                    </td>
-                    <td className="max-w-[220px] px-4 py-3 text-xs font-semibold text-slate-700">
-                      {row.reception_employee || "—"}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-bold text-slate-800">
+                    <td className="break-all px-1.5 py-2 font-mono text-[9px] font-bold text-slate-800 xl:px-2 xl:text-[10px]">
                       {row.product_code}
                     </td>
-                    <td className="min-w-[260px] px-4 py-3 text-slate-700">
+                    <td className="break-words px-1.5 py-2 text-slate-700 xl:px-2">
                       {row.description || "—"}
                     </td>
-                    <td className="px-4 py-3 text-center text-xs text-slate-600">
+                    <td className="break-words px-1.5 py-2 text-center text-slate-600 xl:px-2">
                       {row.unit || "—"}
                     </td>
                     <td
-                      className={`whitespace-nowrap px-4 py-3 text-right font-black ${row.quantity < 0 ? "text-red-600" : "text-emerald-700"}`}
+                      className={`break-words px-1.5 py-2 text-right font-black xl:px-2 ${row.quantity < 0 ? "text-red-600" : "text-emerald-700"}`}
                     >
                       {formatNumber(row.quantity)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">
+                    <td className="break-words px-1.5 py-2 text-right font-semibold text-slate-700 xl:px-2">
                       {row.balance_after === null
                         ? "—"
                         : formatNumber(row.balance_after)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right text-slate-600">
+                    <td className="break-words px-1.5 py-2 text-right text-slate-600 xl:px-2">
                       {row.cost === null ? "—" : formatMoney(row.cost)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">
+                    <td className="break-words px-1.5 py-2 text-right font-semibold text-slate-700 xl:px-2">
                       {row.value_total === null
                         ? "—"
                         : formatMoney(row.value_total)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-xs font-bold text-slate-600">
+                    <td className="break-words px-1.5 py-2 font-bold text-slate-600 xl:px-2">
                       {row.status || "—"}
+                    </td>
+                    <td className="break-words px-1.5 py-2 font-semibold text-slate-700 xl:px-2">
+                      {row.movement_employee || "No informado por RMS"}
+                    </td>
+                    <td className="break-words px-1.5 py-2 font-semibold text-slate-700 xl:px-2">
+                      {row.reception_employee || "—"}
                     </td>
                   </tr>
                 ))}

@@ -4173,6 +4173,120 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         }
 
         try {
+            const auditRows = result.filter(row => (row.last_source || "").toLowerCase() === "auditoria" && row.store_id && row.product_id);
+            if (auditRows.length > 0) {
+                const auditSessionsById = new Map<string, { store_id: string; created_at: string }>();
+                const auditRowsByStore = new Map<string, ProductLocation[]>();
+                for (const row of auditRows) {
+                    const storeId = row.store_id;
+                    if (!storeId) continue;
+                    const storeRows = auditRowsByStore.get(storeId) || [];
+                    storeRows.push(row);
+                    auditRowsByStore.set(storeId, storeRows);
+                }
+
+                // Se consulta únicamente la ventana de sesiones que corresponde a las
+                // ubicaciones mostradas. Así el resultado viene del conteo de auditoría
+                // real, sin recorrer el historial completo en cada búsqueda.
+                for (const [storeId, storeRows] of auditRowsByStore.entries()) {
+                    const timestamps = storeRows
+                        .map(row => new Date(row.last_seen_at || row.updated_at || "").getTime())
+                        .filter(value => Number.isFinite(value));
+                    const earliest = timestamps.length > 0 ? Math.min(...timestamps) - 14 * 24 * 60 * 60 * 1000 : null;
+                    const latest = timestamps.length > 0 ? Math.max(...timestamps) + 24 * 60 * 60 * 1000 : null;
+                    let from = 0;
+                    while (true) {
+                        let query = supabase
+                            .from("audit_sessions")
+                            .select("id,store_id,created_at")
+                            .eq("store_id", storeId)
+                            .order("created_at", { ascending: false })
+                            .range(from, from + 500 - 1);
+                        if (earliest !== null && latest !== null) {
+                            query = query.gte("created_at", new Date(earliest).toISOString()).lte("created_at", new Date(latest).toISOString());
+                        }
+                        const { data } = await query;
+                        for (const session of (data || []) as Array<{ id: string; store_id: string; created_at: string }>) {
+                            auditSessionsById.set(session.id, session);
+                        }
+                        if (!data || data.length < 500) break;
+                        from += 500;
+                    }
+                }
+
+                const auditSessionIds = [...auditSessionsById.keys()];
+                const auditProductIds = [...new Set(auditRows.map(row => row.product_id).filter(Boolean))] as string[];
+                const auditItemsById = new Map<string, { session_id: string; product_id: string }>();
+                for (let i = 0; i < auditSessionIds.length; i += 500) {
+                    const chunk = auditSessionIds.slice(i, i + 500);
+                    let from = 0;
+                    while (true) {
+                        const { data } = await supabase
+                            .from("audit_session_items")
+                            .select("id,session_id,product_id")
+                            .in("session_id", chunk)
+                            .in("product_id", auditProductIds)
+                            .range(from, from + 500 - 1);
+                        for (const item of (data || []) as Array<{ id: string; session_id: string; product_id: string }>) {
+                            auditItemsById.set(item.id, { session_id: item.session_id, product_id: item.product_id });
+                        }
+                        if (!data || data.length < 500) break;
+                        from += 500;
+                    }
+                }
+
+                const auditCounts: Array<{ item_id: string; location: string | null; quantity: number | null }> = [];
+                const auditItemIds = [...auditItemsById.keys()];
+                for (let i = 0; i < auditItemIds.length; i += 500) {
+                    const chunk = auditItemIds.slice(i, i + 500);
+                    let from = 0;
+                    while (true) {
+                        const { data } = await supabase
+                            .from("audit_counts")
+                            .select("item_id,location,quantity")
+                            .in("item_id", chunk)
+                            .range(from, from + 500 - 1);
+                        auditCounts.push(...((data || []) as Array<{ item_id: string; location: string | null; quantity: number | null }>));
+                        if (!data || data.length < 500) break;
+                        from += 500;
+                    }
+                }
+
+                const latestAuditSessionByStoreProduct = new Map<string, string>();
+                for (const count of auditCounts) {
+                    const item = auditItemsById.get(count.item_id);
+                    const session = item ? auditSessionsById.get(item.session_id) : undefined;
+                    if (!item || !session || isSessionFlagLocation(count.location)) continue;
+                    const pairKey = `${session.store_id}__${item.product_id}`;
+                    const existingId = latestAuditSessionByStoreProduct.get(pairKey);
+                    const existing = existingId ? auditSessionsById.get(existingId) : undefined;
+                    if (!existing || session.created_at > existing.created_at) latestAuditSessionByStoreProduct.set(pairKey, item.session_id);
+                }
+
+                const auditQuantityMap = new Map<string, number>();
+                for (const count of auditCounts) {
+                    const item = auditItemsById.get(count.item_id);
+                    const session = item ? auditSessionsById.get(item.session_id) : undefined;
+                    if (!item || !session || isSessionFlagLocation(count.location)) continue;
+                    const pairKey = `${session.store_id}__${item.product_id}`;
+                    if (latestAuditSessionByStoreProduct.get(pairKey) !== item.session_id) continue;
+                    const key = locationQuantityKey(item.product_id, count.location);
+                    auditQuantityMap.set(key, (auditQuantityMap.get(key) || 0) + Number(count.quantity || 0));
+                }
+
+                for (const row of result) {
+                    if ((row.last_source || "").toLowerCase() !== "auditoria") continue;
+                    const quantity = locationQuantityKeys(row.product_id, row.location)
+                        .map(key => auditQuantityMap.get(key))
+                        .find(value => value !== undefined);
+                    if (quantity !== undefined) row.stored_quantity = quantity;
+                }
+            }
+        } catch (error) {
+            console.warn("No se pudieron resolver cantidades de auditoría:", error);
+        }
+
+        try {
             const { data: assignmentsData } = await supabase
                 .from("cyclic_assignments")
                 .select("id,store_id,product_id,assigned_date,created_at")
@@ -7468,7 +7582,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className={`flex-1 w-full max-w-5xl mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
+                <div className={`flex-1 w-full ${activeTab === "ubicaciones" ? "max-w-[1800px]" : "max-w-5xl"} mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -9480,19 +9594,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         {isCdGpcStore() && cdGpcFilterHasValues() && <button type="button" className="rounded-lg bg-red-600 px-3 py-1.5 font-bold text-white disabled:opacity-40" disabled={locationBusy} onClick={() => deleteLocationRows(locationResults)}>Eliminar bloque filtrado</button>}
                                     </div>
                                 )}
-                                <div className="max-h-[460px] overflow-auto">
-                                    <table className="min-w-[1420px] w-full table-fixed text-sm">
+                                <div className="max-h-[460px] overflow-y-auto overflow-x-hidden">
+                                    <table className="w-full table-fixed text-[11px] leading-tight">
                                         <thead className="bg-slate-100 sticky top-0">
                                             <tr>
-                                                {canEditLocations && <th className="w-12 p-2 border text-center"><input type="checkbox" checked={locationResults.length > 0 && selectedLocationIds.size === locationResults.length} onChange={toggleAllLocationSelection} aria-label="Seleccionar todas" /></th>}
-                                                <th className="w-32 p-2 border text-left">Codigo</th>
-                                                <th className="w-80 p-2 border text-left">Descripcion</th>
-                                                <th className="w-52 p-2 border">Tienda</th>
-                                                <th className="w-72 p-2 border text-left">Ubicacion</th>
-                                                <th className="w-28 p-2 border">Cantidad</th>
-                                                <th className="w-44 p-2 border">Ultimo cambio</th>
-                                                <th className="w-36 p-2 border">Registrado en</th>
-                                                {!isMobileAccess && <th className="w-40 p-2 border">Accion</th>}
+                                                {canEditLocations && <th className="w-[3%] p-1.5 border text-center"><input type="checkbox" checked={locationResults.length > 0 && selectedLocationIds.size === locationResults.length} onChange={toggleAllLocationSelection} aria-label="Seleccionar todas" /></th>}
+                                                <th className="w-[8%] p-1.5 border text-left">Codigo</th>
+                                                <th className="w-[21%] p-1.5 border text-left">Descripcion</th>
+                                                <th className="w-[14%] p-1.5 border">Tienda</th>
+                                                <th className="w-[19%] p-1.5 border text-left">Ubicacion</th>
+                                                <th className="w-[7%] p-1.5 border">Cantidad</th>
+                                                <th className="w-[11%] p-1.5 border">Ultimo cambio</th>
+                                                <th className="w-[8%] p-1.5 border">Registrado en</th>
+                                                {!isMobileAccess && <th className="w-[9%] p-1.5 border">Accion</th>}
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -9505,25 +9619,25 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 const store = allStores.find(s => s.id === row.store_id);
                                                 return (
                                                     <tr key={row.id}>
-                                                        {canEditLocations && <td className="p-2 border text-center"><input type="checkbox" checked={selectedLocationIds.has(row.id)} onChange={() => toggleLocationSelection(row.id)} aria-label={`Seleccionar ${productSku}`} /></td>}
-                                                        <td className="p-2 border font-mono text-xs">{productSku}</td>
-                                                        <td className="p-2 border text-slate-600">
+                                                        {canEditLocations && <td className="p-1.5 border text-center"><input type="checkbox" checked={selectedLocationIds.has(row.id)} onChange={() => toggleLocationSelection(row.id)} aria-label={`Seleccionar ${productSku}`} /></td>}
+                                                        <td className="break-words p-1.5 border font-mono text-[10px]">{productSku}</td>
+                                                        <td className="break-words p-1.5 border text-slate-600">
                                                             <div>{productDescription}</div>
-                                                            <div className="mt-1 text-xs font-black text-slate-900">UM: {productUnit}</div>
+                                                            <div className="mt-1 text-[10px] font-black text-slate-900">UM: {productUnit}</div>
                                                         </td>
-                                                        <td className="p-2 border text-center text-xs">{store?.name || "Global"}</td>
-                                                        <td className="p-2 border font-bold text-slate-900">
-                                                            {locationEditingIds.has(row.id) ? <input className="w-full min-w-32 rounded-lg border border-cyan-300 px-2 py-1 font-mono text-sm uppercase text-slate-900" value={locationEditDrafts[row.id] || ""} onChange={e => setLocationEditDrafts(prev => ({ ...prev, [row.id]: e.target.value.toUpperCase() }))} /> : row.location}
+                                                        <td className="break-words p-1.5 border text-center text-[10px]">{store?.name || "Global"}</td>
+                                                        <td className="break-words p-1.5 border font-bold text-slate-900">
+                                                            {locationEditingIds.has(row.id) ? <input className="w-full rounded-lg border border-cyan-300 px-1.5 py-1 font-mono text-xs uppercase text-slate-900" value={locationEditDrafts[row.id] || ""} onChange={e => setLocationEditDrafts(prev => ({ ...prev, [row.id]: e.target.value.toUpperCase() }))} /> : row.location}
                                                         </td>
-                                                        <td className="p-2 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
-                                                        <td className="p-2 border text-center text-xs text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
-                                                        <td className="p-2 border text-center text-xs font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</td>
+                                                        <td className="p-1.5 border text-center font-black">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</td>
+                                                        <td className="break-words p-1.5 border text-center text-[10px] text-slate-500">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</td>
+                                                        <td className="break-words p-1.5 border text-center text-[10px] font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</td>
                                                         {!isMobileAccess && (
-                                                            <td className="p-2 border text-center whitespace-nowrap">
+                                                            <td className="p-1.5 border text-center">
                                                                 {canEditLocations ? (
                                                                 <>
-                                                                {!locationEditingIds.has(row.id) ? <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={() => beginLocationEditing([row])}>Editar</button> : <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold mr-1" onClick={saveLocationEdits}>Guardar</button>}
-                                                                {!locationEditingIds.has(row.id) && <button className="px-3 py-1.5 rounded-lg border text-xs font-semibold text-red-600 border-red-200" onClick={() => deactivateProductLocation(row)}>Eliminar</button>}
+                                                                {!locationEditingIds.has(row.id) ? <button className="mb-1 rounded-lg border px-2 py-1 text-[10px] font-semibold" onClick={() => beginLocationEditing([row])}>Editar</button> : <button className="mb-1 rounded-lg border px-2 py-1 text-[10px] font-semibold" onClick={saveLocationEdits}>Guardar</button>}
+                                                                {!locationEditingIds.has(row.id) && <button className="rounded-lg border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-600" onClick={() => deactivateProductLocation(row)}>Eliminar</button>}
                                                                 </>
                                                                 ) : <span className="text-xs text-slate-400">Lectura</span>}
                                                             </td>
@@ -9543,16 +9657,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 <div className="font-black text-slate-900">{group.query}</div>
                                                 <div className="text-xs font-bold text-slate-500">{group.rows.length} resultado{group.rows.length !== 1 ? "s" : ""}</div>
                                             </div>
-                                            <div className="max-h-72 overflow-auto">
-                                                <table className="min-w-[1120px] w-full table-fixed text-sm">
+                                            <div className="max-h-72 overflow-y-auto overflow-x-hidden">
+                                                <table className="w-full table-fixed text-[11px] leading-tight">
                                                     <thead className="bg-slate-100 sticky top-0">
                                                         <tr>
-                                                            <th className="w-32 p-2 border text-left">Codigo</th>
-                                                            <th className="w-80 p-2 border text-left">Descripcion</th>
-                                                            <th className="w-52 p-2 border">Tienda</th>
-                                                            <th className="w-72 p-2 border text-left">Ubicacion</th>
-                                                            <th className="w-28 p-2 border">Cantidad</th>
-                                                            <th className="w-44 p-2 border">Ultimo cambio</th>
+                                                            <th className="w-[10%] p-1.5 border text-left">Codigo</th>
+                                                            <th className="w-[29%] p-1.5 border text-left">Descripcion</th>
+                                                            <th className="w-[19%] p-1.5 border">Tienda</th>
+                                                            <th className="w-[25%] p-1.5 border text-left">Ubicacion</th>
+                                                            <th className="w-[7%] p-1.5 border">Cantidad</th>
+                                                            <th className="w-[10%] p-1.5 border">Ultimo cambio</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
