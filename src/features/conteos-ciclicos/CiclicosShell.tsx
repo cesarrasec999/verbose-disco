@@ -4214,7 +4214,12 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             for (const row of result) {
                 const source = row.last_source === "manual" ? "Recepcion" : row.last_source || "";
                 if (source !== "ciclico") continue;
-                const quantity = cyclicQuantityMap.get(locationQuantityKey(row.product_id, row.location));
+                // El conteo cíclico guarda el ticket como número ("422"), mientras
+                // que la pantalla de ubicaciones muestra su descripción ("RACK-[422]").
+                // Resolvemos ambos formatos sin inferir otra ubicación.
+                const quantity = locationQuantityKeys(row.product_id, row.location)
+                    .map(key => cyclicQuantityMap.get(key))
+                    .find(value => value !== undefined);
                 if (quantity !== undefined) row.stored_quantity = quantity;
             }
         } catch (error) {
@@ -9476,18 +9481,18 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                     </div>
                                 )}
                                 <div className="max-h-[460px] overflow-auto">
-                                    <table className="w-full text-sm">
+                                    <table className="min-w-[1420px] w-full table-fixed text-sm">
                                         <thead className="bg-slate-100 sticky top-0">
                                             <tr>
-                                                {canEditLocations && <th className="p-2 border text-center"><input type="checkbox" checked={locationResults.length > 0 && selectedLocationIds.size === locationResults.length} onChange={toggleAllLocationSelection} aria-label="Seleccionar todas" /></th>}
-                                                <th className="p-2 border text-left">Codigo</th>
-                                                <th className="p-2 border text-left">Descripcion</th>
-                                                <th className="p-2 border">Tienda</th>
-                                                <th className="p-2 border text-left">Ubicacion</th>
-                                                <th className="p-2 border">Cantidad</th>
-                                                <th className="p-2 border">Ultimo cambio</th>
-                                                <th className="p-2 border">Registrado en</th>
-                                                {!isMobileAccess && <th className="p-2 border">Accion</th>}
+                                                {canEditLocations && <th className="w-12 p-2 border text-center"><input type="checkbox" checked={locationResults.length > 0 && selectedLocationIds.size === locationResults.length} onChange={toggleAllLocationSelection} aria-label="Seleccionar todas" /></th>}
+                                                <th className="w-32 p-2 border text-left">Codigo</th>
+                                                <th className="w-80 p-2 border text-left">Descripcion</th>
+                                                <th className="w-52 p-2 border">Tienda</th>
+                                                <th className="w-72 p-2 border text-left">Ubicacion</th>
+                                                <th className="w-28 p-2 border">Cantidad</th>
+                                                <th className="w-44 p-2 border">Ultimo cambio</th>
+                                                <th className="w-36 p-2 border">Registrado en</th>
+                                                {!isMobileAccess && <th className="w-40 p-2 border">Accion</th>}
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -9539,15 +9544,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 <div className="text-xs font-bold text-slate-500">{group.rows.length} resultado{group.rows.length !== 1 ? "s" : ""}</div>
                                             </div>
                                             <div className="max-h-72 overflow-auto">
-                                                <table className="w-full text-sm">
+                                                <table className="min-w-[1120px] w-full table-fixed text-sm">
                                                     <thead className="bg-slate-100 sticky top-0">
                                                         <tr>
-                                                            <th className="p-2 border text-left">Codigo</th>
-                                                            <th className="p-2 border text-left">Descripcion</th>
-                                                            <th className="p-2 border">Tienda</th>
-                                                            <th className="p-2 border text-left">Ubicacion</th>
-                                                            <th className="p-2 border">Cantidad</th>
-                                                            <th className="p-2 border">Ultimo cambio</th>
+                                                            <th className="w-32 p-2 border text-left">Codigo</th>
+                                                            <th className="w-80 p-2 border text-left">Descripcion</th>
+                                                            <th className="w-52 p-2 border">Tienda</th>
+                                                            <th className="w-72 p-2 border text-left">Ubicacion</th>
+                                                            <th className="w-28 p-2 border">Cantidad</th>
+                                                            <th className="w-44 p-2 border">Ultimo cambio</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
