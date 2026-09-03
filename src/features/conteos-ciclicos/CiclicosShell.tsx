@@ -4101,6 +4101,17 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         return `${productId || ""}__${String(location || "").trim().toUpperCase()}`;
     }
 
+    // Inventario general almacena el código numérico del ticket, mientras que
+    // Ubicaciones presenta su descripción completa (por ejemplo "RACK-[534]").
+    // Ambos representan la misma ubicación sólo cuando el ticket está explícito.
+    function locationQuantityKeys(productId: string | null | undefined, location: string | null | undefined) {
+        const rawLocation = String(location || "").trim();
+        const keys = [locationQuantityKey(productId, rawLocation)];
+        const ticketMatch = rawLocation.match(/\[(\d+)\]\s*$/);
+        if (ticketMatch) keys.push(locationQuantityKey(productId, ticketMatch[1]));
+        return keys;
+    }
+
     function pickQuantityFromSessionAggregates(rows: any[], sessionOrder: Map<string, number>) {
         const byKeySession = new Map<string, Map<string, number>>();
         for (const row of rows) {
@@ -4151,8 +4162,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             for (const row of result) {
                 const source = row.last_source === "manual" ? "Recepcion" : row.last_source || "";
                 if (source !== "inventario general") continue;
-                const key = locationQuantityKey(row.product_id, row.location);
-                const quantity = validationMap.get(key) ?? recountMap.get(key) ?? countMap.get(key);
+                const keys = locationQuantityKeys(row.product_id, row.location);
+                const quantity = keys.map(key => validationMap.get(key)).find(value => value !== undefined)
+                    ?? keys.map(key => recountMap.get(key)).find(value => value !== undefined)
+                    ?? keys.map(key => countMap.get(key)).find(value => value !== undefined);
                 if (quantity !== undefined) row.stored_quantity = quantity;
             }
         } catch (error) {
@@ -5976,6 +5989,22 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             }
 
             if (asgnRows.length > 0) {
+                // El dashboard puede haberse construido con una tienda que ya no
+                // está en el estado local. Resolver los nombres desde la tabla
+                // maestra evita que el correo exponga el UUID como si fuera tienda.
+                const storeIds = [...new Set(asgnRows.map((a: any) => String(a.store_id || "")).filter(Boolean))];
+                for (let i = 0; i < storeIds.length; i += 500) {
+                    const { data: storeRows, error: storeError } = await supabase
+                        .from("stores")
+                        .select("id,name,erp_sede")
+                        .in("id", storeIds.slice(i, i + 500));
+                    if (storeError) throw storeError;
+                    for (const store of storeRows || []) {
+                        const resolvedName = String(store.name || store.erp_sede || "").trim();
+                        if (resolvedName) storeNameById.set(store.id, resolvedName);
+                    }
+                }
+
                 // 2. Traer products para obtener sku, description, cost
                 const prodIds = [...new Set(asgnRows.map((a: any) => a.product_id))];
                 let prodRows: any[] = [];
