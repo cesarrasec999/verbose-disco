@@ -36,8 +36,8 @@ type Movement = {
   status: string | null;
   transfer_store_code: string | null;
   adjustment_user: string | null;
-  movement_employee?: string | null;
-  reception_employee?: string | null;
+  movement_employee: string | null;
+  reception_employee: string | null;
   related_store_code?: string | null;
 };
 
@@ -58,7 +58,7 @@ type ProductCandidate = {
 };
 
 const MOVEMENT_COLUMNS =
-  "movement_key,source_type,source_id,store_code,movement_date,operation,document_no,product_code,description,unit,cost,quantity,balance_after,value_total,reason,status,transfer_store_code,adjustment_user";
+  "movement_key,source_type,source_id,store_code,movement_date,operation,document_no,product_code,description,unit,cost,quantity,balance_after,value_total,reason,status,transfer_store_code,adjustment_user,movement_employee,reception_employee";
 
 const GPC_STORE_NUMBER_OVERRIDES: Record<number, number> = {
   2: 4,
@@ -415,19 +415,22 @@ export default function KardexPage() {
 
     return movements.map(row => {
       const reception = personnelByDocument.get(normalizeDocument(row.document_no));
-      const movementEmployee = row.source_type === "ADJUSTMENT"
-        ? row.adjustment_user
-        : row.source_type === "SLIP_OUT"
-          ? reception?.dispatched_by_name || null
-          : row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
-            ? reception?.completed_by_name || null
-            : null;
+      const isTransfer = row.source_type === "SLIP_OUT" || row.source_type === "SLIP_IN";
+      // RMS es la fuente principal: Cashier para ventas, Clerk para compras,
+      // EmployeeCode para traslados y ReceivedBy al recibir. Recepción solo
+      // queda como respaldo para transferencias históricas sin enriquecer.
+      const movementEmployee = row.movement_employee || row.adjustment_user || (
+        isTransfer ? reception?.dispatched_by_name || null : null
+      );
+      const receptionEmployee = row.reception_employee || (
+        row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
+          ? reception?.completed_by_name || null
+          : null
+      );
       return {
         ...row,
         movement_employee: movementEmployee,
-        reception_employee: row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
-          ? reception?.completed_by_name || null
-          : null,
+        reception_employee: receptionEmployee,
         related_store_code: row.transfer_store_code || (
           row.source_type === "SLIP_OUT"
             ? reception?.destination_store_code || null
@@ -705,9 +708,9 @@ export default function KardexPage() {
             Busca por código completo, últimos 4 o 5 dígitos, o descripción;
             elige una coincidencia antes de cargar sus movimientos. La consulta
             final usa el código exacto e índices. El Excel incluye todas las
-            filas del filtro, no solo la página visible. En transferencias se
-            muestra quien despachó y quien recepcionó; otros movimientos sin
-            empleado disponible se marcan como “No informado por RMS”.
+            filas del filtro, no solo la página visible. El responsable se
+            obtiene directamente de RMS: cajero en ventas, clerk en compras,
+            y solicitante/recepcionista en transferencias.
           </p>
           {(productSearchMessage || productCandidates.length > 0) && (
             <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
