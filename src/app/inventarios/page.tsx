@@ -195,6 +195,7 @@ export default function InventariosPage() {
   const [locationsFileBuffer, setLocationsFileBuffer] = useState<ArrayBuffer | null>(null);
   const locationsFileRef = useRef<HTMLInputElement | null>(null);
   const [importingLocations, setImportingLocations] = useState(false);
+  const [downloadingTicketControl, setDownloadingTicketControl] = useState(false);
   const [pendingLocationSortDirection, setPendingLocationSortDirection] = useState<SortDirection>("asc");
   const [manualLocationDraft, setManualLocationDraft] = useState<ManualLocationDraft>({
     location_code: "",
@@ -6061,6 +6062,53 @@ export default function InventariosPage() {
     }
   }
 
+  async function downloadTicketControl() {
+    if (!selectedSessionId || !selectedSession) {
+      setMessage("Selecciona un inventario para descargar su control de tickets.");
+      return;
+    }
+    setDownloadingTicketControl(true);
+    try {
+      const rows = await loadPagedSessionRows(
+        "general_inventory_locations",
+        "ticket,location_code,zone,lineal,zone_ref,reference,full_location,description",
+        selectedSessionId,
+        "location_code",
+      ) as InventoryLocation[];
+      if (rows.length === 0) {
+        setMessage("Esta sesión no tiene un control de tickets cargado.");
+        return;
+      }
+      const data = [
+        ["TICKET", "UBICACIÓN", "ZONA", "LINEAL", "METRO", "UBICACIÓN FINAL"],
+        ...rows
+          .sort((a, b) => String(a.ticket || a.location_code).localeCompare(String(b.ticket || b.location_code), "es", { numeric: true, sensitivity: "base" }))
+          .map(row => [
+            row.ticket || row.location_code,
+            row.zone || "",
+            row.lineal || "",
+            row.zone_ref || "",
+            row.reference || "",
+            row.full_location || row.description || "",
+          ]),
+      ];
+      const workbook = XLSX.utils.book_new();
+      const sheet = XLSX.utils.aoa_to_sheet(data);
+      sheet["!cols"] = [
+        { wch: 14 }, { wch: 28 }, { wch: 28 }, { wch: 28 }, { wch: 16 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(workbook, sheet, "Control de tickets");
+      const storeName = (selectedSession.store_name || stores.find(store => store.id === selectedSession.store_id)?.name || "tienda").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+      const sessionDate = selectedSession.scheduled_date || "sin-fecha";
+      XLSX.writeFile(workbook, `control-tickets-${storeName}-${sessionDate}.xlsx`);
+      setMessage(`${rows.length} ubicaciones descargadas. El archivo conserva el formato reutilizable para volver a cargar el control.`);
+    } catch (error) {
+      setMessage("No se pudo descargar el control de tickets: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setDownloadingTicketControl(false);
+    }
+  }
+
   async function deleteCount(row: CountRow) {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
@@ -7810,12 +7858,15 @@ export default function InventariosPage() {
                   className="hidden"
                   onChange={event => void handleLocationsFileChange(event.target.files?.[0] || null)}
                 />
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   <button onClick={() => locationsFileRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-black">
                     <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                   </button>
                   <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                     {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
+                  </button>
+                  <button onClick={downloadTicketControl} disabled={downloadingTicketControl} className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-800 disabled:opacity-40">
+                    <Download size={16} /> {downloadingTicketControl ? "Descargando..." : "Descargar control"}
                   </button>
                 </div>
                 <button
@@ -8140,12 +8191,15 @@ export default function InventariosPage() {
                       className="hidden"
                       onChange={event => void handleLocationsFileChange(event.target.files?.[0] || null)}
                     />
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
                       <button onClick={() => locationsFileRef.current?.click()} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border bg-white px-4 py-3 text-sm font-black">
                         <FolderOpen size={16} /> {locationsFile ? locationsFile.name : "Seleccionar Excel"}
                       </button>
                       <button onClick={importLocations} disabled={!locationsFile || !locationsFileBuffer || importingLocations || !selectedSessionId} className="min-h-14 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
                         {importingLocations ? "Subiendo..." : "Subir ubicaciones"}
+                      </button>
+                      <button onClick={downloadTicketControl} disabled={downloadingTicketControl || !selectedSessionId} className="inline-flex min-h-14 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-800 disabled:opacity-40">
+                        <Download size={16} /> {downloadingTicketControl ? "Descargando..." : "Descargar control"}
                       </button>
                     </div>
                     <button
