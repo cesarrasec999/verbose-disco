@@ -47,6 +47,9 @@ type ReceptionPersonnel = {
   destination_store_code: string | null;
   dispatched_by_name: string | null;
   completed_by_name: string | null;
+  reception_status: string | null;
+  status_name: string | null;
+  erp_status: string | null;
 };
 
 type ProductCandidate = {
@@ -152,6 +155,16 @@ function normalizeProductSearch(value: string) {
 
 function normalizeDocument(value: string | null | undefined) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
+}
+
+function receptionStatus(value: string | null | undefined) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (["COMPLETED", "COMPLETADO", "RECIBIDO", "RECEIVED", "V"].includes(normalized))
+    return "RECIBIDO";
+  if (["REJECTED", "RECHAZADO"].includes(normalized)) return "RECHAZADO";
+  if (["PENDING", "PENDIENTE", "EN TRANSITO", "EN TRÁNSITO", "T"].includes(normalized))
+    return "EN TRANSITO";
+  return null;
 }
 
 function codeMatchRank(product: ProductCandidate, query: string) {
@@ -398,7 +411,7 @@ export default function KardexPage() {
     for (let index = 0; index < transferDocuments.length; index += 200) {
       const { data, error } = await supabase
         .from("reception_requests")
-        .select("doc_number,source_store_code,destination_store_code,dispatched_by_name,completed_by_name")
+        .select("doc_number,source_store_code,destination_store_code,dispatched_by_name,completed_by_name,reception_status,status_name,erp_status")
         .in("doc_number", transferDocuments.slice(index, index + 200));
       if (error) throw error;
       for (const row of (data || []) as ReceptionPersonnel[]) {
@@ -422,13 +435,25 @@ export default function KardexPage() {
       const movementEmployee = row.movement_employee || row.adjustment_user || (
         isTransfer ? reception?.dispatched_by_name || null : null
       );
+      const workflowState = receptionStatus(
+        reception?.reception_status || reception?.status_name,
+      );
+      const rmsReceptionState = receptionStatus(reception?.erp_status);
+      // Recepción publica el estado de su flujo y su réplica vigente de RMS.
+      // Nunca se degrada un recibido RMS por una cola pendiente desfasada.
+      const status = workflowState === "RECHAZADO"
+        ? "RECHAZADO"
+        : row.status === "RECIBIDO" || rmsReceptionState === "RECIBIDO" || workflowState === "RECIBIDO"
+          ? "RECIBIDO"
+          : rmsReceptionState || workflowState || row.status;
       const receptionEmployee = row.reception_employee || (
-        row.source_type === "SLIP_IN" && row.status === "RECIBIDO"
+        isTransfer && status === "RECIBIDO"
           ? reception?.completed_by_name || null
           : null
       );
       return {
         ...row,
+        status,
         movement_employee: movementEmployee,
         reception_employee: receptionEmployee,
         related_store_code: row.transfer_store_code || (
