@@ -1,5 +1,5 @@
-import ChecklistModule from "@/features/checklist/ChecklistModule";
+import { redirect } from "next/navigation";
 
 export default function AnalysisEriPage() {
-  return <ChecklistModule analysisOnly />;
+  redirect("/analisis/bono");
 }

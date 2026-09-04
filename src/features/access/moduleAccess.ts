@@ -21,7 +21,6 @@ export type ModuleAccessKey =
   | "packing"
   | "reception"
   | "ajustes_provisionales"
-  | "checklist"
   | "inventory_differences";
 
 export const CYCLIC_SUBMODULE_KEYS: ModuleAccessKey[] = [
@@ -58,7 +57,6 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
   { key: "reception", label: "Recepción", group: "Modulos" },
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
-  { key: "checklist", label: "Checklist", group: "Modulos" },
 ];
 
 type AccessUser = {
@@ -85,7 +83,6 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "picking",
     "packing",
     "ajustes_provisionales",
-    "checklist",
   ];
   if (role === "Validador") return [
     "cyclic_assign_products",

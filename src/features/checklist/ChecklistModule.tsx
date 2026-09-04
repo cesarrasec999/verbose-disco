@@ -228,8 +228,10 @@ export default function ChecklistModule({ analysisOnly = false }: { analysisOnly
     let cancelled = false;
     const stored = readStoredUser<CyclicUser>();
     const hasAnalysisAccess = canAccessModule(stored, "analysis") || canAccessModule(stored, "reports") || canAccessModule(stored, "reports_results") || canAccessModule(stored, "reports_non_inventory");
-    if (!stored || !(analysisOnly ? hasAnalysisAccess : canAccessModule(stored, "checklist"))) { window.location.replace("/"); return; }
-    const accessKey = analysisOnly ? "analysis" : "checklist";
+    // El Checklist ya no se expone como módulo. Se conserva este componente y
+    // su historial solamente para la vista histórica de análisis.
+    if (!stored || !hasAnalysisAccess) { window.location.replace("/"); return; }
+    const accessKey = "analysis";
     fetchDisabledModules().then(disabled => {
       if (!cancelled && isModuleBlockedForUser(disabled, accessKey, stored)) setModuleDisabled(true);
     });

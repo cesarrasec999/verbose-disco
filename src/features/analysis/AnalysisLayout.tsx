@@ -29,7 +29,7 @@ export default function AnalysisLayout({ children }: { children: React.ReactNode
             const active = pathname === `/analisis/reportes/${key}`;
             return <Link key={key} href={`/analisis/reportes/${key}`} className={`rounded-xl px-3 py-2 text-center text-sm font-black ${active ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{label}</Link>;
           })}
-          <Link href="/analisis/eri" className={`rounded-xl px-3 py-2 text-center text-sm font-black ${pathname.startsWith("/analisis/eri") ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>ERI consolidado</Link>
+          <Link href="/analisis/bono" className={`rounded-xl px-3 py-2 text-center text-sm font-black ${pathname.startsWith("/analisis/bono") ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>Bono</Link>
           <Link href="/analisis/cobertura" className={`rounded-xl px-3 py-2 text-center text-sm font-black ${pathname.startsWith("/analisis/cobertura") ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>Cobertura y maestro</Link>
         </nav>
       </div>

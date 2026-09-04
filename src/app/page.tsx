@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Boxes, ClipboardCheck, ListChecks, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { AlertTriangle, Boxes, ClipboardCheck, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -58,7 +58,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/kardex" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/checklist" | "/diferencias-inventario";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/kardex" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/diferencias-inventario";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -77,13 +77,12 @@ const MODULES: Array<{
   { label: "Consulta", description: "Consulta de stock y codigos", destination: "/consulta-stock", icon: Search, accent: "bg-sky-600" },
   { label: "Picking", description: "Modulo en preparacion", destination: "/picking", icon: ScanLine, accent: "bg-violet-600" },
   { label: "Etiquetado/Packing", description: "Marcar productos para etiquetar o armar", destination: "/etiquetado-packing", icon: Tags, accent: "bg-cyan-600" },
-  { label: "Análisis", description: "Reportes de inventario y ERI consolidado", destination: "/analisis", icon: TrendingUp, accent: "bg-slate-900" },
+  { label: "Análisis", description: "Reportes de inventario, rotación y bono", destination: "/analisis", icon: TrendingUp, accent: "bg-slate-900" },
   { label: "Kardex", description: "Movimientos ERP por fecha, tienda y código", destination: "/kardex", icon: Boxes, accent: "bg-blue-700" },
   { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
   { label: "Ajustes Provisionales", description: "Ingresos y regularizaciones provisionales del ERP", destination: "/ajustes-provisionales", icon: TrendingUp, accent: "bg-indigo-600" },
-  { label: "Checklist", description: "Checklist diario de auditoria de almacenes por tienda", destination: "/checklist", icon: ListChecks, accent: "bg-lime-600" },
   { label: "Diferencias de Inventario", description: "Reportar diferencias de stock con foto y seguimiento de regularizacion", destination: "/diferencias-inventario", icon: AlertTriangle, accent: "bg-red-600" },
 ];
 
@@ -102,7 +101,6 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/usuarios": "users",
   "/recepcion": "reception",
   "/ajustes-provisionales": "ajustes_provisionales",
-  "/checklist": "checklist",
   "/diferencias-inventario": "inventory_differences",
 };
 

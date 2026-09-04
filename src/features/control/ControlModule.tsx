@@ -32,7 +32,6 @@ const KILL_SWITCH_MODULES: { key: ModuleAccessKey; label: string }[] = [
   { key: "users", label: "Usuarios" },
   { key: "reception", label: "Recepción" },
   { key: "ajustes_provisionales", label: "Ajustes Provisionales" },
-  { key: "checklist", label: "Checklist" },
   { key: "inventory_differences", label: "Diferencias de Inventario" },
 ];
 
