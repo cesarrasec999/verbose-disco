@@ -46,6 +46,11 @@ const nextMonthStart = (month: string) => {
 };
 const money = (value: number | null | undefined) => new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN", maximumFractionDigits: 2 }).format(Number(value || 0));
 const pct = (value: number | null | undefined) => value === null || value === undefined ? "Sin dato" : `${Number(value).toFixed(2)}%`;
+const errorMessage = (error: unknown) => error instanceof Error
+  ? error.message
+  : error && typeof error === "object" && "message" in error
+    ? String((error as { message: unknown }).message)
+    : "Error desconocido";
 
 function isLima(store: Store) {
   return /\bLIM\b|CALLAO|HUACHIPA|HUAROCHIRI|LURIN|VILLA EL SALVADOR|PUENTE PIEDRA|CHORILLOS|SURQUILLO|NARANJAL|ARRIOLA|PERLA|GRUPO|SUMINISTRO|CORPORATIVO/i.test(`${store.name} ${store.erp_sede || ""}`);
@@ -136,16 +141,19 @@ export default function BonusModule() {
       const quarterlyFrom = quarterStart(quarterCut);
       const previous = previousMonth(monthlyCut);
       const previousTo = monthEnd(previous);
-      const storeById = new Map(stores.map(store => [store.id, store]));
       const storeByCode = new Map(stores.map(store => [String(store.code || "").trim(), store]));
+      const finishedSessions = await pages<any>((from, to) => supabase.from("general_inventory_sessions").select("id,store_id,finished_at").eq("status", "finished").lte("finished_at", `${quarterCut}T23:59:59-05:00`).order("finished_at", { ascending: false }).range(from, to));
+      const latestFinishedByStore = new Map<string, any>();
+      for (const session of finishedSessions) if (!latestFinishedByStore.has(String(session.store_id))) latestFinishedByStore.set(String(session.store_id), session);
+      const earliestLatestInventory = [...latestFinishedByStore.values()].map(session => String(session.finished_at || "").slice(0, 10)).filter(Boolean).sort()[0] || quarterStart(quarterCut);
 
       const [salesRows, receptionRows, adjustmentRows, rotationRows, auditSessions, generalResponse] = await Promise.all([
         pages<any>((from, to) => supabase.from("erp_store_sales_daily").select("store_name,sales_amount,sales_date").gte("sales_date", quarterlyFrom).lte("sales_date", quarterCut).range(from, to)),
         pages<any>((from, to) => supabase.from("reception_requests").select("id,destination_store_code,creation_date,erp_status").gte("creation_date", `${monthlyFrom}T00:00:00-05:00`).lt("creation_date", `${nextMonthStart(monthlyCut)}T00:00:00-05:00`).range(from, to)),
         pages<any>((from, to) => supabase.from("erp_movements").select("store_code,reason,value_total").in("source_type", ["ADJUSTMENT", "SLIP_OUT"]).gte("movement_date", `${monthlyFrom}T00:00:00-05:00`).lt("movement_date", `${nextMonthStart(monthlyCut)}T00:00:00-05:00`).range(from, to)),
-        pages<any>((from, to) => supabase.from("inventory_rotation_valuation_daily").select("snapshot_date,store_key,rotation_category,inventory_value").gte("snapshot_date", previous).lte("snapshot_date", monthlyTo).in("rotation_category", ["X", "D"]).range(from, to)),
+        pages<any>((from, to) => supabase.from("inventory_rotation_valuation_daily").select("snapshot_date,store_key,rotation_category,inventory_value").gte("snapshot_date", `${previous}-01`).lte("snapshot_date", monthlyTo).in("rotation_category", ["X", "D"]).range(from, to)),
         pages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id,finished_at").eq("status", "finished").lte("finished_at", `${quarterCut}T23:59:59-05:00`).order("finished_at", { ascending: false }).range(from, to)),
-        supabase.rpc("get_finished_general_inventory_report", { p_date_from: "2026-01-01", p_date_to: quarterCut }),
+        supabase.rpc("get_finished_general_inventory_report", { p_date_from: earliestLatestInventory, p_date_to: quarterCut }),
       ]);
       if (generalResponse.error) throw generalResponse.error;
 
@@ -242,7 +250,7 @@ export default function BonusModule() {
       }));
       setLoaded(true);
     } catch (error) {
-      toast.error(`No se pudo calcular Bono: ${error instanceof Error ? error.message : "error desconocido"}`);
+      toast.error(`No se pudo calcular Bono: ${errorMessage(error)}`);
     } finally { setLoading(false); }
   }, [monthlyCut, quarterCut, stores]);
 
