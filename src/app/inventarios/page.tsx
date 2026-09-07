@@ -110,6 +110,11 @@ const SUMMARY_PAGE_SIZE = 120;
 const VALIDATOR_RECORDS_PAGE_SIZE = 120;
 const RECOUNT_PAGE_SIZE = 80;
 const FINISHED_REPORT_PAGE_SIZE = 50;
+// El endpoint de Supabase ejecuta triggers/índices por cada fila de la foto.
+// 500 filas pueden superar statement_timeout en una tienda grande. Mantener
+// la escritura chica permite reanudar sin volver a procesar toda la sesión.
+const STOCK_SNAPSHOT_WRITE_BATCH_SIZE = 100;
+const STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS = 4;
 
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -118,6 +123,15 @@ function errorMessage(error: unknown) {
     return `${String(row.message || row.details || "Error de base de datos")}${row.code ? ` (${String(row.code)})` : ""}`;
   }
   return String(error || "Error desconocido");
+}
+
+function isStatementTimeout(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("statement timeout") || message.includes("canceling statement") || message.includes("timeout");
+}
+
+function pause(milliseconds: number) {
+  return new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
 }
 
 type SummaryCacheEntry = {
@@ -4338,6 +4352,39 @@ export default function InventariosPage() {
     setLoading(false);
   }
 
+  async function upsertStockSnapshotChunk(rows: Array<Record<string, unknown>>, completed: number) {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const { error } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .upsert(rows, { onConflict: "session_id,product_id" });
+      if (!error) return null;
+      lastError = error;
+      if (!isStatementTimeout(error) || attempt === STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS) break;
+      // El upsert es idempotente por session_id + product_id. Si la conexión
+      // fue cancelada, repetir únicamente este bloque es seguro.
+      setMessage(`Actualizando stock... ${completed} códigos. Reintentando lote ${attempt + 1}/${STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS}...`);
+      await pause(350 * attempt);
+    }
+    return lastError;
+  }
+
+  async function zeroStockSnapshotChunk(ids: string[], completed: number) {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const { error } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .update({ system_stock: 0, frozen_at: new Date().toISOString() })
+        .in("id", ids);
+      if (!error) return null;
+      lastError = error;
+      if (!isStatementTimeout(error) || attempt === STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS) break;
+      setMessage(`Actualizando stock... ${completed} códigos. Reintentando códigos en cero ${attempt + 1}/${STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS}...`);
+      await pause(350 * attempt);
+    }
+    return lastError;
+  }
+
   async function saveStockSnapshot(progressMessage: string, successLabel: string) {
     if (!ensureSelectedSessionEditable()) return;
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
@@ -4441,7 +4488,7 @@ export default function InventariosPage() {
           setMessage("No se pudo cruzar stock con maestro de productos: " + productsRes.error.message);
           return null;
         }
-        const rows = ((productsRes.data || []) as Product[]).filter(product => !protectedProductIds.has(product.id)).map(product => {
+        const snapshotRows = ((productsRes.data || []) as Product[]).filter(product => !protectedProductIds.has(product.id)).map(product => {
           const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
           const systemStock = Number(stock?.stock || 0);
           const cost = Number(stock?.costo ?? product.cost ?? 0);
@@ -4456,15 +4503,14 @@ export default function InventariosPage() {
             frozen_at: new Date().toISOString(),
           };
         });
-        if (rows.length > 0) {
-          const upsertRes = await supabase
-            .from("general_inventory_stock_snapshot")
-            .upsert(rows, { onConflict: "session_id,product_id" });
-          if (upsertRes.error) {
-            setMessage("No se pudo guardar stock por lotes: " + upsertRes.error.message);
+        for (let offset = 0; offset < snapshotRows.length; offset += STOCK_SNAPSHOT_WRITE_BATCH_SIZE) {
+          const rows = snapshotRows.slice(offset, offset + STOCK_SNAPSHOT_WRITE_BATCH_SIZE);
+          const upsertError = await upsertStockSnapshotChunk(rows, inserted);
+          if (upsertError) {
+            setMessage("No se pudo guardar stock por lotes: " + errorMessage(upsertError));
             return null;
           }
-          for (const row of rows) upsertedProductIds.add(row.product_id);
+          for (const row of rows) upsertedProductIds.add(String(row.product_id || ""));
           inserted += rows.length;
           setMessage(`Actualizando stock por lotes... ${inserted} codigos en foto${protectedProductIds.size > 0 ? ` (${protectedProductIds.size} OK protegidos)` : ""}.`);
         }
@@ -4482,13 +4528,11 @@ export default function InventariosPage() {
       })
       .map(row => String(row.id || ""))
       .filter(Boolean);
-    for (let i = 0; i < phantomIds.length; i += 500) {
-      const cleanupRes = await supabase
-        .from("general_inventory_stock_snapshot")
-        .update({ system_stock: 0, frozen_at: new Date().toISOString() })
-        .in("id", phantomIds.slice(i, i + 500));
-      if (cleanupRes.error) {
-        setMessage("Advertencia: no se pudieron actualizar " + phantomIds.length + " códigos sin stock del snapshot: " + cleanupRes.error.message);
+    for (let i = 0; i < phantomIds.length; i += STOCK_SNAPSHOT_WRITE_BATCH_SIZE) {
+      const cleanupIds = phantomIds.slice(i, i + STOCK_SNAPSHOT_WRITE_BATCH_SIZE);
+      const cleanupError = await zeroStockSnapshotChunk(cleanupIds, inserted);
+      if (cleanupError) {
+        setMessage("Advertencia: no se pudieron actualizar " + phantomIds.length + " códigos sin stock del snapshot: " + errorMessage(cleanupError));
       }
     }
 
