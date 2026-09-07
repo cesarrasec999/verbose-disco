@@ -210,7 +210,7 @@ export async function fetchStockGeneralBySkuForSession(
   }
 ): Promise<Map<string, StockGeneralRow>> {
   const store = params.session?.store_id ? params.stores.find(row => row.id === params.session?.store_id) : null;
-  const sede = store?.erp_sede || store?.name || params.session?.store_name || "";
+  const sede = store?.erp_sede || params.session?.store_erp_sede || store?.name || params.session?.store_name || "";
   const cleanSkus = [...new Set(params.skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
   const stockBySku = new Map<string, StockGeneralRow>();
   if (!sede || cleanSkus.length === 0) return stockBySku;

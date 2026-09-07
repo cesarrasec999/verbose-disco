@@ -111,6 +111,15 @@ const VALIDATOR_RECORDS_PAGE_SIZE = 120;
 const RECOUNT_PAGE_SIZE = 80;
 const FINISHED_REPORT_PAGE_SIZE = 50;
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const row = error as { message?: unknown; details?: unknown; code?: unknown };
+    return `${String(row.message || row.details || "Error de base de datos")}${row.code ? ` (${String(row.code)})` : ""}`;
+  }
+  return String(error || "Error desconocido");
+}
+
 type SummaryCacheEntry = {
   rows: SummaryRow[];
   observationDrafts: Record<string, string>;
@@ -1906,7 +1915,7 @@ export default function InventariosPage() {
 
     let sessionsQuery = supabase
       .from("general_inventory_sessions")
-      .select("*, stores(name)")
+      .select("*, stores(name,erp_sede)")
       .in("status", ["planned", "open", "frozen", "finished"])
       .order("created_at", { ascending: false })
       .limit(80);
@@ -1916,6 +1925,7 @@ export default function InventariosPage() {
     const sessionRows = (sessionsRes.data || []).map((row: any) => ({
       ...row,
       store_name: row.stores?.name,
+      store_erp_sede: row.stores?.erp_sede || null,
     })) as InventorySession[];
 
     setStores(storeRows);
@@ -3086,7 +3096,7 @@ export default function InventariosPage() {
     try {
       return await fetchPagedSessionRows(supabase, { table, select, sessionId, orderColumn });
     } catch (error) {
-      setMessage(`Error leyendo ${table}: ` + (error instanceof Error ? error.message : String(error)));
+      setMessage(`Error leyendo ${table}: ${errorMessage(error)}`);
       return [];
     }
   }
@@ -3135,7 +3145,7 @@ export default function InventariosPage() {
   function sessionSede(sessionId: string) {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
-    return store?.erp_sede || store?.name || session?.store_name || "";
+    return store?.erp_sede || session?.store_erp_sede || store?.name || session?.store_name || "";
   }
 
   // Chequeo "OK" en vivo (no depende de `summary` en memoria, que puede estar
@@ -3195,18 +3205,17 @@ export default function InventariosPage() {
   // la sesion sigue activa (refresco automatico cada 55s y el boton manual
   // "Actualizar stock ERP"). Los productos ya OK (contado = sistema) nunca se
   // tocan.
-  async function refreshFullSessionSnapshotFromErp(sessionId: string): Promise<number | null> {
+  async function refreshFullSessionSnapshotFromErp(sessionId: string): Promise<number> {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
-    const sede = store?.erp_sede || store?.name || session?.store_name || "";
-    if (!sede) return null;
+    const sede = store?.erp_sede || session?.store_erp_sede || store?.name || session?.store_name || "";
+    if (!sede) throw new Error("La sesión no tiene una sede ERP configurada. Recarga la sesión y vuelve a intentarlo.");
 
     const protectedProductIds = await loadProtectedOkProductIdsForStockUpdate(sessionId);
     const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const deleteError = await deleteUnprotectedSnapshotRows(sessionId, protectedProductIds);
-    if (deleteError) return null;
-
+    // La foto anterior se mantiene hasta completar el nuevo barrido. Así, un
+    // error transitorio nunca deja incompleto el resumen ni borra conteos.
     let inserted = protectedProductIds.size;
     let from = 0;
     const pageSize = 1000;
@@ -3219,7 +3228,7 @@ export default function InventariosPage() {
         .gt("stock", 0)
         .order("codsap", { ascending: true })
         .range(from, from + pageSize - 1);
-      if (stockRes.error) return null;
+      if (stockRes.error) throw stockRes.error;
 
       const stockRows = (stockRes.data || []) as StockGeneralRow[];
       if (stockRows.length === 0) break;
@@ -3237,7 +3246,7 @@ export default function InventariosPage() {
           .select("id,sku,description,unit,cost,is_active")
           .eq("is_active", true)
           .in("sku", chunk);
-        if (productsRes.error) return null;
+        if (productsRes.error) throw productsRes.error;
         const rows = ((productsRes.data || []) as Product[]).filter(product => !protectedProductIds.has(product.id)).map(product => {
           const stock = stockBySku.get(normalizeCode(product.sku).toUpperCase());
           const systemStock = Number(stock?.stock || 0);
@@ -3257,7 +3266,7 @@ export default function InventariosPage() {
           const upsertRes = await supabase
             .from("general_inventory_stock_snapshot")
             .upsert(rows, { onConflict: "session_id,product_id" });
-          if (upsertRes.error) return null;
+          if (upsertRes.error) throw upsertRes.error;
           for (const row of rows) upsertedProductIds.add(row.product_id);
           inserted += rows.length;
         }
@@ -3269,7 +3278,12 @@ export default function InventariosPage() {
 
     // Limpieza de fantasmas: productos que quedaron en el snapshot pero ya
     // no tienen stock live (y no estan protegidos por estar OK).
-    const postUpsertSnapshot = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
+    const postUpsertSnapshot = await fetchPagedSessionRows(supabase, {
+      table: "general_inventory_stock_snapshot",
+      select: "id,product_id",
+      sessionId,
+      orderColumn: "product_id",
+    });
     const phantomIds = postUpsertSnapshot
       .filter(row => {
         const pid = String(row.product_id || "");
@@ -3278,7 +3292,8 @@ export default function InventariosPage() {
       .map(row => String(row.id || ""))
       .filter(Boolean);
     for (let i = 0; i < phantomIds.length; i += 500) {
-      await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
+      const { error } = await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
+      if (error) throw error;
     }
 
     return inserted;
@@ -3315,11 +3330,10 @@ export default function InventariosPage() {
       // Barrido completo (no solo SKUs ya conocidos): tambien trae codigos
       // nuevos que ganaron stock en el ERP y todavia no estaban en la sesion.
       const updatedCount = await refreshFullSessionSnapshotFromErp(selectedSessionId);
-      if (updatedCount === null) { setMessage("No se pudo sincronizar stock: no se encontro la sede ERP del inventario."); return; }
       await loadSummary(selectedSessionId, true);
       setMessage(`Stock sincronizado: ${updatedCount} codigos en la foto (los ya contados OK no se tocan).`);
     } catch (error) {
-      setMessage("Error al sincronizar stock: " + (error instanceof Error ? error.message : String(error)));
+      setMessage("Error al sincronizar stock: " + errorMessage(error));
     } finally {
       setRefreshingNonOkStock(false);
     }
@@ -4013,7 +4027,7 @@ export default function InventariosPage() {
         status: "open",
         created_by: user.id,
       })
-      .select("*, stores(name)")
+      .select("*, stores(name,erp_sede)")
       .single();
 
     if (error) {
@@ -4021,7 +4035,7 @@ export default function InventariosPage() {
       return;
     }
 
-    const row = { ...data, store_name: data.stores?.name } as InventorySession;
+    const row = { ...data, store_name: data.stores?.name, store_erp_sede: data.stores?.erp_sede || null } as InventorySession;
     setSessions(prev => [row, ...prev]);
     setSelectedSessionId(row.id);
     setNewName("");
@@ -4462,7 +4476,7 @@ export default function InventariosPage() {
   async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string, preserveOkProducts: boolean) {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
-    const sede = store?.erp_sede || store?.name || session?.store_name || "";
+    const sede = store?.erp_sede || session?.store_erp_sede || store?.name || session?.store_name || "";
     if (!sede) {
       setMessage("No se pudo actualizar stock por lotes: no encontre la sede ERP del inventario.");
       return null;

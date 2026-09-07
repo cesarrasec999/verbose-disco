@@ -44,6 +44,8 @@ export type InventorySession = {
   frozen_total_value: number;
   notes?: string | null;
   store_name?: string;
+  /** Sede RMS incluida al cargar la sesión, aun si el caché de tiendas está desactualizado. */
+  store_erp_sede?: string | null;
 };
 
 export type InventoryOperator = {
