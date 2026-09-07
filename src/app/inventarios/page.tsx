@@ -3203,15 +3203,18 @@ export default function InventariosPage() {
   // saveStockSnapshotInBatches, esta funcion NO cambia el estado de la sesion
   // (no congela/finaliza nada) - se usa para mantener la foto al dia mientras
   // la sesion sigue activa (refresco automatico cada 55s y el boton manual
-  // "Actualizar stock ERP"). Los productos ya OK (contado = sistema) nunca se
-  // tocan.
+  // "Actualizar stock ERP"). Solo modifica la foto de sistema: nunca toca
+  // conteos, reconteos ni validaciones registrados por los usuarios.
   async function refreshFullSessionSnapshotFromErp(sessionId: string): Promise<number> {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
     const sede = store?.erp_sede || session?.store_erp_sede || store?.name || session?.store_name || "";
     if (!sede) throw new Error("La sesión no tiene una sede ERP configurada. Recarga la sesión y vuelve a intentarlo.");
 
-    const protectedProductIds = await loadProtectedOkProductIdsForStockUpdate(sessionId);
+    // RMS es la fuente del stock de sistema mientras la sesión siga abierta.
+    // Un código contado como OK conserva su conteo, pero su stock de sistema
+    // también debe poder refrescarse si RMS cambió después.
+    const protectedProductIds = new Set<string>();
     const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
     // La foto anterior se mantiene hasta completar el nuevo barrido. Así, un
@@ -3276,8 +3279,8 @@ export default function InventariosPage() {
       from += pageSize;
     }
 
-    // Limpieza de fantasmas: productos que quedaron en el snapshot pero ya
-    // no tienen stock live (y no estan protegidos por estar OK).
+    // Si un código tenía foto previa y ahora RMS lo deja en cero, se conserva
+    // con sistema=0. Borrarlo ocultaría sobrantes ya contados del Resumen.
     const postUpsertSnapshot = await fetchPagedSessionRows(supabase, {
       table: "general_inventory_stock_snapshot",
       select: "id,product_id",
@@ -3292,7 +3295,10 @@ export default function InventariosPage() {
       .map(row => String(row.id || ""))
       .filter(Boolean);
     for (let i = 0; i < phantomIds.length; i += 500) {
-      const { error } = await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
+      const { error } = await supabase
+        .from("general_inventory_stock_snapshot")
+        .update({ system_stock: 0, frozen_at: new Date().toISOString() })
+        .in("id", phantomIds.slice(i, i + 500));
       if (error) throw error;
     }
 
@@ -3331,7 +3337,7 @@ export default function InventariosPage() {
       // nuevos que ganaron stock en el ERP y todavia no estaban en la sesion.
       const updatedCount = await refreshFullSessionSnapshotFromErp(selectedSessionId);
       await loadSummary(selectedSessionId, true);
-      setMessage(`Stock sincronizado: ${updatedCount} codigos en la foto (los ya contados OK no se tocan).`);
+      setMessage(`Stock sincronizado: ${updatedCount} códigos en la foto. Los conteos, reconteos y validaciones no se modificaron.`);
     } catch (error) {
       setMessage("Error al sincronizar stock: " + errorMessage(error));
     } finally {
