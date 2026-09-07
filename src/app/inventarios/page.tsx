@@ -4339,7 +4339,7 @@ export default function InventariosPage() {
     setMessage(progressMessage);
     try {
       if (selectedSession?.stock_frozen_at) {
-        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel, true);
+        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel);
         if (fallbackInserted === null) return;
         await loadInitial(selectedSessionId);
         setValidatorTab("resumen");
@@ -4358,7 +4358,7 @@ export default function InventariosPage() {
           return;
         }
         setMessage("La actualizacion directa demoro demasiado. Continuo por lotes para evitar timeout...");
-        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel, false);
+        const fallbackInserted = await saveStockSnapshotInBatches(selectedSessionId, user.id, successLabel);
         if (fallbackInserted === null) return;
       } else {
         const { count: productsWithStockCount } = await supabase
@@ -4377,109 +4377,7 @@ export default function InventariosPage() {
     }
   }
 
-  async function loadProtectedOkProductIdsForStockUpdate(sessionId: string) {
-    const session = sessions.find(row => row.id === sessionId) || selectedSession;
-    const validationEnabled = Boolean(session?.validation_enabled);
-    const [snapshotRows, countRows, recountCountRows, recountItemRows, validationRows, nonInventoryRows] = await Promise.all([
-      loadPagedSessionRows("general_inventory_stock_snapshot", "product_id,system_stock", sessionId, "product_id"),
-      loadPagedSessionRows("general_inventory_counts", "product_id,sku,quantity", sessionId, "product_id"),
-      loadPagedSessionRows("general_inventory_recount_counts", "recount_item_id,product_id,sku,quantity,counted_at,updated_at", sessionId, "product_id"),
-      loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
-      loadValidationSummaryRows(sessionId, validationEnabled),
-      loadInventoryNonInventoryRows(sessionId),
-    ]);
-    const { validationCountRows, validationItemRows } = validationRows;
-    const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const originalCountedByProduct = new Map<string, number>();
-    for (const row of countRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const productId = String(row.product_id || "");
-      if (!productId) continue;
-      originalCountedByProduct.set(productId, (originalCountedByProduct.get(productId) || 0) + Number(row.quantity || 0));
-    }
-
-    const recountItemById = new Map(recountItemRows.map(row => [String(row.id || ""), row]));
-    const latestRecountItemByProduct = new Map<string, { id: string; timestamp: number }>();
-    for (const row of recountCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = recountItemById.get(String(row.recount_item_id || ""));
-      if (!item?.id || !item.product_id || item.status !== "counted") continue;
-      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
-      const productId = String(item.product_id || "");
-      const current = latestRecountItemByProduct.get(productId);
-      if (!current || timestamp >= current.timestamp) {
-        latestRecountItemByProduct.set(productId, { id: String(item.id), timestamp });
-      }
-    }
-
-    const recountTotalByProduct = new Map<string, number>();
-    for (const row of recountCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = recountItemById.get(String(row.recount_item_id || ""));
-      const productId = item?.product_id ? String(item.product_id) : "";
-      const latestItemId = productId ? latestRecountItemByProduct.get(productId)?.id : null;
-      if (productId && item?.status === "counted" && String(item.id) === latestItemId) {
-        recountTotalByProduct.set(productId, (recountTotalByProduct.get(productId) || 0) + Number(row.quantity || 0));
-      }
-    }
-
-    const validationItemById = new Map(validationItemRows.map(row => [String(row.id || ""), row]));
-    const latestValidationItemByProduct = new Map<string, { id: string; timestamp: number }>();
-    for (const row of validationCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = validationItemById.get(String(row.validation_item_id || ""));
-      if (!item?.id || !item.product_id || item.status !== "counted") continue;
-      const timestamp = new Date(row.updated_at || row.counted_at || item.updated_at || item.created_at || 0).getTime() || 0;
-      const productId = String(item.product_id || "");
-      const current = latestValidationItemByProduct.get(productId);
-      if (!current || timestamp >= current.timestamp) {
-        latestValidationItemByProduct.set(productId, { id: String(item.id), timestamp });
-      }
-    }
-
-    const validationTotalByProduct = new Map<string, number>();
-    for (const row of validationCountRows) {
-      if (nonInventorySkus.has(normalizeCode(row.sku).toUpperCase())) continue;
-      const item = validationItemById.get(String(row.validation_item_id || ""));
-      const productId = item?.product_id ? String(item.product_id) : "";
-      const latestItemId = productId ? latestValidationItemByProduct.get(productId)?.id : null;
-      if (productId && item?.status === "counted" && String(item.id) === latestItemId) {
-        validationTotalByProduct.set(productId, (validationTotalByProduct.get(productId) || 0) + Number(row.quantity || 0));
-      }
-    }
-
-    const protectedIds = new Set<string>();
-    for (const snap of snapshotRows) {
-      const productId = String(snap.product_id || "");
-      if (!productId) continue;
-      const counted = validationTotalByProduct.has(productId)
-        ? validationTotalByProduct.get(productId)!
-        : recountTotalByProduct.has(productId)
-          ? recountTotalByProduct.get(productId)!
-          : originalCountedByProduct.get(productId) || 0;
-      const systemStock = Number(snap.system_stock || 0);
-      if (counted > 0 && counted === systemStock) protectedIds.add(productId);
-    }
-    return protectedIds;
-  }
-
-  async function deleteUnprotectedSnapshotRows(sessionId: string, protectedProductIds: Set<string>) {
-    const snapshotRows = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
-    const deleteIds = snapshotRows
-      .filter(row => !protectedProductIds.has(String(row.product_id || "")))
-      .map(row => String(row.id || ""))
-      .filter(Boolean);
-    for (let i = 0; i < deleteIds.length; i += 500) {
-      const deleteRes = await supabase
-        .from("general_inventory_stock_snapshot")
-        .delete()
-        .in("id", deleteIds.slice(i, i + 500));
-      if (deleteRes.error) return deleteRes.error;
-    }
-    return null;
-  }
-
-  async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string, preserveOkProducts: boolean) {
+  async function saveStockSnapshotInBatches(sessionId: string, userId: string, successLabel: string) {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
     const store = stores.find(row => row.id === session?.store_id);
     const sede = store?.erp_sede || session?.store_erp_sede || store?.name || session?.store_name || "";
@@ -4488,16 +4386,14 @@ export default function InventariosPage() {
       return null;
     }
 
-    const protectedProductIds = preserveOkProducts ? await loadProtectedOkProductIdsForStockUpdate(sessionId) : new Set<string>();
+    // El stock de sistema siempre se refresca completo. Esto no altera ninguna
+    // fila de conteo/reconteo/validación, que se guardan en tablas distintas.
+    const protectedProductIds = new Set<string>();
     const nonInventoryRows = await loadInventoryNonInventoryRows(sessionId);
     const nonInventorySkus = new Set(nonInventoryRows.map(row => normalizeCode(row.sku).toUpperCase()));
-    const deleteError = preserveOkProducts
-      ? await deleteUnprotectedSnapshotRows(sessionId, protectedProductIds)
-      : (await supabase.from("general_inventory_stock_snapshot").delete().eq("session_id", sessionId)).error;
-    if (deleteError) {
-      setMessage("No se pudo limpiar la foto anterior de stock: " + deleteError.message);
-      return null;
-    }
+    // No se borra la foto anterior. Los productos que RMS ya deja en cero se
+    // conservan con sistema=0 al final del barrido; eliminarlos hace que se
+    // pierdan sobrantes, conteos y líneas válidas del cierre.
 
     let inserted = protectedProductIds.size;
     let totalValue = 0;
@@ -4570,23 +4466,21 @@ export default function InventariosPage() {
       from += pageSize;
     }
 
-    // Limpieza de fantasmas: eliminar filas del snapshot que no tienen stock live
-    // y no son productos protegidos (OK). Cubre casos donde la eliminacion inicial
-    // fue parcial por fallo de red u otro problema transitorio.
-    if (preserveOkProducts) {
-      const postUpsertSnapshot = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
-      const phantomIds = postUpsertSnapshot
-        .filter(row => {
-          const pid = String(row.product_id || "");
-          return pid && !protectedProductIds.has(pid) && !upsertedProductIds.has(pid);
-        })
-        .map(row => String(row.id || ""))
-        .filter(Boolean);
-      for (let i = 0; i < phantomIds.length; i += 500) {
-        const cleanupRes = await supabase.from("general_inventory_stock_snapshot").delete().in("id", phantomIds.slice(i, i + 500));
-        if (cleanupRes.error) {
-          setMessage("Advertencia: no se pudieron eliminar " + phantomIds.length + " codigos sin stock del snapshot: " + cleanupRes.error.message);
-        }
+    const postUpsertSnapshot = await loadPagedSessionRows("general_inventory_stock_snapshot", "id,product_id", sessionId, "product_id");
+    const phantomIds = postUpsertSnapshot
+      .filter(row => {
+        const pid = String(row.product_id || "");
+        return pid && !protectedProductIds.has(pid) && !upsertedProductIds.has(pid);
+      })
+      .map(row => String(row.id || ""))
+      .filter(Boolean);
+    for (let i = 0; i < phantomIds.length; i += 500) {
+      const cleanupRes = await supabase
+        .from("general_inventory_stock_snapshot")
+        .update({ system_stock: 0, frozen_at: new Date().toISOString() })
+        .in("id", phantomIds.slice(i, i + 500));
+      if (cleanupRes.error) {
+        setMessage("Advertencia: no se pudieron actualizar " + phantomIds.length + " códigos sin stock del snapshot: " + cleanupRes.error.message);
       }
     }
 
@@ -4623,7 +4517,7 @@ export default function InventariosPage() {
     const confirmed = window.confirm("Finalizar esta sesion? Los operarios ya no podran entrar y no se podra modificar conteo, reconteo ni stock.");
     if (!confirmed) return;
     if (!selectedSession?.stock_frozen_at) {
-      const inserted = await saveStockSnapshotInBatches(selectedSessionId, user?.id ?? "", "Stock congelado al finalizar", true);
+      const inserted = await saveStockSnapshotInBatches(selectedSessionId, user?.id ?? "", "Stock congelado al finalizar");
       if (inserted === null) return;
     }
     const { error } = await supabase
