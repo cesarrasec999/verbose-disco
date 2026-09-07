@@ -31,6 +31,8 @@ type AggRow = {
   total_rows?: number;
 };
 
+const ADJUSTMENTS_PAGE_SIZE = 100;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(n: number) {
@@ -93,6 +95,8 @@ export default function AjustesProvisionalesPage() {
   const [storeFilter, setStoreFilter] = useState("");
   const [codeSearch, setCodeSearch]   = useState("");
   const [rows, setRows]     = useState<AggRow[]>([]);
+  const [page, setPage]     = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded]   = useState(false);
   const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
@@ -139,7 +143,7 @@ export default function AjustesProvisionalesPage() {
 
   // ─── Carga de datos ──────────────────────────────────────────────────────────
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (targetPage = page) => {
     const yearStart = `${new Date().getFullYear()}-01-01`;
     const effectiveStore = canViewAllStores ? (storeFilter || null) : (userErpStoreCode || null);
     setLoading(true);
@@ -148,8 +152,10 @@ export default function AjustesProvisionalesPage() {
         supabase.rpc("get_ajustes_provisionales", {
           year_start: yearStart,
           p_store:    effectiveStore,
-          p_limit:    500,
-          p_offset:   0,
+          // Se pide una fila adicional solo para saber si existe la siguiente
+          // página. El servidor limita la respuesta a 101, nunca al historial.
+          p_limit:    ADJUSTMENTS_PAGE_SIZE + 1,
+          p_offset:   (targetPage - 1) * ADJUSTMENTS_PAGE_SIZE,
         }),
         supabase.from("erp_sync_status").select("synced_at").eq("id", "erp_movements").maybeSingle(),
       ]);
@@ -158,8 +164,11 @@ export default function AjustesProvisionalesPage() {
 
       if (error) throw error;
 
-      const aggRows = (data || []) as AggRow[];
+      const pageRows = (data || []) as AggRow[];
+      const aggRows = pageRows.slice(0, ADJUSTMENTS_PAGE_SIZE);
       setRows(aggRows);
+      setPage(targetPage);
+      setHasNextPage(pageRows.length > ADJUSTMENTS_PAGE_SIZE);
       setLoaded(true);
 
       const storeCodes = new Set(aggRows.map((r: AggRow) => r.store_code));
@@ -173,7 +182,7 @@ export default function AjustesProvisionalesPage() {
     } finally {
       setLoading(false);
     }
-  }, [storeFilter, canViewAllStores, userErpStoreCode]);
+  }, [storeFilter, canViewAllStores, userErpStoreCode, page]);
 
   // Auto-carga al tener acceso y tiendas listas
   useEffect(() => {
@@ -185,7 +194,7 @@ export default function AjustesProvisionalesPage() {
   // Recargar cuando cambia el filtro de tienda (el RPC filtra en el servidor)
   useEffect(() => {
     if (loaded) {
-      load();
+      void load(1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeFilter]);
@@ -352,7 +361,7 @@ export default function AjustesProvisionalesPage() {
               />
             </div>
             <button
-              onClick={load}
+              onClick={() => void load(1)}
               disabled={loading}
               className="flex items-center gap-2 px-6 py-2.5 rounded-2xl bg-slate-900 text-white text-sm font-bold disabled:opacity-50 active:scale-[0.97] transition-transform"
             >
@@ -392,9 +401,7 @@ export default function AjustesProvisionalesPage() {
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
               <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Productos</div>
               <div className="text-3xl font-black text-slate-900">{visibleAggregated.length}</div>
-              {rows[0]?.total_rows !== undefined && rows[0].total_rows > visibleAggregated.length && (
-                <div className="text-[10px] text-slate-400 mt-0.5">de {rows[0].total_rows} total</div>
-              )}
+              <div className="text-[10px] text-slate-400 mt-0.5">Página {page}</div>
             </div>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-md p-4 text-center">
               <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Ajuste Prov. 06</div>
@@ -413,6 +420,24 @@ export default function AjustesProvisionalesPage() {
               <div className={`text-2xl font-black ${totalNeto >= 0 ? "text-blue-700" : "text-red-600"}`}>
                 {totalNeto >= 0 ? "+" : ""}{fmt(totalNeto)}
               </div>
+            </div>
+          </div>
+        )}
+
+        {loaded && (page > 1 || hasNextPage) && (
+          <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+            <span className="text-xs font-semibold text-slate-500">Mostrando hasta {ADJUSTMENTS_PAGE_SIZE} productos por página</span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => void load(page - 1)}
+                disabled={loading || page <= 1}
+                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 disabled:opacity-40"
+              >Anterior</button>
+              <button
+                onClick={() => void load(page + 1)}
+                disabled={loading || !hasNextPage}
+                className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
+              >Siguiente</button>
             </div>
           </div>
         )}
