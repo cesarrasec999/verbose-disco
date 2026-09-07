@@ -70,7 +70,15 @@ function loadExcel(file) {
 async function paged(table, select, sessionId) {
   const result = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from(table).select(select).eq("session_id", sessionId).range(from, from + 999);
+    // Sin ORDER BY, las páginas de PostgREST no tienen orden determinista y
+    // pueden repetir/omitir filas mientras se hace una restauración. La clave
+    // primaria da un recorrido estable sin tocar el contenido de la sesión.
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .eq("session_id", sessionId)
+      .order("id", { ascending: true })
+      .range(from, from + 999);
     if (error) throw error;
     result.push(...(data || []));
     if ((data || []).length < 1000) return result;
