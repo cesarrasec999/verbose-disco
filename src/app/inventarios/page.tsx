@@ -2828,18 +2828,26 @@ export default function InventariosPage() {
 
     const loadAssignedLayer = async (layer: "recount" | "validation") => {
       const layerValidationMode = layer === "validation";
-      const { data, error } = await supabase
-        .from(layerValidationMode ? "general_inventory_validation_items" : "general_inventory_recount_items")
-        .select("*")
-        .eq("session_id", sessionId)
-        .in("assigned_operator_id", [...operatorIds])
-        .order("location_code", { ascending: true, nullsFirst: false })
-        .order("value_diff", { ascending: false });
-      if (error) {
-        setMessage(`No se pudo leer ${layerValidationMode ? "validaciones" : "reconteos"} asignados: ${error.message}`);
-        return [] as RecountItem[];
+      const rows: any[] = [];
+      const pageSize = 100;
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from(layerValidationMode ? "general_inventory_validation_items" : "general_inventory_recount_items")
+          .select("*")
+          .eq("session_id", sessionId)
+          .in("assigned_operator_id", [...operatorIds])
+          .in("status", ["assigned", "pending"])
+          .order("location_code", { ascending: true, nullsFirst: false })
+          .order("value_diff", { ascending: false })
+          .range(from, from + pageSize - 1);
+        if (error) {
+          setMessage(`No se pudo leer ${layerValidationMode ? "validaciones" : "reconteos"} asignados: ${error.message}`);
+          return [] as RecountItem[];
+        }
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
       }
-      return (data || []).map((row: any) => ({
+      return rows.map((row: any) => ({
       id: row.id,
       product_id: row.product_id,
       sku: row.sku,
@@ -4954,26 +4962,29 @@ export default function InventariosPage() {
       return;
     }
 
-    const locCode = normalizeLocationCode(locationCode);
-    const loc = await resolveInventoryLocation(locCode, { allowCreate: true, sourceLabel: locCode });
-    if (!loc) {
-      setMessage(selectedSession.location_lock_enabled
-        ? "Ubicacion no autorizada para esta sesion. Desactiva el seguro o carga la ubicacion por Excel."
-        : "Ingresa una ubicacion valida."
-      );
-      return;
-    }
-
-    const qty = Number(quantity);
-    if (!productCode.trim() || !Number.isFinite(qty) || qty <= 0) {
-      setMessage("Ingresa codigo y cantidad mayor a cero.");
-      return;
-    }
-
+    // Bloquea desde el primer toque, antes de cualquier consulta asíncrona.
+    // En Android WebView un segundo tap podía entrar mientras el primero aún
+    // validaba la ubicación, creando la sensación de tener que pulsar dos veces.
     savingCountRef.current = true;
     setSavingCount(true);
 
     try {
+      const locCode = normalizeLocationCode(locationCode);
+      const loc = await resolveInventoryLocation(locCode, { allowCreate: true, sourceLabel: locCode });
+      if (!loc) {
+        setMessage(selectedSession.location_lock_enabled
+          ? "Ubicacion no autorizada para esta sesion. Desactiva el seguro o carga la ubicacion por Excel."
+          : "Ingresa una ubicacion valida."
+        );
+        return;
+      }
+
+      const qty = Number(quantity);
+      if (!productCode.trim() || !Number.isFinite(qty) || qty <= 0) {
+        setMessage("Ingresa codigo y cantidad mayor a cero.");
+        return;
+      }
+
       const latestCandidates = selectedProduct ? productCandidates : (await findProductCandidates(productCode, productLookupModeRef.current)).products;
       const product = selectedProduct || (latestCandidates.length === 1 ? latestCandidates[0] : null);
       if (!product) {
@@ -8241,8 +8252,8 @@ export default function InventariosPage() {
                   </div>
                 )}
                 <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_3.25rem] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                  <input ref={qtyInputRef} value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Cantidad" inputMode="decimal" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
-                  <button onClick={saveCount} disabled={savingCount || !selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-0 py-3 text-sm font-black text-white transition active:scale-95 active:bg-slate-700 disabled:opacity-40 disabled:active:scale-100 sm:min-w-28 sm:px-4">
+                  <input ref={qtyInputRef} value={quantity} onChange={event => setQuantity(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void saveCount(); } }} placeholder="Cantidad" inputMode="decimal" enterKeyHint="done" className="min-w-0 rounded-xl border px-3 py-3 text-base font-bold" />
+                  <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => void saveCount()} disabled={savingCount || !selectedSession || !canOperatorEnter(selectedSession.status)} className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-slate-900 px-0 py-3 text-sm font-black text-white transition active:scale-95 active:bg-slate-700 disabled:opacity-40 disabled:active:scale-100 sm:min-w-28 sm:px-4">
                   <Save size={16} /> <span className="hidden sm:inline">{savingCount ? "Guardando..." : "Guardar"}</span>
                   </button>
                 </div>
@@ -8416,10 +8427,11 @@ export default function InventariosPage() {
                       <div className="rounded-xl border bg-white p-3 text-sm font-black text-slate-800">
                         Ubicaciones contadas: {row.location_count || row.original_locations.length || (row.recount_type === "missing" ? 1 : 0)}
                       </div>
-                      <div className="hidden">
-                        <div className="font-black text-slate-900">{row.location_code || "Sin ubicación"}</div>
-                        <div className="truncate">{row.full_location || "Reconteo por código"}</div>
-                        {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
+                      <div className="rounded-xl border bg-white p-3">
+                        <div className="text-[10px] font-black uppercase text-slate-500">Asignación de reconteo</div>
+                        <div className="mt-1 font-black text-slate-900">{row.full_location || (row.location_code === "CODIGO_COMPLETO" ? "Reconteo por código completo" : row.location_code || "Sin ubicación")}</div>
+                        <div className="mt-1 text-xs font-bold text-slate-600">{row.location_code === "CODIGO_COMPLETO" ? "El recuento se registra por ubicación física." : `Ubicación: ${row.location_code || "-"}`}</div>
+                        {(row.zone || row.lineal || row.zone_ref) && <div className="mt-1 text-xs text-slate-400">{[row.zone, row.lineal, row.zone_ref].filter(Boolean).join(" | ")}</div>}
                       </div>
                       <div className="grid grid-cols-5 gap-1 rounded-xl border bg-white p-2 text-center">
                         <MiniMetric label="Sistema" value={row.system_stock} compact />
