@@ -1,13 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import { mapBounded } from "@/lib/boundedReads";
+import { bonusSqlMapping } from "@/features/bono/storeMapping";
 
 export const maxDuration = 300;
 
-const norm = (value: unknown) => String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-const skuOf = (value: unknown) => String(value || "").trim().toUpperCase();
-const FLAGS = new Set(["__session_counting__", "__session_finished__", "__recount_started__", "__recount_done__"]);
-const aliases = ["ARBOLEDA", "CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "LEGUIA", "CHORRILLOS", "AREQUIPA NEW K 21", "VILLA EL SALVADOR", "SUMINISTRO", "DIAMANTE", "HUANCAYO", "NARANJAL", "PTE PIEDRA", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA", "HUACHIPA", "AREQUIPA MIRAFLORES", "CAJAMARCA", "CD"];
 const latestClosedRotationPeriod = () => {
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
@@ -23,71 +21,29 @@ async function readPages<T>(factory: (from: number, to: number) => any) {
   }
 }
 
-async function readInChunks<T>(values: string[], loader: (chunk: string[]) => Promise<T[]>) {
-  const result: T[] = [];
-  for (let i = 0; i < values.length; i += 500) {
-    const batch = values.slice(i, i + 500);
-    result.push(...await loader(batch));
-  }
-  return result;
-}
-
 export async function GET() {
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   try {
     const stores = await readPages<any>((from, to) => supabase.from("stores").select("id,name,erp_sede,code,is_active").eq("is_active", true).order("name").range(from, to));
-    const stockByStore = new Map<string, any[]>();
-    const stockSkus = new Set<string>();
-    const stockEntries = await Promise.all(stores.map(async store => {
-      const sede = String(store.erp_sede || store.name || "");
-      const stockRows = await readPages<any>((from, to) => supabase.from("stock_general").select("codsap,stock").eq("sede", sede).range(from, to));
-      return [String(store.id), stockRows.filter(row => Number(row.stock || 0) > 0)] as const;
-    }));
-    for (const [storeId, positiveStockRows] of stockEntries) {
-      stockByStore.set(storeId, positiveStockRows);
-      for (const row of positiveStockRows) { const sku = norm(row.codsap); if (sku) stockSkus.add(sku); }
-    }
-    const products: any[] = [];
-    const stockSkuList = [...stockSkus];
-    for (let i = 0; i < stockSkuList.length; i += 500) products.push(...await readPages<any>((from, to) => supabase.from("cyclic_products").select("id,sku,description,unit,cost").eq("is_active", true).in("sku", stockSkuList.slice(i, i + 500)).range(from, to)));
-    const productBySku = new Map(products.map(product => [norm(product.sku), product]));
-
-    const cyclicCounts = await readPages<any>((from, to) => supabase.from("cyclic_counts").select("assignment_id,location").range(from, to));
-    const assignmentIds = [...new Set(cyclicCounts.map(row => String(row.assignment_id)).filter(Boolean))];
-    const assignments = await readInChunks<any>(assignmentIds, chunk => readPages<any>((from, to) => supabase.from("cyclic_assignments").select("id,store_id,product_id").in("id", chunk).range(from, to)));
-    const countedAssignments = new Set(cyclicCounts.filter(row => !FLAGS.has(String(row.location || ""))).map(row => String(row.assignment_id)));
-    const cyclicSampled = new Set(assignments.filter(row => countedAssignments.has(String(row.id))).map(row => `${row.store_id}|${row.product_id}`));
-
-    const auditCounts = await readPages<any>((from, to) => supabase.from("audit_counts").select("item_id").range(from, to));
-    const auditItemIds = [...new Set(auditCounts.map(row => String(row.item_id)).filter(Boolean))];
-    const auditItems = await readInChunks<any>(auditItemIds, chunk => readPages<any>((from, to) => supabase.from("audit_session_items").select("id,session_id,product_id").in("id", chunk).range(from, to)));
-    const sessionIds = [...new Set(auditItems.map(row => String(row.session_id)).filter(Boolean))];
-    const sessions = await readInChunks<any>(sessionIds, chunk => readPages<any>((from, to) => supabase.from("audit_sessions").select("id,store_id").eq("status", "finished").in("id", chunk).range(from, to)));
-    const sessionStore = new Map(sessions.map(row => [String(row.id), String(row.store_id)]));
-    const countedAuditItems = new Set(auditCounts.map(row => String(row.item_id)));
-    const auditSampled = new Set(auditItems.filter(row => countedAuditItems.has(String(row.id))).map(row => `${sessionStore.get(String(row.session_id))}|${row.product_id}`));
-
-    const rotationByStore = new Map<string, Map<string, string>>();
     const rotationCutoff = latestClosedRotationPeriod();
-    await Promise.all(stores.map(async store => {
-      const sourceNames = [store.name, store.code, store.erp_sede].filter(Boolean).map(norm);
-      const keys = [...new Set([...sourceNames, ...aliases.filter(alias => sourceNames.some(source => source.includes(norm(alias))))])];
-      const rotations = await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category,period_month,store_key").in("store_key", keys).lt("period_month", rotationCutoff).order("period_month", { ascending: false }).range(from, to));
-      const bySku = new Map<string, string>();
-      for (const row of rotations) if (!bySku.has(norm(row.product_code))) bySku.set(norm(row.product_code), String(row.rotation_category || "SIN ROTACION"));
-      rotationByStore.set(String(store.id), bySku);
-    }));
-
-    const detail: any[] = [];
-    for (const store of stores) {
-      const stockRows = stockByStore.get(String(store.id)) || [];
-      const rotationBySku = rotationByStore.get(String(store.id)) || new Map<string, string>();
-      for (const stock of stockRows) {
-        const sku = skuOf(stock.codsap); const product = productBySku.get(norm(sku)); if (!product) continue;
-        const productId = String(product.id); const value = Number(stock.stock || 0) * Number(product.cost || 0); const cyclic = cyclicSampled.has(`${store.id}|${productId}`); const audit = auditSampled.has(`${store.id}|${productId}`);
-        detail.push({ TIENDA: store.name, CODIGO: sku, DESCRIPCION: product.description || "", UNIDAD: product.unit || "", ROTACION: rotationBySku.get(norm(sku)) || "SIN ROTACION", STOCK: Number(stock.stock || 0), COSTO: Number(product.cost || 0), VALORIZADO: value, "MUESTREADO CICLICO": cyclic ? "SI" : "NO", "MUESTREADO AUDITORIA": audit ? "SI" : "NO", MUESTREADO: cyclic || audit ? "SI" : "NO", _store_id: store.id });
-      }
-    }
+    const perStore = await mapBounded(stores, async store => {
+      const stockRows = await readPages<any>((from) => supabase.rpc("get_analysis_coverage_products_v2", { p_store_id: store.id, p_limit: 1000, p_offset: from }));
+      const sqlKeys = bonusSqlMapping([store])[0].keys;
+      const { data: lastPeriod, error } = await supabase.from("product_rotation_monthly").select("period_month").in("store_key", sqlKeys).lt("period_month", rotationCutoff).order("period_month", { ascending: false }).limit(1);
+      if (error) throw error;
+      const rotations = lastPeriod?.[0] ? await readPages<any>((from, to) => supabase.from("product_rotation_monthly").select("product_code,rotation_category").in("store_key", sqlKeys).eq("period_month", lastPeriod[0].period_month).order("store_key").order("product_code").range(from, to)) : [];
+      const rotation = new Map(rotations.map(row => [String(row.product_code), String(row.rotation_category)]));
+      return stockRows.map(row => ({
+        TIENDA: store.name, CODIGO: row.sku, DESCRIPCION: row.description, UNIDAD: row.unit,
+        ROTACION: rotation.get(row.sku) || "SIN ROTACION", STOCK: Number(row.stock),
+        COSTO: row.cost == null ? "Sin costo ERP" : Number(row.cost),
+        VALORIZADO: row.cost == null ? null : Number(row.stock) * Number(row.cost),
+        "MUESTREADO CICLICO": row.cyclic_sampled ? "SI" : "NO",
+        "MUESTREADO AUDITORIA": row.audit_sampled ? "SI" : "NO",
+        MUESTREADO: row.cyclic_sampled || row.audit_sampled ? "SI" : "NO", _store_id: store.id,
+      }));
+    }, 2);
+    const detail: any[] = perStore.flat();
     detail.sort((a, b) => Number(b.VALORIZADO) - Number(a.VALORIZADO) || String(a.TIENDA).localeCompare(String(b.TIENDA)));
     const totalValue = detail.reduce((sum, row) => sum + Number(row.VALORIZADO || 0), 0); let cumulative = 0;
     const exportDetail = detail.map(row => { const pct = totalValue ? Number(row.VALORIZADO) / totalValue * 100 : 0; cumulative += pct; const clean = { ...row }; delete clean._store_id; return { ...clean, "% TOTAL": `${pct.toFixed(2)}%`, "% ACUMULADO": `${cumulative.toFixed(2)}%` }; });

@@ -14,6 +14,8 @@ import { writeStoredUser } from "@/lib/singleDeviceSession";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import { isIosDevice } from "@/features/inventarios/utils";
+import { mapBounded } from "@/lib/boundedReads";
+import ReadPagination from "@/components/ReadPagination";
 
 type Role = "Operario" | "Validador" | "Supervisor" | "Administrador";
 type ScannerTarget = "product" | "location" | null;
@@ -279,6 +281,14 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [sessionRestorePending, setSessionRestorePending] = useState(true);
   const [items, setItems] = useState<AuditItem[]>([]);
   const [counts, setCounts] = useState<AuditCount[]>([]);
+  const [countTotals, setCountTotals] = useState<Map<string, { quantity: number; records: number }>>(new Map());
+  const [recordsPage, setRecordsPage] = useState(0);
+  const [recordsHasNext, setRecordsHasNext] = useState(false);
+  const [summaryPage, setSummaryPage] = useState(0);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const countRequestVersion = useRef(0);
+  const sessionRequestVersion = useRef(0);
+  const pendingCount = useRef<{ key: string; uuid: string } | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -432,26 +442,59 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     }
   }, [user?.role, mainTab, adminSummaryPeriod, adminSummaryDate, adminSummaryMonth, adminSummaryFrom, adminSummaryTo]);
 
+  const liveRefresh = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    liveRefresh.current = async () => {
+      if (session?.id) {
+        const { data, error } = await supabase.from("audit_sessions").select("status").eq("id", session.id).maybeSingle();
+        if (error) throw error;
+        if (data) setSession(previous => previous?.id === session.id ? { ...previous, status: data.status } : previous);
+        await loadSessionData(session.id);
+      }
+      if (mainTab === "sessions") await loadSessions();
+    };
+  });
+
   useEffect(() => {
     if (!user) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        if (session?.id) void loadSavedSession(session.id);
-        void loadSessions();
+        if (document.visibilityState !== "visible") return;
+        void liveRefresh.current().catch(error => setMessage("No se pudo actualizar la sesión: " + error.message));
       }, 1500);
     };
-    const channel = supabase.channel(`audit-live-${user.id}-${session?.id || "none"}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "audit_counts" }, refresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "audit_session_items" }, refresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "audit_sessions" }, refresh)
-      .subscribe();
+    const channel = supabase.channel(`audit-live-${user.id}-${session?.id || "none"}`);
+    if (session?.id) {
+      channel.on("postgres_changes", { event: "*", schema: "public", table: "audit_counts", filter: `session_id=eq.${session.id}` }, refresh)
+        .on("postgres_changes", { event: "*", schema: "public", table: "audit_session_items", filter: `session_id=eq.${session.id}` }, refresh)
+        .on("postgres_changes", { event: "*", schema: "public", table: "audit_sessions", filter: `id=eq.${session.id}` }, refresh);
+    } else if (mainTab === "sessions") {
+      channel.on("postgres_changes", { event: "*", schema: "public", table: "audit_sessions" }, refresh);
+    }
+    channel.subscribe();
+    const resume = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", resume);
     return () => {
+      document.removeEventListener("visibilitychange", resume);
       if (timer) clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [user, session?.id]);
+  }, [user?.id, session?.id, mainTab]);
+
+  useEffect(() => {
+    setRecordsPage(0);
+  }, [session?.id, recordsQuery, registerTab]);
+
+  useEffect(() => { setSummaryPage(0); }, [session?.id, summaryQuery, summarySort]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (session?.id) void loadCountPage(session.id, recordsPage).catch(error => setMessage("Error leyendo registros: " + error.message));
+    }, 250);
+    return () => { window.clearTimeout(timer); countRequestVersion.current++; };
+  }, [session?.id, recordsPage, recordsQuery, registerTab, user?.id]);
 
 
   useEffect(() => {
@@ -856,15 +899,12 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     const sede = String(store?.erp_sede || store?.name || "").trim();
     if (!sede) return 0;
 
-    const [{ data: itemRows }, { data: countRows }] = await Promise.all([
-      supabase
+    const [itemRows, countRows] = await Promise.all([
+      fetchPagedRows<any>((from, to) => supabase
         .from("audit_session_items")
         .select("id,product_id,system_stock,cyclic_products(sku)")
-        .eq("session_id", sessionId),
-      supabase
-        .from("audit_counts")
-        .select("item_id")
-        .eq("session_id", sessionId),
+        .eq("session_id", sessionId).order("id").range(from, to), 500),
+      fetchPagedRows<any>((from) => supabase.rpc("get_audit_count_totals_v2", { p_session_id: sessionId, p_limit: 500, p_offset: from }), 500),
     ]);
 
     const countedItemIds = new Set((countRows || []).map(row => String(row.item_id)));
@@ -874,11 +914,12 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
 
     const stockMap = new Map<string, number>();
     for (let i = 0; i < skus.length; i += 500) {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("stock_general")
         .select("codsap,stock")
         .eq("sede", sede)
         .in("codsap", skus.slice(i, i + 500));
+      if (error) throw error;
       for (const row of data || []) stockMap.set(fullProductCode(row.codsap), Number(row.stock || 0));
     }
 
@@ -890,11 +931,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       }))
       .filter(row => row.stock !== row.current);
 
-    for (let i = 0; i < updates.length; i += 50) {
-      await Promise.all(updates.slice(i, i + 50).map(row =>
-        supabase.from("audit_session_items").update({ system_stock: row.stock }).eq("id", row.id)
-      ));
-    }
+    await mapBounded(updates, async row => {
+      const { error } = await supabase.from("audit_session_items").update({ system_stock: row.stock }).eq("id", row.id);
+      if (error) throw error;
+    });
 
     return updates.length;
   }
@@ -1258,11 +1298,17 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   }
 
   async function loadSessionData(sessionId: string) {
-    const { data: itemRows } = await supabase
+    const version = ++sessionRequestVersion.current;
+    const [itemRows, totals] = await Promise.all([
+      fetchPagedRows<any>((from, to) => supabase
       .from("audit_session_items")
       .select("*, observation, cyclic_products(sku, barcode, description, unit)")
       .eq("session_id", sessionId)
-      .order("created_at");
+      .order("id").range(from, to), 500),
+      fetchPagedRows<any>((from) => supabase.rpc("get_audit_count_totals_v2", { p_session_id: sessionId, p_limit: 500, p_offset: from }), 500),
+    ]);
+    if (version !== sessionRequestVersion.current) return;
+    setCountTotals(new Map(totals.map(row => [row.item_id, { quantity: Number(row.quantity), records: Number(row.records) }])));
     const mappedItems = (itemRows || []).map((r: any) => ({
       ...r,
       sku: r.cyclic_products?.sku,
@@ -1271,18 +1317,32 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       unit: r.cyclic_products?.unit,
     })) as AuditItem[];
     setItems(mappedItems);
-    setItemObservationDrafts(Object.fromEntries(mappedItems.map(item => [item.id, item.observation || ""])));
-    setItemStockDrafts(Object.fromEntries(mappedItems.map(item => [item.id, String(Number(item.system_stock || 0))])));
+    setItemObservationDrafts(previous => Object.fromEntries(mappedItems.map(item => {
+      const old = items.find(row => row.id === item.id);
+      return [item.id, previous[item.id] !== undefined && previous[item.id] !== (old?.observation || "") ? previous[item.id] : item.observation || ""];
+    })));
+    setItemStockDrafts(previous => Object.fromEntries(mappedItems.map(item => {
+      const old = items.find(row => row.id === item.id);
+      return [item.id, previous[item.id] !== undefined && previous[item.id] !== String(Number(old?.system_stock || 0)) ? previous[item.id] : String(Number(item.system_stock || 0))];
+    })));
 
-    const { data: countRows } = await supabase
-      .from("audit_counts")
-      .select("*, cyclic_users!audit_counts_counted_by_fkey(full_name)")
-      .eq("session_id", sessionId)
-      .order("counted_at", { ascending: false });
-    setCounts(((countRows || []) as any[]).map(row => ({
-      ...row,
-      counted_by_name: row.cyclic_users?.full_name || null,
-    })) as AuditCount[]);
+    await loadCountPage(sessionId, recordsPage);
+  }
+
+  async function loadCountPage(sessionId: string, page: number) {
+    const version = ++countRequestVersion.current;
+    setRecordsLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("get_audit_count_page_v2", {
+        p_session_id: sessionId, p_query: recordsQuery,
+        p_counter_id: registerTab === "count" ? user?.id || null : null,
+        p_limit: 51, p_offset: page * 50,
+      });
+      if (error) throw error;
+      if (version !== countRequestVersion.current) return;
+      setRecordsHasNext((data || []).length > 50);
+      setCounts((data || []).slice(0, 50) as AuditCount[]);
+    } finally { if (version === countRequestVersion.current) setRecordsLoading(false); }
   }
 
   async function findProductByCode(code: string): Promise<Product | "AMBIGUOUS" | null> {
@@ -1523,13 +1583,16 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     }
     const quantity = Number(qty);
     if (!location.trim()) { setMessage("Ingresa ubicación."); return; }
-    if (!Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
+    if (!qty.trim() || !Number.isFinite(quantity) || quantity < 0) { setMessage("Ingresa cantidad válida."); return; }
     savingCountRef.current = true;
     setSavingCount(true);
     try {
       const storedItem = items.find(item => item.id === activeItem.id) || null;
       const snapshotStock = Number(storedItem?.system_stock ?? activeItem.system_stock ?? 0);
       const currentItem = await ensureAuditItemForCount(await refreshAuditItemStock(activeItem));
+      const countKey = JSON.stringify([session.id, currentItem.id, location.trim().toUpperCase(), quantity, user?.id]);
+      if (pendingCount.current?.key !== countKey) pendingCount.current = { key: countKey, uuid: createClientUuid("audit-count") };
+      const clientUuid = pendingCount.current.uuid;
       const { error } = await supabase.from("audit_counts").insert({
         session_id: session.id,
         item_id: currentItem.id,
@@ -1537,18 +1600,23 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
         location: location.trim().toUpperCase(),
         quantity,
         counted_by: user?.id,
-        client_uuid: createClientUuid("audit-count"),
+        client_uuid: clientUuid,
         client_device_id: getOrCreateDeviceId(),
         sync_origin: "web",
       });
       if (error) {
-        setMessage("Error guardando conteo: " + error.message);
-        return;
+        // A lost response or duplicate retry is only success if this exact
+        // operation exists. Other errors keep the same key for the retry.
+        const { data: confirmed } = await supabase.from("audit_counts").select("id").eq("client_uuid", clientUuid).maybeSingle();
+        if (!confirmed) { setMessage("No se pudo confirmar el guardado. Reintenta: " + error.message); return; }
       }
 
-      const previousTotal = counts
-        .filter(count => count.item_id === currentItem.id)
-        .reduce((total, count) => total + Number(count.quantity || 0), 0);
+      pendingCount.current = null;
+      setActiveItem(null);
+      setMessage(`Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. Actualizando resumen...`);
+      const { data: totalAfter, error: totalError } = await supabase.rpc("get_audit_item_total_v2", { p_session_id: session.id, p_item_id: currentItem.id });
+      if (totalError) throw new Error("El conteo ya está guardado. No se pudo consultar el acumulado; pulsa Actualizar.");
+      const previousTotal = Number(totalAfter?.[0]?.quantity || 0) - quantity;
       const keepsOriginalSnapshot = storedItem !== null && previousTotal + quantity === snapshotStock;
 
       // Solo se refresca la foto en el Resumen cuando el conteo conserva una
@@ -1562,9 +1630,13 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
           throw new Error("El conteo se guardó, pero no se pudo actualizar el stock del resumen: " + stockError.message);
         }
       }
-      await upsertProductLocation(currentItem.product_id, currentItem.sku, location);
-      await loadSessionData(session.id);
-      setActiveItem(null);
+      try {
+        await upsertProductLocation(currentItem.product_id, currentItem.sku, location);
+        await loadSessionData(session.id);
+      } catch (error) {
+        setMessage("El conteo ya está guardado. No se pudo actualizar el resumen o la ubicación: " + (error instanceof Error ? error.message : String(error)) + ". Pulsa Actualizar.");
+        return;
+      }
       setMessage(keepsOriginalSnapshot
         ? `Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. El código está OK y conserva el stock original de auditoría.`
         : `Conteo registrado: ${number2(quantity)} ${currentItem.unit || "UM"}. El resumen usa el stock actual: ${number2(currentItem.system_stock)}.`);
@@ -1679,24 +1751,22 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   }
 
   const summaryRows = useMemo(() => items.map(item => {
-    const total = counts.filter(c => c.item_id === item.id).reduce((acc, c) => acc + Number(c.quantity || 0), 0);
+    const total = countTotals.get(item.id)?.quantity || 0;
     const diff = total - Number(item.system_stock || 0);
     const value = diff * Number(item.cost_snapshot || 0);
-    const status = counts.some(c => c.item_id === item.id)
+    const status = countTotals.has(item.id)
       ? diff === 0 ? "OK" : diff > 0 ? "Sobrante" : "Faltante"
       : item.source === "extra" ? "Extra sin conteo" : "No contado";
     return { item, total, diff, value, status };
-  }), [items, counts]);
+  }), [items, countTotals]);
 
   const activeItemCountedTotal = useMemo(() => {
     if (!activeItem) return 0;
-    return counts
-      .filter(count => count.item_id === activeItem.id)
-      .reduce((acc, count) => acc + Number(count.quantity || 0), 0);
-  }, [activeItem, counts]);
+    return countTotals.get(activeItem.id)?.quantity || 0;
+  }, [activeItem, countTotals]);
 
   const totals = useMemo(() => {
-    const audited = summaryRows.filter(r => r.status !== "No contado").length;
+    const audited = summaryRows.filter(r => r.status === "OK" || r.status === "Faltante" || r.status === "Sobrante").length;
     const ok = summaryRows.filter(r => r.status === "OK").length;
     const eri = audited === 0 ? 0 : Math.round((ok / audited) * 100);
     return {
@@ -1760,24 +1830,8 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       });
   }, [summaryRows, summaryQuery, summarySort, itemObservationDrafts]);
 
-  const filteredCounts = useMemo(() => {
-    const term = normalizeText(recordsQuery.trim());
-    return [...counts]
-      .sort((a, b) => new Date(b.counted_at).getTime() - new Date(a.counted_at).getTime())
-      .filter(count => {
-        if (!term) return true;
-        const item = items.find(row => row.id === count.item_id);
-        const haystack = normalizeText([
-          item?.sku || count.sku,
-          item?.description || count.description,
-          item?.unit || count.unit,
-          count.location,
-          count.quantity,
-          new Date(count.counted_at).toLocaleString("es-PE"),
-        ].join(" "));
-        return haystack.includes(term);
-      });
-  }, [counts, items, recordsQuery]);
+  // Search and ordering happen on the server, before applying the page limit.
+  const filteredCounts = counts;
 
   const myAuditCounts = useMemo(() => {
     return [...counts]
@@ -2780,8 +2834,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                         </div>
                       );
                     })}
-                    {myAuditCounts.length === 0 && <div className="p-8 text-center text-sm font-semibold text-slate-400">Aun no tienes registros en esta sesion.</div>}
+                    {myAuditCounts.length === 0 && <div className="p-8 text-center text-sm font-semibold text-slate-400">{recordsLoading ? "Cargando registros…" : "No hay registros en esta página."}</div>}
                   </div>
+                  <ReadPagination page={recordsPage} hasNext={recordsHasNext} busy={recordsLoading} onPage={setRecordsPage} />
                 </section>
               )}
               </>
@@ -2790,7 +2845,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
             {!isMobileAccess && registerTab === "records" && (
               <div className="rounded-2xl border bg-white shadow-sm">
                 <div className="border-b px-4 py-3">
-                  <div className="font-black">Registros realizados ({filteredCounts.length}/{counts.length})</div>
+                  <div className="font-black">Registros realizados · página {recordsPage + 1} · {Array.from(countTotals.values()).reduce((sum, row) => sum + row.records, 0)} registros en la sesión</div>
                   <div className="mt-3 flex rounded-2xl border bg-white p-1 focus-within:ring-2 focus-within:ring-blue-200">
                     <input
                       value={recordsQuery}
@@ -2819,6 +2874,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                     ))}</tbody>
                   </table>
                 </div>
+                <ReadPagination page={recordsPage} hasNext={recordsHasNext} busy={recordsLoading} onPage={setRecordsPage} />
               </div>
             )}
 
@@ -2892,7 +2948,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredSummaryRows.map(r => (
+                        {filteredSummaryRows.slice(summaryPage * 50, (summaryPage + 1) * 50).map(r => (
                           <tr key={r.item.id} className="border-b hover:bg-slate-50">
                             <td className="p-2 font-black">{r.item.sku}</td>
                             <td className="max-w-sm truncate p-2">{r.item.description}</td>
@@ -2945,6 +3001,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                       </tbody>
                     </table>
                   </div>
+                  <ReadPagination page={summaryPage} hasNext={(summaryPage + 1) * 50 < filteredSummaryRows.length} total={filteredSummaryRows.length} onPage={setSummaryPage} />
                 </div>
               </div>
             )}
