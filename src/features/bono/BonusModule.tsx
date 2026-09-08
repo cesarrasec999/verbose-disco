@@ -104,7 +104,8 @@ const trafficStyle: Record<Exclude<TrafficLight, null>, object> = {
   gray: { fill: { patternType: "solid", fgColor: { rgb: "E2E8F0" } }, font: { color: { rgb: "475569" } } },
 };
 function excel(name: string, sheets: { name: string; rows: Record<string, unknown>[] }[]) {
-  void import("xlsx").then(XLSX => {
+  // xlsx-js-style conserva rellenos y colores en el archivo descargado.
+  void import("xlsx-js-style").then(XLSX => {
     const book = XLSX.utils.book_new();
     for (const source of sheets) {
       const rows = source.rows.length ? source.rows : [{ "Sin registros": "No hay movimientos para el período calculado." }];
