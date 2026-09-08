@@ -10,6 +10,7 @@ import { readStoredUser } from "@/lib/singleDeviceSession";
 import type { CyclicUser, Store } from "@/features/ciclicos/types";
 
 type MonthlyRow = { store: Store; sales: number; target: number | null; targetPct: number | null; received: number; eligible: number; receptionPct: number | null; loss: number; lossPct: number | null; xdNow: number | null; xdBefore: number | null; xdPct: number | null };
+type LossDetail = { store: string; source: string; movementDate: string; documentNo: string; reason: string; productCode: string; description: string; quantity: number; value: number };
 type QuarterlyRow = { store: Store; sales: number; audit: number | null; inventory: number | null; diff: number | null; monthlySales: number | null; diffPct: number | null };
 const PAGE = 1000;
 const money = (v: number | null | undefined) => new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN", maximumFractionDigits: 2 }).format(Number(v || 0));
@@ -44,6 +45,17 @@ function eligible(store: Store) {
   return /^GPC[0-9]+/i.test(String(store.name || "")) && !/(CD GPC|TIENDA VIRTUAL|VIRTUAL|CORPORATIVO|DISCREPANCIAS)/.test(t);
 }
 function isLima(store: Store) { return /\bLIM\b|CALLAO|HUACHIPA|HUAROCHIRI|LURIN|VILLA EL SALVADOR|PUENTE PIEDRA|CHORILLOS|SURQUILLO|NARANJAL|ARRIOLA|PERLA|GRUPO|SUMINISTRO/i.test(String(store.name || "") + " " + String(store.erp_sede || "")); }
+// erp_movements identifica las sedes con 1000 + número ERP. Los cuatro
+// cruces están confirmados contra RMS y son los mismos usados por Kardex.
+const GPC_STORE_NUMBER_OVERRIDES: Record<number, number> = { 2: 4, 3: 5, 4: 2, 5: 3 };
+function erpMovementStoreCode(store: Store) {
+  const label = String(store.erp_sede || store.name || "");
+  if (/CD-GPC|CENTRO DISTRIBUCION/i.test(label)) return "1000";
+  const match = label.match(/^GPC0*(\d+)/i);
+  if (!match) return null;
+  const number = Number(match[1]);
+  return String(1000 + (GPC_STORE_NUMBER_OVERRIDES[number] ?? number));
+}
 function keys(store: Store) {
   const result = new Set<string>();
   for (const source of [store.code, store.name, store.erp_sede].filter(Boolean) as string[]) {
@@ -51,6 +63,8 @@ function keys(store: Store) {
     result.add(normal(text));
     result.add(normal(text.slice(text.lastIndexOf("-") + 1)));
   }
+  const erpCode = erpMovementStoreCode(store);
+  if (erpCode) result.add(normal(erpCode));
   const text = normal(store.name);
   for (const alias of ["CALLAO", "GRUPO", "LURIN", "PIURA", "TRUJILLO", "CHORILLOS", "VILLA EL SALVADOR", "SUMINISTRO", "HUANCAYO", "NARANJAL", "PUENTE PIEDRA", "ARRIOLA", "SURQUILLO", "PERLA", "HUACHIPA", "CAJAMARCA"]) if (text.includes(normal(alias))) result.add(normal(alias));
   return result;
@@ -72,8 +86,17 @@ function monthlyReward(row: MonthlyRow) {
     + tier(row.sales, true, row.lossPct != null && row.lossPct <= 0.5 ? 100 : 0)
     + tier(row.sales, true, row.xdPct != null && row.xdPct <= -10 ? 100 : 0);
 }
-function excel(name: string, rows: Record<string, unknown>[]) {
-  void import("xlsx").then(XLSX => { const sheet = XLSX.utils.json_to_sheet(rows); sheet["!cols"] = Array.from({ length: Math.max(1, Object.keys(rows[0] || {}).length) }, (_, i) => ({ wch: i ? 22 : 32 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "Bono"); XLSX.writeFile(book, name); });
+function excel(name: string, sheets: { name: string; rows: Record<string, unknown>[] }[]) {
+  void import("xlsx").then(XLSX => {
+    const book = XLSX.utils.book_new();
+    for (const source of sheets) {
+      const rows = source.rows.length ? source.rows : [{ "Sin registros": "No hay movimientos para el período calculado." }];
+      const sheet = XLSX.utils.json_to_sheet(rows);
+      sheet["!cols"] = Object.keys(rows[0]).map((key, index) => ({ wch: Math.min(42, Math.max(index ? 15 : 26, key.length + 3)) }));
+      XLSX.utils.book_append_sheet(book, sheet, source.name);
+    }
+    XLSX.writeFile(book, name);
+  });
 }
 
 export default function BonusModule() {
@@ -82,6 +105,7 @@ export default function BonusModule() {
   const [month, setMonth] = useState("2026-08");
   const [quarter, setQuarter] = useState("2026-09-30");
   const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
+  const [lossDetails, setLossDetails] = useState<LossDetail[]>([]);
   const [quarterly, setQuarterly] = useState<QuarterlyRow[]>([]);
   const [loadingMonthly, setLoadingMonthly] = useState(false);
   const [loadingQuarterly, setLoadingQuarterly] = useState(false);
@@ -102,14 +126,23 @@ export default function BonusModule() {
         paged<any>((a, b) => supabase.from("erp_store_sales_daily").select("store_key,store_name,sales_amount").gte("sales_date", from).lte("sales_date", until).range(a, b)),
         paged<any>((a, b) => supabase.from("erp_store_sales_targets").select("store_key,target_amount").eq("target_month", from).range(a, b)),
         paged<any>((a, b) => supabase.from("reception_requests").select("destination_store_code,creation_date,erp_status").gte("creation_date", from + "T00:00:00-05:00").lt("creation_date", next(month) + "T00:00:00-05:00").range(a, b)),
-        paged<any>((a, b) => supabase.from("erp_movements").select("store_code,value_total").eq("source_type", "ADJUSTMENT").ilike("reason", "%DESMEDRO%").gte("movement_date", from + "T00:00:00-05:00").lt("movement_date", next(month) + "T00:00:00-05:00").range(a, b)),
-        paged<any>((a, b) => supabase.from("erp_movements").select("store_code,value_total").eq("source_type", "SLIP_OUT").ilike("reason", "%DESMEDRO%").gte("movement_date", from + "T00:00:00-05:00").lt("movement_date", next(month) + "T00:00:00-05:00").range(a, b)),
+        // La regla del bono usa exclusivamente los dos motivos RMS confirmados:
+        // ajuste de cantidad 15. DESMEDROS y salida por transferencia DESMEDROS.
+        paged<any>((a, b) => supabase.from("erp_movements").select("store_code,movement_date,document_no,reason,product_code,description,quantity,value_total").eq("source_type", "ADJUSTMENT").eq("reason", "15. DESMEDROS").gte("movement_date", from + "T00:00:00-05:00").lt("movement_date", next(month) + "T00:00:00-05:00").range(a, b)),
+        paged<any>((a, b) => supabase.from("erp_movements").select("store_code,movement_date,document_no,reason,product_code,description,quantity,value_total").eq("source_type", "SLIP_OUT").eq("reason", "DESMEDROS").gte("movement_date", from + "T00:00:00-05:00").lt("movement_date", next(month) + "T00:00:00-05:00").range(a, b)),
         paged<any>((a, b) => supabase.from("product_rotation_monthly").select("store_key,product_code").lte("period_month", from).in("rotation_category", ["X", "D"]).order("period_month", { ascending: false }).range(a, b)),
       ]);
       const sales = new Map<string, number>(), targets = new Map<string, number>(), loss = new Map<string, number>(), reception = new Map<string, { received: number; eligible: number }>();
       for (const row of salesRows) { const s = store(row.store_key || row.store_name); if (s) sales.set(s.id, (sales.get(s.id) || 0) + Number(row.sales_amount || 0)); }
       for (const row of targetRows) { const s = store(row.store_key); if (s) targets.set(s.id, Number(row.target_amount || 0)); }
       for (const row of [...adjustments, ...transfers]) { const s = store(row.store_code); if (s) loss.set(s.id, (loss.get(s.id) || 0) + Math.abs(Number(row.value_total || 0))); }
+      setLossDetails([
+        ...adjustments.map(row => ({ row, source: "Ajuste de cantidad" })),
+        ...transfers.map(row => ({ row, source: "Salida por transferencia" })),
+      ].flatMap(({ row, source }) => {
+        const s = store(row.store_code);
+        return s ? [{ store: s.name, source, movementDate: String(row.movement_date || ""), documentNo: String(row.document_no || ""), reason: String(row.reason || ""), productCode: String(row.product_code || ""), description: String(row.description || ""), quantity: Number(row.quantity || 0), value: Math.abs(Number(row.value_total || 0)) }] : [];
+      }));
       for (const row of receptionRows) {
         const s = store(row.destination_store_code); if (!s) continue;
         const age = Math.floor((new Date(until + "T23:59:59-05:00").getTime() - new Date(row.creation_date).getTime()) / 86400000);
@@ -165,14 +198,49 @@ export default function BonusModule() {
 
   const monthlyTotal = useMemo(() => monthly.reduce((sum, row) => sum + monthlyReward(row), 0), [monthly]);
   const quarterlyTotal = useMemo(() => quarterly.reduce((sum, row) => sum + tier(row.sales, false, row.audit != null && row.audit >= 95 ? 100 : 0) + tier(row.sales, false, row.inventory != null && row.inventory > 85 ? 100 : 0) + tier(row.sales, false, row.diffPct != null && row.diffPct < 0.5 ? 100 : 0), 0), [quarterly]);
+  const exportMonthly = () => excel("bono_mensual_" + month + ".xlsx", [
+    {
+      name: "Resumen",
+      rows: monthly.map(x => ({
+        TIENDA: x.store.name,
+        VENTA: x.sales,
+        "META VENTAS RMS": x.target ?? "Sin dato",
+        "% META RMS": x.targetPct == null ? "Sin dato" : x.targetPct / 100,
+        "ESTADO META": x.targetPct == null ? "Meta pendiente RMS" : x.targetPct >= 100 ? "Habilita bono" : "No comisiona",
+        "RECEPCIONES RECIBIDAS": x.received,
+        "RECEPCIONES EXIGIBLES": x.eligible,
+        "% RECEPCIONES": x.receptionPct == null ? "Sin dato" : x.receptionPct / 100,
+        DESMEDRO: x.loss,
+        "% DESMEDRO": x.lossPct == null ? "Sin dato" : x.lossPct / 100,
+        "X+D MES ANTERIOR": x.xdBefore ?? "Sin dato",
+        "X+D MES ACTUAL": x.xdNow ?? "Sin dato",
+        "% VARIACION X+D": x.xdPct == null ? "Sin dato" : x.xdPct / 100,
+        "BONO ESTIMADO": monthlyReward(x),
+      })),
+    },
+    {
+      name: "Detalle",
+      rows: lossDetails.map(x => ({
+        TIENDA: x.store,
+        TIPO: x.source,
+        "FECHA Y HORA": x.movementDate,
+        DOCUMENTO: x.documentNo,
+        MOTIVO: x.reason,
+        CODIGO: x.productCode,
+        DESCRIPCION: x.description,
+        CANTIDAD: x.quantity,
+        VALOR: x.value,
+      })),
+    },
+  ]);
   if (!user) return <p className="p-8 text-center font-bold text-slate-400">Cargando...</p>;
   const state = (ok: boolean | null) => ok == null ? "text-slate-400" : ok ? "text-emerald-700" : "text-red-600";
   return <div className="p-4 md:p-8"><div className="mx-auto max-w-[1600px] space-y-6">
     <section className="rounded-2xl border bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-indigo-600">Análisis · Bono</p><h2 className="mt-1 text-2xl font-black">Bono mensual y bono trimestral</h2><p className="mt-1 text-sm text-slate-500">Son consultas independientes: calcular una no carga fuentes de la otra.</p></section>
-    <section className="rounded-2xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap items-end gap-3"><div className="mr-auto"><p className="text-xs font-black uppercase text-emerald-700">Bono mensual</p><h3 className="text-xl font-black">Corte mensual</h3></div><label className="text-xs font-black">Mes<input className="mt-1 block rounded-xl border px-3 py-2" type="month" value={month} onChange={e => setMonth(e.target.value)} /></label><button onClick={() => void calculateMonthly()} disabled={loadingMonthly || !stores.length} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 font-black text-white disabled:opacity-50"><RefreshCw size={16} className={loadingMonthly ? "animate-spin" : ""} />{loadingMonthly ? "Calculando..." : "Calcular mensual"}</button>{monthly.length > 0 && <button onClick={() => excel("bono_mensual_" + month + ".xlsx", monthly.map(x => ({ TIENDA: x.store.name, VENTA: x.sales, "META RMS": x.target ?? "Sin dato", "% META": x.targetPct == null ? "Sin dato" : x.targetPct / 100, "RECEPCIONES": x.received + "/" + x.eligible, DESMEDRO: x.loss, "% DESMEDRO": x.lossPct == null ? "Sin dato" : x.lossPct / 100, "X+D ACTUAL": x.xdNow ?? "Sin dato", "% REDUCCION X+D": x.xdPct == null ? "Sin dato" : x.xdPct / 100 })))} className="flex items-center gap-2 rounded-xl border border-emerald-700 px-4 py-2.5 font-black text-emerald-700"><Download size={16} />Excel</button>}</div>
+    <section className="rounded-2xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap items-end gap-3"><div className="mr-auto"><p className="text-xs font-black uppercase text-emerald-700">Bono mensual</p><h3 className="text-xl font-black">Corte mensual</h3></div><label className="text-xs font-black">Mes<input className="mt-1 block rounded-xl border px-3 py-2" type="month" value={month} onChange={e => setMonth(e.target.value)} /></label><button onClick={() => void calculateMonthly()} disabled={loadingMonthly || !stores.length} className="flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 font-black text-white disabled:opacity-50"><RefreshCw size={16} className={loadingMonthly ? "animate-spin" : ""} />{loadingMonthly ? "Calculando..." : "Calcular mensual"}</button>{monthly.length > 0 && <button onClick={exportMonthly} className="flex items-center gap-2 rounded-xl border border-emerald-700 px-4 py-2.5 font-black text-emerald-700"><Download size={16} />Excel</button>}</div>
       {monthly.length > 0 && <><div className="mt-4 rounded-xl bg-emerald-700 p-4 text-white"><p className="text-xs font-black uppercase">Bono mensual estimado</p><p className="text-3xl font-black">{money(monthlyTotal)}</p><p className="text-xs text-emerald-100">La meta RMS es obligatoria: menos de 100% o sin meta cargada = S/ 0.00 de bono.</p></div><div className="mt-4 overflow-x-auto rounded-xl border"><table className="w-full min-w-[1250px] text-xs"><thead className="bg-slate-950 text-white"><tr><th className="p-3 text-left">Tienda / venta</th><th className="p-3">Meta ventas RMS<br />obligatoria</th><th className="p-3">Recepciones</th><th className="p-3">Desmedro ≤0.5%</th><th className="p-3">Variación X+D<br />meta: −10%</th><th className="p-3">Bono</th></tr></thead><tbody>{monthly.map(x => { const meta = x.targetPct != null && x.targetPct >= 100, recep = x.receptionPct != null && x.receptionPct >= 85, loss = x.lossPct != null && x.lossPct <= 0.5, xd = x.xdPct != null && x.xdPct <= -10, reward = monthlyReward(x); return <tr key={x.store.id} className="border-t"><td className="p-3 font-bold">{x.store.name}<br /><span className="font-normal text-slate-500">{money(x.sales)}</span></td><td className={"p-3 text-center font-bold " + state(x.targetPct == null ? null : meta)}>{pct(x.targetPct)}<br />{money(x.target)}<br /><span className="text-[10px]">{x.targetPct == null ? "Meta pendiente RMS" : meta ? "Habilita bono" : "No comisiona"}</span></td><td className={"p-3 text-center font-bold " + state(x.receptionPct == null ? null : recep)}>{x.received}/{x.eligible}<br />{pct(x.receptionPct)}</td><td className={"p-3 text-center font-bold " + state(x.lossPct == null ? null : loss)}>{money(x.loss)}<br />{pct(x.lossPct)}</td><td className={"p-3 text-center font-bold " + state(x.xdPct == null ? null : xd)}>{xdText(x.xdPct)}<br /><span className="font-normal">{xdValueText(x.xdNow, x.xdBefore)}</span></td><td className="p-3 text-center font-black text-emerald-700">{money(reward)}</td></tr>; })}</tbody></table></div></>}
     </section>
-    <section className="rounded-2xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap items-end gap-3"><div className="mr-auto"><p className="text-xs font-black uppercase text-indigo-700">Bono trimestral</p><h3 className="text-xl font-black">Corte trimestral</h3></div><label className="text-xs font-black">Fecha<input className="mt-1 block rounded-xl border px-3 py-2" type="date" value={quarter} onChange={e => setQuarter(e.target.value)} /></label><button onClick={() => void calculateQuarterly()} disabled={loadingQuarterly || !stores.length} className="flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2.5 font-black text-white disabled:opacity-50"><RefreshCw size={16} className={loadingQuarterly ? "animate-spin" : ""} />{loadingQuarterly ? "Calculando..." : "Calcular trimestral"}</button>{quarterly.length > 0 && <button onClick={() => excel("bono_trimestral_" + quarter + ".xlsx", quarterly.map(x => ({ TIENDA: x.store.name, "VENTA TRIMESTRAL": x.sales, "ERI AUDITORIA": x.audit == null ? "Sin dato" : x.audit / 100, "ERI INVENTARIO": x.inventory == null ? "Sin dato" : x.inventory / 100, "DIFERENCIA NETA": x.diff ?? "Sin dato", "VENTA MENSUAL INVENTARIO": x.monthlySales ?? "Sin dato", "% DIFERENCIA": x.diffPct == null ? "Sin dato" : x.diffPct / 100 })))} className="flex items-center gap-2 rounded-xl border border-indigo-700 px-4 py-2.5 font-black text-indigo-700"><Download size={16} />Excel</button>}</div>
+    <section className="rounded-2xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap items-end gap-3"><div className="mr-auto"><p className="text-xs font-black uppercase text-indigo-700">Bono trimestral</p><h3 className="text-xl font-black">Corte trimestral</h3></div><label className="text-xs font-black">Fecha<input className="mt-1 block rounded-xl border px-3 py-2" type="date" value={quarter} onChange={e => setQuarter(e.target.value)} /></label><button onClick={() => void calculateQuarterly()} disabled={loadingQuarterly || !stores.length} className="flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2.5 font-black text-white disabled:opacity-50"><RefreshCw size={16} className={loadingQuarterly ? "animate-spin" : ""} />{loadingQuarterly ? "Calculando..." : "Calcular trimestral"}</button>{quarterly.length > 0 && <button onClick={() => excel("bono_trimestral_" + quarter + ".xlsx", [{ name: "Resumen", rows: quarterly.map(x => ({ TIENDA: x.store.name, "VENTA TRIMESTRAL": x.sales, "ERI AUDITORIA": x.audit == null ? "Sin dato" : x.audit / 100, "ERI INVENTARIO": x.inventory == null ? "Sin dato" : x.inventory / 100, "DIFERENCIA NETA": x.diff ?? "Sin dato", "VENTA MENSUAL INVENTARIO": x.monthlySales ?? "Sin dato", "% DIFERENCIA": x.diffPct == null ? "Sin dato" : x.diffPct / 100 })) }])} className="flex items-center gap-2 rounded-xl border border-indigo-700 px-4 py-2.5 font-black text-indigo-700"><Download size={16} />Excel</button>}</div>
       {quarterly.length > 0 && <><div className="mt-4 rounded-xl bg-indigo-700 p-4 text-white"><p className="text-xs font-black uppercase">Bono trimestral estimado</p><p className="text-3xl font-black">{money(quarterlyTotal)}</p><p className="text-xs text-indigo-100">Auditoría ≥95%, inventario &gt;85% y diferencia &lt;0.5% de la venta mensual.</p></div><div className="mt-4 overflow-x-auto rounded-xl border"><table className="w-full min-w-[1100px] text-xs"><thead className="bg-slate-950 text-white"><tr><th className="p-3 text-left">Tienda / venta trimestre</th><th className="p-3">Auditoría ≥95%</th><th className="p-3">Inventario &gt;85%</th><th className="p-3">Dif. / venta mensual &lt;0.5%</th><th className="p-3">Bono</th></tr></thead><tbody>{quarterly.map(x => { const au = x.audit != null && x.audit >= 95, inv = x.inventory != null && x.inventory > 85, diff = x.diffPct != null && x.diffPct < 0.5, reward = tier(x.sales, false, au ? 100 : 0) + tier(x.sales, false, inv ? 100 : 0) + tier(x.sales, false, diff ? 100 : 0); return <tr key={x.store.id} className="border-t"><td className="p-3 font-bold">{x.store.name}<br /><span className="font-normal text-slate-500">{money(x.sales)}</span></td><td className={"p-3 text-center font-bold " + state(x.audit == null ? null : au)}>{pct(x.audit)}</td><td className={"p-3 text-center font-bold " + state(x.inventory == null ? null : inv)}>{pct(x.inventory)}</td><td className={"p-3 text-center font-bold " + state(x.diffPct == null ? null : diff)}>{pct(x.diffPct)}<br />{money(x.diff)} / {money(x.monthlySales)}</td><td className="p-3 text-center font-black text-indigo-700">{money(reward)}</td></tr>; })}</tbody></table></div></>}
     </section>
   </div></div>;
