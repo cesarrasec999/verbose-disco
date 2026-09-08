@@ -92,6 +92,16 @@ function excel(name: string, sheets: { name: string; rows: Record<string, unknow
     for (const source of sheets) {
       const rows = source.rows.length ? source.rows : [{ "Sin registros": "No hay movimientos para el período calculado." }];
       const sheet = XLSX.utils.json_to_sheet(rows);
+      // Los porcentajes permanecen como números para que Excel pueda operar
+      // con ellos, pero se muestran con dos decimales (ej. 90.00%).
+      const headers = Object.keys(rows[0]);
+      headers.forEach((header, column) => {
+        if (!header.includes("%")) return;
+        for (let row = 2; row <= rows.length + 1; row += 1) {
+          const cell = sheet[XLSX.utils.encode_cell({ r: row - 1, c: column })];
+          if (cell && typeof cell.v === "number") cell.z = "0.00%";
+        }
+      });
       sheet["!cols"] = Object.keys(rows[0]).map((key, index) => ({ wch: Math.min(42, Math.max(index ? 15 : 26, key.length + 3)) }));
       XLSX.utils.book_append_sheet(book, sheet, source.name);
     }
