@@ -86,6 +86,23 @@ function monthlyReward(row: MonthlyRow) {
     + tier(row.sales, true, row.lossPct != null && row.lossPct <= 0.5 ? 100 : 0)
     + tier(row.sales, true, row.xdPct != null && row.xdPct <= -10 ? 100 : 0);
 }
+type TrafficLight = "green" | "yellow" | "red" | "gray" | null;
+function trafficLight(header: string, row: Record<string, unknown>): TrafficLight {
+  const number = (key: string) => typeof row[key] === "number" ? Number(row[key]) : null;
+  const target = number("% META RMS"), reception = number("% RECEPCIONES"), loss = number("% DESMEDRO"), xd = number("% VARIACION X+D"), reward = number("BONO ESTIMADO");
+  if (header === "% META RMS" || header === "META VENTAS RMS" || header === "VENTA" || header === "ESTADO META") return target == null ? "gray" : target >= 1 ? "green" : target >= 0.85 ? "yellow" : "red";
+  if (header === "% RECEPCIONES" || header === "RECEPCIONES RECIBIDAS") return reception == null ? "gray" : reception >= 0.9 ? "green" : reception >= 0.85 ? "yellow" : "red";
+  if (header === "% DESMEDRO" || header === "DESMEDRO") return loss == null ? "gray" : loss <= 0.005 ? "green" : loss <= 0.01 ? "yellow" : "red";
+  if (header === "% VARIACION X+D" || header === "X+D MES ACTUAL" || header === "X+D MES ANTERIOR") return xd == null ? "gray" : xd <= -0.1 ? "green" : xd < 0 ? "yellow" : "red";
+  if (header === "BONO ESTIMADO") return reward == null ? "gray" : reward > 0 ? "green" : "red";
+  return null;
+}
+const trafficStyle: Record<Exclude<TrafficLight, null>, object> = {
+  green: { fill: { patternType: "solid", fgColor: { rgb: "C6EFCE" } }, font: { color: { rgb: "006100" } } },
+  yellow: { fill: { patternType: "solid", fgColor: { rgb: "FFEB9C" } }, font: { color: { rgb: "9C6500" } } },
+  red: { fill: { patternType: "solid", fgColor: { rgb: "FFC7CE" } }, font: { color: { rgb: "9C0006" } } },
+  gray: { fill: { patternType: "solid", fgColor: { rgb: "E2E8F0" } }, font: { color: { rgb: "475569" } } },
+};
 function excel(name: string, sheets: { name: string; rows: Record<string, unknown>[] }[]) {
   void import("xlsx").then(XLSX => {
     const book = XLSX.utils.book_new();
@@ -96,10 +113,12 @@ function excel(name: string, sheets: { name: string; rows: Record<string, unknow
       // con ellos, pero se muestran con dos decimales (ej. 90.00%).
       const headers = Object.keys(rows[0]);
       headers.forEach((header, column) => {
-        if (!header.includes("%")) return;
         for (let row = 2; row <= rows.length + 1; row += 1) {
           const cell = sheet[XLSX.utils.encode_cell({ r: row - 1, c: column })];
-          if (cell && typeof cell.v === "number") cell.z = "0.00%";
+          if (!cell) continue;
+          if (header.includes("%") && typeof cell.v === "number") cell.z = "0.00%";
+          const status = source.name === "Resumen" ? trafficLight(header, rows[row - 2]) : null;
+          if (status) cell.s = trafficStyle[status];
         }
       });
       sheet["!cols"] = Object.keys(rows[0]).map((key, index) => ({ wch: Math.min(42, Math.max(index ? 15 : 26, key.length + 3)) }));
