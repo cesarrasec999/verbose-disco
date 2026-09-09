@@ -279,8 +279,12 @@ function rotationStoreKeysForSession(session: InventorySession | null | undefine
   ];
   const keys = new Set<string>();
   const store = session?.store_id ? stores.find(item => item.id === session.store_id) : null;
-  const sources = [session?.store_name, store?.name, store?.erp_sede, session?.store_id].filter(Boolean) as string[];
+  const sources = [session?.store_name, session?.store_erp_sede, store?.name, store?.erp_sede, session?.store_id].filter(Boolean) as string[];
   for (const source of sources) {
+    // La igualdad de PostgREST es exacta: los cierres recientes guardan la
+    // sede completa, incluido el guion (GPC025 APU - ABANCAY). Conservarla
+    // antes de generar aliases evita caer en un cierre antiguo de ABANCAY.
+    keys.add(source.trim().toUpperCase());
     const normalized = normalizeRotationStoreKey(source);
     if (!normalized) continue;
     keys.add(normalized);
