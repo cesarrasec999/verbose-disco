@@ -1156,10 +1156,13 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
       });
     }
     const dates = [...byDate.keys()].sort();
-    const periodKeys = evolutionFilter === "month" ? dates : [...new Set(dates.map(date => date.slice(0, 7)))].sort();
+    // La vista dejó de ser un gráfico: las columnas representan meses. Para
+    // no repetir la misma tienda por cada día, se usa la última fotografía
+    // disponible de cada mes. En Día se conserva la fecha exacta elegida.
+    const periodKeys = evolutionFilter === "day" ? dates : [...new Set(dates.map(date => date.slice(0, 7)))].sort();
     const periodStoreRows = new Map<string, Map<string, { name: string; value: number }>>();
     for (const period of periodKeys) {
-      const date = evolutionFilter === "month" ? period : dates.filter(item => item.startsWith(period)).at(-1);
+      const date = evolutionFilter === "day" ? period : dates.filter(item => item.startsWith(period)).at(-1);
       if (date) periodStoreRows.set(period, byDate.get(date) || new Map());
     }
     const barDates = [...new Set(barRowsSource.map(row => row.snapshot_date))].sort();
@@ -1177,10 +1180,15 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
     const lines = storeKeys.map(key => ({
       key,
       name: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.name).find(Boolean) || key,
-      values: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.value || 0),
+      values: periodKeys.map(period => periodStoreRows.get(period)?.get(key)?.value ?? null),
     })).sort((a, b) => (b.values.at(-1) || 0) - (a.values.at(-1) || 0));
     return { latestDate, bars, periods: periodKeys, lines };
   }, [rotationHistoryRows, stores, barStoreIds, evolutionStoreIds, historyRange.from, historyRange.to, evolutionRange.from, evolutionRange.to, evolutionFilter]);
+
+  const valuationTableTotals = useMemo(() => valuationChart.periods.map((period, index) => {
+    const values = valuationChart.lines.map(line => line.values[index]).filter((value): value is number => value !== null);
+    return { period, hasData: values.length > 0, value: r2(values.reduce((sum, value) => sum + value, 0)) };
+  }), [valuationChart]);
 
   if (moduleDisabled) return <ModuleDisabledScreen moduleLabel="Reportes" />;
 
@@ -1350,8 +1358,8 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
           </div>
 
           <div className="rounded-2xl border p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Evolución por tienda</h3><p className="text-xs font-semibold text-slate-500">En modo mes se muestra cada día disponible; en rango se toma el último día disponible de cada mes.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
-            <h4 className="mb-2 text-sm font-black text-slate-800">Filtro del gráfico evolutivo</h4>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-black">Valorizado por tienda y mes</h3><p className="text-xs font-semibold text-slate-500">Cada columna mensual muestra la última fotografía disponible de ese mes. En Día se muestra la fecha exacta consultada.</p></div><span className="text-xs font-bold text-slate-500">{valuationChart.lines.length} tiendas</span></div>
+            <h4 className="mb-2 text-sm font-black text-slate-800">Filtro de la tabla</h4>
             <div className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl bg-slate-50 p-3">
               <div className="flex rounded-xl border bg-white p-1 text-xs font-black">{([["day", "Día"], ["month", "Mes"], ["range", "Rango"]] as [HistoryFilter, string][]).map(([key, label]) => <button key={key} onClick={() => setEvolutionFilter(key)} className={`rounded-lg px-3 py-2 ${evolutionFilter === key ? "bg-slate-950 text-white" : "text-slate-600"}`}>{label}</button>)}</div>
               {evolutionFilter === "day" && <label className="text-xs font-black text-slate-600">Fecha<input type="date" value={evolutionDate} onChange={e => setEvolutionDate(e.target.value)} className="mt-1 block rounded-xl border bg-white px-3 py-2 text-sm font-bold text-slate-900" /></label>}
@@ -1360,8 +1368,7 @@ export default function ReportesModule({ activeTab, basePath = "/reportes", embe
               <div className="relative text-xs font-black text-slate-600"><span>Tiendas</span><button type="button" onClick={() => setEvolutionStoreOpen(prev => !prev)} className="mt-1 flex min-w-64 items-center justify-between rounded-xl border bg-white px-3 py-2 text-left text-sm font-bold text-slate-900"><span className="truncate">{evolutionStoreIds.length === 0 ? "Todas las tiendas" : `${evolutionStoreIds.length} tienda(s)`}</span><span className="ml-3 text-slate-400">{evolutionStoreOpen ? "▲" : "▼"}</span></button>{evolutionStoreOpen && <><div className="fixed inset-0 z-10" onClick={() => setEvolutionStoreOpen(false)} /><div className="absolute left-0 z-20 mt-1 max-h-64 min-w-72 overflow-y-auto rounded-xl border bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center gap-2 border-b px-2 py-2 text-sm"><input type="checkbox" checked={evolutionStoreIds.length === 0} onChange={() => setEvolutionStoreIds([])} />Todas las tiendas</label>{stores.map(store => <label key={store.id} className="flex cursor-pointer items-center gap-2 px-2 py-2 text-sm hover:bg-slate-50"><input type="checkbox" checked={evolutionStoreIds.includes(store.id)} onChange={() => setEvolutionStoreIds(prev => prev.includes(store.id) ? prev.filter(id => id !== store.id) : [...prev, store.id])} />{store.name}</label>)}</div></>}</div>
               <span className="text-xs font-bold text-slate-500">Disponible: {evolutionRange.from} al {evolutionRange.to}</span>
             </div>
-            {valuationChart.periods.length > 0 ? <div className="overflow-x-auto"><svg viewBox="0 0 900 320" className="min-w-[720px] w-full" role="img" aria-label="Evolución del valorizado por tienda"><line x1="50" y1="20" x2="50" y2="270" stroke="#cbd5e1" /><line x1="50" y1="270" x2="880" y2="270" stroke="#cbd5e1" />{[0, 1, 2, 3, 4].map(i => <line key={i} x1="50" y1={20 + i * 62.5} x2="880" y2={20 + i * 62.5} stroke="#e2e8f0" strokeDasharray="4 4" />)}{valuationChart.lines.slice(0, 12).map((line, index) => { const max = Math.max(...valuationChart.lines.flatMap(item => item.values), 1); const points = line.values.map((value, i) => `${50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))},${270 - (value / max) * 240}`).join(" "); const colors = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"]; return <g key={line.key}><polyline points={points} fill="none" stroke={colors[index % colors.length]} strokeWidth="3" />{line.values.map((value, i) => <circle key={`${line.key}-${i}`} cx={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} cy={270 - (value / max) * 240} r="4" fill={colors[index % colors.length]}><title>{`${line.name} · ${valuationChart.periods[i]}: ${money(value)}`}</title></circle>)}</g>; })}{valuationChart.periods.map((period, i) => <text key={period} x={50 + (valuationChart.periods.length === 1 ? 0 : i * (830 / (valuationChart.periods.length - 1)))} y="294" textAnchor="middle" fontSize="11" fill="#475569">{period}</text>)}</svg></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay datos históricos para graficar.</p>}
-            <div className="mt-3 flex flex-wrap gap-3">{valuationChart.lines.slice(0, 12).map((line, index) => <span key={line.key} className="text-xs font-bold text-slate-600"><span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#db2777", "#ea580c", "#16a34a", "#4f46e5", "#be123c", "#475569"][index % 12] }} />{line.name}</span>)}</div>
+            {valuationChart.periods.length > 0 ? <div className="overflow-x-auto rounded-xl border"><table className="min-w-max w-full border-collapse text-sm"><thead className="bg-slate-950 text-white"><tr><th className="sticky left-0 z-10 min-w-60 border-b border-slate-700 bg-slate-950 px-3 py-3 text-left text-xs font-black">Tienda</th>{valuationChart.periods.map(period => <th key={period} className="min-w-36 border-b border-l border-slate-700 px-3 py-3 text-right text-xs font-black">{evolutionFilter === "day" ? period : period.slice(0, 7)}</th>)}</tr></thead><tbody>{valuationChart.lines.map(line => <tr key={line.key} className="border-b last:border-0 hover:bg-slate-50"><td className="sticky left-0 z-[1] min-w-60 border-r bg-white px-3 py-3 font-bold text-slate-800">{line.name}</td>{line.values.map((value, index) => <td key={`${line.key}-${valuationChart.periods[index]}`} className="border-l px-3 py-3 text-right font-semibold tabular-nums text-slate-700">{value === null ? <span className="text-slate-400">—</span> : money(value)}</td>)}</tr>)}{valuationChart.lines.length > 0 && <tr className="bg-slate-100 font-black"><td className="sticky left-0 z-[1] border-r bg-slate-100 px-3 py-3 text-slate-900">Total</td>{valuationTableTotals.map(total => <td key={total.period} className="border-l px-3 py-3 text-right tabular-nums text-slate-900">{total.hasData ? money(total.value) : "—"}</td>)}</tr>}</tbody></table></div> : <p className="py-12 text-center text-sm font-bold text-slate-400">No hay valorizados históricos para el filtro seleccionado.</p>}
           </div>
         </div>}
 
