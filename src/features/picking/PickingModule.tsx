@@ -3411,7 +3411,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
               <div className="mt-1.5 h-1.5 rounded-full bg-slate-100">
                 <div className="h-1.5 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
               </div>
-              <div className="mt-2 grid grid-cols-3 gap-1.5">
+              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 <input
                   type="date"
                   value={pickingDate}
@@ -3419,7 +3419,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     setPickingDate(event.target.value);
                     setActiveAssignmentId("");
                   }}
-                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                  className="order-1 min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
                 />
                 <select
                   value={selectedRequesterStore}
@@ -3427,7 +3427,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     setSelectedRequesterStore(event.target.value);
                     setActiveAssignmentId("");
                   }}
-                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                  aria-label="Filtrar por tienda solicitante"
+                  title="Filtrar por tienda solicitante"
+                  className="order-3 col-span-2 min-w-0 w-full rounded-lg border bg-white px-2 py-1.5 text-left text-[12px] font-black text-slate-800 sm:order-2 sm:col-span-1 sm:px-1.5 sm:text-[11px]"
                 >
                   <option value="all">Todas las tiendas</option>
                   {requesterStoreOptions.map(option => (
@@ -3440,7 +3442,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     setSelectedOperatorReason(event.target.value);
                     setActiveAssignmentId("");
                   }}
-                  className="min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800"
+                  className="order-2 min-w-0 rounded-lg border bg-white px-1.5 py-1.5 text-[11px] font-black text-slate-800 sm:order-3"
                 >
                   <option value="all">Todos los motivos</option>
                   {reasonOptions.map(option => (
