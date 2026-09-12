@@ -7,7 +7,8 @@ import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
-import { cleanCode, fullProductCode, mappedProductCodeCandidates } from "@/features/ciclicos/utils";
+import { isPickingTransactionRejected, PickingSubmission } from "@/lib/picking/transport";
+import { writePickingScan } from "@/lib/picking/apiV2";
 import { toast } from "sonner";
 
 type CyclicUser = {
@@ -126,6 +127,13 @@ type ScanEntry = {
   qty: string;
 };
 
+type PickingScanWriteResult = {
+  insertedScans: PickingScan[];
+  assignment: PickingAssignment;
+  pickedQty: number;
+  status: string;
+};
+
 type Html5QrLike = {
   start: (
     cameraConfig: { facingMode: string },
@@ -180,6 +188,17 @@ function todayISO() {
 
 function normalize(value: string | null | undefined) {
   return String(value || "").trim().toUpperCase();
+}
+
+function newPickingOperationId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `pick-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
+  return "No se pudo confirmar la operación.";
 }
 
 function reasonBadgeClass(reason: string | null | undefined) {
@@ -364,6 +383,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [scannerLocationIndex, setScannerLocationIndex] = useState(0);
   const scannerRef = useRef<Html5QrLike | null>(null);
   const scanHandledRef = useRef(false);
+  const scanSubmissionRef = useRef<PickingSubmission | null>(null);
+  if (!scanSubmissionRef.current) scanSubmissionRef.current = new PickingSubmission(newPickingOperationId);
   const scannerContainerId = "picking-scanner";
 
   const manager = canManagePicking(user);
@@ -1980,32 +2001,6 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     setScanEntries(prev => prev.length <= 1 ? prev : prev.filter((_, rowIndex) => rowIndex !== index));
   }
 
-  async function scannedCodeMatchesActiveLine(scanned: string, line: PickingLine) {
-    const raw = String(scanned || "").trim();
-    const candidates = [...new Set([
-      raw,
-      cleanCode(raw),
-      fullProductCode(raw),
-    ].filter(Boolean).map(normalize))];
-    const expected = [line.product_code, line.sku, line.barcode].filter(Boolean).map(value => normalize(value));
-    if (candidates.some(candidate => expected.includes(candidate))) return true;
-
-    try {
-      const [{ data: byUpc }, { data: byAlu }, { data: byErpSku }] = await Promise.all([
-        supabase.from("codigos_barra").select("codsap,upc,alu").in("upc", candidates).not("codsap", "is", null).limit(20),
-        supabase.from("codigos_barra").select("codsap,upc,alu").in("alu", candidates).not("codsap", "is", null).limit(20),
-        supabase.from("cyclic_products").select("sku").in("erp_sku", candidates).eq("is_active", true).limit(20),
-      ]);
-      const mappedCodes = [...new Set([...(byUpc || []), ...(byAlu || [])].flatMap(row => mappedProductCodeCandidates(row as Record<string, unknown>)).map(normalize))];
-      if (mappedCodes.some(code => expected.includes(code))) return true;
-      const erpSkuCodes = [...new Set((byErpSku || []).map(row => normalize(row.sku)))];
-      return erpSkuCodes.some(code => expected.includes(code));
-    } catch (error) {
-      console.warn("No se pudo validar UPC/ALU en picking:", error);
-      return false;
-    }
-  }
-
   async function saveScan() {
     if (!user || !activeAssignment || !activeLine || !activeRequest || savingScan) return;
     const rows = scanEntries
@@ -2017,64 +2012,51 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }
     setSavingScan(true);
     try {
-      const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
-      const pickedNext = num(activeAssignment.picked_qty) + totalQty;
-      const isMatch = await scannedCodeMatchesActiveLine(scanProduct, activeLine);
-      if (!isMatch) {
-        playFeedback("error");
-        setScanFeedback({ type: "error", message: "El código leído no corresponde a la asignación." });
-        setCodeMismatch({
-          expected: [activeLine.product_code, activeLine.sku, activeLine.barcode, "UPC/ALU asociado"].filter(Boolean).join(" / "),
-          scanned: scanProduct.trim(),
-        });
-        return;
-      }
-      const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
-
-      const { data: insertedScans, error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
-        assignment_id: activeAssignment.id,
-        request_id: activeRequest.id,
-        line_id: activeLine.id,
-        picker_id: user.id,
-        picker_name: user.full_name,
-        location_code: normalize(row.location),
-        scanned_product_code: scanProduct.trim(),
-        scanned_barcode: scanProduct.trim(),
-        qty: row.qty,
-        is_match: isMatch,
-      }))).select();
-      if (scanError) {
-        playFeedback("error");
-        setScanFeedback({ type: "error", message: "No se pudo guardar el picking. Inténtalo nuevamente." });
-        toast.error("No se pudo guardar el escaneo: " + scanError.message);
+      const submission = scanSubmissionRef.current!;
+      const operationRows = rows.map(row => ({ location: normalize(row.location), qty: row.qty }));
+      let operationId: string;
+      try {
+        operationId = submission.begin({ assignmentId: activeAssignment.id, product: scanProduct.trim(), rows: operationRows });
+      } catch (error) {
+        const message = errorMessage(error);
+        toast.warning(message);
+        setScanFeedback({ type: "error", message });
         return;
       }
 
-      const updateRow: Record<string, unknown> = {
-        picked_qty: pickedNext,
-        status,
-        completed_at: status === "completado" ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString(),
-      };
-      if (activeAssignment.status === "pendiente") updateRow.started_at = new Date().toISOString();
-
-      const { error: updateError } = await supabase
-        .from("picking_assignments")
-        .update(updateRow)
-        .eq("id", activeAssignment.id);
-      if (updateError) {
+      let result: PickingScanWriteResult;
+      try {
+        result = await writePickingScan<PickingScanWriteResult>(supabase, operationId, user.id, activeAssignment.id, scanProduct.trim(), operationRows);
+        submission.confirmed();
+      } catch (error) {
+        const message = errorMessage(error);
+        const rejected = isPickingTransactionRejected(error);
+        if (rejected) submission.rejected();
+        else submission.uncertain();
         playFeedback("error");
-        setScanFeedback({ type: "error", message: "El registro se guardó, pero su avance aún se está actualizando." });
-        toast.warning("Escaneo guardado, pero no se actualizo progreso: " + updateError.message);
+        if (message.toLowerCase().includes("no coincide")) {
+          setCodeMismatch({
+            expected: [activeLine.product_code, activeLine.sku, activeLine.barcode, "UPC/ALU asociado"].filter(Boolean).join(" / "),
+            scanned: scanProduct.trim(),
+          });
+          setScanFeedback({ type: "error", message: "El código leído no corresponde a la asignación." });
+        } else if (rejected) {
+          setScanFeedback({ type: "error", message: "No se guardó el picking: corrige el dato y vuelve a intentar." });
+        } else {
+          setScanFeedback({ type: "error", message: "No se pudo confirmar la respuesta. Reintenta sin cambiar los datos; el sistema evitará duplicados." });
+        }
+        toast.error(message);
         return;
       }
 
       setScanProduct("");
       setScanEntries([{ location: "", qty: "1" }]);
       setAssignments(prev => prev.map(item => (
-        item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
+        item.id === activeAssignment.id ? { ...item, ...result.assignment } : item
       )));
-      if (insertedScans?.length) setScans(prev => [...(insertedScans as PickingScan[]), ...prev]);
+      if (result.insertedScans?.length) setScans(prev => [...result.insertedScans, ...prev.filter(item => !result.insertedScans.some(inserted => inserted.id === item.id))]);
+      const status = result.status || result.assignment?.status || "en_proceso";
+      const pickedNext = num(result.pickedQty ?? result.assignment?.picked_qty);
       const nextAssignment = status === "completado"
         ? sortedMyAssignments.find(item => item.id !== activeAssignment.id && num(item.picked_qty) < num(item.assigned_qty))
         : activeAssignment;
