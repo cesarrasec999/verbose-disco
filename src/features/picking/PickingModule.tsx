@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { BarChart3, ClipboardList, Clock, Download, Home, Printer, QrCode, RefreshCw, ScanLine, Trophy, TrendingUp, UserCircle, UserPlus, X } from "lucide-react";
+import { BarChart3, CheckCircle2, ClipboardList, Clock, Download, Home, MapPin, PackageCheck, Printer, QrCode, RefreshCw, ScanLine, Trophy, TrendingUp, UserCircle, UserPlus, Volume2, VolumeX, X, Zap } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
@@ -354,6 +354,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [scannerTarget, setScannerTarget] = useState<ScannerTarget>(null);
   const [scannerRunning, setScannerRunning] = useState(false);
   const [codeMismatch, setCodeMismatch] = useState<{ expected: string; scanned: string } | null>(null);
+  const [savingScan, setSavingScan] = useState(false);
+  const [soundFeedbackEnabled, setSoundFeedbackEnabled] = useState(true);
+  const [hapticFeedbackEnabled, setHapticFeedbackEnabled] = useState(true);
+  const [scanFeedback, setScanFeedback] = useState<{ type: "scan" | "success" | "error"; message: string } | null>(null);
   const [editingScanId, setEditingScanId] = useState("");
   const [editScanLocation, setEditScanLocation] = useState("");
   const [editScanQty, setEditScanQty] = useState("");
@@ -364,6 +368,61 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
   const manager = canManagePicking(user);
   const admin = user?.role === "Administrador";
+
+  useEffect(() => {
+    setSoundFeedbackEnabled(localStorage.getItem("picking_sound_feedback") !== "off");
+    setHapticFeedbackEnabled(localStorage.getItem("picking_haptic_feedback") !== "off");
+  }, []);
+
+  useEffect(() => {
+    if (!scanFeedback) return;
+    const timer = window.setTimeout(() => setScanFeedback(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [scanFeedback]);
+
+  const playFeedback = useCallback((type: "scan" | "success" | "error") => {
+    if (hapticFeedbackEnabled && typeof navigator !== "undefined" && "vibrate" in navigator) {
+      navigator.vibrate(type === "error" ? [70, 60, 100] : type === "success" ? [35, 45, 70] : 28);
+    }
+    if (!soundFeedbackEnabled || typeof window === "undefined") return;
+    try {
+      const AudioContextConstructor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextConstructor) return;
+      const audio = new AudioContextConstructor();
+      const oscillator = audio.createOscillator();
+      const gain = audio.createGain();
+      const frequencies = type === "error" ? [180, 0.16] : type === "success" ? [660, 0.12] : [440, 0.07];
+      oscillator.type = type === "error" ? "sawtooth" : "sine";
+      oscillator.frequency.setValueAtTime(frequencies[0], audio.currentTime);
+      gain.gain.setValueAtTime(0.0001, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.09, audio.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + frequencies[1]);
+      oscillator.connect(gain).connect(audio.destination);
+      oscillator.start();
+      oscillator.stop(audio.currentTime + frequencies[1] + 0.02);
+      oscillator.addEventListener("ended", () => void audio.close());
+    } catch {
+      // El aviso visual siempre queda disponible, incluso si el navegador bloquea audio.
+    }
+  }, [hapticFeedbackEnabled, soundFeedbackEnabled]);
+
+  function toggleSoundFeedback() {
+    setSoundFeedbackEnabled(previous => {
+      const next = !previous;
+      localStorage.setItem("picking_sound_feedback", next ? "on" : "off");
+      return next;
+    });
+  }
+
+  function toggleHapticFeedback() {
+    setHapticFeedbackEnabled(previous => {
+      const next = !previous;
+      localStorage.setItem("picking_haptic_feedback", next ? "on" : "off");
+      if (next && typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(25);
+      return next;
+    });
+  }
+
   // Una fecha anterior en Asignación es una consulta de historial: muestra el
   // requerimiento aunque RMS ya lo haya recepcionado, pero sin permitir cambios.
   const historicalAssignmentView = manager && panel === "asignacion" && (!assignmentDate || assignmentDate < todayISO());
@@ -962,6 +1021,21 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     [allScanRows, filteredMyAssignmentKeys, selectedRequesterStore, user]
   );
 
+  const operatorInsights = useMemo(() => {
+    const totalCodes = filteredMyAssignments.length;
+    const completedCodes = filteredMyAssignments.filter(assignment => isAssignmentComplete(assignment)).length;
+    const visitedLocations = new Set(operatorScanRows.map(row => cleanLocationLabel(row.scan.location_code)).filter(Boolean));
+    const timestamps = operatorScanRows
+      .map(row => new Date(row.scan.created_at || "").getTime())
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const elapsedMinutes = timestamps.length > 0 ? Math.max(1, Math.round((Date.now() - timestamps[0]) / 60000)) : 0;
+    const pickedPerMinute = elapsedMinutes > 0 && operatorTotals.picked > 0 ? operatorTotals.picked / elapsedMinutes : 0;
+    const remaining = Math.max(0, operatorTotals.assigned - operatorTotals.picked);
+    const etaMinutes = pickedPerMinute > 0 ? Math.ceil(remaining / pickedPerMinute) : null;
+    return { totalCodes, completedCodes, visitedLocations: visitedLocations.size, elapsedMinutes, etaMinutes, remaining };
+  }, [filteredMyAssignments, operatorScanRows, operatorTotals.assigned, operatorTotals.picked]);
+
   const loadData = useCallback(async (currentUser: CyclicUser) => {
     setLoading(true);
     const currentUserCanManage = canManagePicking(currentUser);
@@ -1439,6 +1513,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
               setScanEntries(prev => prev.map((row, index) => index === scannerLocationIndex ? { ...row, location: clean } : row));
             }
             if (scannerTarget === "product") setScanProduct(clean);
+            playFeedback("scan");
+            setScanFeedback({ type: "scan", message: scannerTarget === "location" ? "Ubicación leída. Ingresa o confirma la cantidad." : "Código leído. Ahora escanea la ubicación." });
             void closeScanner();
           },
           undefined
@@ -1455,7 +1531,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       cancelled = true;
       void closeScanner();
     };
-  }, [closeScanner, scannerLocationIndex, scannerTarget]);
+  }, [closeScanner, playFeedback, scannerLocationIndex, scannerTarget]);
 
   useEffect(() => {
     const raw = localStorage.getItem("cyclic_user");
@@ -1477,6 +1553,25 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadData]);
+
+  // Actualiza únicamente la fila modificada: el validador ve el avance al
+  // instante sin relanzar la carga paginada completa ni afectar al escaneo.
+  useEffect(() => {
+    if (!user) return;
+    const channel = supabase
+      .channel(`picking-live-${user.id}-${panel}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "picking_assignments" }, payload => {
+        const changed = payload.new as PickingAssignment;
+        setAssignments(previous => previous.map(row => row.id === changed.id ? { ...row, ...changed } : row));
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "picking_scans" }, payload => {
+        const incoming = payload.new as PickingScan;
+        if (!manager && incoming.picker_id !== user.id) return;
+        setScans(previous => previous.some(row => row.id === incoming.id) ? previous : [incoming, ...previous]);
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [manager, panel, user]);
 
   const operatorDateLoadedRef = useRef(false);
   useEffect(() => {
@@ -1912,7 +2007,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   }
 
   async function saveScan() {
-    if (!user || !activeAssignment || !activeLine || !activeRequest) return;
+    if (!user || !activeAssignment || !activeLine || !activeRequest || savingScan) return;
     const rows = scanEntries
       .map(row => ({ location: cleanLocationLabel(row.location), qtyText: row.qty.trim(), qty: num(row.qty) }))
       .filter(row => row.location || row.qtyText);
@@ -1920,59 +2015,76 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       toast.warning("Escanea producto y completa ubicacion/cantidad en todas las lineas.");
       return;
     }
-    const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
-    const pickedNext = num(activeAssignment.picked_qty) + totalQty;
-    const isMatch = await scannedCodeMatchesActiveLine(scanProduct, activeLine);
-    if (!isMatch) {
-      setCodeMismatch({
-        expected: [activeLine.product_code, activeLine.sku, activeLine.barcode, "UPC/ALU asociado"].filter(Boolean).join(" / "),
-        scanned: scanProduct.trim(),
-      });
-      return;
+    setSavingScan(true);
+    try {
+      const totalQty = rows.reduce((sum, row) => sum + row.qty, 0);
+      const pickedNext = num(activeAssignment.picked_qty) + totalQty;
+      const isMatch = await scannedCodeMatchesActiveLine(scanProduct, activeLine);
+      if (!isMatch) {
+        playFeedback("error");
+        setScanFeedback({ type: "error", message: "El código leído no corresponde a la asignación." });
+        setCodeMismatch({
+          expected: [activeLine.product_code, activeLine.sku, activeLine.barcode, "UPC/ALU asociado"].filter(Boolean).join(" / "),
+          scanned: scanProduct.trim(),
+        });
+        return;
+      }
+      const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
+
+      const { data: insertedScans, error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
+        assignment_id: activeAssignment.id,
+        request_id: activeRequest.id,
+        line_id: activeLine.id,
+        picker_id: user.id,
+        picker_name: user.full_name,
+        location_code: normalize(row.location),
+        scanned_product_code: scanProduct.trim(),
+        scanned_barcode: scanProduct.trim(),
+        qty: row.qty,
+        is_match: isMatch,
+      }))).select();
+      if (scanError) {
+        playFeedback("error");
+        setScanFeedback({ type: "error", message: "No se pudo guardar el picking. Inténtalo nuevamente." });
+        toast.error("No se pudo guardar el escaneo: " + scanError.message);
+        return;
+      }
+
+      const updateRow: Record<string, unknown> = {
+        picked_qty: pickedNext,
+        status,
+        completed_at: status === "completado" ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      };
+      if (activeAssignment.status === "pendiente") updateRow.started_at = new Date().toISOString();
+
+      const { error: updateError } = await supabase
+        .from("picking_assignments")
+        .update(updateRow)
+        .eq("id", activeAssignment.id);
+      if (updateError) {
+        playFeedback("error");
+        setScanFeedback({ type: "error", message: "El registro se guardó, pero su avance aún se está actualizando." });
+        toast.warning("Escaneo guardado, pero no se actualizo progreso: " + updateError.message);
+        return;
+      }
+
+      setScanProduct("");
+      setScanEntries([{ location: "", qty: "1" }]);
+      setAssignments(prev => prev.map(item => (
+        item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
+      )));
+      if (insertedScans?.length) setScans(prev => [...(insertedScans as PickingScan[]), ...prev]);
+      const nextAssignment = status === "completado"
+        ? sortedMyAssignments.find(item => item.id !== activeAssignment.id && num(item.picked_qty) < num(item.assigned_qty))
+        : activeAssignment;
+      setActiveAssignmentId(nextAssignment?.id || "");
+      playFeedback("success");
+      setScanFeedback({ type: "success", message: status === "completado" ? "Código completado. Continúa con el siguiente asignado." : `Picking registrado: faltan ${formatQty(Math.max(0, num(activeAssignment.assigned_qty) - pickedNext))}.` });
+      toast.success(status === "completado" ? "Código completado." : "Picking registrado.");
+    } finally {
+      setSavingScan(false);
     }
-    const status = pickedNext >= num(activeAssignment.assigned_qty) ? "completado" : "en_proceso";
-
-    const { data: insertedScans, error: scanError } = await supabase.from("picking_scans").insert(rows.map(row => ({
-      assignment_id: activeAssignment.id,
-      request_id: activeRequest.id,
-      line_id: activeLine.id,
-      picker_id: user.id,
-      picker_name: user.full_name,
-      location_code: normalize(row.location),
-      scanned_product_code: scanProduct.trim(),
-      scanned_barcode: scanProduct.trim(),
-      qty: row.qty,
-      is_match: isMatch,
-    }))).select();
-    if (scanError) {
-      toast.error("No se pudo guardar el escaneo: " + scanError.message);
-      return;
-    }
-
-    const updateRow: Record<string, unknown> = {
-      picked_qty: pickedNext,
-      status,
-      completed_at: status === "completado" ? new Date().toISOString() : null,
-      updated_at: new Date().toISOString(),
-    };
-    if (activeAssignment.status === "pendiente") updateRow.started_at = new Date().toISOString();
-
-    const { error: updateError } = await supabase
-      .from("picking_assignments")
-      .update(updateRow)
-      .eq("id", activeAssignment.id);
-    if (updateError) {
-      toast.warning("Escaneo guardado, pero no se actualizo progreso: " + updateError.message);
-      return;
-    }
-
-    setScanProduct("");
-    setScanEntries([{ location: "", qty: "1" }]);
-    setAssignments(prev => prev.map(item => (
-      item.id === activeAssignment.id ? { ...item, picked_qty: pickedNext, status } : item
-    )));
-    if (insertedScans?.length) setScans(prev => [...(insertedScans as PickingScan[]), ...prev]);
-    toast.success("Picking registrado.");
   }
 
   function startEditScan(scan: PickingScan) {
@@ -3391,9 +3503,18 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           <div className="mt-2 space-y-3">
             <section className="rounded-2xl border bg-white p-2.5 shadow-sm">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-black">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)}</p>
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">Mi avance de picking</p>
+                  <p className="text-sm font-black text-slate-950">{formatQty(operatorTotals.picked)} / {formatQty(operatorTotals.assigned)} unidades</p>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-black text-violet-700">{operatorTotals.progress}%</span>
+                  <button type="button" onClick={toggleSoundFeedback} aria-pressed={soundFeedbackEnabled} className={`grid h-7 w-7 place-items-center rounded-lg border ${soundFeedbackEnabled ? "border-violet-200 bg-violet-50 text-violet-700" : "text-slate-400"}`} title={soundFeedbackEnabled ? "Sonido activado" : "Sonido desactivado"}>
+                    {soundFeedbackEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                  </button>
+                  <button type="button" onClick={toggleHapticFeedback} aria-pressed={hapticFeedbackEnabled} className={`grid h-7 w-7 place-items-center rounded-lg border ${hapticFeedbackEnabled ? "border-violet-200 bg-violet-50 text-violet-700" : "text-slate-400"}`} title={hapticFeedbackEnabled ? "Vibración activada" : "Vibración desactivada"}>
+                    <Zap size={15} />
+                  </button>
                   {pickingDate !== todayISO() && (
                     <button
                       type="button"
@@ -3408,9 +3529,16 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                   )}
                 </div>
               </div>
-              <div className="mt-1.5 h-1.5 rounded-full bg-slate-100">
-                <div className="h-1.5 rounded-full bg-violet-600" style={{ width: `${operatorTotals.progress}%` }} />
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label="Avance de unidades" aria-valuemin={0} aria-valuemax={100} aria-valuenow={operatorTotals.progress}>
+                <div className="h-full rounded-full bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 transition-all duration-500" style={{ width: `${operatorTotals.progress}%` }} />
               </div>
+              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                <div className="rounded-xl bg-violet-50 px-2 py-1.5"><p className="text-[10px] font-black uppercase text-violet-500">Códigos</p><p className="text-sm font-black text-violet-950">{operatorInsights.completedCodes}/{operatorInsights.totalCodes}</p></div>
+                <div className="rounded-xl bg-emerald-50 px-2 py-1.5"><p className="text-[10px] font-black uppercase text-emerald-600">Unidades</p><p className="text-sm font-black text-emerald-950">{formatQty(operatorTotals.picked)}</p></div>
+                <div className="rounded-xl bg-sky-50 px-2 py-1.5"><p className="text-[10px] font-black uppercase text-sky-600">Ubicaciones</p><p className="text-sm font-black text-sky-950">{operatorInsights.visitedLocations}</p></div>
+                <div className="rounded-xl bg-amber-50 px-2 py-1.5"><p className="text-[10px] font-black uppercase text-amber-600">Por recoger</p><p className="text-sm font-black text-amber-950">{formatQty(operatorInsights.remaining)}</p></div>
+              </div>
+              {operatorInsights.elapsedMinutes > 0 && <p className="mt-2 flex items-center gap-1 text-[11px] font-bold text-slate-500"><Clock size={13} /> {operatorInsights.elapsedMinutes} min en ruta{operatorInsights.etaMinutes !== null ? ` · estimado restante: ${operatorInsights.etaMinutes} min` : ""}</p>}
               <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 <input
                   type="date"
@@ -3451,6 +3579,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                 </select>
               </div>
             </section>
+
+            <div aria-live="polite" className={`overflow-hidden transition-all duration-300 ${scanFeedback ? "max-h-24 opacity-100" : "max-h-0 opacity-0"}`}>
+              {scanFeedback && <div className={`flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-black ${scanFeedback.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : scanFeedback.type === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-sky-200 bg-sky-50 text-sky-800"}`}>
+                {scanFeedback.type === "success" ? <CheckCircle2 size={18} /> : scanFeedback.type === "error" ? <X size={18} /> : <ScanLine size={18} />}
+                {scanFeedback.message}
+              </div>}
+            </div>
 
             <section className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-center justify-between">
@@ -3524,10 +3659,21 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                             </div>
                           </div>
 
+                          <div className="mt-3 rounded-xl border border-violet-100 bg-white p-2.5">
+                            <div className="flex items-center justify-between gap-2 text-xs font-black">
+                              <span className="flex items-center gap-1 text-violet-700"><PackageCheck size={15} /> Progreso de este código</span>
+                              <span>{formatQty(pickedQty)} / {formatQty(assignedQty)} · faltan {formatQty(pendingQty)}</span>
+                            </div>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
+                              <div className="h-full rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500 transition-all duration-500" style={{ width: `${pct(pickedQty, assignedQty)}%` }} />
+                            </div>
+                            <div className="mt-2 flex items-center gap-1 text-[11px] font-bold text-slate-600"><MapPin size={13} className="text-emerald-600" /> {cardLocations.length > 0 ? `Recoje en: ${cardLocations.map(cleanLocationLabel).join(" · ")}` : "Sin ubicación registrada; reporta la incidencia antes de continuar."}</div>
+                          </div>
+
                           <div className="mt-3 grid gap-2">
                             <div className="grid grid-cols-[1fr_auto] gap-2">
-                              <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold" placeholder="Escanear producto o barra" />
-                              <button onClick={() => setScannerTarget("product")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white" title="Abrir escaner de producto">
+                              <input value={scanProduct} onChange={event => setScanProduct(event.target.value)} className="min-w-0 rounded-xl border bg-white px-3 py-2 text-sm font-bold shadow-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" placeholder="Escanear producto o barra" aria-label="Código de producto escaneado" />
+                              <button onClick={() => setScannerTarget("product")} className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white shadow-sm hover:bg-slate-800" title="Abrir escaner de producto">
                                 <QrCode size={18} />
                               </button>
                             </div>
@@ -3540,19 +3686,19 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                                       value={entry.location}
                                       onChange={event => updateScanEntry(index, "location", event.target.value)}
                                       list={`picking-locations-${activeLine.id}-${index}`}
-                                      className="min-w-0 rounded-xl border px-3 py-2 text-sm font-bold uppercase"
+                                      className="min-w-0 rounded-xl border px-3 py-2 text-sm font-bold uppercase outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
                                       placeholder="Escanear o elegir ubicacion"
                                       autoFocus={index === 0}
                                     />
                                     <button
                                       onClick={() => { setScannerLocationIndex(index); setScannerTarget("location"); }}
-                                      className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white"
+                                      className="grid h-10 w-10 place-items-center rounded-xl bg-slate-950 text-white shadow-sm hover:bg-slate-800"
                                       title="Abrir escaner de ubicacion"
                                     >
                                       <QrCode size={18} />
                                     </button>
                                   </div>
-                                  <input value={entry.qty} onChange={event => updateScanEntry(index, "qty", event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold" placeholder="Cantidad" inputMode="decimal" />
+                                  <input value={entry.qty} onChange={event => updateScanEntry(index, "qty", event.target.value)} className="rounded-xl border px-3 py-2 text-sm font-bold outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" placeholder="Cantidad" inputMode="decimal" />
                                   <button onClick={addScanEntry} className="rounded-xl border px-3 py-2 text-sm font-black hover:bg-slate-50">
                                     Agregar ubicacion
                                   </button>
@@ -3566,9 +3712,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                               );
                             })}
                             <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-                              <button onClick={saveScan} className="rounded-xl bg-violet-600 px-3 py-3 text-sm font-black text-white hover:bg-violet-700">
+                              <button onClick={saveScan} disabled={savingScan} className="rounded-xl bg-violet-600 px-3 py-3 text-sm font-black text-white shadow-md shadow-violet-200 hover:bg-violet-700 disabled:cursor-wait disabled:opacity-60">
                                 <ClipboardList className="mr-1 inline" size={16} />
-                                Guardar picking
+                                {savingScan ? "Guardando..." : "Guardar picking"}
                               </button>
                               <button onClick={() => { setScanProduct(""); setScanEntries([{ location: "", qty: "1" }]); }} className="rounded-xl border bg-white px-3 py-3 text-sm font-black hover:bg-slate-50">
                                 Limpiar
@@ -3580,7 +3726,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     </div>
                   );
                 })}
-                {openOperatorAssignments.length === 0 && <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">{selectedRequesterStore === "all" ? "No tienes codigos pendientes." : "No tienes codigos pendientes para esta tienda."}</p>}
+                {openOperatorAssignments.length === 0 && (operatorTotals.assigned > 0 ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 text-center md:col-span-2 xl:col-span-3"><CheckCircle2 className="mx-auto text-emerald-600" size={32} /><h3 className="mt-2 text-lg font-black text-emerald-950">Picking completado</h3><p className="mt-1 text-sm font-bold text-emerald-800">Completaste {operatorInsights.completedCodes} códigos, {formatQty(operatorTotals.picked)} unidades y {operatorInsights.visitedLocations} ubicaciones.</p></div> : <p className="p-6 text-center text-sm font-bold text-slate-400 md:col-span-2 xl:col-span-3">{selectedRequesterStore === "all" ? "No tienes codigos pendientes." : "No tienes codigos pendientes para esta tienda."}</p>)}
               </div>
             </section>
 
