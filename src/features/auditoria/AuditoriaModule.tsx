@@ -58,6 +58,12 @@ type Product = {
   cost: number;
   is_active: boolean;
   system_stock?: number;
+  inventory_value?: number;
+  recommendation_type?: string;
+  metric_value?: number;
+  metric_quantity?: number;
+  period_start?: string;
+  period_end?: string;
 };
 
 type AuditSession = {
@@ -292,6 +298,10 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [recommendationKind, setRecommendationKind] = useState<"RETORNO" | "VENTA_ACTIVA" | "VENTA_HISTORICA" | null>(null);
+  const [recommendationPage, setRecommendationPage] = useState(0);
+  const [recommendationHasNext, setRecommendationHasNext] = useState(false);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [scanCode, setScanCode] = useState("");
   const [activeItem, setActiveItem] = useState<AuditItem | null>(null);
   const [activeProductLocations, setActiveProductLocations] = useState<ProductLocation[]>([]);
@@ -981,6 +991,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     setActiveItem(null);
     setResults([]);
     setSelected(new Set());
+    setRecommendationKind(null);
+    setRecommendationPage(0);
+    setRecommendationHasNext(false);
     setScanCode("");
     setLocation("");
     setQty("");
@@ -1097,6 +1110,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     setCounts([]);
     setResults([]);
     setSelected(new Set());
+    setRecommendationKind(null);
+    setRecommendationPage(0);
+    setRecommendationHasNext(false);
     sessionStorage.setItem(AUDIT_SESSION_ID_KEY, data.id);
     await loadSessions();
     setMessage("Sesión de auditoría iniciada.");
@@ -1160,6 +1176,65 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     setSelected(new Set(enriched.map(p => p.id)));
     setLoading(false);
     setMessage(`${enriched.length} productos encontrados en la BD. Se seleccionaron todos.`);
+  }
+
+  async function loadAuditRecommendations(kind: "RETORNO" | "VENTA_ACTIVA" | "VENTA_HISTORICA", page = 0) {
+    if (!canManageAudit) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
+    if (!session || session.status !== "in_progress") {
+      setMessage("Selecciona una sesión de auditoría en progreso antes de recomendar códigos.");
+      return;
+    }
+    if (recommendationLoading) return;
+
+    setRecommendationKind(kind);
+    setRecommendationLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("get_audit_assignment_recommendations_page", {
+        p_store_id: session.store_id,
+        p_session_id: session.id,
+        p_kind: kind,
+        p_reference_date: todayISO(),
+        p_limit: 51,
+        p_offset: page * 50,
+      });
+      if (error) throw error;
+      const pageRows = (data || []) as Array<Record<string, unknown>>;
+      const rows = pageRows.slice(0, 50).map(row => ({
+        id: String(row.product_id || ""),
+        sku: String(row.sku || ""),
+        barcode: row.barcode ? String(row.barcode) : null,
+        description: String(row.description || ""),
+        unit: String(row.unit || ""),
+        cost: Number(row.cost || 0),
+        is_active: true,
+        system_stock: Number(row.system_stock || 0),
+        inventory_value: Number(row.inventory_value || 0),
+        recommendation_type: String(row.recommendation_type || kind),
+        metric_value: Number(row.metric_value || 0),
+        metric_quantity: Number(row.metric_quantity || 0),
+        period_start: row.period_start ? String(row.period_start) : "",
+        period_end: row.period_end ? String(row.period_end) : "",
+      })).filter(row => row.id && row.sku) as Product[];
+      setResults(rows);
+      setSelected(new Set(rows.map(row => row.id)));
+      setRecommendationKind(kind);
+      setRecommendationPage(page);
+      setRecommendationHasNext(pageRows.length > 50);
+      const labels = {
+        RETORNO: "retornos / notas de crédito",
+        VENTA_ACTIVA: "ventas activas RMS",
+        VENTA_HISTORICA: "ventas valorizadas",
+      };
+      const periodStart = rows[0]?.period_start || "";
+      const periodEnd = rows[0]?.period_end || "";
+      setMessage(rows.length
+        ? `${rows.length} códigos recomendados por ${labels[kind]} (${periodStart} a ${periodEnd}). Página ${page + 1}; puedes continuar sin límite.`
+        : `No hay más códigos recomendables por ${labels[kind]} en este período.`);
+    } catch (error) {
+      setMessage("No se pudo cargar la recomendación: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setRecommendationLoading(false);
+    }
   }
 
   async function addSelectedItems() {
@@ -2497,6 +2572,23 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
               </div>}
 
               {canManageAudit && <div className="rounded-2xl border bg-white p-4 shadow-sm">
+                <h2 className="font-black">Recomendaciones RMS para auditoría</h2>
+                <p className="mt-1 text-sm text-slate-500">Carga 50 códigos por página. Las siguientes páginas no tienen límite y se consultan en el servidor para evitar timeouts.</p>
+                <div className="mt-3 grid gap-2">
+                  <button onClick={() => void loadAuditRecommendations("RETORNO")} disabled={!session || session.status !== "in_progress" || recommendationLoading} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2.5 text-left text-xs font-black text-violet-800 disabled:opacity-40">
+                    {recommendationLoading && recommendationKind === "RETORNO" ? "Calculando…" : "Recomendar 50 retornos / notas de crédito"}
+                  </button>
+                  <button onClick={() => void loadAuditRecommendations("VENTA_ACTIVA")} disabled={!session || session.status !== "in_progress" || recommendationLoading} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-left text-xs font-black text-amber-800 disabled:opacity-40">
+                    {recommendationLoading && recommendationKind === "VENTA_ACTIVA" ? "Calculando…" : "Recomendar 50 ventas activas RMS"}
+                  </button>
+                  <button onClick={() => void loadAuditRecommendations("VENTA_HISTORICA")} disabled={!session || session.status !== "in_progress" || recommendationLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-left text-xs font-black text-emerald-800 disabled:opacity-40">
+                    {recommendationLoading && recommendationKind === "VENTA_HISTORICA" ? "Calculando…" : "Recomendar 50 más vendidos valorizados"}
+                  </button>
+                </div>
+                {recommendationKind && <ReadPagination page={recommendationPage} hasNext={recommendationHasNext} busy={recommendationLoading} onPage={page => void loadAuditRecommendations(recommendationKind, page)} />}
+              </div>}
+
+              {canManageAudit && <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <h2 className="font-black">Asignar códigos por Excel</h2>
                 <p className="mt-1 text-sm text-slate-500">Columna A: código. La primera fila debe ser el encabezado y no se asigna.</p>
                 <input
@@ -2560,6 +2652,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                           <div className="font-black">{p.sku}</div>
                           <div className="truncate text-slate-600">{p.description}</div>
                           <div className="text-xs text-slate-400">UM: {p.unit} - Stock: {number2(p.system_stock || 0)} - Costo: {money(p.cost)}</div>
+                          {p.recommendation_type && <div className="mt-1 text-xs font-bold text-blue-700">{p.recommendation_type} · Valorizado: {money(p.metric_value || 0)} · Cant.: {number2(p.metric_quantity || 0)}</div>}
                         </div>
                       </label>
                     ))}
