@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const sql = fs.readFileSync('supabase/migrations/20260913130000_audit_recommendations_paged.sql', 'utf8');
+const cyclicSql = fs.readFileSync('supabase/migrations/20260913133000_cyclic_recommendations_all_paged.sql', 'utf8');
 const audit = fs.readFileSync('src/features/auditoria/AuditoriaModule.tsx', 'utf8');
 const cyclic = fs.readFileSync('src/features/conteos-ciclicos/CiclicosShell.tsx', 'utf8');
 
@@ -28,4 +29,13 @@ test('cyclic sales recommendations no longer load hundreds of rows or client-sid
   assert.match(cyclic, /rawRows\.slice\(0, 50\)/);
   assert.match(cyclic, /Recomendar 50 más vendidos/);
   assert.doesNotMatch(cyclic, /p_limit: 200/);
+});
+
+test('all cyclic recommendation types use indexed server pagination', () => {
+  assert.match(cyclicSql, /get_cyclic_assignment_recommendations_page/i);
+  assert.match(sql, /idx_cyclic_assignments_recommendation_store_date_product/i);
+  assert.match(cyclicSql, /limit least\(greatest\(coalesce\(p_limit, 51\), 1\), 101\)/i);
+  assert.match(cyclic, /p_kind: "MIXTA"/);
+  assert.match(cyclic, /p_kind: "NO_ABC_VALORIZADO"/);
+  assert.match(cyclic, /setBaseRecommendationHasNext\(rawRows\.length > 50\)/);
 });

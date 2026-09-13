@@ -285,6 +285,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [assignSearchNotice, setAssignSearchNotice] = useState("");
     const [assignBusy, setAssignBusy] = useState(false);
     const [assignRecommendationsLoading, setAssignRecommendationsLoading] = useState(false);
+    const [baseRecommendationPage, setBaseRecommendationPage] = useState(0);
+    const [baseRecommendationHasNext, setBaseRecommendationHasNext] = useState(false);
+    const [baseRecommendationKind, setBaseRecommendationKind] = useState<"MIXTA" | "NO_ABC_VALORIZADO" | null>(null);
     const [salesRecommendationsLoading, setSalesRecommendationsLoading] = useState(false);
     const [salesRecommendationPage, setSalesRecommendationPage] = useState(0);
     const [salesRecommendationHasNext, setSalesRecommendationHasNext] = useState(false);
@@ -3104,7 +3107,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         setAssignSelectedIds(new Set(nextResults.slice(0, 30).map(product => product.id)));
     }
 
-    async function loadAssignmentRecommendations() {
+    async function loadAssignmentRecommendations(page = 0) {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
         if (!valStoreId || valStoreId === ALL_STORES_VALUE) {
@@ -3116,17 +3119,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         setAssignRecommendationsLoading(true);
         setAssignSearchNotice("");
         try {
-            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations", {
+            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations_page", {
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
-                p_a_limit: 25,
-                p_other_limit: 25,
+                p_kind: "MIXTA",
+                p_limit: 51,
+                p_offset: page * 50,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion. Ejecuta el SQL get_cyclic_assignment_recommendations en Supabase: " + error.message);
                 return;
             }
-            const rows = ((data || []) as any[]).map(row => ({
+            const rawRows = (data || []) as any[];
+            const rows = rawRows.slice(0, 50).map(row => ({
                 id: String(row.product_id || row.id || ""),
                 sku: String(row.sku || ""),
                 barcode: row.barcode || null,
@@ -3144,10 +3149,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setAssignUnitFilter("");
             setAssignResults(rows);
             setAssignSelectedIds(new Set(rows.map(product => product.id)));
+            setBaseRecommendationKind("MIXTA");
+            setBaseRecommendationPage(page);
+            setBaseRecommendationHasNext(rawRows.length > 50);
+            setSalesRecommendationsActive(false);
             const rotationRecommended = rows.filter(row => row.recommendation_group !== "VALORIZADO");
             const valuedRecommended = rows.filter(row => row.recommendation_group === "VALORIZADO");
             setAssignSearchNotice(rows.length > 0
-                ? `Recomendacion SQL cargada: ${rotationRecommended.filter(row => row.rotation_category === "A").length} A, ${rotationRecommended.filter(row => row.rotation_category === "B").length} B, ${rotationRecommended.filter(row => row.rotation_category === "C").length} C, ${rotationRecommended.filter(row => !["A", "B", "C"].includes(String(row.rotation_category || ""))).length} otros y ${valuedRecommended.length} de mayor valorizado.`
+                ? `Recomendacion SQL cargada: ${rotationRecommended.filter(row => row.rotation_category === "A").length} A, ${rotationRecommended.filter(row => row.rotation_category === "B").length} B, ${rotationRecommended.filter(row => row.rotation_category === "C").length} C, ${rotationRecommended.filter(row => !["A", "B", "C"].includes(String(row.rotation_category || ""))).length} otros y ${valuedRecommended.length} de mayor valorizado. Página ${page + 1}; continúa sin límite.`
                 : "No se encontraron codigos recomendables con stock para esta tienda/fecha."
             );
         } catch (error: any) {
@@ -3258,6 +3267,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setSalesRecommendationPage(page);
             setSalesRecommendationHasNext(rawRows.length > 50);
             setSalesRecommendationsActive(true);
+            setBaseRecommendationKind(null);
             const periodStart = finalRows[0]?.sales_period_start || rawRows[0]?.sales_period_start || "";
             const periodEnd = finalRows[0]?.sales_period_end || rawRows[0]?.sales_period_end || "";
             setAssignSearchNotice(finalRows.length > 0
@@ -3271,7 +3281,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         }
     }
 
-    async function loadNonAbcValueAssignmentRecommendations() {
+    async function loadNonAbcValueAssignmentRecommendations(page = 0) {
         if (!canValidateCyclic) { showMessage("Tu usuario tiene acceso de solo lectura.", "error"); return; }
         if (!valDate) { showMessage("Selecciona fecha.", "error"); return; }
         if (!valStoreId || valStoreId === ALL_STORES_VALUE) {
@@ -3283,20 +3293,19 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         setNonAbcValueRecommendationsLoading(true);
         setAssignSearchNotice("");
         try {
-            // Se solicita un limite ABC muy alto para que el RPC excluya todos
-            // los A/B/C antes de devolver los 30 de mayor valorizado.
-            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations", {
+            const { data, error } = await supabase.rpc("get_cyclic_assignment_recommendations_page", {
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
-                p_a_limit: 100000,
-                p_other_limit: 50,
+                p_kind: "NO_ABC_VALORIZADO",
+                p_limit: 51,
+                p_offset: page * 50,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion de valorizados no ABC: " + error.message);
                 return;
             }
-            const rows = ((data || []) as any[])
-                .filter(row => String(row.recommendation_group || "") === "VALORIZADO")
+            const rawRows = (data || []) as any[];
+            const rows = rawRows.slice(0, 50)
                 .filter(row => !["A", "B", "C"].includes(String(row.rotation_category || "").trim().toUpperCase()))
                 .map(row => ({
                     id: String(row.product_id || row.id || ""),
@@ -3311,15 +3320,18 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                     inventory_value: Number(row.inventory_value || 0),
                     recommendation_group: "VALORIZADO_NO_ABC",
                 }))
-                .filter(product => product.id && product.sku)
-                .slice(0, 50) as Product[];
+                .filter(product => product.id && product.sku) as Product[];
 
             setAssignSearch("");
             setAssignUnitFilter("");
             setAssignResults(rows);
             setAssignSelectedIds(new Set(rows.map(product => product.id)));
+            setBaseRecommendationKind("NO_ABC_VALORIZADO");
+            setBaseRecommendationPage(page);
+            setBaseRecommendationHasNext(rawRows.length > 50);
+            setSalesRecommendationsActive(false);
             setAssignSearchNotice(rows.length > 0
-                ? `Recomendacion cargada: ${rows.length} productos de mayor valorizado sin rotacion A/B/C.`
+                ? `Recomendacion cargada: ${rows.length} productos de mayor valorizado sin rotacion A/B/C. Página ${page + 1}; continúa sin límite.`
                 : "No se encontraron productos valorizados fuera de A/B/C con stock disponible para esta tienda/fecha."
             );
         } catch (error: any) {
@@ -8760,14 +8772,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                     <div className="flex flex-wrap items-center gap-2">
                                         <button
                                             type="button"
-                                            onClick={loadAssignmentRecommendations}
+                                            onClick={() => void loadAssignmentRecommendations(0)}
                                             disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-40"
                                         >
                                             {assignRecommendationsLoading ? "Calculando..." : "Recomendar 50 códigos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
-                                            25 rotación A; si no alcanza, completa con B y luego C + 25 mayor valorizado
+                                            Prioriza rotación A, luego B/C y continúa con mayor valorizado; páginas ilimitadas de 50
                                         </span>
                                         <button
                                             type="button"
@@ -8782,7 +8794,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         </span>
                                         <button
                                             type="button"
-                                            onClick={loadNonAbcValueAssignmentRecommendations}
+                                            onClick={() => void loadNonAbcValueAssignmentRecommendations(0)}
                                             disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-xs font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-40"
                                         >
@@ -8796,6 +8808,16 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
                                             {assignSearchNotice}
                                         </div>
+                                    )}
+                                    {baseRecommendationKind && (
+                                        <ReadPagination
+                                            page={baseRecommendationPage}
+                                            hasNext={baseRecommendationHasNext}
+                                            busy={assignRecommendationsLoading || nonAbcValueRecommendationsLoading}
+                                            onPage={page => void (baseRecommendationKind === "MIXTA"
+                                                ? loadAssignmentRecommendations(page)
+                                                : loadNonAbcValueAssignmentRecommendations(page))}
+                                        />
                                     )}
                                     {salesRecommendationsActive && (
                                         <ReadPagination
