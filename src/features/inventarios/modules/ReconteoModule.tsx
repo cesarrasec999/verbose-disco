@@ -9,6 +9,7 @@ type ReconteoModuleProps = {
   isAdmin: boolean;
   validationEnabled: boolean;
   isSelectedSessionFinished: boolean;
+  assigningRecount: boolean;
   recountFilter: RecountFilter;
   recountOperatorId: string;
   sessionOperators: InventoryOperator[];
@@ -35,6 +36,7 @@ export function ReconteoModule({
   isAdmin,
   validationEnabled,
   isSelectedSessionFinished,
+  assigningRecount,
   recountFilter,
   recountOperatorId,
   sessionOperators,
@@ -73,13 +75,13 @@ export function ReconteoModule({
                 {validationEnabled ? "Validacion activa" : "Activar validacion"}
               </button>
             )}
-            <button onClick={() => onAssignRecountBlock(10)} disabled={isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
-              Asignar 10 primeros
+            <button onClick={() => onAssignRecountBlock(10)} disabled={isSelectedSessionFinished || assigningRecount} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
+              {assigningRecount ? "Confirmando..." : "Asignar 10 primeros"}
             </button>
-            <button onClick={() => onAssignRecountBlock(20)} disabled={isSelectedSessionFinished} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-              Asignar 20 primeros
+            <button onClick={() => onAssignRecountBlock(20)} disabled={isSelectedSessionFinished || assigningRecount} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+              {assigningRecount ? "Confirmando..." : "Asignar 20 primeros"}
             </button>
-            <button onClick={onAssignSelectedRecountRows} disabled={selectedPendingCount === 0 || isSelectedSessionFinished} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
+            <button onClick={onAssignSelectedRecountRows} disabled={selectedPendingCount === 0 || isSelectedSessionFinished || assigningRecount} className="rounded-xl border px-4 py-3 text-sm font-black text-slate-800 disabled:opacity-40">
               Asignar seleccionados
             </button>
           </div>

@@ -322,6 +322,9 @@ export default function InventariosPage() {
   const [recountFilter, setRecountFilter] = useState<RecountFilter>("surplus");
   const recountType: RecountType = recountFilter === "missing" || recountFilter === "missing_not_counted" ? "missing" : "surplus";
   const [recountOperatorId, setRecountOperatorId] = useState("");
+  const [assigningRecount, setAssigningRecount] = useState(false);
+  const assigningRecountRef = useRef(false);
+  const recountAssignmentsLoadGenRef = useRef(0);
   const [recountPrintOperatorId, setRecountPrintOperatorId] = useState("");
   const [recountDrafts, setRecountDrafts] = useState<Record<string, RecountDraft>>({});
   const [manualRecountDrafts, setManualRecountDrafts] = useState<Record<string, ManualRecountDraft>>({});
@@ -1445,6 +1448,11 @@ export default function InventariosPage() {
         "postgres_changes",
         { event: "*", schema: "public", table: "general_inventory_recount_counts", filter: `session_id=eq.${selectedSessionId}` },
         reloadInventoryCounts
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `session_id=eq.${selectedSessionId}` },
+        reloadInventoryCounts
       );
     if (validationRealtimeEnabled) {
       channel = channel
@@ -1544,7 +1552,10 @@ export default function InventariosPage() {
       .channel(`gi-operator-recounts-${selectedSessionId}-${operator.id}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `assigned_operator_id=eq.${operator.id}` },
+        // Si una asignación cambia de operario, el registro actualizado ya no
+        // coincide con el filtro del operario anterior. Escuchar la sesión
+        // completa evita que ese usuario conserve el código en su pantalla.
+        { event: "*", schema: "public", table: "general_inventory_recount_items", filter: `session_id=eq.${selectedSessionId}` },
         reloadAssignedRecounts
       )
       .on(
@@ -1556,7 +1567,7 @@ export default function InventariosPage() {
       channel = channel
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `assigned_operator_id=eq.${operator.id}` },
+          { event: "*", schema: "public", table: "general_inventory_validation_items", filter: `session_id=eq.${selectedSessionId}` },
           reloadAssignedRecounts
         )
         .on(
@@ -2496,6 +2507,7 @@ export default function InventariosPage() {
   }
 
   async function loadRecountAssignments(sessionId: string, validationMode = isValidationManagerTab) {
+    const loadGen = ++recountAssignmentsLoadGenRef.current;
     const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
     const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const [operatorsRes, countOperatorsRes, recountCountOperatorsRes, itemsRes] = await Promise.all([
@@ -2512,13 +2524,17 @@ export default function InventariosPage() {
         .from(countTable)
         .select("operator_id")
         .eq("session_id", sessionId),
-      supabase
-        .from(itemTable)
-        .select("*")
-        .eq("session_id", sessionId)
-        .order("location_code", { ascending: true, nullsFirst: false })
-        .order("value_diff", { ascending: false }),
+      fetchPagedSessionRows(supabase, {
+        table: itemTable,
+        select: "*",
+        sessionId,
+        orderColumn: "id",
+      }).then(data => ({ data, error: null })).catch(error => ({ data: [] as any[], error })),
     ]);
+
+    // Una carga anterior no debe reemplazar los datos de la pestaña o capa
+    // que el usuario abrió después.
+    if (loadGen !== recountAssignmentsLoadGenRef.current) return;
 
     if (operatorsRes.error) {
       setMessage("Error leyendo operadores activos: " + operatorsRes.error.message);
@@ -2598,6 +2614,7 @@ export default function InventariosPage() {
       layer: validationMode ? "validation" : "recount",
       source_recount_item_id: row.source_recount_item_id || null,
     })) as RecountItem[]);
+    if (loadGen !== recountAssignmentsLoadGenRef.current) return;
     setRecountItems(rows);
     setReassignOperatorDrafts(Object.fromEntries(rows.map(row => [row.id, row.assigned_operator_id || ""])));
   }
@@ -3655,6 +3672,10 @@ export default function InventariosPage() {
 
   async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
     if (!ensureSelectedSessionEditable()) return;
+    if (assigningRecountRef.current) {
+      setMessage("La asignación anterior todavía se está confirmando. Espera un momento.");
+      return;
+    }
     if (!selectedSessionId || !user || !recountOperatorId) {
       setMessage("Selecciona operador activo para asignar reconteo.");
       return;
@@ -3694,21 +3715,77 @@ export default function InventariosPage() {
       return;
     }
 
-    const { error } = await supabase
-      .from(validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items")
-      .upsert(rows, { onConflict: "session_id,product_id,location_code,recount_type" });
-    if (error) {
-      setMessage(`No se pudo asignar ${validationMode ? "validacion" : "reconteo"}. Ejecuta el SQL si aun no lo hiciste: ` + error.message);
-      return;
-    }
+    assigningRecountRef.current = true;
+    setAssigningRecount(true);
+    try {
+      const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
+      const productIds = [...new Set(rows.map(row => row.product_id))];
+      const existingRows: Array<{ id: string; product_id: string; recount_type: RecountType; status: string }> = [];
 
-    setSelectedPendingRecountKeys(prev => {
-      const next = new Set(prev);
-      for (const row of sourceRows) next.delete(recountKey(row));
-      return next;
-    });
-    setMessage(`${rows.length} items asignados para ${validationMode ? "validacion" : "reconteo"}.`);
-    await loadRecountAssignments(selectedSessionId);
+      // La decisión se toma contra el estado actual del servidor, no contra
+      // una lista posiblemente antigua del navegador.
+      for (let index = 0; index < productIds.length; index += 100) {
+        const { data, error } = await supabase
+          .from(itemTable)
+          .select("id,product_id,recount_type,status")
+          .eq("session_id", selectedSessionId)
+          .eq("location_code", "CODIGO_COMPLETO")
+          .in("product_id", productIds.slice(index, index + 100));
+        if (error) throw error;
+        existingRows.push(...((data || []) as typeof existingRows));
+      }
+
+      const existingByKey = new Map(existingRows.map(row => [`${row.product_id}__${row.recount_type}`, row]));
+      const rowsToInsert = rows.filter(row => !existingByKey.has(`${row.product_id}__${row.recount_type}`));
+      let assignedCount = 0;
+
+      if (rowsToInsert.length > 0) {
+        // ON CONFLICT DO NOTHING: dos validadores pueden intentar tomar el
+        // mismo código, pero la asignación activa nunca cambia de operario.
+        const { data, error } = await supabase
+          .from(itemTable)
+          .upsert(rowsToInsert, {
+            onConflict: "session_id,product_id,location_code,recount_type",
+            ignoreDuplicates: true,
+          })
+          .select("id");
+        if (error) throw error;
+        assignedCount += (data || []).length;
+      }
+
+      const cancelledRows = rows.filter(row => existingByKey.get(`${row.product_id}__${row.recount_type}`)?.status === "cancelled");
+      for (const row of cancelledRows) {
+        const existing = existingByKey.get(`${row.product_id}__${row.recount_type}`);
+        if (!existing) continue;
+        // La condición evita que dos solicitudes reactiven y reasignen la
+        // misma fila cancelada: después de la primera ya no coincide.
+        const { data, error } = await supabase
+          .from(itemTable)
+          .update(row)
+          .eq("id", existing.id)
+          .eq("status", "cancelled")
+          .select("id");
+        if (error) throw error;
+        assignedCount += (data || []).length;
+      }
+
+      setSelectedPendingRecountKeys(prev => {
+        const next = new Set(prev);
+        for (const row of sourceRows) next.delete(recountKey(row));
+        return next;
+      });
+      const skippedCount = rows.length - assignedCount;
+      setMessage(skippedCount > 0
+        ? `${assignedCount} items asignados; ${skippedCount} ya estaban asignados y se conservaron con su operario.`
+        : `${assignedCount} items asignados para ${validationMode ? "validacion" : "reconteo"}.`
+      );
+      await loadRecountAssignments(selectedSessionId, validationMode);
+    } catch (error) {
+      setMessage(`No se pudo asignar ${validationMode ? "validacion" : "reconteo"}: ` + errorMessage(error));
+    } finally {
+      assigningRecountRef.current = false;
+      setAssigningRecount(false);
+    }
   }
 
   async function assignSelectedRecountRows() {
@@ -8582,6 +8659,7 @@ export default function InventariosPage() {
               isAdmin={user?.role === "Administrador"}
               validationEnabled={Boolean(selectedSession?.validation_enabled)}
               isSelectedSessionFinished={isSelectedSessionFinished}
+              assigningRecount={assigningRecount}
               recountFilter={recountFilter}
               recountOperatorId={recountOperatorId}
               sessionOperators={sessionOperators}
