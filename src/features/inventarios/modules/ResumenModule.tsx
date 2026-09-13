@@ -99,6 +99,29 @@ export function ResumenModule({
   const maxDifferenceValue = Math.max(Math.abs(kpis.surplusValue), Math.abs(kpis.missingValue), 1);
   const fromRow = totalSummaryRows === 0 ? 0 : ((summaryPage - 1) * SUMMARY_PAGE_SIZE) + 1;
   const toRow = Math.min(summaryPage * SUMMARY_PAGE_SIZE, totalSummaryRows);
+  const renderSummaryPagination = () => (
+    <>
+      <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
+        {totalSummaryRows === 0 ? "Sin filas" : `Mostrando ${fromRow}-${toRow} de ${totalSummaryRows}`}
+      </span>
+      <button
+        type="button"
+        onClick={() => onSummaryPageChange(Math.max(1, summaryPage - 1))}
+        disabled={summaryPage <= 1}
+        className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+      >
+        Anterior
+      </button>
+      <button
+        type="button"
+        onClick={() => onSummaryPageChange(Math.min(summaryTotalPages, summaryPage + 1))}
+        disabled={summaryPage >= summaryTotalPages}
+        className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
+      >
+        Siguiente
+      </button>
+    </>
+  );
 
   return (
     <>
@@ -154,25 +177,7 @@ export function ResumenModule({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="inline-flex items-center gap-2 font-black"><PackageSearch size={18} /> Resumen por codigo</h2>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
-                {totalSummaryRows === 0 ? "Sin filas" : `Mostrando ${fromRow}-${toRow} de ${totalSummaryRows}`}
-              </span>
-              <button
-                type="button"
-                onClick={() => onSummaryPageChange(Math.max(1, summaryPage - 1))}
-                disabled={summaryPage <= 1}
-                className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
-              >
-                Anterior
-              </button>
-              <button
-                type="button"
-                onClick={() => onSummaryPageChange(Math.min(summaryTotalPages, summaryPage + 1))}
-                disabled={summaryPage >= summaryTotalPages}
-                className="rounded-xl border px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-40"
-              >
-                Siguiente
-              </button>
+              {renderSummaryPagination()}
               <input value={summaryQuery} onChange={event => onSummaryQueryChange(event.target.value)} placeholder="Buscar código, UPC/ALU, descripción u observación" className="w-full rounded-xl border px-3 py-2 text-sm md:w-96" />
             </div>
           </div>
@@ -297,6 +302,9 @@ export function ResumenModule({
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t p-4">
+          {renderSummaryPagination()}
         </div>
       </section>
     </>
