@@ -210,6 +210,8 @@ export default function InventariosPage() {
   const [operatorPassword, setOperatorPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [finishingSession, setFinishingSession] = useState(false);
+  const finishingSessionRef = useRef(false);
   const isMobileAccess = useIsMobileAccess();
 
   const [newStoreId, setNewStoreId] = useState("");
@@ -4644,36 +4646,70 @@ export default function InventariosPage() {
   async function finishSession() {
     if (!canManageInventory) { setMessage("Tu usuario tiene acceso de solo lectura."); return; }
     if (!selectedSessionId) return;
+    if (finishingSessionRef.current) {
+      setMessage("La finalización ya se está confirmando. No es necesario volver a presionar el botón.");
+      return;
+    }
     if (selectedSession?.status === "finished") {
       setMessage("Esta sesion ya esta finalizada.");
       return;
     }
     const confirmed = window.confirm("Finalizar esta sesion? Los operarios ya no podran entrar y no se podra modificar conteo, reconteo ni stock.");
     if (!confirmed) return;
-    if (!selectedSession?.stock_frozen_at) {
-      const inserted = await saveStockSnapshotInBatches(selectedSessionId, user?.id ?? "", "Stock congelado al finalizar");
-      if (inserted === null) return;
+    finishingSessionRef.current = true;
+    setFinishingSession(true);
+    try {
+      if (!selectedSession?.stock_frozen_at) {
+        const inserted = await saveStockSnapshotInBatches(selectedSessionId, user?.id ?? "", "Stock congelado al finalizar");
+        if (inserted === null) return;
+      }
+      const finishedAt = new Date().toISOString();
+      const { error } = await supabase
+        .from("general_inventory_sessions")
+        .update({
+          status: "finished",
+          finished_at: finishedAt,
+          finished_by: user?.id ?? null,
+          finished_by_name: user?.full_name ?? null,
+          updated_at: finishedAt,
+        })
+        .eq("id", selectedSessionId);
+
+      // Si la respuesta de red se pierde justo después del commit, se
+      // consulta el estado real antes de pedirle al usuario otro intento.
+      if (error) {
+        const confirmation = await supabase
+          .from("general_inventory_sessions")
+          .select("status")
+          .eq("id", selectedSessionId)
+          .maybeSingle();
+        if (confirmation.error || confirmation.data?.status !== "finished") {
+          setMessage("No se pudo finalizar: " + error.message);
+          return;
+        }
+      }
+
+      setMessage("Inventario finalizado. Los operadores ya no podrán entrar. Las ubicaciones se actualizarán de forma automática en segundo plano.");
+
+      // Acelera la cola cuando el navegador sigue abierto. No se espera este
+      // trabajo: el cierre ya quedó confirmado y pg_cron lo reintentará aunque
+      // el usuario cierre la página.
+      void supabase.rpc("process_general_inventory_location_sync_queue", {
+        p_limit: 1,
+        p_session_id: selectedSessionId,
+      }).then(({ error: queueError }) => {
+        if (queueError) console.warn("La cola de ubicaciones continuará por cron:", queueError.message);
+      });
+
+      await loadInitial(selectedSessionId);
+      // Sin esto, la pantalla se quedaba mostrando el resumen de antes de
+      // finalizar (loadInitial solo recarga la lista de sesiones, no el
+      // resumen) — mismo fix que ya usa saveStockSnapshot() al congelar.
+      await loadSummary(selectedSessionId, true);
+    } finally {
+      finishingSessionRef.current = false;
+      setFinishingSession(false);
     }
-    const { error } = await supabase
-      .from("general_inventory_sessions")
-      .update({
-        status: "finished",
-        finished_at: new Date().toISOString(),
-        finished_by: user?.id ?? null,
-        finished_by_name: user?.full_name ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", selectedSessionId);
-    if (error) {
-      setMessage("No se pudo finalizar: " + error.message);
-      return;
-    }
-    setMessage("Inventario finalizado. Los operadores ya no podran entrar.");
-    await loadInitial(selectedSessionId);
-    // Sin esto, la pantalla se quedaba mostrando el resumen de antes de
-    // finalizar (loadInitial solo recarga la lista de sesiones, no el
-    // resumen) — mismo fix que ya usa saveStockSnapshot() al congelar.
-    await loadSummary(selectedSessionId, true);
   }
 
   async function unfinishSession() {
@@ -7897,8 +7933,8 @@ export default function InventariosPage() {
                   <LockOpen size={16} /> Descongelar stock
                 </button>
               )}
-              <button onClick={finishSession} disabled={isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                Finalizar inventario
+              <button onClick={finishSession} disabled={isSelectedSessionFinished || finishingSession} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                {finishingSession ? "Finalizando..." : "Finalizar inventario"}
               </button>
               {canAdminReopenSelectedSession && (
                 <button onClick={unfinishSession} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
@@ -8139,8 +8175,8 @@ export default function InventariosPage() {
                       <LockOpen size={16} /> Descongelar stock
                     </button>
                   )}
-                  <button onClick={finishSession} disabled={!selectedSessionId || isSelectedSessionFinished} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
-                    Finalizar inventario
+                  <button onClick={finishSession} disabled={!selectedSessionId || isSelectedSessionFinished || finishingSession} className="w-full rounded-xl bg-green-700 px-4 py-3 text-sm font-black text-white disabled:opacity-40">
+                    {finishingSession ? "Finalizando..." : "Finalizar inventario"}
                   </button>
                   {canAdminReopenSelectedSession && (
                     <button onClick={unfinishSession} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-black text-amber-800">
