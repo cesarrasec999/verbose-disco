@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
 import * as XLSX from "xlsx";
@@ -5966,6 +5967,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         const v = String(decoded || "").trim();
         if (!v || scanHandledRef.current) return;
         scanHandledRef.current = true;
+        playOperationalFeedback("scan");
 
         if (scannerTarget === "product") {
             closeScanner();
@@ -5976,12 +5978,14 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         if (scannerTarget === "location") {
             setLocationRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
             showMessage("Ubicación escaneada.", "success");
+            playOperationalFeedback("success");
             closeScanner();
         }
 
         if (scannerTarget === "recount_location") {
             setRecountRows(prev => prev.map((r, idx) => idx === scanningRowIndex ? { ...r, location: v } : r));
             showMessage("Ubicación escaneada.", "success");
+            playOperationalFeedback("success");
             closeScanner();
         }
 
@@ -5995,6 +5999,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         if (scannerTarget === "location_entry_location") {
             setLocationEntryLocation(v);
             showMessage("Ubicacion escaneada.", "success");
+            playOperationalFeedback("success");
             closeScanner();
             return;
         }

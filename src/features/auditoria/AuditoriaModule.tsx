@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { BarChart3, CheckCircle2, ClipboardCheck, ClipboardList, Download, Edit3, FileText, Flashlight, Home, Loader2, Mail, PackageSearch, Plus, QrCode, RefreshCw, Save, Search, Settings2, Trash2, XCircle } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
@@ -592,12 +593,14 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
 
   async function applyAuditScannedValue(decodedText: string, target = scannerTargetRef.current) {
     const clean = decodedText.trim();
+    playOperationalFeedback("scan");
     if (target === "product") {
       setScanCode(clean);
       await scanProduct(clean);
     } else if (target === "location") {
       setLocation(clean.toUpperCase());
       setMessage("Ubicación escaneada: " + clean.toUpperCase());
+      playOperationalFeedback("success");
     }
   }
 

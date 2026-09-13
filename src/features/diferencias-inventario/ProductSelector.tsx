@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { QrCode, Search, X, XCircle } from "lucide-react";
 import type { Product, Store } from "@/features/ciclicos/types";
 import { fetchStockForStore, resolveProductCandidates } from "./api";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 
 type Html5QrLike = {
   start: (camera: { facingMode: string }, config: { fps: number; qrbox: { width: number; height: number } }, onSuccess: (text: string) => void, onError?: () => void) => Promise<unknown>;
@@ -109,6 +110,7 @@ export function ProductSelector({
             if (scanHandledRef.current) return;
             scanHandledRef.current = true;
             const scanned = decoded.trim();
+            playOperationalFeedback("scan");
             setCode(scanned);
             void closeScanner();
             void search(scanned);

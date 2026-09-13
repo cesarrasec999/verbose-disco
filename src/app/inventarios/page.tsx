@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, Download, FileLock2, Flashlight, FolderOpen, LockOpen, Plus, QrCode, Save, Search, ShieldCheck, Trash2, UserCheck, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase/client";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
 import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems, removeOfflineItem } from "@/lib/offline/pendingQueue";
@@ -1798,9 +1799,11 @@ export default function InventariosPage() {
 
   async function applyScannedValue(decodedText: string, target = scannerTargetRef.current, activeRecountScanId = activeRecountScanIdRef.current) {
     const clean = decodedText.trim();
+    playOperationalFeedback("scan");
     if (target === "location") {
       setLocationCode(normalizeLocationCode(clean));
       setMessage("Ubicación escaneada.");
+      playOperationalFeedback("success");
       setTimeout(() => productInputRef.current?.focus(), 50);
     }
     if (target === "product") {
@@ -1820,11 +1823,13 @@ export default function InventariosPage() {
       const item = recountItems.find(row => row.id === rowId);
       if (item) updateRecountDraftLine(item, Number(indexText || 0), "locationCode", normalizeLocationCode(clean));
       setMessage("Ubicacion de reconteo escaneada.");
+      playOperationalFeedback("success");
     }
     if (target === "recount_product" && activeRecountScanId) {
       const [rowId] = activeRecountScanId.split(":");
       updateRecountDraft(rowId, "productCode", normalizeScannedBarcode(clean));
       setMessage("Codigo de reconteo escaneado.");
+      playOperationalFeedback("success");
     }
   }
 

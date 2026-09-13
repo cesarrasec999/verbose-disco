@@ -12,6 +12,7 @@ import {
   Download, Pencil, Printer, QrCode, RefreshCw, ScanLine, Trash2, X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { endSingleDeviceSession, readStoredUser } from "@/lib/singleDeviceSession";
 import { canAccessModule } from "@/features/access/moduleAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
@@ -1036,6 +1037,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           (decoded) => {
             if (scanHandled.current) return;
             scanHandled.current = true;
+            playOperationalFeedback("scan");
             setScanProduct(decoded.trim());
             void closeScanner();
             void handleScan(decoded.trim());

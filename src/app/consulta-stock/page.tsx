@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Flashlight, Home, PackageSearch, QrCode, RefreshCw, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 
@@ -140,6 +141,7 @@ export default function ConsultaStockPage() {
           async decodedText => {
             const clean = decodedText.trim();
             if (!clean) return;
+            playOperationalFeedback("scan");
             setQuery(clean);
             await stopScanner();
             await searchStock(clean);

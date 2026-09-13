@@ -100,8 +100,8 @@ export default function GlobalNetworkIndicator() {
 
   return (
     <div className="fixed inset-x-0 top-0 z-[9999] pointer-events-none">
-      <div className="h-1.5 w-full overflow-hidden bg-slate-200">
-        <div className="h-full rounded-r-full bg-orange-600 transition-all duration-500" style={{ width: `${Math.max(8, boundedProgress)}%` }} />
+      <div className="h-1.5 w-full overflow-hidden bg-slate-200/90 shadow-sm backdrop-blur">
+        <div className="app-progress-fill" style={{ width: `${Math.max(8, boundedProgress)}%` }} />
       </div>
     </div>
   );
