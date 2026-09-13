@@ -4845,69 +4845,6 @@ export default function InventariosPage() {
     };
   }
 
-  async function upsertKnownProductLocation(product: Pick<Product, "id" | "sku">, locationValue: string) {
-    const cleanLocation = normalizeLocationCode(locationValue);
-    if (!selectedSession?.store_id || !product.id || !product.sku || !cleanLocation || cleanLocation.startsWith("__")) return;
-    const now = new Date().toISOString();
-    const row = {
-      store_id: selectedSession.store_id,
-      product_id: product.id,
-      sku: normalizeCode(product.sku).toUpperCase(),
-      location: cleanLocation,
-      is_active: true,
-      updated_by: user?.id || null,
-      updated_at: now,
-      last_source: "inventario general",
-      last_seen_at: now,
-      general_inventory_registered: true,
-    };
-    let { error } = await supabase.from("product_locations").upsert(row, { onConflict: "store_id,product_id,location" });
-    if (error && /last_source|last_seen_at|general_inventory_registered/i.test(error.message)) {
-      const fallbackRow: Partial<typeof row> = { ...row };
-      delete fallbackRow.last_source;
-      delete fallbackRow.last_seen_at;
-      delete fallbackRow.general_inventory_registered;
-      ({ error } = await supabase.from("product_locations").upsert(fallbackRow, { onConflict: "store_id,product_id,location" }));
-    }
-    if (error) console.warn("No se pudo registrar ubicacion de inventario general:", error.message);
-  }
-
-  async function replaceKnownInventoryLocations(product: Pick<Product, "id" | "sku">, locationValues: string[]) {
-    if (!selectedSession?.store_id || !product.id || !product.sku) return;
-    const cleanLocations = [...new Set(locationValues
-      .map(location => normalizeLocationCode(location))
-      .filter(location => location && !location.startsWith("__") && location !== "SIN_FISICO"))];
-    const now = new Date().toISOString();
-
-    const deactivateBySource = await supabase
-      .from("product_locations")
-      .update({ is_active: false, updated_by: user?.id || null, updated_at: now })
-      .eq("store_id", selectedSession.store_id)
-      .eq("product_id", product.id)
-      .eq("is_active", true)
-      .eq("last_source", "inventario general");
-
-    let error = deactivateBySource.error;
-    if (!error || /last_source/i.test(error.message)) {
-      const deactivateByFlag = await supabase
-        .from("product_locations")
-        .update({ is_active: false, updated_by: user?.id || null, updated_at: now })
-        .eq("store_id", selectedSession.store_id)
-        .eq("product_id", product.id)
-        .eq("is_active", true)
-        .eq("general_inventory_registered", true);
-      error = deactivateByFlag.error && !/general_inventory_registered/i.test(deactivateByFlag.error.message)
-        ? deactivateByFlag.error
-        : null;
-    }
-
-    if (error) {
-      console.warn("No se pudieron reemplazar ubicaciones de inventario general:", error.message);
-    }
-
-    await Promise.all(cleanLocations.map(location => upsertKnownProductLocation(product, location)));
-  }
-
   async function resolveInventoryLocation(locationValue: string, options: { allowCreate: boolean; sourceLabel?: string }) {
     const cleanLocation = normalizeLocationCode(locationValue);
     if (!selectedSessionId || !cleanLocation) return null;
@@ -5209,7 +5146,6 @@ export default function InventariosPage() {
       void protectOkProductSnapshot(selectedSession.id, product).catch(error => {
         console.warn("No se pudo proteger snapshot OK:", error);
       });
-      void upsertKnownProductLocation(product, loc.location_code);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo guardar conteo.");
     } finally {
@@ -5452,7 +5388,6 @@ export default function InventariosPage() {
         setMessage(`No se pudo guardar ${actionLabel}. Ejecuta el SQL actualizado: ` + error.message);
         return;
       }
-      await replaceKnownInventoryLocations(product, locationRows.map(({ locationCode }) => locationCode));
 
       const statusUpdate = await supabase
         .from(itemTable)
@@ -5604,7 +5539,6 @@ export default function InventariosPage() {
         setMessage("No se pudo guardar reconteo manual. Ejecuta el SQL actualizado: " + error.message);
         return;
       }
-      await replaceKnownInventoryLocations({ id: row.product_id, sku: row.sku }, locationRows.map(({ locationCode }) => locationCode));
 
       const statusUpdate = await supabase
         .from("general_inventory_recount_items")

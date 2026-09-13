@@ -9604,7 +9604,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 <th className="w-[14%] p-1.5 border">Tienda</th>
                                                 <th className="w-[19%] p-1.5 border text-left">Ubicacion</th>
                                                 <th className="w-[7%] p-1.5 border">Cantidad</th>
-                                                <th className="w-[11%] p-1.5 border">Ultimo cambio</th>
+                                                <th className="w-[11%] p-1.5 border">Fecha fuente</th>
                                                 <th className="w-[8%] p-1.5 border">Registrado en</th>
                                                 {!isMobileAccess && <th className="w-[9%] p-1.5 border">Accion</th>}
                                             </tr>
@@ -9615,7 +9615,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
                                                 const productDescription = product?.description || row.cyclic_products?.description || "-";
                                                 const productUnit = product?.unit || row.cyclic_products?.unit || "-";
-                                                const changedAt = row.last_seen_at || row.updated_at;
+                                                const changedAt = row.last_seen_at;
                                                 const store = allStores.find(s => s.id === row.store_id);
                                                 return (
                                                     <tr key={row.id}>
