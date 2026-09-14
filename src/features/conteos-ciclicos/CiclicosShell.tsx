@@ -9637,7 +9637,43 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         {isCdGpcStore() && cdGpcFilterHasValues() && <button type="button" className="rounded-lg bg-red-600 px-3 py-1.5 font-bold text-white disabled:opacity-40" disabled={locationBusy} onClick={() => deleteLocationRows(locationResults)}>Eliminar bloque filtrado</button>}
                                     </div>
                                 )}
-                                <div className="max-h-[460px] overflow-y-auto overflow-x-hidden">
+                                {isMobileAccess ? (
+                                    <div className="max-h-[62vh] space-y-2 overflow-y-auto bg-slate-50 p-2">
+                                        {locationResults.map(row => {
+                                            const product = products.find(p => p.id === row.product_id);
+                                            const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
+                                            const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                            const productUnit = product?.unit || row.cyclic_products?.unit || "-";
+                                            const changedAt = row.last_seen_at || row.updated_at;
+                                            const store = allStores.find(s => s.id === row.store_id);
+                                            return (
+                                                <article key={row.id} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="break-all font-mono text-sm font-black text-slate-950">{productSku}</div>
+                                                            <div className="mt-1 break-words text-sm leading-5 text-slate-700">{productDescription}</div>
+                                                        </div>
+                                                        <div className="shrink-0 rounded-xl bg-emerald-50 px-3 py-2 text-center ring-1 ring-emerald-200">
+                                                            <div className="text-[9px] font-black uppercase text-emerald-700">Cantidad</div>
+                                                            <div className="text-lg font-black text-emerald-900">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                                                        <div className="text-[10px] font-black uppercase tracking-wide text-blue-600">Ubicación</div>
+                                                        <div className="mt-1 break-words font-mono text-base font-black text-slate-950">{row.location}</div>
+                                                    </div>
+                                                    <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                                                        <div><dt className="font-black uppercase text-[9px] text-slate-400">Tienda</dt><dd className="mt-0.5 break-words font-bold text-slate-800">{store?.name || "Global"}</dd></div>
+                                                        <div><dt className="font-black uppercase text-[9px] text-slate-400">Unidad</dt><dd className="mt-0.5 font-bold text-slate-800">{productUnit}</dd></div>
+                                                        <div><dt className="font-black uppercase text-[9px] text-slate-400">Fecha fuente</dt><dd className="mt-0.5 text-slate-600">{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</dd></div>
+                                                        <div><dt className="font-black uppercase text-[9px] text-slate-400">Origen</dt><dd className="mt-0.5 break-words font-bold text-slate-700">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</dd></div>
+                                                    </dl>
+                                                </article>
+                                            );
+                                        })}
+                                        {locationResults.length === 0 && <div className="p-6 text-center text-sm text-slate-400">Busca un producto para ver ubicaciones.</div>}
+                                    </div>
+                                ) : <div className="max-h-[460px] overflow-y-auto overflow-x-hidden">
                                     <table className="w-full table-fixed text-[11px] leading-tight">
                                         <thead className="bg-slate-100 sticky top-0">
                                             <tr>
@@ -9691,7 +9727,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             {locationResults.length === 0 && <tr><td colSpan={isMobileAccess ? 7 : canEditLocations ? 9 : 8} className="p-6 text-center text-slate-400">Busca un producto para ver ubicaciones.</td></tr>}
                                         </tbody>
                                     </table>
-                                </div>
+                                </div>}
                             </div> : (
                                 <div className="space-y-3">
                                     {multiLocationResults.map(group => (
@@ -9700,7 +9736,34 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                 <div className="font-black text-slate-900">{group.query}</div>
                                                 <div className="text-xs font-bold text-slate-500">{group.rows.length} resultado{group.rows.length !== 1 ? "s" : ""}</div>
                                             </div>
-                                            <div className="max-h-72 overflow-y-auto overflow-x-hidden">
+                                            {isMobileAccess ? (
+                                                <div className="max-h-[55vh] space-y-2 overflow-y-auto bg-slate-50 p-2">
+                                                    {group.rows.map(row => {
+                                                        const product = products.find(p => p.id === row.product_id);
+                                                        const productSku = product?.sku || row.cyclic_products?.sku || row.sku;
+                                                        const productDescription = product?.description || row.cyclic_products?.description || "-";
+                                                        const productUnit = product?.unit || row.cyclic_products?.unit || "-";
+                                                        const changedAt = row.last_seen_at || row.updated_at;
+                                                        const store = allStores.find(s => s.id === row.store_id);
+                                                        return (
+                                                            <article key={`${group.query}__${row.id}`} className="rounded-2xl border bg-white p-3 shadow-sm">
+                                                                <div className="flex items-start justify-between gap-3">
+                                                                    <div className="min-w-0"><div className="break-all font-mono text-sm font-black">{productSku}</div><div className="mt-1 break-words text-sm leading-5 text-slate-700">{productDescription}</div></div>
+                                                                    <div className="shrink-0 rounded-xl bg-emerald-50 px-3 py-2 text-center ring-1 ring-emerald-200"><div className="text-[9px] font-black uppercase text-emerald-700">Cantidad</div><div className="text-lg font-black text-emerald-900">{row.stored_quantity === null || row.stored_quantity === undefined ? "-" : formatNumber(Number(row.stored_quantity))}</div></div>
+                                                                </div>
+                                                                <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3"><div className="text-[9px] font-black uppercase text-blue-600">Ubicación</div><div className="mt-1 break-words font-mono text-base font-black">{row.location}</div></div>
+                                                                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-700">
+                                                                    <div><div className="text-[9px] font-black uppercase text-slate-400">Tienda</div><div className="break-words font-bold">{store?.name || "Global"}</div></div>
+                                                                    <div><div className="text-[9px] font-black uppercase text-slate-400">Unidad</div><div className="font-bold">{productUnit}</div></div>
+                                                                    <div><div className="text-[9px] font-black uppercase text-slate-400">Fecha fuente</div><div>{changedAt ? new Date(changedAt).toLocaleString("es-PE") : "-"}</div></div>
+                                                                    <div><div className="text-[9px] font-black uppercase text-slate-400">Origen</div><div className="break-words font-bold">{row.last_source === "manual" ? "Recepcion" : row.last_source || "Recepcion"}</div></div>
+                                                                </div>
+                                                            </article>
+                                                        );
+                                                    })}
+                                                    {group.rows.length === 0 && <div className="p-6 text-center text-slate-400">Sin ubicaciones para este codigo.</div>}
+                                                </div>
+                                            ) : <div className="max-h-72 overflow-y-auto overflow-x-hidden">
                                                 <table className="w-full table-fixed text-[11px] leading-tight">
                                                     <thead className="bg-slate-100 sticky top-0">
                                                         <tr>
@@ -9737,7 +9800,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                         {group.rows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400">Sin ubicaciones para este codigo.</td></tr>}
                                                     </tbody>
                                                 </table>
-                                            </div>
+                                            </div>}
                                         </div>
                                     ))}
                                     {multiLocationResults.length === 0 && (
