@@ -333,6 +333,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [savingItemObservationId, setSavingItemObservationId] = useState<string | null>(null);
   const [itemStockDrafts, setItemStockDrafts] = useState<Record<string, string>>({});
   const [savingItemStockId, setSavingItemStockId] = useState<string | null>(null);
+  const [removingAuditItemId, setRemovingAuditItemId] = useState<string | null>(null);
   const [savingCount, setSavingCount] = useState(false);
   const savingCountRef = useRef(false);
   const auditCodesExcelInputRef = useRef<HTMLInputElement | null>(null);
@@ -1998,6 +1999,44 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     XLSX.writeFile(workbook, `Auditoria ${storeName} - ${auditDate}.xlsx`);
   }
 
+  async function removeAssignedAuditItem(item: AuditItem) {
+    if (!user || !session) return;
+    if (session.status !== "in_progress") {
+      setMessage("Solo se pueden quitar productos de una sesión en progreso.");
+      return;
+    }
+    if (item.source !== "selected") {
+      setMessage("Solo se pueden quitar productos de la lista asignada.");
+      return;
+    }
+    if (countTotals.has(item.id)) {
+      setMessage("El producto ya tiene registros y no se puede quitar.");
+      return;
+    }
+    if (!confirm(`¿Quitar ${item.sku || "este producto"} de la sesión? El conteo y el historial existente no se modificarán.`)) return;
+
+    setRemovingAuditItemId(item.id);
+    try {
+      const { data, error } = await supabase.rpc("remove_audit_session_item", {
+        p_item_id: item.id,
+        p_actor_id: user.id,
+      });
+      if (error) throw error;
+      const result = data as { ok?: boolean; message?: string } | null;
+      if (!result?.ok) {
+        setMessage(result?.message || "No se pudo quitar el producto de la sesión.");
+        return;
+      }
+      if (activeItem?.id === item.id) setActiveItem(null);
+      await loadSessionData(session.id);
+      setMessage(result.message || "Producto quitado de la sesión.");
+    } catch (error) {
+      setMessage("No se pudo quitar el producto: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setRemovingAuditItemId(null);
+    }
+  }
+
   async function downloadAdminSummaryExcel() {
     if (adminSummaryRows.length === 0) {
       setMessage("No hay sesiones en el resumen para descargar.");
@@ -3028,7 +3067,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                     </div>
                   </div>
                   <div className="max-h-[520px] overflow-auto">
-                    <table className="w-full min-w-[1160px] text-sm">
+                    <table className="w-full min-w-[1240px] text-sm">
                       <thead className="sticky top-0 bg-slate-100 text-xs text-slate-600">
                         <tr>
                           <th className="p-2 text-left"><button onClick={() => changeSummarySort("sku")} className="font-black">Código{summarySortMark("sku")}</button></th>
@@ -3041,6 +3080,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                           <th className="p-2"><button onClick={() => changeSummarySort("status")} className="font-black">Estado{summarySortMark("status")}</button></th>
                           <th className="p-2 text-left"><button onClick={() => changeSummarySort("observation")} className="font-black">Observación{summarySortMark("observation")}</button></th>
                           <th className="p-2">Guardar</th>
+                          <th className="p-2">Asignación</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3091,6 +3131,24 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                               >
                                 <Save className="mr-1 inline" size={14} /> Guardar
                               </button>
+                            </td>
+                            <td className="p-2 text-center">
+                              {session?.status !== "in_progress" ? (
+                                <span className="text-xs font-semibold text-slate-400">Sesión cerrada</span>
+                              ) : r.item.source !== "selected" ? (
+                                <span className="text-xs font-semibold text-slate-400">Producto extra</span>
+                              ) : countTotals.has(r.item.id) ? (
+                                <span className="text-xs font-semibold text-slate-400">Con registros</span>
+                              ) : (
+                                <button
+                                  onClick={() => void removeAssignedAuditItem(r.item)}
+                                  disabled={removingAuditItemId === r.item.id}
+                                  className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                >
+                                  <Trash2 className="mr-1 inline" size={14} />
+                                  {removingAuditItemId === r.item.id ? "Quitando..." : "Quitar"}
+                                </button>
+                              )}
                             </td>
                           </tr>
                         ))}
