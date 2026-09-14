@@ -22,12 +22,13 @@ test('audit recommendations are sourced server-side, indexed and paged in batche
   assert.match(audit, /ReadPagination/);
 });
 
-test('cyclic sales recommendations no longer load hundreds of rows or client-side history', () => {
+test('cyclic sales recommendations use pages of 30 without client-side history', () => {
   assert.match(sql, /get_cyclic_sales_assignment_recommendations_page/i);
   assert.match(cyclic, /get_cyclic_sales_assignment_recommendations_page/);
-  assert.match(cyclic, /p_offset: page \* 50/);
-  assert.match(cyclic, /rawRows\.slice\(0, 50\)/);
-  assert.match(cyclic, /Recomendar 50 más vendidos/);
+  assert.match(cyclic, /const CYCLIC_RECOMMENDATION_PAGE_SIZE = 30/);
+  assert.match(cyclic, /p_offset: page \* CYCLIC_RECOMMENDATION_PAGE_SIZE/);
+  assert.match(cyclic, /rawRows\.slice\(0, CYCLIC_RECOMMENDATION_PAGE_SIZE\)/);
+  assert.match(cyclic, /Recomendar 30 más vendidos/);
   assert.doesNotMatch(cyclic, /p_limit: 200/);
 });
 
@@ -37,5 +38,7 @@ test('all cyclic recommendation types use indexed server pagination', () => {
   assert.match(cyclicSql, /limit least\(greatest\(coalesce\(p_limit, 51\), 1\), 101\)/i);
   assert.match(cyclic, /p_kind: "MIXTA"/);
   assert.match(cyclic, /p_kind: "NO_ABC_VALORIZADO"/);
-  assert.match(cyclic, /setBaseRecommendationHasNext\(rawRows\.length > 50\)/);
+  assert.match(cyclic, /setBaseRecommendationHasNext\(rawRows\.length > CYCLIC_RECOMMENDATION_PAGE_SIZE\)/);
+  assert.match(cyclic, /Recomendar 30 códigos/);
+  assert.match(cyclic, /Recomendar 30 valorizados no ABC/);
 });

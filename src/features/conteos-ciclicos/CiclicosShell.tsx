@@ -115,6 +115,8 @@ const COUNT_TYPE_OPTIONS: Array<{ value: CyclicCountType; label: string }> = [
     { value: "supervisor", label: "Conteo supervisor" },
 ];
 
+const CYCLIC_RECOMMENDATION_PAGE_SIZE = 30;
+
 function countTypeLabel(type: CyclicCountType | "all") {
     return type === "all" ? "Todos los conteos" : COUNT_TYPE_OPTIONS.find(option => option.value === type)?.label || "Conteo cíclico";
 }
@@ -3124,15 +3126,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
                 p_kind: "MIXTA",
-                p_limit: 51,
-                p_offset: page * 50,
+                p_limit: CYCLIC_RECOMMENDATION_PAGE_SIZE + 1,
+                p_offset: page * CYCLIC_RECOMMENDATION_PAGE_SIZE,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion. Ejecuta el SQL get_cyclic_assignment_recommendations en Supabase: " + error.message);
                 return;
             }
             const rawRows = (data || []) as any[];
-            const rows = rawRows.slice(0, 50).map(row => ({
+            const rows = rawRows.slice(0, CYCLIC_RECOMMENDATION_PAGE_SIZE).map(row => ({
                 id: String(row.product_id || row.id || ""),
                 sku: String(row.sku || ""),
                 barcode: row.barcode || null,
@@ -3152,7 +3154,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setAssignSelectedIds(new Set(rows.map(product => product.id)));
             setBaseRecommendationKind("MIXTA");
             setBaseRecommendationPage(page);
-            setBaseRecommendationHasNext(rawRows.length > 50);
+            setBaseRecommendationHasNext(rawRows.length > CYCLIC_RECOMMENDATION_PAGE_SIZE);
             setSalesRecommendationsActive(false);
             const rotationRecommended = rows.filter(row => row.recommendation_group !== "VALORIZADO");
             const valuedRecommended = rows.filter(row => row.recommendation_group === "VALORIZADO");
@@ -3237,15 +3239,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             const { data, error } = await supabase.rpc("get_cyclic_sales_assignment_recommendations_page", {
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
-                p_limit: 51,
-                p_offset: page * 50,
+                p_limit: CYCLIC_RECOMMENDATION_PAGE_SIZE + 1,
+                p_offset: page * CYCLIC_RECOMMENDATION_PAGE_SIZE,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion por ventas. Ejecuta la migracion de ventas de conteo ciclico en Supabase: " + error.message);
                 return;
             }
             const rawRows = (data || []) as any[];
-            const finalRows = rawRows.slice(0, 50).map(row => ({
+            const finalRows = rawRows.slice(0, CYCLIC_RECOMMENDATION_PAGE_SIZE).map(row => ({
                 id: String(row.product_id || row.id || ""),
                 sku: String(row.sku || ""),
                 barcode: row.barcode || null,
@@ -3266,7 +3268,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setAssignResults(finalRows);
             setAssignSelectedIds(new Set(finalRows.map(product => product.id)));
             setSalesRecommendationPage(page);
-            setSalesRecommendationHasNext(rawRows.length > 50);
+            setSalesRecommendationHasNext(rawRows.length > CYCLIC_RECOMMENDATION_PAGE_SIZE);
             setSalesRecommendationsActive(true);
             setBaseRecommendationKind(null);
             const periodStart = finalRows[0]?.sales_period_start || rawRows[0]?.sales_period_start || "";
@@ -3298,15 +3300,15 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 p_store_id: valStoreId,
                 p_assigned_date: valDate,
                 p_kind: "NO_ABC_VALORIZADO",
-                p_limit: 51,
-                p_offset: page * 50,
+                p_limit: CYCLIC_RECOMMENDATION_PAGE_SIZE + 1,
+                p_offset: page * CYCLIC_RECOMMENDATION_PAGE_SIZE,
             });
             if (error) {
                 setAssignSearchNotice("No se pudo generar la recomendacion de valorizados no ABC: " + error.message);
                 return;
             }
             const rawRows = (data || []) as any[];
-            const rows = rawRows.slice(0, 50)
+            const rows = rawRows.slice(0, CYCLIC_RECOMMENDATION_PAGE_SIZE)
                 .filter(row => !["A", "B", "C"].includes(String(row.rotation_category || "").trim().toUpperCase()))
                 .map(row => ({
                     id: String(row.product_id || row.id || ""),
@@ -3329,7 +3331,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
             setAssignSelectedIds(new Set(rows.map(product => product.id)));
             setBaseRecommendationKind("NO_ABC_VALORIZADO");
             setBaseRecommendationPage(page);
-            setBaseRecommendationHasNext(rawRows.length > 50);
+            setBaseRecommendationHasNext(rawRows.length > CYCLIC_RECOMMENDATION_PAGE_SIZE);
             setSalesRecommendationsActive(false);
             setAssignSearchNotice(rows.length > 0
                 ? `Recomendacion cargada: ${rows.length} productos de mayor valorizado sin rotacion A/B/C. Página ${page + 1}; continúa sin límite.`
@@ -4491,8 +4493,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         await upsertProductLocations(productId, sku, storeId, cleanLocations, "ciclico");
     }
 
-    async function assignFirst50Results() {
-        await assignProductsToStores(filteredAssignResults.slice(0, 50), "50 primeros");
+    async function assignFirst30Results() {
+        await assignProductsToStores(filteredAssignResults.slice(0, CYCLIC_RECOMMENDATION_PAGE_SIZE), "30 primeros");
     }
 
     async function assignSelectedResults() {
@@ -8781,10 +8783,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-40"
                                         >
-                                            {assignRecommendationsLoading ? "Calculando..." : "Recomendar 50 códigos"}
+                                            {assignRecommendationsLoading ? "Calculando..." : "Recomendar 30 códigos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
-                                            Prioriza rotación A, luego B/C y continúa con mayor valorizado; páginas ilimitadas de 50
+                                            Prioriza rotación A, luego B/C y continúa con mayor valorizado; páginas ilimitadas de 30
                                         </span>
                                         <button
                                             type="button"
@@ -8792,10 +8794,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-40"
                                         >
-                                            {salesRecommendationsLoading ? "Calculando ventas..." : "Recomendar 50 más vendidos"}
+                                            {salesRecommendationsLoading ? "Calculando ventas..." : "Recomendar 30 más vendidos"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
-                                            Último mes calendario, ordenados por venta valorizada de mayor a menor; páginas ilimitadas de 50
+                                            Último mes calendario, ordenados por venta valorizada de mayor a menor; páginas ilimitadas de 30
                                         </span>
                                         <button
                                             type="button"
@@ -8803,7 +8805,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             disabled={assignRecommendationsLoading || salesRecommendationsLoading || nonAbcValueRecommendationsLoading || assignBusy || !valStoreId || valStoreId === ALL_STORES_VALUE}
                                             className="rounded-2xl border border-violet-200 bg-violet-50 px-4 py-2 text-xs font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-40"
                                         >
-                                            {nonAbcValueRecommendationsLoading ? "Calculando valorizados..." : "Recomendar 50 valorizados no ABC"}
+                                            {nonAbcValueRecommendationsLoading ? "Calculando valorizados..." : "Recomendar 30 valorizados no ABC"}
                                         </button>
                                         <span className="text-xs font-semibold text-slate-500">
                                             Mayor valorizado con rotación distinta de A, B o C
@@ -8842,11 +8844,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                     {filteredAssignResults.length > 0 && filteredAssignResults.every(product => assignSelectedIds.has(product.id)) ? "Quitar seleccion" : "Seleccionar visibles"}
                                                 </button>
                                                 <button
-                                                    onClick={assignFirst50Results}
+                                                    onClick={assignFirst30Results}
                                                     disabled={assignBusy}
                                                     className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
                                                 >
-                                                    Asignar 50 primeros
+                                                    Asignar 30 primeros
                                                 </button>
                                                 <button
                                                     onClick={assignSelectedResults}
