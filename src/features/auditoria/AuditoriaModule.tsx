@@ -1225,7 +1225,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
       setRecommendationHasNext(pageRows.length > 50);
       const labels = {
         RETORNO: "retornos / notas de crédito",
-        VENTA_ACTIVA: "ventas activas RMS",
+        VENTA_ACTIVA: "órdenes de venta activas RMS",
         VENTA_HISTORICA: "ventas valorizadas",
       };
       const periodStart = rows[0]?.period_start || "";
@@ -2582,7 +2582,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                     {recommendationLoading && recommendationKind === "RETORNO" ? "Calculando…" : "Recomendar 50 retornos / notas de crédito"}
                   </button>
                   <button onClick={() => void loadAuditRecommendations("VENTA_ACTIVA")} disabled={!session || session.status !== "in_progress" || recommendationLoading} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-left text-xs font-black text-amber-800 disabled:opacity-40">
-                    {recommendationLoading && recommendationKind === "VENTA_ACTIVA" ? "Calculando…" : "Recomendar 50 ventas activas RMS"}
+                    {recommendationLoading && recommendationKind === "VENTA_ACTIVA" ? "Calculando…" : "Recomendar 50 órdenes de venta activas RMS"}
                   </button>
                   <button onClick={() => void loadAuditRecommendations("VENTA_HISTORICA")} disabled={!session || session.status !== "in_progress" || recommendationLoading} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-left text-xs font-black text-emerald-800 disabled:opacity-40">
                     {recommendationLoading && recommendationKind === "VENTA_HISTORICA" ? "Calculando…" : "Recomendar 50 más vendidos valorizados"}
