@@ -7607,7 +7607,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 )}
 
                 {/* ── ÁREA DE CONTENIDO ─────────────────────────────── */}
-                <div className={`flex-1 w-full ${activeTab === "ubicaciones" ? "max-w-[1800px]" : "max-w-5xl"} mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
+                <div className={`flex-1 w-full ${activeTab === "ubicaciones" ? "max-w-[1800px]" : activeTab === "validador" && valTab === "dashboard" ? "max-w-7xl" : "max-w-5xl"} mx-auto space-y-4 px-3 py-4 md:p-6 overflow-y-auto`}>
 
             {/* ════════════════════════════════════════════════════════
                 TAB OPERARIO
@@ -8345,7 +8345,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
                             {/* Tabla dashboard */}
                             {filteredDashData.length > 0 ? (
-                                <section className="bg-white rounded-3xl p-5 shadow-md border border-slate-100 space-y-3">
+                                <section className="bg-white rounded-3xl p-4 shadow-md border border-slate-100 space-y-2 md:px-5">
                                     <h3 className="font-bold text-slate-900">
                                         Detalle por tienda
                                         {dashPeriod !== "dia" && (
@@ -8354,21 +8354,21 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                     </h3>
                                     <div className="border rounded-2xl overflow-hidden">
                                         <div className="overflow-auto">
-                                            <table className={`w-full text-sm ${dashPeriod === "dia" ? "min-w-[900px]" : "min-w-[760px]"}`}>
+                                            <table className={`w-full text-xs leading-tight ${dashPeriod === "dia" ? "min-w-[1040px]" : "min-w-[820px]"}`}>
                                                 <thead className="bg-slate-100 sticky top-0">
                                                     <tr>
-                                                        <th className="p-2 border text-left">Tienda</th>
-                                                        <th className="p-2 border">Asignados</th>
-                                                        <th className="p-2 border text-green-700">OK</th>
-                                                        <th className="p-2 border text-blue-700">Sobrantes</th>
-                                                        <th className="p-2 border text-red-600">Faltantes</th>
-                                                        <th className="p-2 border text-red-700">Dif. Val.</th>
-                                                        <th className="p-2 border">ERI %</th>
-                                                        <th className="p-2 border">Cumplimiento</th>
+                                                        <th className="w-[230px] border px-2 py-1.5 text-left">Tienda</th>
+                                                        <th className="border px-2 py-1.5">Asignados</th>
+                                                        <th className="border px-2 py-1.5 text-green-700">OK</th>
+                                                        <th className="border px-2 py-1.5 text-blue-700">Sobrantes</th>
+                                                        <th className="border px-2 py-1.5 text-red-600">Faltantes</th>
+                                                        <th className="border px-2 py-1.5 text-red-700">Dif. Val.</th>
+                                                        <th className="border px-2 py-1.5">ERI %</th>
+                                                        <th className="border px-2 py-1.5">Cumplimiento</th>
                                                         {dashPeriod === "dia" && <>
-                                                            <th className="p-2 border">Hora inicio</th>
-                                                            <th className="p-2 border">Hora fin</th>
-                                                            <th className="p-2 border">Duración</th>
+                                                            <th className="border px-2 py-1.5">Hora inicio</th>
+                                                            <th className="border px-2 py-1.5">Hora fin</th>
+                                                            <th className="border px-2 py-1.5">Duración</th>
                                                         </>}
                                                     </tr>
                                                 </thead>
@@ -8380,7 +8380,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                             className={`${r.cumplio ? "hover:bg-green-50" : "hover:bg-slate-50"} ${dashPeriod !== "dia" ? "cursor-pointer" : ""}`}
                                                             title={dashPeriod !== "dia" ? "Haz clic para ver el detalle diario" : undefined}
                                                         >
-                                                            <td className="p-2 border font-medium">
+                                                            <td className="border px-2 py-1.5 font-medium">
                                                                 {dashPeriod === "dia" ? (
                                                                     <button
                                                                         className="text-left text-blue-700 underline underline-offset-2 hover:text-blue-900 font-semibold transition-colors"
@@ -8399,24 +8399,24 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                     </button>
                                                                 )}
                                                             </td>
-                                                            <td className="p-2 border text-center font-semibold">{r.total_asignados}</td>
-                                                            <td className="p-2 border text-center text-green-700 font-semibold">{r.total_ok}</td>
-                                                            <td className="p-2 border text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
-                                                            <td className="p-2 border text-center text-red-600 font-semibold">{r.total_faltantes}</td>
-                                                            <td className="p-2 border text-center text-xs font-semibold">
+                                                            <td className="border px-2 py-1.5 text-center font-semibold">{r.total_asignados}</td>
+                                                            <td className="border px-2 py-1.5 text-center text-green-700 font-semibold">{r.total_ok}</td>
+                                                            <td className="border px-2 py-1.5 text-center text-blue-700 font-semibold">{r.total_sobrantes}</td>
+                                                            <td className="border px-2 py-1.5 text-center text-red-600 font-semibold">{r.total_faltantes}</td>
+                                                            <td className="whitespace-nowrap border px-2 py-1.5 text-center font-semibold">
                                                                 <span className={(r.dif_valorizada || 0) < 0 ? "text-red-600" : (r.dif_valorizada || 0) > 0 ? "text-blue-700" : "text-green-700"}>{formatMoney(r.dif_valorizada || 0)}</span>
                                                             </td>
-                                                            <td className="p-2 border text-center">
-                                                                <span className={`font-bold text-sm ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
+                                                            <td className="border px-2 py-1.5 text-center">
+                                                                <span className={`font-bold ${r.eri >= 90 ? "text-green-700" : r.eri >= 70 ? "text-amber-600" : "text-red-600"}`}>{r.eri}%</span>
                                                             </td>
-                                                            <td className="p-2 border text-center">
+                                                            <td className="border px-2 py-1.5 text-center">
                                                                 {dashPeriod === "dia" ? (
-                                                                    <span className={`font-bold text-sm ${r.cumplio ? "text-green-700" : "text-red-600"}`}>
+                                                                    <span className={`whitespace-nowrap font-bold ${r.cumplio ? "text-green-700" : "text-red-600"}`}>
                                                                         {r.cumplio ? "✓ Sí" : "✗ No"}
                                                                     </span>
                                                                 ) : (
                                                                     <>
-                                                                        <span className={`font-bold text-sm ${r.dias_cumplidos === r.dias_totales ? "text-green-700" : r.dias_cumplidos > 0 ? "text-amber-600" : "text-red-600"}`}>
+                                                                        <span className={`whitespace-nowrap font-bold ${r.dias_cumplidos === r.dias_totales ? "text-green-700" : r.dias_cumplidos > 0 ? "text-amber-600" : "text-red-600"}`}>
                                                                             {r.dias_cumplidos}/{r.dias_totales} días
                                                                         </span>
                                                                         <div className="text-xs text-slate-400">{r.cumplimiento_pct}%</div>
@@ -8424,9 +8424,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                                                 )}
                                                             </td>
                                                             {dashPeriod === "dia" && <>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs whitespace-nowrap">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
-                                                                <td className="p-2 border text-center text-xs">{formatDuration(r.duracion_min)}</td>
+                                                                <td className="whitespace-nowrap border px-2 py-1.5 text-center">{r.hora_inicio ? formatDateTime(r.hora_inicio) : "—"}</td>
+                                                                <td className="whitespace-nowrap border px-2 py-1.5 text-center">{r.hora_fin ? formatDateTime(r.hora_fin) : "—"}</td>
+                                                                <td className="whitespace-nowrap border px-2 py-1.5 text-center">{formatDuration(r.duracion_min)}</td>
                                                             </>}
                                                         </tr>
                                                         {dashPeriod !== "dia" && expandedDashStoreId === r.store_id && (
