@@ -38,4 +38,7 @@ Migración: `20260915100000_security_hardening_phase1.sql`.
 - La migración `20260915110000_protect_inactive_internal_partitions.sql`
   protege las particiones internas históricas y futuras; septiembre de 2026 se
   deja para una ventana de baja carga.
+- La migración `20260915111500_revoke_active_partition_direct_api.sql` retira el
+  acceso API directo a las tres particiones activas sin activar RLS durante las
+  sincronizaciones.
 - Revisar índices duplicados y crear índices faltantes con operaciones concurrentes en horario de baja carga.
