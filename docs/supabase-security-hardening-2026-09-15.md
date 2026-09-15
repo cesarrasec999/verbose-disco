@@ -41,4 +41,6 @@ Migración: `20260915100000_security_hardening_phase1.sql`.
 - La migración `20260915111500_revoke_active_partition_direct_api.sql` retira el
   acceso API directo a las tres particiones activas sin activar RLS durante las
   sincronizaciones.
+- La migración `20260915113000_restrict_assignment_stock_refresh.sql` limita las
+  dos RPC de recálculo masivo al `service_role` usado por el servidor `.53`.
 - Revisar índices duplicados y crear índices faltantes con operaciones concurrentes en horario de baja carga.
