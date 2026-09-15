@@ -43,4 +43,7 @@ Migración: `20260915100000_security_hardening_phase1.sql`.
   sincronizaciones.
 - La migración `20260915113000_restrict_assignment_stock_refresh.sql` limita las
   dos RPC de recálculo masivo al `service_role` usado por el servidor `.53`.
+- La migración `20260915120000_restrict_server_derived_tables.sql` conserva la
+  lectura del frontend y reserva al servidor las escrituras en siete tablas de
+  ventas, valorizado, rotaciones y calendario.
 - Revisar índices duplicados y crear índices faltantes con operaciones concurrentes en horario de baja carga.
