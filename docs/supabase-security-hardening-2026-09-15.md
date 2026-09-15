@@ -47,3 +47,28 @@ Migración: `20260915100000_security_hardening_phase1.sql`.
   lectura del frontend y reserva al servidor las escrituras en siete tablas de
   ventas, valorizado, rotaciones y calendario.
 - Revisar índices duplicados y crear índices faltantes con operaciones concurrentes en horario de baja carga.
+
+## Conciliación del historial de migraciones
+
+Estado al 15/09/2026:
+
+- El historial remoto registraba únicamente 16 migraciones, hasta
+  `20260627220000`, aunque el esquema productivo ya contenía los cambios
+  posteriores aplicados manualmente.
+- Se verificaron las huellas finales en el catálogo de PostgreSQL: tablas,
+  columnas, restricciones, funciones, triggers, índices, políticas y permisos.
+- Los objetos antiguos ausentes estaban reemplazados por migraciones posteriores
+  o por índices equivalentes; no se volvió a ejecutar ninguna migración.
+- Se registraron como aplicadas las 74 migraciones locales válidas de julio a
+  septiembre. El historial remoto y el repositorio ahora contienen las mismas
+  90 versiones SQL.
+- `supabase db push --linked --dry-run` confirmó `Remote database is up to date`
+  y cero migraciones pendientes.
+- El archivo
+  `20260718120001_rollback_gi_realtime_stock_sync.sql.rollback` continúa siendo
+  documentación de rollback y, por su extensión, no forma parte del historial
+  ejecutable.
+
+La conciliación modificó únicamente
+`supabase_migrations.schema_migrations`; no insertó, actualizó ni eliminó filas
+de las tablas operativas o históricas.
