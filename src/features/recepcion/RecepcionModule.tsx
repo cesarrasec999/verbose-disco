@@ -217,6 +217,12 @@ function readAnyRequestCache(userId: string | undefined): ReceptionRequest[] {
   }
   return best?.rows || [];
 }
+
+function requestMatchesStoreCodes(request: ReceptionRequest, codes: string[]) {
+  if (codes.length === 0) return false;
+  const destination = normalize(request.destination_store_code);
+  return codes.some(code => normalize(code) === destination);
+}
 // Cada combinacion tienda+fecha usada en la sesion crea una key de cache
 // nueva (ver requestScopeKey) - sin limpieza esto crecia sin tope hasta
 // superar la cuota de localStorage ("Setting the value of ... exceeded the
@@ -589,6 +595,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     if (!user?.store_id) return [] as string[];
     return storeCodes(stores.find(s => s.id === user.store_id));
   }, [storeCodes, stores, user]);
+
+  const canAccessRequest = useCallback((request: ReceptionRequest) =>
+    canViewAllStores || requestMatchesStoreCodes(request, myStoreCodes),
+  [canViewAllStores, myStoreCodes]);
   // Ademas de Admin/Supervisor/Validador, cualquier usuario con tienda
   // asignada puede ver (y accionar) sus propias diferencias reportadas o
   // por regularizar, aunque no tenga acceso a todas las tiendas.
@@ -649,6 +659,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   function openSelectedGroups() {
     const groups = filteredRequests.filter(req => selectedGroupIds.has(req.id));
+    if (!canViewAllStores && groups.some(group => !group.child_requests.every(canAccessRequest))) {
+      showMsg("Uno de los requerimientos no pertenece a tu tienda. Actualiza la lista antes de continuar.");
+      setSelectedGroupIds(new Set());
+      setRequests(prev => prev.filter(canAccessRequest));
+      return;
+    }
     const merged = mergeRequestGroups(groups);
     if (!merged) {
       showMsg("Selecciona al menos un requerimiento.");
@@ -854,14 +870,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     const { signal } = controller;
 
     const scopeKey = requestScopeKey();
-    const cachedRows = readRequestCache(scopeKey);
-    const fallbackCachedRows = listPanel === "pendientes" ? [] : (cachedRows.length > 0 ? cachedRows : readAnyRequestCache(user?.id));
+    const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
+    const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
+    const keepVisible = (rows: ReceptionRequest[]) => canViewAllStores
+      ? rows
+      : rows.filter(row => requestMatchesStoreCodes(row, codes));
+    const cachedRows = keepVisible(readRequestCache(scopeKey));
+    const fallbackCachedRows = listPanel === "pendientes"
+      ? []
+      : (cachedRows.length > 0 ? cachedRows : keepVisible(readAnyRequestCache(user?.id)));
     if (requests.length === 0 && cachedRows.length > 0) setRequests(cachedRows);
     else if (requests.length === 0 && fallbackCachedRows.length > 0) setRequests(fallbackCachedRows);
     setLoading(true);
     try {
-      const store = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
-      const codes = store ? storeCodes(store) : selectedStoreCodes(storeFilter);
       const syncStatusPromise = supabase
         .from("erp_sync_status").select("synced_at,updated_at")
         .eq("id", "reception_requests").abortSignal(signal).maybeSingle();
@@ -978,6 +999,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }
 
   async function openRequest(req: ReceptionRequestGroup) {
+    if (!canViewAllStores && !req.child_requests.every(canAccessRequest)) {
+      showMsg("Este requerimiento pertenece a otra tienda y no puede abrirse con tu usuario.");
+      setSelectedGroupIds(new Set());
+      setRequests(prev => prev.filter(canAccessRequest));
+      return;
+    }
     setSelected(req);
     setView("detail");
     setActiveLine(null);
@@ -2005,22 +2032,25 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   );
 
   const scopedRequestGroups = useMemo(() => {
-    if (!canViewAllStores || storeFilter === "all") return requestGroups;
+    if (!canViewAllStores) {
+      return requestGroups.filter(group => group.child_requests.every(canAccessRequest));
+    }
+    if (storeFilter === "all") return requestGroups;
     const targetCodes = new Set(selectedStoreCodes(storeFilter).map(normalize));
     return requestGroups.filter(req =>
       req.child_requests.some(item => targetCodes.has(normalize(item.destination_store_code)))
     );
-  }, [canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
+  }, [canAccessRequest, canViewAllStores, requestGroups, selectedStoreCodes, storeFilter]);
 
   const reasonOptions = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const req of requestGroups) {
+    for (const req of scopedRequestGroups) {
       const key = req.reason ? normalizeReason(req.reason) : "";
       if (!seen.has(key)) seen.set(key, req.reason || "");
     }
     return [...seen.entries()].map(([key, label]) => ({ key, label: label || "Sin motivo" }))
       .sort((a, b) => a.label.localeCompare(b.label, "es"));
-  }, [requestGroups]);
+  }, [scopedRequestGroups]);
 
   const filteredRequests = useMemo(() => scopedRequestGroups.filter(r => {
     if (!isVisibleReceptionDocument(r)) return false;
