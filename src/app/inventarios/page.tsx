@@ -4307,10 +4307,17 @@ export default function InventariosPage() {
         setMessage("Error cargando ubicaciones: " + error.message);
         return;
       }
+      const { error: syncError } = await supabase.rpc("process_general_inventory_location_sync_queue", {
+        p_limit: 1,
+        p_session_id: selectedSessionId,
+      });
       setLocationsFile(null);
       setLocationsFileBuffer(null);
       if (locationsFileRef.current) locationsFileRef.current.value = "";
-      setMessage(`${rows.length} ubicaciones cargadas desde Excel. El control de tickets no modifica stock ni conteos, incluso en sesiones finalizadas.`);
+      setMessage(syncError
+        ? `${rows.length} ubicaciones cargadas. La actualización del maestro quedó en cola y se completará automáticamente.`
+        : `${rows.length} ubicaciones cargadas y maestro de Ubicaciones actualizado. El control no modifica stock ni conteos.`
+      );
       await loadPreparationData(selectedSessionId);
     } catch (error) {
       setMessage("Error leyendo el Excel: " + (error instanceof Error ? error.message : String(error)));
