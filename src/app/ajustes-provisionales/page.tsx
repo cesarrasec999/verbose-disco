@@ -98,6 +98,7 @@ export default function AjustesProvisionalesPage() {
   const [page, setPage]     = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [loaded, setLoaded]   = useState(false);
   const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
   const [lastSync, setLastSync] = useState<string | null>(null);
@@ -245,8 +246,47 @@ export default function AjustesProvisionalesPage() {
 
   // ─── Exportar Excel ──────────────────────────────────────────────────────────
 
-  function exportExcel() {
-    const sheetData = visibleAggregated.map(r => ({
+  async function exportExcel() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const yearStart = `${new Date().getFullYear()}-01-01`;
+      const effectiveStore = canViewAllStores ? (storeFilter || null) : (userErpStoreCode || null);
+      const allRows: AggRow[] = [];
+
+      // El Excel es un reporte completo: se recorren paginas pequeñas en el
+      // servidor, independientemente de la pagina que el usuario ve en pantalla.
+      for (let offset = 0; ; offset += ADJUSTMENTS_PAGE_SIZE) {
+        const { data, error } = await supabase.rpc("get_ajustes_provisionales_v2", {
+          year_start: yearStart,
+          p_store: effectiveStore,
+          p_search: codeSearch.trim() || null,
+          p_limit: ADJUSTMENTS_PAGE_SIZE + 1,
+          p_offset: offset,
+        });
+        if (error) throw error;
+        const pageRows = (data || []) as AggRow[];
+        allRows.push(...pageRows.slice(0, ADJUSTMENTS_PAGE_SIZE));
+        if (pageRows.length <= ADJUSTMENTS_PAGE_SIZE) break;
+      }
+
+      const reportRows = allRows.map(r => ({
+        ...r,
+        store_name: stores.find(s => ajusteStoreCode(s) === r.store_code)?.name || r.store_code,
+        description: r.description || r.product_code,
+        unit: r.unit || "",
+      })).sort((a, b) =>
+        a.store_name.localeCompare(b.store_name, "es") ||
+        b.last_date.localeCompare(a.last_date) ||
+        a.product_code.localeCompare(b.product_code, "es")
+      );
+
+      if (reportRows.length === 0) {
+        toast.info("No hay ajustes provisionales para exportar con los filtros seleccionados.");
+        return;
+      }
+
+      const sheetData = reportRows.map(r => ({
       Tienda:                   r.store_name,
       Codigo:                   r.product_code,
       Descripcion:              r.description,
@@ -258,8 +298,8 @@ export default function AjustesProvisionalesPage() {
       "Ultimo Ajuste":          formatSync(r.last_date),
       "Usuario ultimo ingreso provisional": r.last_user || "No informado",
       Documentos:               r.record_count,
-    }));
-    const summaryRows = [...visibleAggregated]
+      }));
+      const summaryRows = [...reportRows]
       .sort((a, b) => new Date(a.last_date).getTime() - new Date(b.last_date).getTime() ||
         a.store_name.localeCompare(b.store_name, "es") || a.product_code.localeCompare(b.product_code, "es"))
       .map(r => ({
@@ -272,19 +312,25 @@ export default function AjustesProvisionalesPage() {
         "Usuario ultimo ingreso provisional": r.last_user || "No informado",
         Documentos: r.record_count,
       }));
-    const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
-    for (let row = 2; row <= summaryRows.length + 1; row += 1) {
-      if (summaryWs[`A${row}`]) summaryWs[`A${row}`].z = "dd/mm/yyyy";
+      const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
+      for (let row = 2; row <= summaryRows.length + 1; row += 1) {
+        if (summaryWs[`A${row}`]) summaryWs[`A${row}`].z = "dd/mm/yyyy";
+      }
+      const ws = XLSX.utils.json_to_sheet(sheetData);
+      ws["!cols"] = [
+        { wch: 22 }, { wch: 18 }, { wch: 40 }, { wch: 10 },
+        { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 10 },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, summaryWs, "Resumen");
+      XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
+      XLSX.writeFile(wb, `ajustes-provisionales-${new Date().getFullYear()}.xlsx`);
+      toast.success(`Excel generado con ${reportRows.length} productos de todas las paginas.`);
+    } catch (err: any) {
+      toast.error(`No se pudo generar el Excel completo: ${err?.message || "desconocido"}`);
+    } finally {
+      setExporting(false);
     }
-    const ws = XLSX.utils.json_to_sheet(sheetData);
-    ws["!cols"] = [
-      { wch: 22 }, { wch: 18 }, { wch: 40 }, { wch: 10 },
-      { wch: 22 }, { wch: 24 }, { wch: 10 }, { wch: 14 }, { wch: 34 }, { wch: 10 },
-    ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, summaryWs, "Resumen");
-    XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
-    XLSX.writeFile(wb, `ajustes-provisionales-${new Date().getFullYear()}.xlsx`);
   }
 
   // ─── Render: sin acceso / cargando ───────────────────────────────────────────
@@ -370,11 +416,12 @@ export default function AjustesProvisionalesPage() {
             </button>
             {loaded && rows.length > 0 && (
               <button
-                onClick={exportExcel}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl border border-slate-200 text-sm font-bold text-slate-700 active:scale-[0.97] transition-transform"
+                onClick={() => void exportExcel()}
+                disabled={exporting}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl border border-slate-200 text-sm font-bold text-slate-700 active:scale-[0.97] transition-transform disabled:opacity-50"
               >
-                <Download size={14} />
-                Excel
+                {exporting ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                {exporting ? "Generando..." : "Excel completo"}
               </button>
             )}
           </div>
