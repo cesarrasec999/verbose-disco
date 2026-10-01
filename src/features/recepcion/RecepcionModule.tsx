@@ -109,6 +109,7 @@ type ReceptionDifferenceRow = {
   qty: number;
   notes: string;
   receptionNotes: string[];
+  reportOrigin: "store" | "cd";
   photoUrl?: string | null;
 };
 
@@ -152,15 +153,6 @@ type DifferenceRegularization = {
   attended_by_name: string | null;
   attended_at: string | null;
   regularized_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type DifferenceSelection = {
-  report_id: string;
-  selected_by: string | null;
-  selected_by_name: string | null;
-  notes: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -500,8 +492,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
   const [differenceReportView, setDifferenceReportView] = useState<DifferenceReportView>("store");
-  const [differenceSelections, setDifferenceSelections] = useState<Map<string, DifferenceSelection>>(new Map());
-  const [savingDifferenceSelectionKey, setSavingDifferenceSelectionKey] = useState<string | null>(null);
   const [diffDateFrom, setDiffDateFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -587,7 +577,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   [user]);
   const canViewSummary = canViewAllStores;
   const canDeleteRequests = user?.role === "Administrador";
-  const canCurateDifferences = canViewAllStores;
 
   const storeCodes = useCallback((store: Store | null | undefined) => {
     const codes = [store?.code, store?.erp_sede].filter(Boolean).map(code => String(code).trim());
@@ -1755,7 +1744,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       if (reports.length === 0) {
         setDifferenceRows([]);
         setRegularizations(new Map());
-        setDifferenceSelections(new Map());
         return;
       }
 
@@ -1808,11 +1796,18 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         const req = requestsById.get(report.request_id);
         if (!req) continue;
         if (filterCodes.length > 0) {
-          const matches = canViewAllStores
-            ? filterCodes.includes(req.destination_store_code)
-            : filterCodes.includes(req.destination_store_code) || filterCodes.includes(req.source_store_code);
+          // Una tienda participa en ambos sentidos: puede ser quien recibe y
+          // reporta la diferencia, o quien envio mercaderia a CD-GPC y recibe
+          // el reporte generado por CD. Filtrar solo por destino ocultaba todo
+          // el segundo caso y hacia parecer que los reportes se habian perdido.
+          const matches = filterCodes.includes(req.destination_store_code) || filterCodes.includes(req.source_store_code);
           if (!matches) continue;
         }
+        const destinationCode = normalize(req.destination_store_code);
+        const destinationName = normalize(req.destination_store_name);
+        const reportOrigin = destinationCode === "0" || destinationCode === "CD-GPC" || destinationName === "CD-GPC"
+          ? "cd"
+          : "store";
         rows.push({
           key: report.id,
           diffKey: report.id,
@@ -1836,6 +1831,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           qty: num(report.qty),
           notes: report.notes?.trim() || "",
           receptionNotes: receptionNotesByProduct.get(`${report.request_id}::${normalize(report.product_code)}`) || [],
+          reportOrigin,
           photoUrl: report.photo_url,
         });
       }
@@ -1849,14 +1845,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const diffKeys = [...new Set(rows.map(row => row.diffKey))];
       const regChunks: string[][] = [];
       for (let i = 0; i < diffKeys.length; i += 200) regChunks.push(diffKeys.slice(i, i + 200));
-      const [regResults, selectionResults] = await Promise.all([
-        Promise.all(regChunks.map(ids =>
-          supabase.from("reception_difference_regularizations").select("*").in("diff_key", ids)
-        )),
-        Promise.all(regChunks.map(ids =>
-          supabase.from("reception_difference_selections").select("*").in("report_id", ids)
-        )),
-      ]);
+      const regResults = await Promise.all(regChunks.map(ids =>
+        supabase.from("reception_difference_regularizations").select("*").in("diff_key", ids)
+      ));
       const regError = regResults.find(result => result.error)?.error;
       if (regError) throw regError;
       const regMap = new Map<string, DifferenceRegularization>();
@@ -1864,18 +1855,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         regMap.set(reg.diff_key, reg);
       }
 
-      const selectionError = selectionResults.find(result => result.error)?.error;
-      if (selectionError) throw selectionError;
-      const selectionMap = new Map<string, DifferenceSelection>();
-      for (const selection of selectionResults.flatMap(result => (result.data || []) as DifferenceSelection[])) {
-        selectionMap.set(selection.report_id, selection);
-      }
-
       // El paso de "atendido" a "regularizado" lo hace un sync del lado del
       // servidor (sync-regularizaciones.js, cada 5 min) que verifica el N° de
       // requerimiento directo contra RMS. Aqui solo se lee el estado actual.
       setRegularizations(regMap);
-      setDifferenceSelections(selectionMap);
     } catch (e: any) {
       showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
     } finally {
@@ -1914,11 +1897,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         "Reportado por": row.reportedByName || "",
         "Observación de recepción": row.receptionNotes.join(" | "),
         "Observación del reporte": row.notes || "",
-        "Incluido en nuestro reporte": differenceSelections.has(row.diffKey) ? "Sí" : "No",
-        "Seleccionado por": differenceSelections.get(row.diffKey)?.selected_by_name || "",
-        "Seleccionado el": differenceSelections.get(row.diffKey)?.created_at
-          ? new Date(differenceSelections.get(row.diffKey)!.created_at).toLocaleString("es-PE")
-          : "",
+        "Origen del reporte": row.reportOrigin === "cd" ? "CD-GPC" : "Tienda",
         Estado: statusLabel(reg?.status || "pendiente"),
         "N° Requerimiento reg.": reg?.requirement_ref || "",
         "Atendido por": reg?.attended_by_name || "",
@@ -1968,45 +1947,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       showMsg("Error al actualizar la diferencia: " + e.message);
     } finally {
       setSavingRegularizationKey(null);
-    }
-  }
-
-  async function setDifferenceSelection(row: ReceptionDifferenceRow, include: boolean) {
-    if (!user || !canCurateDifferences) return;
-    setSavingDifferenceSelectionKey(row.diffKey);
-    try {
-      if (include) {
-        const payload = {
-          report_id: row.diffKey,
-          selected_by: user.id,
-          selected_by_name: user.full_name,
-          updated_at: new Date().toISOString(),
-        };
-        const { data, error } = await supabase
-          .from("reception_difference_selections")
-          .upsert(payload, { onConflict: "report_id" })
-          .select("*")
-          .single();
-        if (error) throw error;
-        setDifferenceSelections(prev => new Map(prev).set(row.diffKey, data as DifferenceSelection));
-        showMsg("Diferencia incluida en nuestro reporte.");
-      } else {
-        const { error } = await supabase
-          .from("reception_difference_selections")
-          .delete()
-          .eq("report_id", row.diffKey);
-        if (error) throw error;
-        setDifferenceSelections(prev => {
-          const next = new Map(prev);
-          next.delete(row.diffKey);
-          return next;
-        });
-        showMsg("Diferencia retirada de nuestro reporte; el reporte original de la tienda se conserva.");
-      }
-    } catch (e: any) {
-      showMsg("No se pudo actualizar nuestro reporte: " + e.message);
-    } finally {
-      setSavingDifferenceSelectionKey(null);
     }
   }
 
@@ -2064,12 +2004,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         next.delete(row.diffKey);
         return next;
       });
-      setDifferenceSelections(prev => {
-        if (!prev.has(row.diffKey)) return prev;
-        const next = new Map(prev);
-        next.delete(row.diffKey);
-        return next;
-      });
       if (expandedDiffKey === row.diffKey) setExpandedDiffKey(null);
       showMsg("Reporte de diferencia eliminado.");
     } catch (e: any) {
@@ -2116,11 +2050,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       if (error) throw error;
       setDifferenceRows(prev => prev.filter(item => !keys.includes(item.diffKey)));
       setRegularizations(prev => {
-        const next = new Map(prev);
-        for (const key of keys) next.delete(key);
-        return next;
-      });
-      setDifferenceSelections(prev => {
         const next = new Map(prev);
         for (const key of keys) next.delete(key);
         return next;
@@ -2210,12 +2139,13 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   const filteredDifferenceRows = useMemo(() => {
     return differenceRows.filter(row => {
-      if (differenceReportView === "ours" && !differenceSelections.has(row.diffKey)) return false;
+      if (differenceReportView === "store" && row.reportOrigin !== "store") return false;
+      if (differenceReportView === "ours" && row.reportOrigin !== "cd") return false;
       if (differenceReasonFilter !== "all" && normalizeReason(row.reason) !== differenceReasonFilter) return false;
       const status = regularizations.get(row.diffKey)?.status || "pendiente";
       return differenceStatusFilter === "all" || status === differenceStatusFilter;
     });
-  }, [differenceReasonFilter, differenceReportView, differenceSelections, differenceStatusFilter, differenceRows, regularizations]);
+  }, [differenceReasonFilter, differenceReportView, differenceStatusFilter, differenceRows, regularizations]);
 
   // Al cambiar el motivo se retiran las selecciones que ya no se ven. Esto
   // protege las eliminaciones masivas de operar sobre otro bloque.
@@ -2781,7 +2711,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 >
                   <span className="block text-xs font-black uppercase">Reportado por tienda</span>
                   <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "store" ? "text-slate-300" : "text-slate-500"}`}>
-                    {differenceRows.length} diferencias comunicadas en recepción
+                    {differenceRows.filter(row => row.reportOrigin === "store").length} diferencias que las tiendas reportaron al recibir
                   </span>
                 </button>
                 <button
@@ -2791,7 +2721,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                 >
                   <span className="block text-xs font-black uppercase">Nuestro reporte</span>
                   <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "ours" ? "text-emerald-100" : "text-slate-500"}`}>
-                    {differenceSelections.size} diferencias seleccionadas y validadas
+                    {differenceRows.filter(row => row.reportOrigin === "cd").length} diferencias reportadas por CD-GPC a las tiendas
                   </span>
                 </button>
               </div>
@@ -2873,7 +2803,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                         <th className="p-2 text-right">Recibido</th>
                         <th className="p-2 text-right">Dif.</th>
                         <th className="p-2">Reportado</th>
-                        <th className="p-2 text-center">Nuestro reporte</th>
+                        <th className="p-2 text-center">Reportó</th>
                         <th className="p-2">Estado</th>
                         <th className="p-2">N° Req.</th>
                         <th className="p-2">Regularizado</th>
@@ -2901,8 +2831,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                               ? { label: "Rechazado", cls: "bg-red-100 text-red-700" }
                               : { label: "Pendiente", cls: "bg-slate-200 text-slate-600" };
                         const saving = savingRegularizationKey === row.diffKey;
-                        const savingSelection = savingDifferenceSelectionKey === row.diffKey;
-                        const includedInOurReport = differenceSelections.has(row.diffKey);
                         const isOpen = expandedDiffKey === row.diffKey;
                         const diffQty = row.kind === "desmedro" ? null : (row.kind === "sobrante" ? row.qty : -row.qty);
                         return (
@@ -2948,23 +2876,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                 <p className="font-bold text-slate-700">{timeShort(row.reportedAt)}</p>
                                 {row.reportedByName && <p className="text-slate-500">{row.reportedByName}</p>}
                               </td>
-                              <td className="p-2 text-center" onClick={event => event.stopPropagation()}>
-                                {canCurateDifferences ? (
-                                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-[10px] font-black text-slate-600">
-                                    <input
-                                      type="checkbox"
-                                      checked={includedInOurReport}
-                                      disabled={savingSelection}
-                                      onChange={event => void setDifferenceSelection(row, event.target.checked)}
-                                      className="h-4 w-4 rounded border-slate-300 text-emerald-600"
-                                    />
-                                    {savingSelection ? "Guardando" : includedInOurReport ? "Incluido" : "Incluir"}
-                                  </label>
-                                ) : (
-                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${includedInOurReport ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"}`}>
-                                    {includedInOurReport ? "Incluido" : "No incluido"}
-                                  </span>
-                                )}
+                              <td className="p-2 text-center">
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.reportOrigin === "cd" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`}>
+                                  {row.reportOrigin === "cd" ? "CD-GPC" : "Tienda"}
+                                </span>
                               </td>
                               <td className="p-2">
                                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusBadge.cls}`}>{statusBadge.label}</span>
@@ -2993,12 +2908,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                     </div>
                                   )}
                                   {row.notes && <p className="mt-1 text-xs font-semibold text-slate-600">Observación del reporte: {row.notes}</p>}
-                                  {includedInOurReport && (
-                                    <p className="mt-1 text-[11px] font-bold text-emerald-700">
-                                      Incluido en nuestro reporte por {differenceSelections.get(row.diffKey)?.selected_by_name || "validador"}
-                                      {differenceSelections.get(row.diffKey)?.created_at ? ` · ${timeShort(differenceSelections.get(row.diffKey)!.created_at)}` : ""}
-                                    </p>
-                                  )}
                                   {reg?.notes && <p className="mt-1 text-xs font-semibold text-slate-600">Obs. proveedora: {reg.notes}</p>}
                                   {row.kind === "desmedro" && (
                                     row.photoUrl ? (
