@@ -109,7 +109,7 @@ type ReceptionDifferenceRow = {
   qty: number;
   notes: string;
   receptionNotes: string[];
-  reportOrigin: "store" | "cd";
+  reportPerspective: "received" | "issued";
   photoUrl?: string | null;
 };
 
@@ -157,7 +157,7 @@ type DifferenceRegularization = {
   updated_at: string;
 };
 
-type DifferenceReportView = "store" | "ours";
+type DifferenceReportView = "received" | "issued";
 
 
 type ProductLookup = {
@@ -491,7 +491,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [differenceRows, setDifferenceRows] = useState<ReceptionDifferenceRow[]>([]);
   const [loadingDifferences, setLoadingDifferences] = useState(false);
-  const [differenceReportView, setDifferenceReportView] = useState<DifferenceReportView>("store");
+  const [differenceReportView, setDifferenceReportView] = useState<DifferenceReportView>("received");
   const [diffDateFrom, setDiffDateFrom] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -566,6 +566,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const scannerRef    = useRef<Html5QrLike | null>(null);
   const scanHandled   = useRef(false);
   const loadSeq       = useRef(0);
+  const differenceLoadSeq = useRef(0);
+  const pendingStoreFilterRef = useRef<string | null>(null);
   const emptyRetryTimer = useRef<number | null>(null);
   const mountedRef        = useRef(true);
   const abortRef          = useRef<AbortController | null>(null);
@@ -711,10 +713,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, []);
 
   function updateStoreFilter(value: string) {
-    setStoreFilter(value || "all");
+    const nextValue = value || "all";
+    pendingStoreFilterRef.current = nextValue;
+    setStoreFilter(nextValue);
     const params = new URLSearchParams(searchParams.toString());
-    if (!value || value === "all") params.delete("store");
-    else params.set("store", value);
+    if (nextValue === "all") params.delete("store");
+    else params.set("store", nextValue);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
@@ -753,7 +757,16 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setStoreFilter(urlStoreFilter); }, [urlStoreFilter]);
+  useEffect(() => {
+    const pendingValue = pendingStoreFilterRef.current;
+    if (pendingValue) {
+      // router.replace puede volver a renderizar una vez con la URL anterior.
+      // Ignorar ese valor transitorio evita que el selector salte a "Todas".
+      if (urlStoreFilter !== pendingValue) return;
+      pendingStoreFilterRef.current = null;
+    }
+    if (storeFilter !== urlStoreFilter) setStoreFilter(urlStoreFilter);
+  }, [storeFilter, urlStoreFilter]);
   useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (ready && user && listPanel === "diferencias") void loadDifferencesReport();
@@ -1725,6 +1738,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   async function loadDifferencesReport() {
     if (!canViewSummary && !canViewDifferences) return;
+    const seq = ++differenceLoadSeq.current;
     setLoadingDifferences(true);
     setSelectedDiffKeys(new Set());
     try {
@@ -1741,6 +1755,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         .lte("created_at", toIso)
         .order("created_at", { ascending: false });
       if (reportsError) throw reportsError;
+      if (seq !== differenceLoadSeq.current || !mountedRef.current) return;
       const reports = (reportsData || []) as ReceptionDifferenceReport[];
       if (reports.length === 0) {
         setDifferenceRows([]);
@@ -1791,6 +1806,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       const myStore = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
       const myCodes = myStore ? storeCodes(myStore) : [];
       const filterCodes = canViewAllStores ? selectedStoreCodes(storeFilter) : myCodes;
+      const normalizedFilterCodes = new Set(filterCodes.map(normalize));
 
       const rows: ReceptionDifferenceRow[] = [];
       for (const report of reports) {
@@ -1801,14 +1817,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           // reporta la diferencia, o quien envio mercaderia a CD-GPC y recibe
           // el reporte generado por CD. Filtrar solo por destino ocultaba todo
           // el segundo caso y hacia parecer que los reportes se habian perdido.
-          const matches = filterCodes.includes(req.destination_store_code) || filterCodes.includes(req.source_store_code);
+          const matches = normalizedFilterCodes.has(normalize(req.destination_store_code)) || normalizedFilterCodes.has(normalize(req.source_store_code));
           if (!matches) continue;
         }
         const destinationCode = normalize(req.destination_store_code);
         const destinationName = normalize(req.destination_store_name);
-        const reportOrigin = destinationCode === "0" || destinationCode === "CD-GPC" || destinationName === "CD-GPC"
-          ? "cd"
-          : "store";
+        const destinationIsCd = destinationCode === "0" || destinationCode === "CD-GPC" || destinationName === "CD-GPC";
+        // La perspectiva cambia con la tienda elegida:
+        // - si la tienda es origen, la contraparte receptora le reporto;
+        // - si la tienda es destino, ella fue quien emitio el reporte.
+        // Sin filtro se conserva la perspectiva corporativa de CD-GPC.
+        const reportPerspective: ReceptionDifferenceRow["reportPerspective"] = filterCodes.length > 0
+          ? (normalizedFilterCodes.has(normalize(req.source_store_code)) ? "received" : "issued")
+          : (destinationIsCd ? "issued" : "received");
         rows.push({
           key: report.id,
           diffKey: report.id,
@@ -1832,11 +1853,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           qty: num(report.qty),
           notes: report.notes?.trim() || "",
           receptionNotes: receptionNotesByProduct.get(`${report.request_id}::${normalize(report.product_code)}`) || [],
-          reportOrigin,
+          reportPerspective,
           photoUrl: report.photo_url,
         });
       }
 
+      if (seq !== differenceLoadSeq.current || !mountedRef.current) return;
       setDifferenceRows(rows.sort((a, b) =>
         String(b.reportedAt || "").localeCompare(String(a.reportedAt || "")) ||
         a.destinationStore.localeCompare(b.destinationStore, "es") ||
@@ -1851,6 +1873,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       ));
       const regError = regResults.find(result => result.error)?.error;
       if (regError) throw regError;
+      if (seq !== differenceLoadSeq.current || !mountedRef.current) return;
       const regMap = new Map<string, DifferenceRegularization>();
       for (const reg of regResults.flatMap(result => (result.data || []) as DifferenceRegularization[])) {
         regMap.set(reg.diff_key, reg);
@@ -1861,9 +1884,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       // requerimiento directo contra RMS. Aqui solo se lee el estado actual.
       setRegularizations(regMap);
     } catch (e: any) {
-      showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
+      if (seq === differenceLoadSeq.current && mountedRef.current) {
+        showMsg("No se pudo cargar el reporte de diferencias: " + e.message);
+      }
     } finally {
-      setLoadingDifferences(false);
+      if (seq === differenceLoadSeq.current && mountedRef.current) setLoadingDifferences(false);
     }
   }
 
@@ -1898,7 +1923,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         "Reportado por": row.reportedByName || "",
         "Observación de recepción": row.receptionNotes.join(" | "),
         "Observación del reporte": row.notes || "",
-        "Origen del reporte": row.reportOrigin === "cd" ? "CD-GPC" : "Tienda",
+        "Sentido del reporte": row.reportPerspective === "received" ? "Nos reportaron" : "Reportamos",
         Estado: statusLabel(reg?.status || "pendiente"),
         "N° Requerimiento reg.": reg?.requirement_ref || "",
         "Atendido por": reg?.attended_by_name || "",
@@ -2140,8 +2165,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   const filteredDifferenceRows = useMemo(() => {
     return differenceRows.filter(row => {
-      if (differenceReportView === "store" && row.reportOrigin !== "store") return false;
-      if (differenceReportView === "ours" && row.reportOrigin !== "cd") return false;
+      if (differenceReportView !== row.reportPerspective) return false;
       if (differenceKindFilter !== "all" && row.kind !== differenceKindFilter) return false;
       if (differenceReasonFilter !== "all" && normalizeReason(row.reason) !== differenceReasonFilter) return false;
       const status = regularizations.get(row.diffKey)?.status || "pendiente";
@@ -2715,22 +2739,22 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
               <div className="mb-4 grid gap-2 rounded-2xl border bg-slate-50 p-2 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => setDifferenceReportView("store")}
-                  className={`rounded-xl px-4 py-3 text-left transition ${differenceReportView === "store" ? "bg-slate-950 text-white shadow-sm" : "bg-white text-slate-700 hover:bg-slate-100"}`}
+                  onClick={() => setDifferenceReportView("received")}
+                  className={`rounded-xl px-4 py-3 text-left transition ${differenceReportView === "received" ? "bg-slate-950 text-white shadow-sm" : "bg-white text-slate-700 hover:bg-slate-100"}`}
                 >
-                  <span className="block text-xs font-black uppercase">Reportado por tienda</span>
-                  <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "store" ? "text-slate-300" : "text-slate-500"}`}>
-                    {differenceRows.filter(row => row.reportOrigin === "store").length} diferencias que las tiendas reportaron al recibir
+                  <span className="block text-xs font-black uppercase">Nos reportaron</span>
+                  <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "received" ? "text-slate-300" : "text-slate-500"}`}>
+                    {differenceRows.filter(row => row.reportPerspective === "received").length} diferencias informadas a la tienda seleccionada
                   </span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDifferenceReportView("ours")}
-                  className={`rounded-xl px-4 py-3 text-left transition ${differenceReportView === "ours" ? "bg-emerald-700 text-white shadow-sm" : "bg-white text-slate-700 hover:bg-slate-100"}`}
+                  onClick={() => setDifferenceReportView("issued")}
+                  className={`rounded-xl px-4 py-3 text-left transition ${differenceReportView === "issued" ? "bg-emerald-700 text-white shadow-sm" : "bg-white text-slate-700 hover:bg-slate-100"}`}
                 >
-                  <span className="block text-xs font-black uppercase">Nuestro reporte</span>
-                  <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "ours" ? "text-emerald-100" : "text-slate-500"}`}>
-                    {differenceRows.filter(row => row.reportOrigin === "cd").length} diferencias reportadas por CD-GPC a las tiendas
+                  <span className="block text-xs font-black uppercase">Reportamos</span>
+                  <span className={`mt-0.5 block text-[11px] font-semibold ${differenceReportView === "issued" ? "text-emerald-100" : "text-slate-500"}`}>
+                    {differenceRows.filter(row => row.reportPerspective === "issued").length} diferencias registradas por la tienda seleccionada
                   </span>
                 </button>
               </div>
@@ -2812,7 +2836,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                         <th className="p-2 text-right">Recibido</th>
                         <th className="p-2 text-right">Dif.</th>
                         <th className="p-2">Reportado</th>
-                        <th className="p-2 text-center">Reportó</th>
+                        <th className="p-2 text-center">Sentido</th>
                         <th className="p-2">Estado</th>
                         <th className="p-2">N° Req.</th>
                         <th className="p-2">Regularizado</th>
@@ -2886,8 +2910,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                 {row.reportedByName && <p className="text-slate-500">{row.reportedByName}</p>}
                               </td>
                               <td className="p-2 text-center">
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.reportOrigin === "cd" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`}>
-                                  {row.reportOrigin === "cd" ? "CD-GPC" : "Tienda"}
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.reportPerspective === "issued" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`}>
+                                  {row.reportPerspective === "received" ? "Nos reportaron" : "Reportamos"}
                                 </span>
                               </td>
                               <td className="p-2">
