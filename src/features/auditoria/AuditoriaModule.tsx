@@ -24,6 +24,7 @@ type MainTab = "sessions" | "register" | "adminSummary";
 type RegisterTab = "count" | "records" | "summary";
 type AuditSummaryPeriod = "dia" | "mes" | "rango";
 type SummarySortKey = "sku" | "description" | "unit" | "stock" | "counted" | "diff" | "value" | "status" | "observation";
+type AuditSessionStatusFilter = "all" | "in_progress" | "finished";
 type SortDirection = "asc" | "desc";
 
 const AUDIT_SESSION_ID_KEY = "audit_session_id";
@@ -281,6 +282,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
   const [sessions, setSessions] = useState<AuditSession[]>([]);
   const [storeId, setStoreId] = useState("");
   const [sessionsStoreFilter, setSessionsStoreFilter] = useState("");
+  const [sessionsStatusFilter, setSessionsStatusFilter] = useState<AuditSessionStatusFilter>("all");
   const [session, setSession] = useState<AuditSession | null>(null);
   // true hasta que se resuelve si hay una sesion guardada en sessionStorage
   // para restaurar. Evita que el guard de "sin sesion -> volver a sesiones"
@@ -736,8 +738,9 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     return siblings.length > 0 ? siblings : [id];
   }
 
-  async function loadSessions(activeUser = user, storeFilterOverride?: string) {
+  async function loadSessions(activeUser = user, storeFilterOverride?: string, statusFilterOverride?: AuditSessionStatusFilter) {
     const filterValue = storeFilterOverride !== undefined ? storeFilterOverride : sessionsStoreFilter;
+    const statusFilter = statusFilterOverride !== undefined ? statusFilterOverride : sessionsStatusFilter;
     let query = supabase
       .from("audit_sessions")
       .select("*, stores(name), cyclic_users(full_name)")
@@ -748,6 +751,7 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
     } else if (filterValue) {
       query = query.in("store_id", expandStoreIds(filterValue));
     }
+    if (statusFilter !== "all") query = query.eq("status", statusFilter);
     const { data } = await query;
     setSessions((data || []).map((r: any) => ({ ...r, store_name: r.stores?.name, auditor_name: r.cyclic_users?.full_name })) as AuditSession[]);
   }
@@ -2655,23 +2659,44 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
               <div className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="font-black">Sesiones recientes</h2>
-                  {user.can_access_all_stores && (
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      value={sessionsStatusFilter}
+                      onChange={e => {
+                        const value = e.target.value as AuditSessionStatusFilter;
+                        setSessionsStatusFilter(value);
+                        void loadSessions(user, sessionsStoreFilter, value);
+                      }}
+                      className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold"
+                      aria-label="Filtrar sesiones por estado"
+                    >
+                      <option value="all">Todos los estados</option>
+                      <option value="in_progress">En proceso</option>
+                      <option value="finished">Finalizadas</option>
+                    </select>
+                    {user.can_access_all_stores && (
                     <select
                       value={sessionsStoreFilter}
-                      onChange={e => { const v = e.target.value; setSessionsStoreFilter(v); void loadSessions(user, v); }}
+                      onChange={e => { const v = e.target.value; setSessionsStoreFilter(v); void loadSessions(user, v, sessionsStatusFilter); }}
                       className="rounded-xl border bg-white px-3 py-2 text-xs font-semibold"
                     >
                       <option value="">Todas las tiendas</option>
                       {stores.filter(s => !!s.erp_sede).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
-                  )}
+                    )}
+                  </div>
                 </div>
                 <div className="mt-3 grid max-h-80 gap-2 overflow-auto md:grid-cols-2">
                   {sessions.map(s => (
                     <div key={s.id} className={`rounded-xl border p-3 text-xs hover:bg-slate-50 ${session?.id === s.id ? "border-blue-600 bg-blue-50" : ""}`}>
                       <button onClick={() => openSession(s)} className="w-full text-left">
-                        <div className="font-black text-slate-900">{s.store_name || s.store_id}</div>
-                        <div className="text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")} - {s.status === "finished" ? "Finalizada" : "En progreso"}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="font-black text-slate-900">{s.store_name || s.store_id}</div>
+                          <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${s.status === "finished" ? "bg-green-100 text-green-700" : s.status === "cancelled" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                            {s.status === "finished" ? "Finalizada" : s.status === "cancelled" ? "Cancelada" : "En proceso"}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-slate-500">{new Date(s.started_at).toLocaleString("es-PE")}</div>
                       </button>
                       {user.role === "Administrador" && (
                         <button onClick={() => deleteSession(s)} className="mt-2 rounded-lg border border-red-200 px-2 py-1 text-xs font-black text-red-600 hover:bg-red-50">
@@ -2680,6 +2705,11 @@ export default function AuditoriaModule({ mainTab, registerTab: registerTabProp 
                       )}
                     </div>
                   ))}
+                  {sessions.length === 0 && (
+                    <div className="rounded-xl border border-dashed p-6 text-center text-sm font-semibold text-slate-500 md:col-span-2">
+                      No hay sesiones para los filtros seleccionados.
+                    </div>
+                  )}
                 </div>
               </div>
 
