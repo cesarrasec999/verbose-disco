@@ -21,6 +21,12 @@ const start = (month: string) => month + "-01";
 const end = (month: string) => { const [y, m] = month.split("-").map(Number); return month + "-" + String(new Date(y, m, 0).getDate()).padStart(2, "0"); };
 const prev = (month: string) => { const [y, m] = month.split("-").map(Number); return new Date(y, m - 2, 1).toISOString().slice(0, 7); };
 const next = (month: string) => { const [y, m] = month.split("-").map(Number); return new Date(y, m, 1).toISOString().slice(0, 10); };
+const defaultClosedMonth = () => {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Lima", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const year = Number(parts.find(part => part.type === "year")?.value || 0);
+  const month = Number(parts.find(part => part.type === "month")?.value || 1);
+  return new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
+};
 const quarterStart = (date: string) => date.slice(0, 4) + "-" + String(Math.floor((Number(date.slice(5, 7)) - 1) / 3) * 3 + 1).padStart(2, "0") + "-01";
 const normal = (v: unknown) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 const message = (e: unknown) => e instanceof Error ? e.message : e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Error desconocido";
@@ -104,7 +110,7 @@ async function excel(name: string, sheets: { name: string; rows: Record<string, 
 export default function BonusModule() {
   const [user, setUser] = useState<CyclicUser | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
-  const [month, setMonth] = useState("2026-08");
+  const [month, setMonth] = useState(defaultClosedMonth);
   const [quarter, setQuarter] = useState("2026-09-30");
   const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
   const [monthlySource, setMonthlySource] = useState<{ month: string; oldDate: string | null; newDate: string | null; rotation: string | null; calculatedAt: string } | null>(null);
@@ -171,11 +177,13 @@ export default function BonusModule() {
     setLoadingQuarterly(true);
     try {
       const store = mapping(stores);
-      const [sessions, auditSessions, salesRows] = await Promise.all([
+      const [sessions, auditSessions, salesResult] = await Promise.all([
         paged<any>((a, b) => supabase.from("general_inventory_sessions").select("id,store_id,finished_at").eq("status", "finished").lte("finished_at", quarter + "T23:59:59-05:00").order("finished_at", { ascending: false }).range(a, b)),
         paged<any>((a, b) => supabase.from("audit_sessions").select("id,store_id,finished_at").eq("status", "finished").lte("finished_at", quarter + "T23:59:59-05:00").order("finished_at", { ascending: false }).range(a, b)),
-        paged<any>((a, b) => supabase.from("erp_store_sales_daily").select("store_key,store_name,sales_amount").gte("sales_date", quarterStart(quarter)).lte("sales_date", quarter).range(a, b)),
+        supabase.rpc("get_bonus_sales_period_v3", { p_from: quarterStart(quarter), p_to: quarter }),
       ]);
+      if (salesResult.error) throw salesResult.error;
+      const salesRows = salesResult.data || [];
       const latestSession = new Map<string, any>(), latestAudit = new Map<string, string>();
       for (const row of sessions) if (!latestSession.has(String(row.store_id))) latestSession.set(String(row.store_id), row);
       for (const row of auditSessions) if (!latestAudit.has(String(row.store_id))) latestAudit.set(String(row.store_id), String(row.id));
@@ -190,7 +198,11 @@ export default function BonusModule() {
       const sales = new Map<string, number>();
       for (const row of salesRows) { const s = store(row.store_key || row.store_name); if (s) sales.set(s.id, (sales.get(s.id) || 0) + Number(row.sales_amount || 0)); }
       const periods = [...new Set([...inventory.values()].map(row => String(row.finished_at || "").slice(0, 7)).filter(Boolean))], monthlySales = new Map<string, number>();
-      for (const period of periods) for (const row of await paged<any>((a, b) => supabase.from("erp_store_sales_daily").select("store_key,store_name,sales_amount").gte("sales_date", start(period)).lte("sales_date", end(period)).range(a, b))) { const s = store(row.store_key || row.store_name); if (s) monthlySales.set(s.id + "|" + period, (monthlySales.get(s.id + "|" + period) || 0) + Number(row.sales_amount || 0)); }
+      for (const period of periods) {
+        const { data: periodSales, error: periodSalesError } = await supabase.rpc("get_bonus_sales_period_v3", { p_from: start(period), p_to: end(period) });
+        if (periodSalesError) throw periodSalesError;
+        for (const row of periodSales || []) { const s = store(row.store_key || row.store_name); if (s) monthlySales.set(s.id + "|" + period, (monthlySales.get(s.id + "|" + period) || 0) + Number(row.sales_amount || 0)); }
+      }
       setQuarterly(stores.map(s => { const inv = inventory.get(s.id), au = audit.get(s.id), saleMonth = inv ? monthlySales.get(s.id + "|" + String(inv.finished_at || "").slice(0, 7)) || 0 : null; const difference = inv ? Math.abs(Number(inv.net_value_diff || 0)) : null; return { store: s, sales: sales.get(s.id) || 0, audit: au && au.all ? au.ok / au.all * 100 : null, inventory: inv ? Number(inv.eri_pct || 0) : null, diff: difference, monthlySales: saleMonth, diffPct: difference != null && saleMonth && saleMonth > 0 ? difference / saleMonth * 100 : null }; }));
       setQuarterlyDate(quarter);
     } catch (error) { toast.error("No se pudo calcular Bono trimestral: " + message(error)); } finally { quarterlyBusy.current = false; setLoadingQuarterly(false); }
