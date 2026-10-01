@@ -603,6 +603,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     if (!user?.store_id) return [] as string[];
     return storeCodes(stores.find(s => s.id === user.store_id));
   }, [storeCodes, stores, user]);
+  const normalizedMyStoreCodes = useMemo(() => new Set(myStoreCodes.map(normalize)), [myStoreCodes]);
+
+  const canManageDifference = useCallback((row: ReceptionDifferenceRow) =>
+    user?.role === "Administrador" || normalizedMyStoreCodes.has(normalize(row.sourceStoreCode)),
+  [normalizedMyStoreCodes, user?.role]);
 
   const canAccessRequest = useCallback((request: ReceptionRequest) =>
     canViewAllStores || requestMatchesStoreCodes(request, myStoreCodes),
@@ -1980,6 +1985,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // marca atendido. El paso a "regularizado" es automatico (ver
   // loadDifferencesReport) cuando ese requerimiento sale recibido en RMS.
   function marcarAtendido(row: ReceptionDifferenceRow) {
+    if (!canManageDifference(row)) {
+      showMsg("Solo la tienda que envio los productos puede atender esta diferencia.");
+      return;
+    }
     const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
     if (!inputs.ref.trim()) { showMsg("Ingresa el numero de requerimiento."); return; }
     void saveRegularization(row, {
@@ -1997,6 +2006,10 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // obligatorias para dejar constancia del motivo. Un rechazo puede editarse
   // posteriormente y pasar a atendido sin borrar el evento anterior.
   function marcarRechazado(row: ReceptionDifferenceRow) {
+    if (!canManageDifference(row)) {
+      showMsg("Solo la tienda que envio los productos puede rechazar esta diferencia.");
+      return;
+    }
     const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
     if (!inputs.notes.trim()) { showMsg("Ingresa el motivo del rechazo en notas."); return; }
     void saveRegularization(row, {
@@ -2845,7 +2858,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                     </thead>
                     <tbody>
                       {filteredDifferenceRows.map(row => {
-                        const isProviderForRow = canViewAllStores || myStoreCodes.includes(row.sourceStoreCode);
+                        const isProviderForRow = canManageDifference(row);
                         const reg = regularizations.get(row.diffKey);
                         const status: RegularizationStatus = reg?.status || "pendiente";
                         const formInputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
@@ -2929,7 +2942,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                               <tr className="border-b bg-slate-50/70 last:border-0">
                                 <td colSpan={canDeleteRequests ? 16 : 15} className="p-3">
                                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-500">
-                                    <span>Origen: <b className="text-slate-700">{row.sourceStore}</b></span>
+                                    <span>Envió / atiende: <b className="text-slate-700">{row.sourceStore}</b></span>
+                                    <span>Recibió / reportó: <b className="text-slate-700">{row.destinationStore}</b></span>
                                     {reg?.attended_at && <span>Atendido: <b className="text-slate-700">{timeShort(reg.attended_at)} · {reg.attended_by_name}</b></span>}
                                   </div>
                                   {row.receptionNotes.length > 0 && (
