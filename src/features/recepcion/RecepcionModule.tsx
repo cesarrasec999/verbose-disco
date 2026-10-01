@@ -494,7 +494,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const [differenceReportView, setDifferenceReportView] = useState<DifferenceReportView>("received");
   const [diffDateFrom, setDiffDateFrom] = useState(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 30);
+    // Mantener visibles los reportes recientes aunque una tienda no haya
+    // generado diferencias durante el último mes calendario.
+    d.setDate(d.getDate() - 90);
     return d.toISOString().slice(0, 10);
   });
   const [diffDateTo, setDiffDateTo] = useState(() => new Date().toISOString().slice(0, 10));
@@ -567,7 +569,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   const scanHandled   = useRef(false);
   const loadSeq       = useRef(0);
   const differenceLoadSeq = useRef(0);
-  const pendingStoreFilterRef = useRef<string | null>(null);
   const emptyRetryTimer = useRef<number | null>(null);
   const mountedRef        = useRef(true);
   const abortRef          = useRef<AbortController | null>(null);
@@ -719,7 +720,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   function updateStoreFilter(value: string) {
     const nextValue = value || "all";
-    pendingStoreFilterRef.current = nextValue;
     setStoreFilter(nextValue);
     const params = new URLSearchParams(searchParams.toString());
     if (nextValue === "all") params.delete("store");
@@ -762,16 +762,6 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   }, []);
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const pendingValue = pendingStoreFilterRef.current;
-    if (pendingValue) {
-      // router.replace puede volver a renderizar una vez con la URL anterior.
-      // Ignorar ese valor transitorio evita que el selector salte a "Todas".
-      if (urlStoreFilter !== pendingValue) return;
-      pendingStoreFilterRef.current = null;
-    }
-    if (storeFilter !== urlStoreFilter) setStoreFilter(urlStoreFilter);
-  }, [storeFilter, urlStoreFilter]);
   useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (ready && user && listPanel === "diferencias") void loadDifferencesReport();
@@ -1753,15 +1743,25 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
       // del reporte, no de la recepcion.
       const fromIso = `${diffDateFrom}T00:00:00`;
       const toIso = `${diffDateTo}T23:59:59`;
-      const { data: reportsData, error: reportsError } = await supabase
-        .from("reception_difference_reports")
-        .select("*")
-        .gte("created_at", fromIso)
-        .lte("created_at", toIso)
-        .order("created_at", { ascending: false });
-      if (reportsError) throw reportsError;
-      if (seq !== differenceLoadSeq.current || !mountedRef.current) return;
-      const reports = (reportsData || []) as ReceptionDifferenceReport[];
+      // Supabase limita por defecto cada respuesta. Recorrer el rango en
+      // páginas evita ocultar diferencias antiguas cuando existen más de
+      // 1,000 reportes en el periodo seleccionado.
+      const reports: ReceptionDifferenceReport[] = [];
+      const reportPageSize = 500;
+      for (let offset = 0; ; offset += reportPageSize) {
+        const { data: reportsData, error: reportsError } = await supabase
+          .from("reception_difference_reports")
+          .select("*")
+          .gte("created_at", fromIso)
+          .lte("created_at", toIso)
+          .order("created_at", { ascending: false })
+          .range(offset, offset + reportPageSize - 1);
+        if (reportsError) throw reportsError;
+        if (seq !== differenceLoadSeq.current || !mountedRef.current) return;
+        const page = (reportsData || []) as ReceptionDifferenceReport[];
+        reports.push(...page);
+        if (page.length < reportPageSize) break;
+      }
       if (reports.length === 0) {
         setDifferenceRows([]);
         setRegularizations(new Map());
