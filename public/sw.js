@@ -1,4 +1,4 @@
-const CACHE_VERSION = "rasecorp-pwa-v4";
+const CACHE_VERSION = "rasecorp-pwa-v5";
 const APP_SHELL = [
   "/",
   "/offline.html",
