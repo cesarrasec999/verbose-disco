@@ -535,6 +535,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
   // Este filtro pertenece solo al submódulo Diferencias. Mantenerlo separado
   // evita que al cambiar de pestaña se alteren los filtros de recepción.
   const [differenceReasonFilter, setDifferenceReasonFilter] = useState("all");
+  const [differenceKindFilter, setDifferenceKindFilter] = useState<"all" | DifferenceKind>("all");
   const [differenceStatusFilter, setDifferenceStatusFilter] = useState<"all" | RegularizationStatus>("all");
   // Acota la consulta a reception_requests por creation_date, igual que el
   // resto de modulos (reportes, diferencias) - antes se traia sin tope de
@@ -1968,8 +1969,8 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   // Tienda proveedora: rechaza la diferencia reportada (ej. no corresponde,
   // ya fue entregada, etc.). A diferencia de "atendido", las notas son
-  // obligatorias para dejar constancia del motivo. Es un estado terminal:
-  // no pasa a "regularizado" automaticamente.
+  // obligatorias para dejar constancia del motivo. Un rechazo puede editarse
+  // posteriormente y pasar a atendido sin borrar el evento anterior.
   function marcarRechazado(row: ReceptionDifferenceRow) {
     const inputs = regFormInputs[row.diffKey] || { ref: "", notes: "" };
     if (!inputs.notes.trim()) { showMsg("Ingresa el motivo del rechazo en notas."); return; }
@@ -2141,11 +2142,12 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     return differenceRows.filter(row => {
       if (differenceReportView === "store" && row.reportOrigin !== "store") return false;
       if (differenceReportView === "ours" && row.reportOrigin !== "cd") return false;
+      if (differenceKindFilter !== "all" && row.kind !== differenceKindFilter) return false;
       if (differenceReasonFilter !== "all" && normalizeReason(row.reason) !== differenceReasonFilter) return false;
       const status = regularizations.get(row.diffKey)?.status || "pendiente";
       return differenceStatusFilter === "all" || status === differenceStatusFilter;
     });
-  }, [differenceReasonFilter, differenceReportView, differenceStatusFilter, differenceRows, regularizations]);
+  }, [differenceKindFilter, differenceReasonFilter, differenceReportView, differenceStatusFilter, differenceRows, regularizations]);
 
   // Al cambiar el motivo se retiran las selecciones que ya no se ven. Esto
   // protege las eliminaciones masivas de operar sobre otro bloque.
@@ -2532,6 +2534,13 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
             )}
             {listPanel === "diferencias" && (
               <>
+                <select value={differenceKindFilter} onChange={e => setDifferenceKindFilter(e.target.value as "all" | DifferenceKind)}
+                  className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
+                  <option value="all">Todos los tipos</option>
+                  <option value="faltante">Faltantes</option>
+                  <option value="sobrante">Sobrantes</option>
+                  <option value="desmedro">Desmedros</option>
+                </select>
                 <select value={differenceReasonFilter} onChange={e => setDifferenceReasonFilter(e.target.value)}
                   className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black">
                   <option value="all">Todos los motivos</option>
@@ -2921,9 +2930,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                   {/* ── Workflow: proveedora coloca N° de requerimiento; el paso a
                                       "regularizado" es automatico cuando ese requerimiento sale
                                       recibido en RMS. ── */}
-                                  {status !== "regularizado" && status !== "rechazado" && isProviderForRow && (
-                                    <div className="mt-2 max-w-sm space-y-1.5 rounded-lg border border-dashed border-slate-300 bg-white p-2">
-                                      <p className="text-[10px] font-black uppercase text-slate-500">Tienda proveedora</p>
+                                  {status !== "regularizado" && isProviderForRow && (
+                                    <div className={`mt-2 max-w-sm space-y-1.5 rounded-lg border border-dashed bg-white p-2 ${status === "rechazado" ? "border-red-300" : "border-slate-300"}`}>
+                                      <p className={`text-[10px] font-black uppercase ${status === "rechazado" ? "text-red-600" : "text-slate-500"}`}>
+                                        {status === "rechazado" ? "Editar rechazo y atender" : "Tienda proveedora"}
+                                      </p>
                                       <input
                                         placeholder="N° de requerimiento (ej. 1010-3200)"
                                         value={formInputs.ref || reg?.requirement_ref || ""}
@@ -2931,7 +2942,7 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                         className="w-full rounded-lg border px-2 py-1.5 text-xs font-bold"
                                       />
                                       <input
-                                        placeholder="Notas (opcional para atender, obligatorio para rechazar)"
+                                        placeholder={status === "rechazado" ? "Nota del cambio (opcional)" : "Notas (opcional para atender, obligatorio para rechazar)"}
                                         value={formInputs.notes}
                                         onChange={e => setFormInputs({ notes: e.target.value })}
                                         className="w-full rounded-lg border px-2 py-1.5 text-xs font-semibold"
@@ -2942,15 +2953,17 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
                                           disabled={saving}
                                           className="flex-1 rounded-lg bg-slate-950 px-3 py-1.5 text-xs font-black text-white disabled:opacity-40"
                                         >
-                                          {saving ? "Guardando..." : status === "atendido" ? "Actualizar requerimiento" : "Marcar atendido"}
+                                          {saving ? "Guardando..." : status === "rechazado" ? "Cambiar a atendido" : status === "atendido" ? "Actualizar requerimiento" : "Marcar atendido"}
                                         </button>
-                                        <button
-                                          onClick={() => marcarRechazado(row)}
-                                          disabled={saving}
-                                          className="flex-1 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
-                                        >
-                                          {saving ? "Guardando..." : "Rechazar"}
-                                        </button>
+                                        {status !== "rechazado" && (
+                                          <button
+                                            onClick={() => marcarRechazado(row)}
+                                            disabled={saving}
+                                            className="flex-1 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-black text-red-600 hover:bg-red-50 disabled:opacity-40"
+                                          >
+                                            {saving ? "Guardando..." : "Rechazar"}
+                                          </button>
+                                        )}
                                       </div>
                                     </div>
                                   )}
