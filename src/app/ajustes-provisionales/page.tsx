@@ -251,7 +251,11 @@ export default function AjustesProvisionalesPage() {
     setExporting(true);
     try {
       const yearStart = `${new Date().getFullYear()}-01-01`;
-      const effectiveStore = canViewAllStores ? (storeFilter || null) : (userErpStoreCode || null);
+      // "Excel completo" no depende de la página, la tienda seleccionada ni
+      // la búsqueda visible. Los perfiles globales reciben todas las sedes;
+      // un usuario restringido conserva obligatoriamente el alcance de su
+      // propia tienda.
+      const effectiveStore = canViewAllStores ? null : (userErpStoreCode || null);
       const allRows: AggRow[] = [];
 
       // El Excel es un reporte completo: se recorren paginas pequeñas en el
@@ -260,7 +264,7 @@ export default function AjustesProvisionalesPage() {
         const { data, error } = await supabase.rpc("get_ajustes_provisionales_v2", {
           year_start: yearStart,
           p_store: effectiveStore,
-          p_search: codeSearch.trim() || null,
+          p_search: null,
           p_limit: ADJUSTMENTS_PAGE_SIZE + 1,
           p_offset: offset,
         });
@@ -325,7 +329,7 @@ export default function AjustesProvisionalesPage() {
       XLSX.utils.book_append_sheet(wb, summaryWs, "Resumen");
       XLSX.utils.book_append_sheet(wb, ws, "Ajustes Provisionales");
       XLSX.writeFile(wb, `ajustes-provisionales-${new Date().getFullYear()}.xlsx`);
-      toast.success(`Excel generado con ${reportRows.length} productos de todas las paginas.`);
+      toast.success(`Excel completo generado con ${reportRows.length} pendientes${canViewAllStores ? " de todas las tiendas" : " de tu tienda"}.`);
     } catch (err: any) {
       toast.error(`No se pudo generar el Excel completo: ${err?.message || "desconocido"}`);
     } finally {
