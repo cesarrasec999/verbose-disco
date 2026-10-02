@@ -3,7 +3,10 @@
 import { useEffect, useRef } from "react";
 import { clearStoredUser, readStoredUser, touchSingleDeviceSession } from "@/lib/singleDeviceSession";
 
-const CHECK_INTERVAL_MS = 60000;
+// La validacion se resuelve en una sola RPC y se reutiliza brevemente en
+// memoria. Tres minutos mantiene la revocacion oportuna sin dos llamadas por
+// minuto, por usuario y por pestaña.
+const CHECK_INTERVAL_MS = 3 * 60 * 1000;
 
 function expireCurrentBrowserSession() {
   clearStoredUser();

@@ -19,6 +19,23 @@ type SessionUser = {
 
 const ACTIVE_SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
 const MAX_ACTIVE_DEVICES = 3;
+const SESSION_TOUCH_CACHE_MS = 2.5 * 60 * 1000;
+
+let cachedSessionIdentity = "";
+let cachedSessionResult = true;
+let lastSessionTouchAt = 0;
+let sessionTouchInFlight: Promise<boolean> | null = null;
+
+function sessionIdentity(user: SessionUser) {
+  return `${user.id}|${user.cyclic_session_token || ""}|${user.cyclic_device_id || ""}`;
+}
+
+function resetSessionTouchCache() {
+  cachedSessionIdentity = "";
+  cachedSessionResult = true;
+  lastSessionTouchAt = 0;
+  sessionTouchInFlight = null;
+}
 
 function randomToken() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -78,6 +95,7 @@ export function consumeSessionExpiredReason() {
 
 export function clearStoredUser(reason = "") {
   if (reason) sessionStorage.setItem(SESSION_REASON_KEY, reason);
+  resetSessionTouchCache();
   localStorage.removeItem(USER_KEY);
   window.dispatchEvent(new CustomEvent(SESSION_EVENT, { detail: { reason } }));
 }
@@ -150,6 +168,9 @@ export async function startSingleDeviceSession<T extends SessionUser>(user: T): 
   }, { onConflict: "user_id,device_id" });
 
   if (error) throw error;
+  cachedSessionIdentity = sessionIdentity(nextUser);
+  cachedSessionResult = true;
+  lastSessionTouchAt = Date.now();
   writeStoredUser(nextUser);
   return nextUser;
 }
@@ -158,25 +179,33 @@ export async function touchSingleDeviceSession(user = readStoredUser()) {
   if (!user?.id) return true;
   if (isPrincipalAdministrator(user)) return true;
   if (!user.cyclic_session_token) return true;
-  const { data, error } = await supabase
-    .from("cyclic_user_sessions")
-    .select("session_token,device_id")
-    .eq("user_id", user.id)
-    .eq("session_token", user.cyclic_session_token)
-    .maybeSingle();
-  if (error) return true;
+  const identity = sessionIdentity(user);
+  const now = Date.now();
+  if (identity === cachedSessionIdentity && now - lastSessionTouchAt < SESSION_TOUCH_CACHE_MS) {
+    return cachedSessionResult;
+  }
+  if (identity === cachedSessionIdentity && sessionTouchInFlight) return sessionTouchInFlight;
 
-  const isCurrent =
-    data?.session_token === user.cyclic_session_token &&
-    (!user.cyclic_device_id || !data.device_id || data.device_id === user.cyclic_device_id);
-  if (!isCurrent) return false;
+  cachedSessionIdentity = identity;
+  sessionTouchInFlight = (async () => {
+    const { data, error } = await supabase.rpc("validate_and_touch_cyclic_session", {
+      p_user_id: user.id,
+      p_session_token: user.cyclic_session_token,
+      p_device_id: user.cyclic_device_id || null,
+    });
+    // Un error temporal de red no debe expulsar a un operador. No se guarda en
+    // cache para que el siguiente intervalo vuelva a validar con el servidor.
+    if (error) return true;
+    cachedSessionResult = data === true;
+    lastSessionTouchAt = Date.now();
+    return cachedSessionResult;
+  })();
 
-  await supabase
-    .from("cyclic_user_sessions")
-    .update({ last_seen_at: new Date().toISOString() })
-    .eq("user_id", user.id)
-    .eq("session_token", user.cyclic_session_token);
-  return true;
+  try {
+    return await sessionTouchInFlight;
+  } finally {
+    sessionTouchInFlight = null;
+  }
 }
 
 export async function endSingleDeviceSession(user = readStoredUser()) {

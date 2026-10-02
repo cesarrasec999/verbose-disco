@@ -222,8 +222,11 @@ async function readLines(pool, ids) {
 }
 
 async function removeStaleLines(poIds, syncRunId) {
-  for (let offset = 0; offset < poIds.length; offset += 50) {
-    const ids = poIds.slice(offset, offset + 50)
+  // UUIDs acotados por lote para reducir solicitudes DELETE y conservar una
+  // URL segura para PostgREST. Solo elimina lineas antiguas de las OC leidas.
+  const cleanupBatchSize = 150
+  for (let offset = 0; offset < poIds.length; offset += cleanupBatchSize) {
+    const ids = poIds.slice(offset, offset + cleanupBatchSize)
     const { error } = await supabase
       .from('erp_purchase_order_lines')
       .delete()

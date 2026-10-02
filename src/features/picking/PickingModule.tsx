@@ -335,6 +335,11 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
   const [scanProduct, setScanProduct] = useState("");
   const [scanEntries, setScanEntries] = useState<ScanEntry[]>([{ location: "", qty: "1" }]);
   const [locationsByLine, setLocationsByLine] = useState<Record<string, string[]>>({});
+  const locationsQueryCacheRef = useRef<{
+    key: string;
+    expiresAt: number;
+    data: Record<string, string[]>;
+  } | null>(null);
   const [stockByLine, setStockByLine] = useState<Record<string, number>>({});
   const [lastErpSync, setLastErpSync] = useState<string | null>(null);
   const [selectedSourceStore, setSelectedSourceStore] = useState("all");
@@ -1668,6 +1673,19 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
       const keys = [...new Set(linesToLocate.flatMap(line => [line.product_code, line.sku, line.barcode].filter(Boolean) as string[]))];
       if (keys.length === 0) return;
+      const cacheKey = `${requestForLocations.id}|${store.id}|${[...keys].sort().join("|")}`;
+      const cached = locationsQueryCacheRef.current;
+      if (cached?.key === cacheKey && cached.expiresAt > Date.now()) {
+        setLocationsByLine(Object.fromEntries(
+          Object.entries(cached.data).map(([lineId, values]) => [
+            lineId,
+            [...values].sort((a, b) => locationSort === "asc"
+              ? a.localeCompare(b, "es")
+              : b.localeCompare(a, "es")),
+          ]),
+        ));
+        return;
+      }
 
       const [bySkuResp, byBarcodeResp] = await Promise.all([
         supabase.from("cyclic_products").select("id,sku,barcode").in("sku", keys),
@@ -1759,11 +1777,21 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
           .map(row => row.quantity !== null && row.quantity > 0
             ? `${row.location} (${formatQty(row.quantity)})`
             : row.location);
-        next[line.id] = [...new Set(productLocations)].sort((a, b) => (
-          locationSort === "asc" ? a.localeCompare(b, "es") : b.localeCompare(a, "es")
-        ));
+        next[line.id] = [...new Set(productLocations)];
       }
-      setLocationsByLine(next);
+      locationsQueryCacheRef.current = {
+        key: cacheKey,
+        expiresAt: Date.now() + 2 * 60 * 1000,
+        data: next,
+      };
+      setLocationsByLine(Object.fromEntries(
+        Object.entries(next).map(([lineId, values]) => [
+          lineId,
+          [...values].sort((a, b) => locationSort === "asc"
+            ? a.localeCompare(b, "es")
+            : b.localeCompare(a, "es")),
+        ]),
+      ));
     }
 
     void loadLocations();

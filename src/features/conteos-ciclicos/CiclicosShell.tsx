@@ -100,6 +100,47 @@ type CdGpcLocationFilter = {
     invalidOnly: boolean;
 };
 
+const PRODUCT_CATALOG_CACHE_MS = 5 * 60 * 1000;
+let productCatalogMemoryCache: { expiresAt: number; data: Product[] } | null = null;
+let productCatalogRequest: Promise<Product[]> | null = null;
+
+async function fetchActiveProductCatalog() {
+    if (productCatalogMemoryCache && productCatalogMemoryCache.expiresAt > Date.now()) {
+        return productCatalogMemoryCache.data;
+    }
+    if (productCatalogRequest) return productCatalogRequest;
+
+    productCatalogRequest = (async () => {
+        const PAGE = 1000;
+        const all: Product[] = [];
+        let page = 0;
+        while (true) {
+            const { data, error } = await supabase
+                .from("cyclic_products")
+                .select("id,sku,barcode,description,unit,cost,is_active")
+                .eq("is_active", true)
+                .order("sku")
+                .range(page * PAGE, (page + 1) * PAGE - 1);
+            if (error) throw error;
+            const rows = (data || []) as Product[];
+            all.push(...rows);
+            if (rows.length < PAGE) break;
+            page += 1;
+        }
+        productCatalogMemoryCache = {
+            expiresAt: Date.now() + PRODUCT_CATALOG_CACHE_MS,
+            data: all,
+        };
+        return all;
+    })();
+
+    try {
+        return await productCatalogRequest;
+    } finally {
+        productCatalogRequest = null;
+    }
+}
+
 type ParsedCdGpcLocation = {
     zona: string;
     lineal: string;
@@ -344,6 +385,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [multiLocationResults, setMultiLocationResults] = useState<MultiLocationSearchResult[]>([]);
     const [locationStoreId, setLocationStoreId] = useState("");
     const [locationResults, setLocationResults] = useState<ProductLocation[]>([]);
+    const locationSearchCacheRef = useRef(new Map<string, { expiresAt: number; rows: ProductLocation[] }>());
     const [locationBusy, setLocationBusy] = useState(false);
     const [selectedLocationIds, setSelectedLocationIds] = useState<Set<string>>(new Set());
     const [locationEditingIds, setLocationEditingIds] = useState<Set<string>>(new Set());
@@ -969,17 +1011,11 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function loadProducts() {
-        const PAGE = 1000;
-        const all: Product[] = [];
-        let page = 0;
-        let hasMore = true;
-        while (hasMore) {
-            // Solo las columnas que este modulo lee realmente (evitar select("*") sobre el catalogo completo)
-            const { data } = await supabase.from("cyclic_products").select("id,sku,barcode,description,unit,cost,is_active").eq("is_active", true).order("sku").range(page * PAGE, (page + 1) * PAGE - 1);
-            if (data && data.length > 0) { all.push(...(data as Product[])); page++; }
-            if (!data || data.length < PAGE) hasMore = false;
+        try {
+            setProducts(await fetchActiveProductCatalog());
+        } catch (error: any) {
+            console.warn("No se pudo cargar el catalogo de productos:", error?.message || error);
         }
-        setProducts(all);
     }
 
     async function loadNonInventoryProducts() {
@@ -4425,6 +4461,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                 return;
             }
         }
+        locationSearchCacheRef.current.clear();
     }
 
     async function replaceProductLocations(productId: string, sku: string | undefined, storeId: string, locations: string[]) {
@@ -5203,6 +5240,9 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     async function buildLocationSearchResults(queryText: string): Promise<ProductLocation[]> {
         const term = queryText.trim();
         if (!term) return [];
+        const cacheKey = `${locationStoreId}|${normalizeText(term)}`;
+        const cached = locationSearchCacheRef.current.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) return cached.rows;
         const normalizedTerm = term.toLowerCase();
         const safeLikeTerm = term.replace(/[,%()]/g, " ").trim();
         const productMatches = products.filter(product => {
@@ -5297,12 +5337,18 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
         for (const row of (locationRows || []) as ProductLocation[]) keepLatestLocation(row);
 
         const hydratedRows = await hydrateLocationQuantities([...latestByLocation.values()]);
-        return hydratedRows.sort((a, b) => {
+        const sortedRows = hydratedRows.sort((a, b) => {
             const timeA = a.last_seen_at || a.updated_at ? new Date(a.last_seen_at || a.updated_at || "").getTime() : 0;
             const timeB = b.last_seen_at || b.updated_at ? new Date(b.last_seen_at || b.updated_at || "").getTime() : 0;
             if (timeA !== timeB) return timeB - timeA;
             return a.location.localeCompare(b.location);
         });
+        if (locationSearchCacheRef.current.size >= 100) locationSearchCacheRef.current.clear();
+        locationSearchCacheRef.current.set(cacheKey, {
+            expiresAt: Date.now() + 60 * 1000,
+            rows: sortedRows,
+        });
+        return sortedRows;
     }
 
     async function searchLocations(queryText = locationSearch) {
@@ -5680,6 +5726,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     }
 
     async function refreshLocationResults() {
+        locationSearchCacheRef.current.clear();
         if (isCdGpcStore() && cdGpcFilterHasValues()) await searchCdGpcLocations();
         else if (locationSearch.trim()) await searchLocations();
         else setLocationResults([]);
