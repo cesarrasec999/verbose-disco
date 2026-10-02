@@ -324,7 +324,8 @@ function slipQuery() {
         (slp.StatusCode = 'T'
          AND (@sinceDate IS NULL OR slp.SlipDate >= CONVERT(date, @sinceDate)))
         OR
-        (slp.StatusCode = 'V'
+        (@includeRecentReceived = 1
+         AND slp.StatusCode = 'V'
          AND slp.SlipDate >= CONVERT(date, @recentDate))
       )
   `
@@ -387,6 +388,10 @@ function mapLines(rows) {
 
 async function syncOnce() {
   if (!acquireLock()) return
+  // Los recibidos recientes se usan para una conciliacion horaria. En los
+  // ciclos de cinco minutos basta cargar los slips que siguen en transito;
+  // updateErpStatusForPending detecta inmediatamente cuando pasan a V/C.
+  const runFullStatusAudit = statusAuditDue()
   const sinceDateStr = LOOKBACK_DAYS > 0
     ? (() => {
         const sinceDate = new Date()
@@ -399,9 +404,13 @@ async function syncOnce() {
     d.setDate(d.getDate() - RECENT_RECEIVED_DAYS)
     return d.toISOString().slice(0, 10)
   })()
-  writeStatus(sinceDateStr
-    ? `Recepcion: sincronizando slips T desde ${sinceDateStr}, recibidos recientes desde ${recentDate}`
-    : `Recepcion: sincronizando slips T (todos) + recibidos recientes desde ${recentDate}`)
+  writeStatus(runFullStatusAudit
+    ? (sinceDateStr
+        ? `Recepcion: conciliacion completa; slips T desde ${sinceDateStr} + recibidos desde ${recentDate}`
+        : `Recepcion: conciliacion completa; slips T (todos) + recibidos desde ${recentDate}`)
+    : (sinceDateStr
+        ? `Recepcion: ciclo incremental; solo slips T desde ${sinceDateStr}`
+        : 'Recepcion: ciclo incremental; solo slips T'))
 
   let pool
   try {
@@ -410,6 +419,7 @@ async function syncOnce() {
       pool.request()
         .input('sinceDate',   sql.VarChar, sinceDateStr)
         .input('recentDate',  sql.VarChar, recentDate)
+        .input('includeRecentReceived', sql.Bit, runFullStatusAudit ? 1 : 0)
         .query(slipQuery())
     )
 
@@ -449,7 +459,6 @@ async function syncOnce() {
     writeStatus('Recepcion: datos principales sincronizados; verificando estados pendientes')
 
     // Revisar slips pendientes: ocultar anulados/archivados, actualizar badge de recibidos
-    const runFullStatusAudit = statusAuditDue()
     const { hidden, statusUpdated } = await updateErpStatusForPending(pool, runFullStatusAudit)
     if (runFullStatusAudit) markStatusAudit()
 

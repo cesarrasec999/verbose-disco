@@ -26,6 +26,11 @@ const INTERVAL_MS = Number(process.env.PURCHASE_ORDERS_INTERVAL_MS || 5 * 60 * 1
 const STATUS_FILE = path.join(__dirname, 'purchase-orders-sync-status.txt')
 const LOG_FILE = path.join(__dirname, 'purchase-orders-sync.log')
 const HEARTBEAT_FILE = path.join(__dirname, 'purchase-orders-watchdog-heartbeat.txt')
+const RECENT_AUDIT_FILE = path.join(__dirname, 'purchase-orders-recent-audit-state.json')
+const RECENT_AUDIT_INTERVAL_MS = Math.max(
+  15 * 60 * 1000,
+  Number(process.env.PURCHASE_ORDERS_RECENT_AUDIT_INTERVAL_MS || 60 * 60 * 1000),
+)
 
 const sqlConfig = {
   user: process.env.SQL_USER,
@@ -71,6 +76,24 @@ function touchHeartbeat() {
   fs.writeFileSync(HEARTBEAT_FILE, new Date().toISOString(), 'utf8')
 }
 
+function recentAuditDue() {
+  try {
+    const state = JSON.parse(fs.readFileSync(RECENT_AUDIT_FILE, 'utf8'))
+    const lastRun = new Date(state.last_success_at).getTime()
+    return !Number.isFinite(lastRun) || Date.now() - lastRun >= RECENT_AUDIT_INTERVAL_MS
+  } catch {
+    return true
+  }
+}
+
+function markRecentAudit() {
+  fs.writeFileSync(
+    RECENT_AUDIT_FILE,
+    JSON.stringify({ last_success_at: new Date().toISOString() }, null, 2),
+    'utf8',
+  )
+}
+
 function headerPageQuery() {
   return `
     SELECT TOP (@page_size)
@@ -106,7 +129,7 @@ function headerPageQuery() {
       -- Algunas instalaciones RMS cambian StatusCode sin actualizar ChangeDate.
       -- Releer una ventana operativa evita dejar una OC recién cerrada como
       -- pendiente, sin convertir cada ciclo de 5 minutos en una carga total.
-      OR p.PODate >= DATEADD(day, -14, GETDATE())
+      OR (@include_recent = 1 AND p.PODate >= DATEADD(day, -14, GETDATE()))
     )
       AND (
         @cursor_changed IS NULL
@@ -199,13 +222,14 @@ async function retrySql(operation, label, attempts = 4) {
   throw lastError
 }
 
-async function readHeaderPage(pool, since, cursorChanged, cursorId) {
+async function readHeaderPage(pool, since, cursorChanged, cursorId, includeRecent) {
   return retrySql(async () => {
     const request = pool.request()
     request.input('page_size', sql.Int, SQL_PAGE_SIZE)
     request.input('since', sql.DateTime2, since)
     request.input('cursor_changed', sql.DateTime2, cursorChanged)
     request.input('cursor_id', sql.VarChar(36), cursorId || '')
+    request.input('include_recent', sql.Bit, includeRecent ? 1 : 0)
     const result = await request.query(headerPageQuery())
     return result.recordset || []
   }, 'Cabeceras OC')
@@ -242,6 +266,7 @@ async function syncOnce(options = {}) {
   const syncRunId = crypto.randomUUID()
   const now = new Date().toISOString()
   const since = forceFull ? null : await lastSuccessfulSync()
+  const runRecentAudit = !forceFull && recentAuditDue()
   let pool
   const resumeCursor = forceFull && resume ? await lastImportedCursor() : null
   let cursorChanged = resumeCursor?.changedAt || null
@@ -252,14 +277,14 @@ async function syncOnce(options = {}) {
   writeStatus(resumeCursor
     ? `Reanudando historial OC RMS desde ${resumeCursor.changedAt.toISOString()} / ${resumeCursor.id}`
     : since
-    ? `Leyendo OC RMS modificadas desde ${since.toISOString()}`
+    ? `${runRecentAudit ? 'Conciliando OC recientes y cambios' : 'Leyendo cambios OC RMS'} desde ${since.toISOString()}`
     : 'Leyendo historial completo de OC RMS por lotes')
 
   try {
     pool = await new sql.ConnectionPool(sqlConfig).connect()
 
     while (true) {
-      const headerRows = await readHeaderPage(pool, since, cursorChanged, cursorId)
+      const headerRows = await readHeaderPage(pool, since, cursorChanged, cursorId, runRecentAudit)
       if (!headerRows.length) break
 
       const poIds = headerRows.map(row => clean(row.po_id)).filter(Boolean)
@@ -354,6 +379,8 @@ async function syncOnce(options = {}) {
       updated_at: now,
     }, { onConflict: 'id' })
     if (statusError) throw statusError
+
+    if (runRecentAudit) markRecentAudit()
 
     writeStatus(`Sincronización OC terminada: ${processedOrders} órdenes / ${processedLines} líneas`)
     return { processedOrders, processedLines }
