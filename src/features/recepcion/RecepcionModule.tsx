@@ -598,6 +598,45 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
     return storeCodes(store).length > 0 ? storeCodes(store) : [value];
   }, [storeCodes, stores]);
 
+  const storeFilterValue = useCallback((store: Store | null | undefined) =>
+    String(store?.erp_sede || store?.code || "").trim(), []);
+
+  const assignedStore = useMemo(() =>
+    user?.store_id ? stores.find(store => store.id === user.store_id) || null : null,
+  [stores, user?.store_id]);
+
+  const cdStore = useMemo(() => stores.find(store => {
+    const codes = new Set(storeCodes(store).map(normalize));
+    return codes.has("CD-GPC") || codes.has("0") || normalize(store.name) === "CD-GPC";
+  }) || null, [storeCodes, stores]);
+
+  // Diferencias siempre se consulta desde la perspectiva de una sede concreta:
+  // la sede asignada para usuarios de tienda y CD-GPC por defecto para usuarios
+  // globales. Un filtro valido de la URL se conserva para estos ultimos.
+  const selectedDifferenceStore = useMemo(() => {
+    if (!canViewAllStores) return assignedStore;
+    if (storeFilter && storeFilter !== "all") {
+      const selected = stores.find(store => storeCodes(store).includes(storeFilter));
+      if (selected) return selected;
+    }
+    return cdStore;
+  }, [assignedStore, canViewAllStores, cdStore, storeCodes, storeFilter, stores]);
+
+  const differenceStoreValue = storeFilterValue(selectedDifferenceStore);
+
+  const differenceStoreOptions = useMemo(() => {
+    const byName = new Map<string, Store>();
+    for (const store of stores) {
+      const key = normalize(store.name);
+      const existing = byName.get(key);
+      if (!existing || (!existing.erp_sede && store.erp_sede)) byName.set(key, store);
+    }
+    return [...byName.values()]
+      .map(store => ({ code: storeFilterValue(store), name: store.name }))
+      .filter(option => Boolean(option.code))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [storeFilterValue, stores]);
+
   // Codigos de la tienda del usuario actual: usados para saber si actua como
   // tienda proveedora o tienda receptora en una fila de diferencias.
   const myStoreCodes = useMemo(() => {
@@ -763,6 +802,14 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
   useEffect(() => { if (ready && user) void loadRequests(); }, [ready, user]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (ready && user) void loadRequests(); }, [storeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!ready || !user || listPanel !== "diferencias" || !differenceStoreValue) return;
+    if (storeFilter === differenceStoreValue) return;
+    // Normaliza enlaces antiguos sin tienda (o con una tienda ajena al usuario)
+    // antes de mostrar el reporte. No modifica datos de recepcion.
+    updateStoreFilter(differenceStoreValue);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, user, listPanel, differenceStoreValue]);
   useEffect(() => {
     if (ready && user && listPanel === "diferencias") void loadDifferencesReport();
     // Antes esta carga inicial dependia de que el boton de la pestaña
@@ -1805,12 +1852,9 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
         receptionNotesByProduct.set(key, current);
       }
 
-      // Alcance: un usuario con acceso a todas las tiendas puede acotar por
-      // tienda destino (filtro de la lista); un usuario de una tienda
-      // especifica ve solo donde su tienda es proveedora o receptora.
-      const myStore = !canViewAllStores && user?.store_id ? stores.find(s => s.id === user.store_id) : null;
-      const myCodes = myStore ? storeCodes(myStore) : [];
-      const filterCodes = canViewAllStores ? selectedStoreCodes(storeFilter) : myCodes;
+      // Diferencias nunca mezcla todas las tiendas: usuarios de sede trabajan
+      // sobre su sede y usuarios globales parten de CD-GPC, pudiendo cambiarla.
+      const filterCodes = storeCodes(selectedDifferenceStore);
       const normalizedFilterCodes = new Set(filterCodes.map(normalize));
 
       const rows: ReceptionDifferenceRow[] = [];
@@ -1825,16 +1869,11 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
           const matches = normalizedFilterCodes.has(normalize(req.destination_store_code)) || normalizedFilterCodes.has(normalize(req.source_store_code));
           if (!matches) continue;
         }
-        const destinationCode = normalize(req.destination_store_code);
-        const destinationName = normalize(req.destination_store_name);
-        const destinationIsCd = destinationCode === "0" || destinationCode === "CD-GPC" || destinationName === "CD-GPC";
         // La perspectiva cambia con la tienda elegida:
         // - si la tienda es origen, la contraparte receptora le reporto;
         // - si la tienda es destino, ella fue quien emitio el reporte.
-        // Sin filtro se conserva la perspectiva corporativa de CD-GPC.
-        const reportPerspective: ReceptionDifferenceRow["reportPerspective"] = filterCodes.length > 0
-          ? (normalizedFilterCodes.has(normalize(req.source_store_code)) ? "received" : "issued")
-          : (destinationIsCd ? "issued" : "received");
+        const reportPerspective: ReceptionDifferenceRow["reportPerspective"] =
+          normalizedFilterCodes.has(normalize(req.source_store_code)) ? "received" : "issued";
         rows.push({
           key: report.id,
           diffKey: report.id,
@@ -2521,7 +2560,19 @@ export default function RecepcionModule({ listPanel }: { listPanel: ListPanel })
 
           {/* Filtros */}
           <div className="flex flex-wrap gap-2">
-            {canViewAllStores && (
+            {listPanel === "diferencias" ? (
+              <select
+                value={differenceStoreValue}
+                onChange={e => updateStoreFilter(e.target.value)}
+                disabled={!canViewAllStores}
+                title={!canViewAllStores ? "Sede asignada al usuario" : "Seleccionar sede"}
+                className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black min-w-[220px] disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
+              >
+                {differenceStoreOptions.map(store => (
+                  <option key={store.code} value={store.code}>{store.name}</option>
+                ))}
+              </select>
+            ) : canViewAllStores && (
               <select value={storeFilter} onChange={e => updateStoreFilter(e.target.value)}
                 className="border rounded-2xl px-3 py-2.5 text-sm bg-white text-slate-900 font-black min-w-[160px]">
                 <option value="all">Todas las tiendas</option>
