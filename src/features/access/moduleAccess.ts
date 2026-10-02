@@ -20,6 +20,7 @@ export type ModuleAccessKey =
   | "picking"
   | "packing"
   | "reception"
+  | "purchase_orders"
   | "ajustes_provisionales"
   | "inventory_differences";
 
@@ -56,6 +57,7 @@ export const MODULE_ACCESS_OPTIONS: Array<{ key: ModuleAccessKey; label: string;
   { key: "picking", label: "Picking", group: "Modulos" },
   { key: "packing", label: "Etiquetado/Packing", group: "Modulos" },
   { key: "reception", label: "Recepción", group: "Modulos" },
+  { key: "purchase_orders", label: "Órdenes de compra RMS", group: "Modulos" },
   { key: "ajustes_provisionales", label: "Ajustes Provisionales ERP", group: "Modulos" },
 ];
 
@@ -82,6 +84,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "analysis",
     "picking",
     "packing",
+    "purchase_orders",
     "ajustes_provisionales",
   ];
   if (role === "Validador") return [
@@ -99,6 +102,7 @@ export function legacyModuleAccessForRole(role: Role | string, canAccessAudit?: 
     "analysis",
     "picking",
     "packing",
+    "purchase_orders",
     "ajustes_provisionales",
   ];
   if (role === "Cajero") return [];

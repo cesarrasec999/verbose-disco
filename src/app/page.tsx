@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Boxes, ClipboardCheck, LogOut, MapPin, PackageCheck, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
+import { AlertTriangle, Boxes, ClipboardCheck, LogOut, MapPin, PackageCheck, PackageSearch, PackageX, ScanLine, Search, ShieldAlert, ShieldCheck, Tags, TrendingUp, UserCog, Warehouse } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import {
   hasExplicitModuleAccess,
@@ -58,7 +58,7 @@ type OperatorSessionRow = {
   general_inventory_sessions?: { id?: string; status?: string } | null;
 };
 
-type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/kardex" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ajustes-provisionales" | "/diferencias-inventario";
+type LoginDestination = "/dashboard" | "/ubicaciones" | "/auditoria" | "/inventarios" | "/picking" | "/etiquetado-packing" | "/consulta-stock" | "/analisis" | "/reportes" | "/kardex" | "/no-inventariables" | "/usuarios" | "/recepcion" | "/ordenes-compra" | "/ajustes-provisionales" | "/diferencias-inventario";
 type InventoryAuthMode = "login" | "register";
 
 const GENERAL_INVENTORY_SESSION_KEY = "general_inventory_session_id";
@@ -82,6 +82,7 @@ const MODULES: Array<{
   { label: "No Inventariables", description: "Códigos excluidos de conteos cíclicos e inventarios", destination: "/no-inventariables", icon: PackageX, accent: "bg-orange-600" },
   { label: "Usuarios", description: "Gestión de usuarios y permisos del sistema", destination: "/usuarios", icon: UserCog, accent: "bg-purple-600" },
   { label: "Recepción", description: "Recepcionar requerimientos aprobados de abastecimiento", destination: "/recepcion", icon: PackageCheck, accent: "bg-teal-600" },
+  { label: "Órdenes de compra", description: "Seguimiento de OC pendientes y cerradas en RMS", destination: "/ordenes-compra", icon: PackageSearch, accent: "bg-orange-600" },
   { label: "Ajustes Provisionales", description: "Ingresos y regularizaciones provisionales del ERP", destination: "/ajustes-provisionales", icon: TrendingUp, accent: "bg-indigo-600" },
   { label: "Diferencias de Inventario", description: "Reportar diferencias de stock con foto y seguimiento de regularizacion", destination: "/diferencias-inventario", icon: AlertTriangle, accent: "bg-red-600" },
 ];
@@ -100,6 +101,7 @@ const DESTINATION_MODULE: Record<LoginDestination, ModuleAccessKey> = {
   "/no-inventariables": "reports_non_inventory",
   "/usuarios": "users",
   "/recepcion": "reception",
+  "/ordenes-compra": "purchase_orders",
   "/ajustes-provisionales": "ajustes_provisionales",
   "/diferencias-inventario": "inventory_differences",
 };
@@ -148,7 +150,7 @@ export default function LoginPage() {
     const moduleKey = DESTINATION_MODULE[targetDestination];
     if (targetDestination === "/diferencias-inventario") return true;
     // Módulos con acceso directo por clave — sin lógica de roles adicional
-    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ajustes-provisionales") {
+    if (targetDestination === "/no-inventariables" || targetDestination === "/usuarios" || targetDestination === "/recepcion" || targetDestination === "/ordenes-compra" || targetDestination === "/ajustes-provisionales") {
       return userModuleAccess(user).includes(moduleKey);
     }
     if (targetDestination === "/dashboard") {
