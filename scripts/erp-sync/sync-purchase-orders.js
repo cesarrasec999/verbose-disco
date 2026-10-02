@@ -100,7 +100,14 @@ function headerPageQuery() {
     FROM PO p WITH (NOLOCK)
     LEFT JOIN STORE s WITH (NOLOCK) ON s.StoreNo = p.StoreNo
     LEFT JOIN VENDOR v WITH (NOLOCK) ON v.VendorCode = p.VendorCode
-    WHERE (@since IS NULL OR COALESCE(p.ChangeDate, p.CreationDate, p.PODate) >= @since)
+    WHERE (
+      @since IS NULL
+      OR COALESCE(p.ChangeDate, p.CreationDate, p.PODate) >= @since
+      -- Algunas instalaciones RMS cambian StatusCode sin actualizar ChangeDate.
+      -- Releer una ventana operativa evita dejar una OC recién cerrada como
+      -- pendiente, sin convertir cada ciclo de 5 minutos en una carga total.
+      OR p.PODate >= DATEADD(day, -14, GETDATE())
+    )
       AND (
         @cursor_changed IS NULL
         OR COALESCE(p.ChangeDate, p.CreationDate, p.PODate, CONVERT(datetime, '19000101')) > @cursor_changed
