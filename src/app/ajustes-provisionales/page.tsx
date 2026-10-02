@@ -62,7 +62,11 @@ function dateForExcel(iso: string | null) {
   const year = Number(parts.find(part => part.type === "year")?.value);
   const month = Number(parts.find(part => part.type === "month")?.value);
   const day = Number(parts.find(part => part.type === "day")?.value);
-  return new Date(year, month - 1, day);
+  // SheetJS convierte Date a número serial usando UTC. Crear la fecha a la
+  // medianoche de Lima (05:00 UTC) terminaba representándola como el día
+  // anterior en Excel. El mediodía UTC conserva el mismo día en ambas zonas
+  // y la celda sigue siendo una fecha real, no texto.
+  return new Date(Date.UTC(year, month - 1, day, 12));
 }
 
 // erp_movements.store_code (lo que usa get_ajustes_provisionales) es
