@@ -31,6 +31,13 @@ const RECENT_AUDIT_INTERVAL_MS = Math.max(
   15 * 60 * 1000,
   Number(process.env.PURCHASE_ORDERS_RECENT_AUDIT_INTERVAL_MS || 60 * 60 * 1000),
 )
+// Inicio operativo del modulo. Las OC anteriores no se replican ni siquiera
+// durante una carga completa o la conciliacion horaria de cambios recientes.
+const PURCHASE_ORDERS_MIN_DATE = clean(process.env.PURCHASE_ORDERS_MIN_DATE || '2026-10-03')
+if (!/^\d{4}-\d{2}-\d{2}$/.test(PURCHASE_ORDERS_MIN_DATE)) {
+  throw new Error('PURCHASE_ORDERS_MIN_DATE debe usar el formato YYYY-MM-DD')
+}
+const PURCHASE_ORDERS_MIN_DATE_VALUE = new Date(`${PURCHASE_ORDERS_MIN_DATE}T00:00:00`)
 
 const sqlConfig = {
   user: process.env.SQL_USER,
@@ -123,7 +130,8 @@ function headerPageQuery() {
     FROM PO p WITH (NOLOCK)
     LEFT JOIN STORE s WITH (NOLOCK) ON s.StoreNo = p.StoreNo
     LEFT JOIN VENDOR v WITH (NOLOCK) ON v.VendorCode = p.VendorCode
-    WHERE (
+    WHERE CONVERT(date, p.PODate) >= @min_date
+      AND (
       @since IS NULL
       OR COALESCE(p.ChangeDate, p.CreationDate, p.PODate) >= @since
       -- Algunas instalaciones RMS cambian StatusCode sin actualizar ChangeDate.
@@ -226,6 +234,7 @@ async function readHeaderPage(pool, since, cursorChanged, cursorId, includeRecen
   return retrySql(async () => {
     const request = pool.request()
     request.input('page_size', sql.Int, SQL_PAGE_SIZE)
+    request.input('min_date', sql.Date, PURCHASE_ORDERS_MIN_DATE_VALUE)
     request.input('since', sql.DateTime2, since)
     request.input('cursor_changed', sql.DateTime2, cursorChanged)
     request.input('cursor_id', sql.VarChar(36), cursorId || '')
@@ -275,10 +284,10 @@ async function syncOnce(options = {}) {
   let processedLines = 0
 
   writeStatus(resumeCursor
-    ? `Reanudando historial OC RMS desde ${resumeCursor.changedAt.toISOString()} / ${resumeCursor.id}`
+    ? `Reanudando OC RMS desde ${resumeCursor.changedAt.toISOString()} / ${resumeCursor.id}; corte ${PURCHASE_ORDERS_MIN_DATE}`
     : since
-    ? `${runRecentAudit ? 'Conciliando OC recientes y cambios' : 'Leyendo cambios OC RMS'} desde ${since.toISOString()}`
-    : 'Leyendo historial completo de OC RMS por lotes')
+    ? `${runRecentAudit ? 'Conciliando OC recientes y cambios' : 'Leyendo cambios OC RMS'} desde ${since.toISOString()}; corte ${PURCHASE_ORDERS_MIN_DATE}`
+    : `Leyendo OC RMS desde el corte ${PURCHASE_ORDERS_MIN_DATE} por lotes`)
 
   try {
     pool = await new sql.ConnectionPool(sqlConfig).connect()
