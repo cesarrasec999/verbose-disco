@@ -15,6 +15,8 @@ export type CyclicUser = {
   module_access?: string[] | null;
   is_active: boolean;
   whatsapp?: string | null;
+  cyclic_session_token?: string;
+  cyclic_device_id?: string;
 };
 
 export type Store = {

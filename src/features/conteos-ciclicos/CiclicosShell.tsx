@@ -9,7 +9,12 @@ import { supabase } from "@/lib/supabase/client";
 import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
-import { CYCLIC_REPORT_DEFAULT_CC, CYCLIC_REPORT_DEFAULT_TO } from "@/lib/cyclicReportRecipients";
+import {
+    CYCLIC_REPORT_DEFAULT_CC,
+    CYCLIC_REPORT_DEFAULT_TO,
+    cyclicReportCcRecipients,
+    parseCyclicReportRecipients,
+} from "@/lib/cyclicReportRecipients";
 import * as XLSX from "xlsx";
 import { BarChart3, Boxes, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
@@ -433,6 +438,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     const [emailHTML, setEmailHTML]           = useState("");
     const [emailToRecipients, setEmailToRecipients] = useState(CYCLIC_REPORT_DEFAULT_TO);
     const [emailCcRecipients, setEmailCcRecipients] = useState(CYCLIC_REPORT_DEFAULT_CC.join(", "));
+    const [emailRecipientsLoading, setEmailRecipientsLoading] = useState(false);
+    const [emailRecipientsSaving, setEmailRecipientsSaving] = useState(false);
     const [manualProductCode, setManualProductCode] = useState("");
     const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
     const [manualProductCodePending, setManualProductCodePending] = useState("");
@@ -6109,6 +6116,63 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
     // ════════════════════════════════════════════════════════
     //  GENERAR CORREO HTML — INFORME GERENCIAL CONTEO CÍCLICO
     // ════════════════════════════════════════════════════════
+    async function loadCyclicEmailRecipients() {
+        setEmailRecipientsLoading(true);
+        try {
+            const { data, error } = await supabase
+                .from("cyclic_report_email_settings")
+                .select("to_recipients,cc_recipients")
+                .eq("id", "daily")
+                .maybeSingle();
+            if (error || !data) return;
+            if (Array.isArray(data.to_recipients) && data.to_recipients.length) {
+                setEmailToRecipients(data.to_recipients.join(", "));
+            }
+            if (Array.isArray(data.cc_recipients)) {
+                setEmailCcRecipients(cyclicReportCcRecipients(data.cc_recipients).replaceAll(",", ", "));
+            }
+        } finally {
+            setEmailRecipientsLoading(false);
+        }
+    }
+
+    async function saveCyclicEmailRecipients() {
+        if (user?.role !== "Administrador") {
+            showMessage("Solo un administrador puede cambiar los destinatarios automaticos.", "error");
+            return;
+        }
+        const toRecipients = parseCyclicReportRecipients(emailToRecipients);
+        const ccRecipients = parseCyclicReportRecipients(cyclicReportCcRecipients(emailCcRecipients));
+        const invalid = [...toRecipients, ...ccRecipients].filter(email => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+        if (!toRecipients.length) {
+            showMessage("Agrega por lo menos un destinatario en Para.", "error");
+            return;
+        }
+        if (invalid.length) {
+            showMessage(`Revisa estos correos: ${invalid.join(", ")}`, "error");
+            return;
+        }
+
+        setEmailRecipientsSaving(true);
+        try {
+            const { error } = await supabase.rpc("update_cyclic_report_email_settings", {
+                p_user_id: user.id,
+                p_session_token: user.cyclic_session_token || null,
+                p_device_id: user.cyclic_device_id || null,
+                p_to_recipients: toRecipients,
+                p_cc_recipients: ccRecipients,
+            });
+            if (error) throw error;
+            setEmailToRecipients(toRecipients.join(", "));
+            setEmailCcRecipients(ccRecipients.join(", "));
+            showMessage("Destinatarios automaticos actualizados.", "success");
+        } catch (error: any) {
+            showMessage(`No se pudieron guardar los destinatarios: ${error?.message || error}`, "error");
+        } finally {
+            setEmailRecipientsSaving(false);
+        }
+    }
+
     async function generateEmailHTML() {
         if (dashCountTypeFilter === "all") {
             showMessage("Selecciona un tipo de conteo para generar un correo separado.", "info");
@@ -6647,6 +6711,7 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
         setEmailHTML(html);
         setShowEmailModal(true);
+        void loadCyclicEmailRecipients();
         showMessage("", "info");
     }
 
@@ -10457,6 +10522,23 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                         onChange={e => setEmailCcRecipients(e.target.value)}
                                     />
                                 </div>
+                            </div>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-[11px] text-slate-500">
+                                    {emailRecipientsLoading
+                                        ? "Cargando destinatarios automaticos..."
+                                        : "Puedes editar estos campos para este correo. Un administrador puede guardar la lista para los envios diarios."}
+                                </p>
+                                {user?.role === "Administrador" && (
+                                    <button
+                                        type="button"
+                                        disabled={emailRecipientsLoading || emailRecipientsSaving}
+                                        onClick={saveCyclicEmailRecipients}
+                                        className="rounded-xl border border-emerald-600 bg-white px-4 py-2 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-50"
+                                    >
+                                        {emailRecipientsSaving ? "Guardando..." : "Guardar para envios automaticos"}
+                                    </button>
+                                )}
                             </div>
                             <div className="flex gap-3 flex-wrap items-center">
                                 <button

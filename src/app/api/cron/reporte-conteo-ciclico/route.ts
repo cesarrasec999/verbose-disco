@@ -61,12 +61,23 @@ export async function GET(request: Request) {
   const toOverride = url.searchParams.get("to");
 
   try {
-    const to = toOverride || process.env.REPORTE_CICLICOS_TO || CYCLIC_REPORT_DEFAULT_TO;
+    const { data: savedRecipients } = await supabase
+      .from("cyclic_report_email_settings")
+      .select("to_recipients,cc_recipients")
+      .eq("id", "daily")
+      .maybeSingle();
+    const savedTo = Array.isArray(savedRecipients?.to_recipients)
+      ? savedRecipients.to_recipients.filter(Boolean).join(",")
+      : "";
+    const savedCc = Array.isArray(savedRecipients?.cc_recipients)
+      ? savedRecipients.cc_recipients.filter(Boolean).join(",")
+      : "";
+    const to = toOverride || savedTo || process.env.REPORTE_CICLICOS_TO || CYCLIC_REPORT_DEFAULT_TO;
     // Yolanda debe permanecer en copia incluso si Vercel tiene una lista CC
     // personalizada mediante variable de entorno.
     const cc = toOverride
       ? undefined
-      : cyclicReportCcRecipients(process.env.REPORTE_CICLICOS_CC || CYCLIC_REPORT_DEFAULT_CC.join(","));
+      : cyclicReportCcRecipients(savedCc || process.env.REPORTE_CICLICOS_CC || CYCLIC_REPORT_DEFAULT_CC);
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
