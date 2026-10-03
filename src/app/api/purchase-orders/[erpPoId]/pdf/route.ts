@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { validatePurchaseOrderIdentity } from "@/lib/server/purchaseOrderAuth";
 import { buildPurchaseOrderPdf, type PdfApprovalStep } from "@/lib/server/purchaseOrderPdf";
@@ -42,7 +44,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ erp
     const { supabase, user } = await validatePurchaseOrderIdentity(identityFromHeaders(request));
     const { data: order, error: orderError } = await supabase
       .from("erp_purchase_orders")
-      .select("erp_po_id,po_number,business_status,store_no,store_code,store_name,vendor_code,vendor_name,buyer,po_date,ship_date,notes,qty_ordered,qty_received,total,currency_id")
+      .select("erp_po_id,po_number,po_no,business_status,store_no,store_code,store_name,vendor_code,vendor_name,buyer,po_date,ship_date,cancel_date,notes,qty_ordered,qty_received,total,currency_id")
       .eq("erp_po_id", erpPoId)
       .maybeSingle();
     if (orderError) throw orderError;
@@ -115,11 +117,13 @@ export async function GET(request: NextRequest, context: { params: Promise<{ erp
     const allApprovedSignaturesReady = route?.status === "approved"
       && steps.filter(step => step.status === "approved").every(step => Boolean(step.signature));
     const generatedAt = new Date();
+    const logoBytes = new Uint8Array(await readFile(path.join(process.cwd(), "public", "rms", "gpc-logo.png")));
     const bytes = await buildPurchaseOrderPdf({
       order,
       lines: lines || [],
       route,
       steps,
+      logoBytes,
       allSignaturesReady: allApprovedSignaturesReady,
       generatedAt,
     });

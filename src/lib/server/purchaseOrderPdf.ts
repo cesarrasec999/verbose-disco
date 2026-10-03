@@ -4,6 +4,7 @@ import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf
 
 type PdfOrder = {
   po_number: string;
+  po_no: number | null;
   business_status: string;
   store_no: string;
   store_code: string | null;
@@ -13,6 +14,7 @@ type PdfOrder = {
   buyer: string | null;
   po_date: string;
   ship_date: string | null;
+  cancel_date: string | null;
   notes: string | null;
   qty_ordered: number;
   qty_received: number;
@@ -61,18 +63,18 @@ type BuildPurchaseOrderPdfInput = {
   lines: PdfLine[];
   route: PdfRoute;
   steps: PdfApprovalStep[];
+  logoBytes?: Uint8Array | null;
   allSignaturesReady?: boolean;
   generatedAt?: Date;
 };
 
-const A4: [number, number] = [595.28, 841.89];
-const NAVY = rgb(0.035, 0.07, 0.16);
-const ORANGE = rgb(0.95, 0.31, 0.04);
-const SLATE = rgb(0.28, 0.34, 0.43);
-const LIGHT = rgb(0.95, 0.97, 0.985);
-const BORDER = rgb(0.8, 0.84, 0.89);
-const GREEN = rgb(0.02, 0.5, 0.3);
-const RED = rgb(0.82, 0.08, 0.12);
+const PAGE_WIDTH = 595;
+const PAGE_HEIGHT = 842;
+const NAVY = rgb(0.025, 0.055, 0.22);
+const RED = rgb(0.94, 0.02, 0.02);
+const GREEN = rgb(0.0, 0.45, 0.22);
+const GRAY = rgb(0.42, 0.45, 0.52);
+const LIGHT = rgb(0.965, 0.97, 0.985);
 
 function safeText(value: unknown) {
   return String(value ?? "")
@@ -88,32 +90,38 @@ function num(value: unknown) {
 }
 
 function formatNumber(value: unknown, digits = 2) {
-  return new Intl.NumberFormat("es-PE", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(num(value));
+  return new Intl.NumberFormat("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(num(value));
 }
 
-function formatMoney(value: unknown, currency: "PEN" | "USD") {
-  return `${currency === "USD" ? "US$" : "S/"} ${formatNumber(value, 2)}`;
-}
-
-function formatDate(value: string | Date | null | undefined, includeTime = false) {
+function formatDate(value: string | Date | null | undefined) {
   if (!value) return "-";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat("es-PE", {
     timeZone: "America/Lima",
-    day: "2-digit",
-    month: "2-digit",
+    day: "numeric",
+    month: "numeric",
     year: "numeric",
-    ...(includeTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}),
   }).format(date);
 }
 
+function formatTime(value: Date) {
+  return new Intl.DateTimeFormat("es-PE", {
+    timeZone: "America/Lima",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
 function statusLabel(status: string) {
-  if (status === "approved") return "APROBADA";
-  if (status === "rejected") return "RECHAZADA";
-  if (status === "cancelled") return "CANCELADA";
-  if (status === "superseded") return "REEMPLAZADA";
-  return "PENDIENTE DE APROBACION";
+  if (status === "approved") return "APROBADO";
+  if (status === "rejected") return "RECHAZADO";
+  if (status === "cancelled") return "CANCELADO";
+  if (status === "superseded") return "REEMPLAZADO";
+  if (status === "unrouted") return "SIN RUTA";
+  return "PENDIENTE";
 }
 
 function roleLabel(role: string) {
@@ -124,35 +132,66 @@ function roleLabel(role: string) {
   return role;
 }
 
-function wrapText(text: string, font: PDFFont, size: number, maxWidth: number, maxLines = 3) {
-  const words = safeText(text).split(/\s+/).filter(Boolean);
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number, maxLines = 2) {
+  const source = safeText(text).trim() || "-";
+  const words = source.split(/\s+/);
   const lines: string[] = [];
   let current = "";
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
     if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
       current = candidate;
-      continue;
+    } else {
+      if (current) lines.push(current);
+      current = word;
+      if (lines.length >= maxLines) break;
     }
-    if (current) lines.push(current);
-    current = word;
-    if (lines.length >= maxLines) break;
   }
   if (current && lines.length < maxLines) lines.push(current);
-  if (words.length && lines.length === maxLines) {
-    const joined = lines.join(" ");
-    if (joined.length < safeText(text).length) {
-      let last = lines[lines.length - 1];
-      while (last.length > 1 && font.widthOfTextAtSize(`${last}...`, size) > maxWidth) last = last.slice(0, -1);
-      lines[lines.length - 1] = `${last}...`;
-    }
+  if (lines.join(" ").length < source.length) {
+    let last = lines[lines.length - 1] || "";
+    while (last.length > 1 && font.widthOfTextAtSize(`${last}...`, size) > maxWidth) last = last.slice(0, -1);
+    lines[lines.length - 1] = `${last}...`;
   }
-  return lines.length ? lines : ["-"];
+  return lines;
 }
 
-function drawRight(page: PDFPage, text: string, right: number, y: number, font: PDFFont, size: number, color = NAVY) {
+function textTop(page: PDFPage, text: string, x: number, top: number, font: PDFFont, size: number, color = NAVY) {
+  page.drawText(safeText(text), { x, y: PAGE_HEIGHT - top - size, font, size, color });
+}
+
+function rightTop(page: PDFPage, text: string, right: number, top: number, font: PDFFont, size: number, color = NAVY) {
   const value = safeText(text);
-  page.drawText(value, { x: right - font.widthOfTextAtSize(value, size), y, font, size, color });
+  textTop(page, value, right - font.widthOfTextAtSize(value, size), top, font, size, color);
+}
+
+function centeredTop(page: PDFPage, text: string, center: number, top: number, font: PDFFont, size: number, color = NAVY) {
+  const value = safeText(text);
+  textTop(page, value, center - font.widthOfTextAtSize(value, size) / 2, top, font, size, color);
+}
+
+function lineTop(page: PDFPage, top: number, x1 = 3, x2 = 592, thickness = 0.45, color = NAVY) {
+  page.drawLine({ start: { x: x1, y: PAGE_HEIGHT - top }, end: { x: x2, y: PAGE_HEIGHT - top }, thickness, color });
+}
+
+function boxTop(page: PDFPage, x: number, top: number, width: number, height: number, color = LIGHT) {
+  page.drawRectangle({ x, y: PAGE_HEIGHT - top - height, width, height, color, borderColor: NAVY, borderWidth: 0.45 });
+}
+
+function rmsOrderNumber(order: PdfOrder) {
+  const po = order.po_no == null ? order.po_number : String(order.po_no);
+  return `${order.store_no || "0"}-${po}`;
+}
+
+function vendorRuc(value: string | null) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length !== 10) return value || "-";
+  const weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  const sum = digits.split("").reduce((total, digit, index) => total + Number(digit) * weights[index], 0);
+  let check = 11 - (sum % 11);
+  if (check === 10) check = 0;
+  if (check === 11) check = 1;
+  return `${digits}${check}`;
 }
 
 export async function buildPurchaseOrderPdf(input: BuildPurchaseOrderPdfInput) {
@@ -162,150 +201,178 @@ export async function buildPurchaseOrderPdf(input: BuildPurchaseOrderPdfInput) {
   const regular = await document.embedFont(StandardFonts.Helvetica);
   const bold = await document.embedFont(StandardFonts.HelveticaBold);
   const currency = route?.currency_code || (Number(order.currency_id) === 2 ? "USD" : "PEN");
+  const approvalStatus = route?.status || "unrouted";
+  const isFinalDocument = approvalStatus === "approved" && input.allSignaturesReady === true;
+  const orderLabel = rmsOrderNumber(order);
+  const embeddedLogo = input.logoBytes ? await document.embedPng(input.logoBytes) : null;
   const embeddedSignatures = new Map<string, PDFImage>();
   for (const step of steps) {
-    if (step.signature?.bytes) {
-      try { embeddedSignatures.set(step.id, await document.embedPng(step.signature.bytes)); } catch { /* El PDF indica si la firma no puede incrustarse. */ }
-    }
+    if (!step.signature?.bytes) continue;
+    try { embeddedSignatures.set(step.id, await document.embedPng(step.signature.bytes)); } catch { /* Se muestra el estado aunque el PNG sea invalido. */ }
   }
 
   let page: PDFPage;
-  let y = 0;
-  const margin = 32;
-  const contentWidth = A4[0] - margin * 2;
-  const addPage = () => {
-    page = document.addPage(A4);
-    y = A4[1] - 34;
-    page.drawRectangle({ x: 0, y: A4[1] - 72, width: A4[0], height: 72, color: NAVY });
-    page.drawRectangle({ x: 0, y: A4[1] - 76, width: A4[0], height: 4, color: ORANGE });
-    page.drawRectangle({ x: margin, y: A4[1] - 61, width: 34, height: 34, color: ORANGE });
-    page.drawText("R", { x: margin + 11, y: A4[1] - 51, size: 18, font: bold, color: rgb(1, 1, 1) });
-    page.drawText("RASECORP", { x: margin + 44, y: A4[1] - 42, size: 15, font: bold, color: rgb(1, 1, 1) });
-    page.drawText("ORDEN DE COMPRA", { x: margin + 44, y: A4[1] - 57, size: 8, font: bold, color: rgb(0.65, 0.72, 0.82) });
-    drawRight(page, `OC ${order.po_number}`, A4[0] - margin, A4[1] - 46, bold, 15, rgb(1, 1, 1));
-    y = A4[1] - 99;
+  let cursorTop = 0;
+  const pages: PDFPage[] = [];
+
+  const drawCompanyHeader = (current: PDFPage, compact = false) => {
+    if (!compact && embeddedLogo) {
+      current.drawImage(embeddedLogo, { x: 3, y: PAGE_HEIGHT - 80, width: 160, height: 77 });
+    } else if (embeddedLogo) {
+      current.drawImage(embeddedLogo, { x: 4, y: PAGE_HEIGHT - 52, width: 95, height: 43 });
+    }
+    if (compact) {
+      centeredTop(current, "GLOBAL PERLA'S CAR S.A.C.", 280, 12, bold, 9.2);
+      rightTop(current, `ORDEN DE COMPRA:${orderLabel}`, 590, 12, bold, 8.2);
+      centeredTop(current, "RUC: 20546153372", 280, 27, bold, 7.5);
+      return;
+    }
+    centeredTop(current, "GLOBAL PERLA'S CAR S.A.C.", 265, 13, bold, 10.5);
+    centeredTop(current, "RUC: 20546153372", 265, 37, bold, 8.8);
+    textTop(current, formatDate(generatedAt), 381, 4, bold, 7.2);
+    textTop(current, formatTime(generatedAt), 480, 4, bold, 7.2);
+    textTop(current, statusLabel(approvalStatus), 349, 43, bold, 14, RED);
+    textTop(current, `ORDEN DE COMPRA:${orderLabel}`, 349, 65, bold, 9.4);
+    textTop(current, "Fecha Orden:", 349, 82, bold, 7.3);
+    textTop(current, formatDate(order.po_date), 401, 82, regular, 7.3);
+    textTop(current, "Fecha Entrega:", 349, 99, bold, 7.3);
+    textTop(current, formatDate(order.ship_date), 408, 99, regular, 7.3);
+    textTop(current, "Fecha Cancelacion:", 349, 116, bold, 7.3);
+    textTop(current, formatDate(order.cancel_date), 426, 116, regular, 7.3);
+
+    textTop(current, "Proveedor:", 3, 84, bold, 6.8);
+    textTop(current, order.vendor_name || "-", 41, 84, regular, 6.8);
+    textTop(current, "Ruc:", 3, 99, bold, 6.8);
+    textTop(current, vendorRuc(order.vendor_code), 20, 99, regular, 6.8);
+    textTop(current, "Direccion:", 3, 115, bold, 6.8);
+    textTop(current, "-", 42, 115, regular, 6.8);
+    textTop(current, "Entregar en:", 3, 144, bold, 6.8);
+    textTop(current, order.store_name || order.store_code || order.store_no, 65, 144, regular, 6.8);
+    textTop(current, "-", 65, 159, regular, 6.8);
+    textTop(current, "Autor:", 349, 147, bold, 7.1);
+    textTop(current, order.buyer || "-", 372, 147, regular, 7.1);
+    textTop(current, "Moneda:", 349, 163, bold, 7.1);
+    textTop(current, currency === "USD" ? "DOLARES" : "SOLES", 382, 163, bold, 7.1);
+  };
+
+  const drawTableHeader = (current: PDFPage, top: number) => {
+    lineTop(current, top, 3, 592, 0.55);
+    textTop(current, "Nro", 5, top + 3, bold, 7.2);
+    textTop(current, "Codigo", 31, top + 3, bold, 7.2);
+    textTop(current, "Descripcion", 94, top + 3, bold, 7.2);
+    centeredTop(current, "Cant.", 341, top + 1, bold, 7.2);
+    centeredTop(current, "Unidades", 341, top + 10, bold, 7.2);
+    centeredTop(current, "Caja/Rollo/", 391, top + 1, bold, 7.2);
+    centeredTop(current, "Paquete", 391, top + 10, bold, 7.2);
+    centeredTop(current, "Unidad", 449, top + 1, bold, 7.2);
+    centeredTop(current, "Medida", 449, top + 10, bold, 7.2);
+    centeredTop(current, "Costo", 505, top + 3, bold, 7.2);
+    centeredTop(current, "Costo Total", 566, top + 3, bold, 7.2);
+    lineTop(current, top + 23, 3, 592, 0.55);
+    return top + 25;
+  };
+
+  const addPage = (first: boolean, withTableHeader = true) => {
+    page = document.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    pages.push(page);
+    drawCompanyHeader(page, !first);
+    cursorTop = first ? 173 : 56;
+    if (withTableHeader) cursorTop = drawTableHeader(page, cursorTop);
     return page;
   };
-  const ensure = (height: number) => { if (y - height < 54) addPage(); };
 
-  addPage();
-  const approvalStatus = route?.status || "unrouted";
-  const isFinalDocument = approvalStatus === "approved" && input.allSignaturesReady === true;
-  const visibleStatus = approvalStatus === "approved" && !isFinalDocument
-    ? "APROBADA - FIRMAS NO CONFIGURADAS"
-    : statusLabel(approvalStatus);
-  const statusColor = isFinalDocument ? GREEN : approvalStatus === "rejected" ? RED : ORANGE;
-  page!.drawRectangle({ x: margin, y: y - 25, width: contentWidth, height: 25, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
-  page!.drawText(visibleStatus, { x: margin + 10, y: y - 17, font: bold, size: 9, color: statusColor });
-  drawRight(page!, `Vista generada: ${formatDate(generatedAt, true)}`, A4[0] - margin - 10, y - 17, regular, 8, SLATE);
-  y -= 39;
-
-  const info = [
-    ["PROVEEDOR", order.vendor_name || "Sin proveedor", "CODIGO", order.vendor_code || "-"],
-    ["TIENDA DE INGRESO", order.store_name || order.store_code || order.store_no, "SEDE RMS", order.store_no],
-    ["FECHA OC", formatDate(order.po_date), "FECHA ENTREGA", formatDate(order.ship_date)],
-    ["COMPRADOR", order.buyer || "-", "MONEDA", currency === "USD" ? "DOLARES" : "SOLES"],
-  ];
-  for (const row of info) {
-    page!.drawRectangle({ x: margin, y: y - 24, width: contentWidth, height: 24, borderColor: BORDER, borderWidth: 0.55 });
-    page!.drawText(row[0], { x: margin + 8, y: y - 15, font: bold, size: 6.5, color: SLATE });
-    page!.drawText(safeText(row[1]).slice(0, 54), { x: margin + 94, y: y - 16, font: bold, size: 8, color: NAVY });
-    page!.drawText(row[2], { x: margin + 344, y: y - 15, font: bold, size: 6.5, color: SLATE });
-    page!.drawText(safeText(row[3]).slice(0, 24), { x: margin + 424, y: y - 16, font: bold, size: 8, color: NAVY });
-    y -= 24;
-  }
-  if (order.notes) {
-    const notes = wrapText(order.notes, regular, 7.5, contentWidth - 84, 2);
-    const height = Math.max(24, notes.length * 10 + 8);
-    page!.drawRectangle({ x: margin, y: y - height, width: contentWidth, height, borderColor: BORDER, borderWidth: 0.55 });
-    page!.drawText("NOTAS", { x: margin + 8, y: y - 15, font: bold, size: 6.5, color: SLATE });
-    notes.forEach((line, index) => page!.drawText(line, { x: margin + 94, y: y - 15 - index * 9, font: regular, size: 7.5, color: NAVY }));
-    y -= height;
-  }
-  y -= 14;
-
-  const columns = { item: margin, code: margin + 28, description: margin + 112, unit: margin + 332, qty: margin + 372, cost: margin + 424, total: margin + 480 };
-  const drawTableHeader = () => {
-    page!.drawRectangle({ x: margin, y: y - 22, width: contentWidth, height: 22, color: NAVY });
-    [["#", columns.item + 7], ["CODIGO", columns.code], ["DESCRIPCION", columns.description], ["UM", columns.unit], ["CANT.", columns.qty], ["COSTO", columns.cost], ["TOTAL", columns.total]].forEach(([label, x]) => page!.drawText(String(label), { x: Number(x), y: y - 14, font: bold, size: 6.5, color: rgb(1, 1, 1) }));
-    y -= 22;
-  };
-  drawTableHeader();
+  addPage(true);
   lines.forEach((line, index) => {
-    const description = wrapText(line.description || "-", regular, 7, 210, 2);
-    const height = Math.max(24, description.length * 9 + 8);
-    if (y - height < 78) { addPage(); drawTableHeader(); }
-    if (index % 2 === 1) page!.drawRectangle({ x: margin, y: y - height, width: contentWidth, height, color: LIGHT });
-    page!.drawRectangle({ x: margin, y: y - height, width: contentWidth, height, borderColor: BORDER, borderWidth: 0.35 });
-    page!.drawText(String(index + 1), { x: columns.item + 8, y: y - 15, font: regular, size: 7, color: SLATE });
-    page!.drawText(safeText(line.product_code).slice(0, 17), { x: columns.code, y: y - 15, font: bold, size: 7, color: NAVY });
-    description.forEach((value, rowIndex) => page!.drawText(value, { x: columns.description, y: y - 15 - rowIndex * 9, font: regular, size: 7, color: NAVY }));
-    page!.drawText(safeText(line.unit || "-").slice(0, 6), { x: columns.unit, y: y - 15, font: regular, size: 7, color: NAVY });
-    drawRight(page!, formatNumber(line.qty_ordered, 2), columns.cost - 8, y - 15, regular, 7);
-    drawRight(page!, formatNumber(line.cost, 2), columns.total - 8, y - 15, regular, 7);
-    drawRight(page!, formatNumber(line.ext_cost, 2), A4[0] - margin - 7, y - 15, bold, 7);
-    y -= height;
+    const descriptionLines = wrapText(line.description || "-", regular, 5.9, 224, 2);
+    const rowHeight = descriptionLines.length > 1 ? 17 : 12.5;
+    if (cursorTop + rowHeight > 800) addPage(false);
+    textTop(page!, String(index + 1), 5, cursorTop + 2, regular, 6.2);
+    textTop(page!, line.product_code, 31, cursorTop + 2, regular, 6.2);
+    descriptionLines.forEach((value, lineIndex) => textTop(page!, value, 94, cursorTop + 2 + lineIndex * 7, regular, 5.9));
+    rightTop(page!, formatNumber(line.qty_ordered), 360, cursorTop + 2, regular, 6.2);
+    centeredTop(page!, "0", 391, cursorTop + 2, regular, 6.2);
+    centeredTop(page!, line.unit || "-", 449, cursorTop + 2, regular, 6.2);
+    rightTop(page!, formatNumber(line.cost), 524, cursorTop + 2, regular, 6.2);
+    rightTop(page!, formatNumber(line.ext_cost), 592, cursorTop + 2, regular, 6.2);
+    cursorTop += rowHeight;
   });
+  lineTop(page!, cursorTop + 1, 3, 592, 0.55);
+  cursorTop += 9;
 
-  ensure(72);
-  y -= 9;
-  page!.drawRectangle({ x: A4[0] - margin - 210, y: y - 54, width: 210, height: 54, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
-  page!.drawText("TOTAL ORDEN", { x: A4[0] - margin - 198, y: y - 19, font: bold, size: 8, color: SLATE });
-  drawRight(page!, formatMoney(order.total, currency), A4[0] - margin - 12, y - 40, bold, 16, NAVY);
-  y -= 72;
+  const approvalHeight = steps.length ? 98 : 48;
+  const summaryHeight = 88 + (order.notes ? 24 : 0) + approvalHeight;
+  if (cursorTop + summaryHeight > 810) addPage(false, false);
 
-  ensure(75 + Math.ceil(Math.max(steps.length, 1) / 2) * 104);
-  page!.drawText("RUTA DE APROBACION", { x: margin, y, font: bold, size: 11, color: NAVY });
-  y -= 18;
-  if (!route) {
-    page!.drawRectangle({ x: margin, y: y - 36, width: contentWidth, height: 36, color: LIGHT, borderColor: BORDER, borderWidth: 0.7 });
-    page!.drawText("Esta OC pertenece al historial anterior a la activacion del flujo automatico.", { x: margin + 10, y: y - 22, font: regular, size: 8, color: SLATE });
-    y -= 46;
+  const subtotal = num(order.total) / 1.18;
+  const tax = num(order.total) - subtotal;
+  textTop(page!, "Condicion de Pago:", 3, cursorTop + 1, bold, 7.1);
+  textTop(page!, "-", 94, cursorTop + 1, bold, 7.1);
+  textTop(page!, "Cuenta:", 3, cursorTop + 18, bold, 7.1);
+  textTop(page!, "-", 94, cursorTop + 18, regular, 7.1);
+  textTop(page!, "Subtotal:", 411, cursorTop + 1, bold, 7.8);
+  rightTop(page!, formatNumber(subtotal), 592, cursorTop + 1, bold, 7.8);
+  textTop(page!, "Impuesto:", 411, cursorTop + 18, bold, 7.8);
+  rightTop(page!, formatNumber(tax), 592, cursorTop + 18, bold, 7.8);
+  lineTop(page!, cursorTop + 32, 419, 592, 0.4);
+  textTop(page!, "Total:", 411, cursorTop + 37, bold, 7.8);
+  rightTop(page!, formatNumber(order.total), 592, cursorTop + 37, bold, 7.8);
+  lineTop(page!, cursorTop + 54, 411, 592, 0.55);
+  cursorTop += 66;
+
+  if (order.notes) {
+    const notes = wrapText(order.notes, regular, 7.0, 580, 2);
+    notes.forEach((value, index) => textTop(page!, value, 3, cursorTop + index * 9, regular, 7.0));
+    cursorTop += notes.length * 9 + 10;
+  }
+
+  if (cursorTop + approvalHeight > 808) addPage(false, false);
+  textTop(page!, "RUTA DE APROBACION", 3, cursorTop, bold, 8.2);
+  if (route) rightTop(page!, `Version ${route.version}`, 592, cursorTop, regular, 6.2, GRAY);
+  cursorTop += 15;
+
+  if (!route || !steps.length) {
+    boxTop(page!, 3, cursorTop, 589, 30, rgb(1, 1, 1));
+    textTop(page!, "Esta orden pertenece al historial anterior a la activacion del flujo automatico.", 10, cursorTop + 9, regular, 6.8, GRAY);
   } else {
-    const cardWidth = (contentWidth - 10) / 2;
+    const gap = 5;
+    const cardWidth = (589 - gap * (steps.length - 1)) / steps.length;
     steps.forEach((step, index) => {
-      const column = index % 2;
-      if (column === 0 && index > 0) y -= 104;
-      const x = margin + column * (cardWidth + 10);
-      const cardY = y - 94;
+      const x = 3 + index * (cardWidth + gap);
+      boxTop(page!, x, cursorTop, cardWidth, 73, rgb(1, 1, 1));
+      textTop(page!, roleLabel(step.role_key), x + 5, cursorTop + 5, bold, 5.8, GRAY);
+      const names = wrapText(step.approver_name_snapshot, bold, 6.6, cardWidth - 10, 2);
+      names.forEach((value, row) => textTop(page!, value, x + 5, cursorTop + 16 + row * 7, bold, 6.6));
       const approved = step.status === "approved";
       const rejected = step.status === "rejected";
-      page!.drawRectangle({ x, y: cardY, width: cardWidth, height: 94, color: approved ? rgb(0.93, 0.98, 0.95) : rejected ? rgb(1, 0.94, 0.94) : LIGHT, borderColor: approved ? GREEN : rejected ? RED : BORDER, borderWidth: 0.8 });
-      page!.drawText(`${step.step_order}. ${roleLabel(step.role_key)}`, { x: x + 9, y: cardY + 76, font: bold, size: 7, color: SLATE });
-      page!.drawText(safeText(step.approver_name_snapshot).slice(0, 38), { x: x + 9, y: cardY + 61, font: bold, size: 9, color: NAVY });
-      const state = approved ? `APROBADO ${formatDate(step.acted_at, true)}` : rejected ? `RECHAZADO ${formatDate(step.acted_at, true)}` : step.status === "pending" ? "PENDIENTE" : "EN ESPERA";
-      page!.drawText(state, { x: x + 9, y: cardY + 47, font: bold, size: 6.5, color: approved ? GREEN : rejected ? RED : ORANGE });
+      const state = approved ? "APROBADO" : rejected ? "RECHAZADO" : step.status === "pending" ? "PENDIENTE" : "EN ESPERA";
+      textTop(page!, state, x + 5, cursorTop + 34, bold, 5.8, approved ? GREEN : rejected ? RED : GRAY);
       const signature = embeddedSignatures.get(step.id);
       if (approved && signature) {
-        const scale = Math.min(100 / signature.width, 30 / signature.height);
-        page!.drawImage(signature, { x: x + cardWidth - signature.width * scale - 10, y: cardY + 8, width: signature.width * scale, height: signature.height * scale });
+        const scale = Math.min((cardWidth - 16) / signature.width, 23 / signature.height);
+        page!.drawImage(signature, {
+          x: x + (cardWidth - signature.width * scale) / 2,
+          y: PAGE_HEIGHT - cursorTop - 67,
+          width: signature.width * scale,
+          height: signature.height * scale,
+        });
       } else {
-        page!.drawText(approved ? "Firma digital no configurada" : "Sin firma hasta su aprobacion", { x: x + 9, y: cardY + 18, font: regular, size: 6.5, color: SLATE });
+        lineTop(page!, cursorTop + 59, x + 8, x + cardWidth - 8, 0.35, GRAY);
+        centeredTop(page!, approved ? "Firma no configurada" : "Firma", x + cardWidth / 2, cursorTop + 61, regular, 4.8, GRAY);
       }
     });
-    if (steps.length) y -= Math.ceil(steps.length / 2) * 104;
     if (route.rejected_comment) {
-      ensure(48);
-      page!.drawRectangle({ x: margin, y: y - 38, width: contentWidth, height: 38, color: rgb(1, 0.94, 0.94), borderColor: RED, borderWidth: 0.7 });
-      page!.drawText("MOTIVO DEL RECHAZO", { x: margin + 8, y: y - 13, font: bold, size: 6.5, color: RED });
-      page!.drawText(safeText(route.rejected_comment).slice(0, 105), { x: margin + 8, y: y - 27, font: regular, size: 7.5, color: NAVY });
-      y -= 48;
+      textTop(page!, `Motivo: ${route.rejected_comment}`, 3, cursorTop + 78, regular, 6.2, RED);
     }
   }
 
-  document.getPages().forEach((current, index, pages) => {
-    current.drawLine({ start: { x: margin, y: 37 }, end: { x: A4[0] - margin, y: 37 }, thickness: 0.5, color: BORDER });
-    current.drawText("Documento generado por RASECORP - Datos sincronizados desde RMS", { x: margin, y: 24, font: regular, size: 6.5, color: SLATE });
-    drawRight(current, `Pagina ${index + 1} de ${pages.length}`, A4[0] - margin, 24, bold, 6.5, SLATE);
-    if (!isFinalDocument) {
-      current.drawText("VISTA PREVIA - NO HABILITA IMPRESION FINAL", { x: 155, y: 50, font: bold, size: 8, color: ORANGE, opacity: 0.75 });
-    }
+  pages.forEach((current, index) => {
+    if (!isFinalDocument) centeredTop(current, "VISTA PREVIA - NO HABILITA IMPRESION FINAL", PAGE_WIDTH / 2, 814, bold, 5.8, RED);
+    rightTop(current, `Pagina ${index + 1} de ${pages.length}`, 592, 829, bold, 7.1);
   });
 
-  document.setTitle(`Orden de Compra ${order.po_number}`);
-  document.setAuthor("RASECORP");
+  document.setTitle(`Orden de Compra ${orderLabel}`);
+  document.setAuthor("GLOBAL PERLA'S CAR S.A.C.");
   document.setSubject("Orden de compra RMS y ruta de aprobacion");
   document.setCreationDate(generatedAt);
   return document.save({ useObjectStreams: false });
 }
-
