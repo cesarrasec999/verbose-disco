@@ -17,7 +17,19 @@ const DEFAULT_CC = [
   "malu.ccahuantico@gpc.pe",
   "loraine.palacio@gpc.pe",
   "sarita.romero@gpc.pe",
+  "yolanda.morales@gpc.pe",
 ].join(",");
+
+const REQUIRED_CC = "yolanda.morales@gpc.pe";
+
+function reportCcRecipients(configuredCc: string): string {
+  return [...new Set(
+    `${configuredCc},${REQUIRED_CC}`
+      .split(",")
+      .map(email => email.trim().toLowerCase())
+      .filter(Boolean),
+  )].join(",");
+}
 
 function getYesterdayLimaISO(): string {
   const nowLima = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Lima" }));
@@ -67,7 +79,11 @@ export async function GET(request: Request) {
 
   try {
     const to = toOverride || process.env.REPORTE_CICLICOS_TO || DEFAULT_TO;
-    const cc = toOverride ? undefined : (process.env.REPORTE_CICLICOS_CC || DEFAULT_CC);
+    // Yolanda debe permanecer en copia incluso si Vercel tiene una lista CC
+    // personalizada mediante variable de entorno.
+    const cc = toOverride
+      ? undefined
+      : reportCcRecipients(process.env.REPORTE_CICLICOS_CC || DEFAULT_CC);
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
