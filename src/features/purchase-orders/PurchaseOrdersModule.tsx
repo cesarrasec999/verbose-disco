@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3,
-  FileSignature, History, Home, Link2, PackageSearch, RefreshCw, Search,
+  FileSignature, FileText, History, Home, Link2, PackageSearch, RefreshCw, Search,
   ShieldCheck, Store, Truck, Upload, X, XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -143,6 +143,7 @@ export default function PurchaseOrdersModule() {
   const [signatureRows, setSignatureRows] = useState<SignatureApprover[]>([]);
   const [signatureLoading, setSignatureLoading] = useState(false);
   const [signatureUploading, setSignatureUploading] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState<string | null>(null);
   const loadSeq = useRef(0); const linesSeq = useRef(0);
 
   const isAdmin = String(user?.role || "").toLowerCase() === "administrador";
@@ -214,6 +215,30 @@ export default function PurchaseOrdersModule() {
     if (!file) return; setSignatureUploading(targetUserId); const form = new FormData(); form.append("userId", targetUserId); form.append("file", file); const response = await fetch("/api/purchase-orders/signatures", { method: "POST", headers: authHeaders(), body: form }); const payload = await response.json().catch(() => ({})); setSignatureUploading(null); if (!response.ok) { toast.error(payload.error || "No se pudo subir la firma"); return; } toast.success("Firma digital guardada de forma privada"); await loadSignatures();
   }
 
+  async function viewPdf(order: PurchaseOrder) {
+    const preview = window.open("", "_blank");
+    if (!preview) { toast.error("Permite las ventanas emergentes para abrir el PDF"); return; }
+    preview.document.title = `Generando OC ${order.po_number}`;
+    preview.document.body.innerHTML = '<div style="font-family:Arial,sans-serif;padding:32px;color:#0f172a"><b>Generando PDF de la orden de compra...</b></div>';
+    setPdfLoading(order.erp_po_id);
+    try {
+      const response = await fetch(`/api/purchase-orders/${encodeURIComponent(order.erp_po_id)}/pdf`, { headers: authHeaders(), cache: "no-store" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "No se pudo generar el PDF");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      preview.location.replace(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+    } catch (error) {
+      preview.close();
+      toast.error(error instanceof Error ? error.message : "No se pudo generar el PDF");
+    } finally {
+      setPdfLoading(null);
+    }
+  }
+
   if (!ready) return <div className="grid min-h-screen place-items-center bg-slate-100"><RefreshCw className="animate-spin text-orange-600" /></div>;
 
   return <main className="min-h-screen bg-slate-100 text-slate-950">
@@ -237,13 +262,13 @@ export default function PurchaseOrdersModule() {
       <Pager page={page} total={total} pageSize={PAGE_SIZE} onPage={setPage} />
     </div>
 
-    {selectedOrder && <OrderDrawer order={selectedOrder} approval={approval} loadingApproval={loadingApproval} lines={lines} loadingLines={loadingLines} linePage={linePage} lineTotal={lineTotal} actionComment={actionComment} acting={acting} replacementNumber={replacementNumber} linkingReplacement={linkingReplacement} onClose={() => setSelectedOrder(null)} onLinePage={changeLinePage} onComment={setActionComment} onAction={actOnApproval} onReplacement={setReplacementNumber} onLinkReplacement={linkReplacement} />}
+    {selectedOrder && <OrderDrawer order={selectedOrder} approval={approval} loadingApproval={loadingApproval} lines={lines} loadingLines={loadingLines} linePage={linePage} lineTotal={lineTotal} actionComment={actionComment} acting={acting} replacementNumber={replacementNumber} linkingReplacement={linkingReplacement} pdfLoading={pdfLoading === selectedOrder.erp_po_id} onViewPdf={() => viewPdf(selectedOrder)} onClose={() => setSelectedOrder(null)} onLinePage={changeLinePage} onComment={setActionComment} onAction={actOnApproval} onReplacement={setReplacementNumber} onLinkReplacement={linkReplacement} />}
     {signatureOpen && <SignatureModal rows={signatureRows} loading={signatureLoading} uploading={signatureUploading} onClose={() => setSignatureOpen(false)} onUpload={uploadSignature} />}
   </main>;
 }
 
-function OrderDrawer({ order, approval, loadingApproval, lines, loadingLines, linePage, lineTotal, actionComment, acting, replacementNumber, linkingReplacement, onClose, onLinePage, onComment, onAction, onReplacement, onLinkReplacement }: { order: PurchaseOrder; approval: ApprovalDetail | null; loadingApproval: boolean; lines: PurchaseOrderLine[]; loadingLines: boolean; linePage: number; lineTotal: number; actionComment: string; acting: boolean; replacementNumber: string; linkingReplacement: boolean; onClose: () => void; onLinePage: (page: number) => void; onComment: (value: string) => void; onAction: (action: "approve" | "reject") => Promise<void>; onReplacement: (value: string) => void; onLinkReplacement: () => Promise<void> }) {
-  return <div className="fixed inset-0 z-50 bg-slate-950/55 p-0 backdrop-blur-sm sm:p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="ml-auto flex h-full w-full max-w-6xl flex-col overflow-hidden bg-slate-50 shadow-2xl sm:rounded-3xl"><div className="border-b bg-white p-4 sm:p-6"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-wider text-orange-600">Detalle y ruta de aprobación</p><div className="mt-1 flex flex-wrap items-center gap-3"><h2 className="text-2xl font-black">OC {order.po_number}</h2><span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase ${approvalMeta(approval?.approval_status || order.approval_status).className}`}>{approvalMeta(approval?.approval_status || order.approval_status).label}</span></div><p className="mt-1 text-sm text-slate-500">{order.vendor_name || order.vendor_code || "Sin proveedor"}</p></div><button onClick={onClose} className="grid h-10 w-10 place-items-center rounded-xl border hover:bg-slate-50"><X size={20} /></button></div></div><div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+function OrderDrawer({ order, approval, loadingApproval, lines, loadingLines, linePage, lineTotal, actionComment, acting, replacementNumber, linkingReplacement, pdfLoading, onViewPdf, onClose, onLinePage, onComment, onAction, onReplacement, onLinkReplacement }: { order: PurchaseOrder; approval: ApprovalDetail | null; loadingApproval: boolean; lines: PurchaseOrderLine[]; loadingLines: boolean; linePage: number; lineTotal: number; actionComment: string; acting: boolean; replacementNumber: string; linkingReplacement: boolean; pdfLoading: boolean; onViewPdf: () => void; onClose: () => void; onLinePage: (page: number) => void; onComment: (value: string) => void; onAction: (action: "approve" | "reject") => Promise<void>; onReplacement: (value: string) => void; onLinkReplacement: () => Promise<void> }) {
+  return <div className="fixed inset-0 z-50 bg-slate-950/55 p-0 backdrop-blur-sm sm:p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div className="ml-auto flex h-full w-full max-w-6xl flex-col overflow-hidden bg-slate-50 shadow-2xl sm:rounded-3xl"><div className="border-b bg-white p-4 sm:p-6"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-wider text-orange-600">Detalle y ruta de aprobación</p><div className="mt-1 flex flex-wrap items-center gap-3"><h2 className="text-2xl font-black">OC {order.po_number}</h2><span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase ${approvalMeta(approval?.approval_status || order.approval_status).className}`}>{approvalMeta(approval?.approval_status || order.approval_status).label}</span></div><p className="mt-1 text-sm text-slate-500">{order.vendor_name || order.vendor_code || "Sin proveedor"}</p></div><div className="flex items-center gap-2"><button onClick={onViewPdf} disabled={pdfLoading} className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-3 text-xs font-black text-white disabled:opacity-50">{pdfLoading ? <RefreshCw className="animate-spin" size={16} /> : <FileText size={16} />}Ver PDF</button><button onClick={onClose} className="grid h-10 w-10 place-items-center rounded-xl border hover:bg-slate-50"><X size={20} /></button></div></div></div><div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-5"><InfoCard icon={<CalendarDays className="text-blue-600" size={18} />} label="Generada" value={dateTime(order.po_date)} /><InfoCard icon={<Store className="text-orange-600" size={18} />} label="Debe ingresar" value={order.store_name || order.store_no} /><InfoCard icon={<Truck className="text-violet-600" size={18} />} label="Unidades" value={`${quantity(order.qty_received)} / ${quantity(order.qty_ordered)}`} /><InfoCard icon={<PackageSearch className="text-emerald-600" size={18} />} label="Ítems" value={String(order.line_count)} /><div className="col-span-2 rounded-2xl border bg-slate-950 p-3 text-white lg:col-span-1"><p className="text-[10px] font-black uppercase text-slate-400">Total OC</p><p className="mt-2 text-xl font-black">{money(order.total, currencyCode(order.currency_id))}</p></div></div>
     <section className="rounded-3xl border bg-white p-4 shadow-sm sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-wider text-orange-600">Control de autorizaciones</p><h3 className="text-lg font-black">Ruta de aprobación</h3></div>{approval && <div className="text-right"><p className="font-black">{tierLabel(approval.approval_tier)} · {approval.currency_code}</p><p className="text-xs text-slate-400">Versión {approval.version} · {money(approval.amount_snapshot, approval.currency_code)}</p></div>}</div>
       {loadingApproval ? <div className="grid min-h-[150px] place-items-center"><RefreshCw className="animate-spin text-orange-600" /></div> : !approval ? <div className="mt-4 rounded-2xl bg-slate-100 p-4 text-sm font-bold text-slate-500">Esta OC pertenece al historial anterior a la activación del flujo automático.</div> : <>
