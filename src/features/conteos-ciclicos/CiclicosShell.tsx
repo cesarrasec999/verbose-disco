@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { writeStoredUser } from "@/lib/singleDeviceSession";
+import { CYCLIC_REPORT_DEFAULT_CC, CYCLIC_REPORT_DEFAULT_TO } from "@/lib/cyclicReportRecipients";
 import * as XLSX from "xlsx";
 import { BarChart3, Boxes, ClipboardList, Database, Download, FileText, Home, LineChart, Package, PackageSearch, QrCode, RefreshCw, Search, Store as StoreIcon, Truck, Users } from "lucide-react";
 import { readSafeSheetMatrix, readSafeSheetObjects } from "@/lib/safeExcel";
@@ -430,7 +431,8 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
 
     const [showEmailModal, setShowEmailModal] = useState(false);
     const [emailHTML, setEmailHTML]           = useState("");
-    const [emailRecipients, setEmailRecipients] = useState("");
+    const [emailToRecipients, setEmailToRecipients] = useState(CYCLIC_REPORT_DEFAULT_TO);
+    const [emailCcRecipients, setEmailCcRecipients] = useState(CYCLIC_REPORT_DEFAULT_CC.join(", "));
     const [manualProductCode, setManualProductCode] = useState("");
     const [manualProductCandidates, setManualProductCandidates] = useState<Product[]>([]);
     const [manualProductCodePending, setManualProductCodePending] = useState("");
@@ -10432,17 +10434,29 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                             <button className="text-slate-400 hover:text-slate-600 text-2xl leading-none flex-shrink-0" onClick={() => setShowEmailModal(false)}>×</button>
                         </div>
 
-                        {/* Campo destinatarios + botones */}
+                        {/* Campos Para/CC + botones */}
                         <div className="flex flex-col gap-3 px-6 py-3 bg-slate-50 border-b flex-shrink-0">
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-semibold text-slate-600">Destinatarios (separados por coma)</label>
-                                <input
-                                    type="text"
-                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                                    placeholder="correo1@empresa.com, correo2@empresa.com"
-                                    value={emailRecipients}
-                                    onChange={e => setEmailRecipients(e.target.value)}
-                                />
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-semibold text-slate-600">Para</label>
+                                    <input
+                                        type="text"
+                                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                        placeholder="destinatario@gpc.pe"
+                                        value={emailToRecipients}
+                                        onChange={e => setEmailToRecipients(e.target.value)}
+                                    />
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                    <label className="text-xs font-semibold text-slate-600">CC (separados por coma)</label>
+                                    <input
+                                        type="text"
+                                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                        placeholder="copia1@gpc.pe, copia2@gpc.pe"
+                                        value={emailCcRecipients}
+                                        onChange={e => setEmailCcRecipients(e.target.value)}
+                                    />
+                                </div>
                             </div>
                             <div className="flex gap-3 flex-wrap items-center">
                                 <button
@@ -10455,9 +10469,10 @@ export default function DashboardPage({ forcedTab, forcedValTab }: DashboardPage
                                             reportWin.document.close();
                                         }
                                         // 2. Abrir Gmail con asunto y destinatarios listos
-                                        const to = emailRecipients.trim();
+                                        const to = emailToRecipients.trim();
+                                        const cc = emailCcRecipients.trim();
                                         const subject = encodeURIComponent(`Informe ${countTypeLabel(dashCountTypeFilter === "all" ? "cyclic" : dashCountTypeFilter)} — ${dashPeriod === "dia" ? dashDate : dashPeriod === "mes" ? dashMonth : `${dashRangeFrom} al ${dashRangeTo}`}`);
-                                        const gmail = `https://mail.google.com/mail/?view=cm&fs=1${to ? `&to=${encodeURIComponent(to)}` : ""}&su=${subject}`;
+                                        const gmail = `https://mail.google.com/mail/?view=cm&fs=1${to ? `&to=${encodeURIComponent(to)}` : ""}${cc ? `&cc=${encodeURIComponent(cc)}` : ""}&su=${subject}`;
                                         setTimeout(() => window.open(gmail, "_blank"), 400);
                                         showMessage("📋 Se abrieron 2 pestañas: el informe y Gmail. Selecciona todo el informe (Ctrl+A), cópialo (Ctrl+C) y pégalo en el cuerpo del correo (Ctrl+V).", "info");
                                     }}

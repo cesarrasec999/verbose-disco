@@ -2,34 +2,17 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
 import { buildDailyCyclicReportHTML, buildDailyDetailXlsxBuffer, type DailyCyclicCountType } from "@/lib/cyclicDailyReport";
+import {
+  CYCLIC_REPORT_DEFAULT_CC,
+  CYCLIC_REPORT_DEFAULT_TO,
+  cyclicReportCcRecipients,
+} from "@/lib/cyclicReportRecipients";
 
 // Corre 1 vez al dia (ver vercel.json, 13:00 UTC = 8:00 America/Lima) disparado
 // por Vercel Cron. Envia el mismo informe que el boton "Generar correo" del
 // dashboard de conteo ciclico, pero de forma automatica via SMTP (no requiere
 // que alguien abra la app ni copie/pegue nada a mano).
 export const maxDuration = 60;
-
-const DEFAULT_TO = "martha.barrera@gpc.pe";
-const DEFAULT_CC = [
-  "rociodelacruz@gpc.pe",
-  "felipe.cabellos@gpc.pe",
-  "marisol.vargas@gpc.pe",
-  "malu.ccahuantico@gpc.pe",
-  "loraine.palacio@gpc.pe",
-  "sarita.romero@gpc.pe",
-  "yolanda.morales@gpc.pe",
-].join(",");
-
-const REQUIRED_CC = "yolanda.morales@gpc.pe";
-
-function reportCcRecipients(configuredCc: string): string {
-  return [...new Set(
-    `${configuredCc},${REQUIRED_CC}`
-      .split(",")
-      .map(email => email.trim().toLowerCase())
-      .filter(Boolean),
-  )].join(",");
-}
 
 function getYesterdayLimaISO(): string {
   const nowLima = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Lima" }));
@@ -78,12 +61,12 @@ export async function GET(request: Request) {
   const toOverride = url.searchParams.get("to");
 
   try {
-    const to = toOverride || process.env.REPORTE_CICLICOS_TO || DEFAULT_TO;
+    const to = toOverride || process.env.REPORTE_CICLICOS_TO || CYCLIC_REPORT_DEFAULT_TO;
     // Yolanda debe permanecer en copia incluso si Vercel tiene una lista CC
     // personalizada mediante variable de entorno.
     const cc = toOverride
       ? undefined
-      : reportCcRecipients(process.env.REPORTE_CICLICOS_CC || DEFAULT_CC);
+      : cyclicReportCcRecipients(process.env.REPORTE_CICLICOS_CC || CYCLIC_REPORT_DEFAULT_CC.join(","));
 
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
