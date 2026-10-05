@@ -115,6 +115,24 @@ function formatTime(value: Date) {
   }).format(value);
 }
 
+function formatApprovalDateTime(value: string | null | undefined) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Lima",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value || "";
+  return `${valueOf("day")}/${valueOf("month")}/${valueOf("year")} ${valueOf("hour")}:${valueOf("minute")}:${valueOf("second")}`;
+}
+
 function statusLabel(status: string) {
   if (status === "approved") return "APROBADO";
   if (status === "rejected") return "RECHAZADO";
@@ -299,7 +317,7 @@ export async function buildPurchaseOrderPdf(input: BuildPurchaseOrderPdfInput) {
   lineTop(page!, cursorTop + 1, 3, 592, 0.55);
   cursorTop += 9;
 
-  const approvalHeight = steps.length ? 98 : 48;
+  const approvalHeight = steps.length ? 113 : 48;
   const summaryHeight = 88 + (order.notes ? 24 : 0) + approvalHeight;
   if (cursorTop + summaryHeight > 810) addPage(false, false);
 
@@ -338,7 +356,7 @@ export async function buildPurchaseOrderPdf(input: BuildPurchaseOrderPdfInput) {
     const cardWidth = (589 - gap * (steps.length - 1)) / steps.length;
     steps.forEach((step, index) => {
       const x = 3 + index * (cardWidth + gap);
-      boxTop(page!, x, cursorTop, cardWidth, 73, rgb(1, 1, 1));
+      boxTop(page!, x, cursorTop, cardWidth, 88, rgb(1, 1, 1));
       textTop(page!, roleLabel(step.role_key), x + 5, cursorTop + 5, bold, 5.8, GRAY);
       const names = wrapText(step.approver_name_snapshot, bold, 6.6, cardWidth - 10, 2);
       names.forEach((value, row) => textTop(page!, value, x + 5, cursorTop + 16 + row * 7, bold, 6.6));
@@ -346,22 +364,33 @@ export async function buildPurchaseOrderPdf(input: BuildPurchaseOrderPdfInput) {
       const rejected = step.status === "rejected";
       const state = approved ? "APROBADO" : rejected ? "RECHAZADO" : step.status === "pending" ? "PENDIENTE" : "EN ESPERA";
       textTop(page!, state, x + 5, cursorTop + 34, bold, 5.8, approved ? GREEN : rejected ? RED : GRAY);
+      if ((approved || rejected) && step.acted_at) {
+        textTop(
+          page!,
+          `${approved ? "Aprobado" : "Rechazado"}: ${formatApprovalDateTime(step.acted_at)}`,
+          x + 5,
+          cursorTop + 43,
+          regular,
+          5.0,
+          GRAY,
+        );
+      }
       const signature = embeddedSignatures.get(step.id);
       if (approved && signature) {
-        const scale = Math.min((cardWidth - 16) / signature.width, 23 / signature.height);
+        const scale = Math.min((cardWidth - 16) / signature.width, 22 / signature.height);
         page!.drawImage(signature, {
           x: x + (cardWidth - signature.width * scale) / 2,
-          y: PAGE_HEIGHT - cursorTop - 67,
+          y: PAGE_HEIGHT - cursorTop - 78,
           width: signature.width * scale,
           height: signature.height * scale,
         });
       } else {
-        lineTop(page!, cursorTop + 59, x + 8, x + cardWidth - 8, 0.35, GRAY);
-        centeredTop(page!, approved ? "Firma no configurada" : "Firma", x + cardWidth / 2, cursorTop + 61, regular, 4.8, GRAY);
+        lineTop(page!, cursorTop + 74, x + 8, x + cardWidth - 8, 0.35, GRAY);
+        centeredTop(page!, approved ? "Firma no configurada" : "Firma", x + cardWidth / 2, cursorTop + 76, regular, 4.8, GRAY);
       }
     });
     if (route.rejected_comment) {
-      textTop(page!, `Motivo: ${route.rejected_comment}`, 3, cursorTop + 78, regular, 6.2, RED);
+      textTop(page!, `Motivo: ${route.rejected_comment}`, 3, cursorTop + 93, regular, 6.2, RED);
     }
   }
 
