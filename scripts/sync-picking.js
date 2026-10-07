@@ -195,10 +195,9 @@ function requestLinesQuery() {
       -- Ventana solapada e indexable: evita huecos por una caida temporal o por
       -- un cambio de estado que ocurra entre dos ciclos del sincronizador.
       AND COALESCE(ir.CreationDate, ir.InvRequestDate) >= DATEADD(day, -@lookbackDays, CONVERT(date, GETDATE()))
-      -- D es "Aprobado" en RMS. Puede aparecer antes de que el ciclo de estado
-      -- A alcance a leer la solicitud, por lo que tambien debe entrar a Picking.
-      -- Estados cerrados/anulados no se importan ni borran historial existente.
-      AND ir.StatusCode IN ('A', 'D')
+      -- Se conservan todos los estados de la ventana. Si RMS completa o recibe
+      -- una solicitud durante una caida, debe quedar como evidencia de solo
+      -- lectura en Picking en vez de desaparecer por no haber pasado por A.
   `
 }
 
@@ -226,16 +225,12 @@ function mapRequests(rows) {
   for (const row of rows) {
     const key = clean(row.inv_request_id)
     if (!key) continue
-    const erpStatusCode = clean(row.status_code).toUpperCase()
     const current = grouped.get(key) || {
       erp_inv_request_id: key,
       inv_request_no: clean(row.inv_request_no) || null,
       doc_number: clean(row.doc_number) || null,
-      // Picking usa A como estado operativo/asignable. Una solicitud que RMS
-      // aprobo (D) sigue pendiente de preparacion y debe aparecer igual que A.
-      // Esto tambien evita retirar del trabajo una solicitud ya asignada.
-      status_code: erpStatusCode === 'D' ? 'A' : (erpStatusCode || null),
-      status_name: erpStatusCode === 'D' ? 'Activo (aprobado RMS)' : statusName(erpStatusCode),
+      status_code: clean(row.status_code) || null,
+      status_name: statusName(row.status_code),
       request_date: row.request_date || null,
       creation_date: row.creation_date || null,
       destination_store_code: clean(row.destination_store_code),
@@ -260,7 +255,7 @@ function mapRequests(rows) {
 
 async function syncOnce() {
   let pool
-  writeStatus(`Reconciliando picking ERP: activos/aprobados de los ultimos ${LOOKBACK_DAYS} dias`)
+  writeStatus(`Reconciliando picking ERP: todos los estados de los ultimos ${LOOKBACK_DAYS} dias`)
   try {
     pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
     const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()

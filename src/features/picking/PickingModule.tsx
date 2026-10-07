@@ -222,6 +222,10 @@ function pickingDocumentLabel(request: PickingRequest | null | undefined) {
   return request?.doc_number || request?.inv_request_no || request?.erp_inv_request_id || "";
 }
 
+function isOperationalPickingRequest(request: PickingRequest | null | undefined) {
+  return normalize(request?.status_code) === "A";
+}
+
 function tabHref(target: PickingPanel) {
   return `/picking/${target}`;
 }
@@ -490,6 +494,7 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
     () => filteredRequests.find(request => request.id === selectedRequestId) || filteredRequests[0] || null,
     [filteredRequests, selectedRequestId]
   );
+  const selectedRequestReadOnly = Boolean(selectedRequest && !isOperationalPickingRequest(selectedRequest));
 
   const visibleLines = useMemo(
     () => lines.filter(line => line.request_id === selectedRequest?.id),
@@ -1202,17 +1207,18 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
         // sola carga, sin importar pestana ni fecha). Ver
         // supabase/migrations/20260720133000_picking_manager_scoped_queries.sql.
         if (panel === "asignacion") {
-          // Para operar se muestran solo activos. Al elegir una fecha anterior,
-          // esta misma pestaña se convierte en historial de solo lectura y
-          // conserva los requerimientos que RMS ya recepcionó.
+          // La lista incluye el universo completo de la fecha. Los estados no
+          // activos se muestran como historial de solo lectura para que una
+          // caida temporal del sincronizador no deje huecos invisibles.
           const day = assignmentDateRef.current;
-          const historicalDay = !day || day < todayISO();
           let requestsQuery = supabase
             .from("picking_requests")
             .select("*", { count: "exact" })
             .is("hidden_at", null)
             .order("creation_date", { ascending: false });
-          if (!historicalDay) requestsQuery = requestsQuery.eq("status_code", "A");
+          // También se muestran los requerimientos que RMS cerró durante una
+          // interrupción del sincronizador. Permanecen visibles como evidencia,
+          // pero las mutaciones quedan bloqueadas por estado más abajo.
           if (day) {
             const dayStart = `${day}T00:00:00.000Z`;
             const dayEnd = new Date(new Date(dayStart).getTime() + 24 * 60 * 60 * 1000).toISOString();
@@ -1813,6 +1819,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
       toast.warning("Selecciona picador y codigos.");
       return;
     }
+    if (!isOperationalPickingRequest(selectedRequest)) {
+      toast.warning(`El requerimiento esta en estado ${selectedRequest.status_name || selectedRequest.status_code || "cerrado"} en RMS y es de solo lectura.`);
+      return;
+    }
     if (!pickingDate) {
       toast.warning("Selecciona una fecha de picking antes de asignar picadores.");
       return;
@@ -1863,6 +1873,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
   async function reassignSelectedAssignments() {
     if (!manager || !user) return;
+    if (!isOperationalPickingRequest(selectedRequest)) {
+      toast.warning(`El requerimiento esta en estado ${selectedRequest?.status_name || selectedRequest?.status_code || "cerrado"} en RMS y es de solo lectura.`);
+      return;
+    }
     const picker = pickers.find(item => item.id === selectedPickerId);
     if (!picker) {
       toast.warning("Selecciona el nuevo picador.");
@@ -1921,6 +1935,10 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
 
   async function removeSelectedAssignments() {
     if (!manager || !user) return;
+    if (!isOperationalPickingRequest(selectedRequest)) {
+      toast.warning(`El requerimiento esta en estado ${selectedRequest?.status_name || selectedRequest?.status_code || "cerrado"} en RMS y es de solo lectura.`);
+      return;
+    }
     const candidates = selectedReassignableAssignments;
     if (candidates.length === 0) {
       toast.warning("Solo se pueden quitar asignaciones sin picking registrado.");
@@ -2849,6 +2867,9 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                           <p className={`text-[10px] font-black uppercase tracking-wide ${reasonBadgeClass(request.reason)}`}>{request.reason || "Sin motivo"}</p>
                           <p className="font-black">{request.doc_number || request.inv_request_no}</p>
                           <p className="text-xs font-bold text-slate-500">{request.source_store_name || request.source_store_code}</p>
+                          <p className={`mt-1 text-[10px] font-black uppercase ${isOperationalPickingRequest(request) ? "text-emerald-700" : "text-slate-500"}`}>
+                            {request.status_name || request.status_code || "Sin estado"}{!isOperationalPickingRequest(request) ? " · solo lectura" : ""}
+                          </p>
                         </div>
                         <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-black text-emerald-700">{progress}%</span>
                       </div>
@@ -2886,6 +2907,12 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                     )}
                   </div>
 
+                  {selectedRequestReadOnly && (
+                    <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+                      Estado RMS: {selectedRequest.status_name || selectedRequest.status_code || "cerrado"}. Se conserva el requerimiento y todo su detalle como historial, pero no permite nuevas asignaciones ni cambios.
+                    </div>
+                  )}
+
                   <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                       <div>
@@ -2893,8 +2920,8 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                         <p className="text-xs font-bold text-slate-500">Selecciona codigos o toma los primeros pendientes segun ubicacion.</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <button onClick={() => selectFirstPending(30)} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Primeros 30</button>
-                        <button onClick={selectAllAssignmentFilteredLines} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Todos</button>
+                        <button disabled={selectedRequestReadOnly} onClick={() => selectFirstPending(30)} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Primeros 30</button>
+                        <button disabled={selectedRequestReadOnly} onClick={selectAllAssignmentFilteredLines} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Todos</button>
                         <button onClick={() => setSelectedLineIds(new Set())} className="rounded-xl border bg-white px-3 py-2 text-xs font-black hover:bg-slate-50">Limpiar</button>
                       </div>
                     </div>
@@ -2936,13 +2963,13 @@ export default function PickingModule({ panel }: { panel: PickingPanel }) {
                           className="w-full rounded-xl border bg-white px-3 py-2 text-sm font-black text-slate-800"
                         />
                       </div>
-                      <button disabled={selectedReassignableAssignments.length === 0} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                      <button disabled={selectedRequestReadOnly || selectedReassignableAssignments.length === 0} onClick={reassignSelectedAssignments} className="rounded-xl border bg-white px-4 py-2 text-sm font-black hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Reasignar seleccionados ({selectedReassignableAssignments.length})
                       </button>
-                      <button disabled={selectedReassignableAssignments.length === 0} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
+                      <button disabled={selectedRequestReadOnly || selectedReassignableAssignments.length === 0} onClick={removeSelectedAssignments} className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
                         Quitar asignacion ({selectedReassignableAssignments.length})
                       </button>
-                      <button onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700">
+                      <button disabled={selectedRequestReadOnly} onClick={assignSelectedLines} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
                         <UserPlus size={16} />
                         <span className="ml-2">Asignar seleccionados ({selectedLineIds.size})</span>
                       </button>
