@@ -153,7 +153,24 @@ async function upsert(table, rows, conflict) {
   if (rows.length) process.stdout.write('\n')
 }
 
-function requestLinesQuery() {
+function parseStatusFilter(value) {
+  if (!value || value === true) return []
+  const allowed = new Set(['A', 'D', 'C', 'X', 'Y'])
+  const statuses = [...new Set(String(value)
+    .split(',')
+    .map(status => clean(status).toUpperCase())
+    .filter(Boolean))]
+  const invalid = statuses.filter(status => !allowed.has(status))
+  if (invalid.length) {
+    throw new Error(`Estados de picking no validos: ${invalid.join(', ')}`)
+  }
+  return statuses
+}
+
+function requestLinesQuery(statuses = []) {
+  const statusPredicate = statuses.length
+    ? `AND UPPER(LTRIM(RTRIM(COALESCE(ir.StatusCode, '')))) IN (${statuses.map(status => `'${status}'`).join(', ')})`
+    : ''
   return `
     SELECT
       CONVERT(varchar(36), ir.InvRequestId) AS inv_request_id,
@@ -198,6 +215,7 @@ function requestLinesQuery() {
         COALESCE(ir.CreationDate, ir.InvRequestDate) >= CONVERT(datetime2, @sinceDate)
         OR ir.ChangeDate >= CONVERT(datetime2, @sinceDate)
       )
+      ${statusPredicate}
       -- Se conservan todos los estados de la ventana. Si RMS completa o recibe
       -- una solicitud durante una caida, debe quedar como evidencia de solo
       -- lectura en Picking en vez de desaparecer por no haber pasado por A.
@@ -256,14 +274,15 @@ function mapRequests(rows) {
   return [...grouped.values()].filter(row => row.destination_store_code && row.source_store_code)
 }
 
-async function syncOnce(sinceDate) {
+async function syncOnce(sinceDate, statuses = []) {
   let pool
-  writeStatus(`Reconciliando picking ERP: todos los estados desde ${localDateTime(sinceDate)}`)
+  const statusLabel = statuses.length ? `estados ${statuses.join(',')}` : 'todos los estados'
+  writeStatus(`Reconciliando picking ERP: ${statusLabel} desde ${localDateTime(sinceDate)}`)
   try {
     pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
     const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()
       .input('sinceDate', sql.VarChar, sqlLocalDateTime(sinceDate))
-      .query(requestLinesQuery()))
+      .query(requestLinesQuery(statuses)))
 
     const requests = mapRequests(result.recordset)
     const lines = mapLines(result.recordset)
@@ -308,6 +327,7 @@ async function syncOnce(sinceDate) {
 
 async function main() {
   const args = parseArgs(process.argv)
+  const statuses = parseStatusFilter(args.statuses)
   let state = readState()
   const now = new Date()
 
@@ -327,7 +347,7 @@ async function main() {
     : new Date(cursorDate.getTime() - OVERLAP_MS)
   const sinceDate = forcedSince && !Number.isNaN(forcedSince.getTime()) ? forcedSince : safeCursor
 
-  await syncOnce(sinceDate)
+  await syncOnce(sinceDate, statuses)
   state.lastSyncAt = new Date().toISOString()
   writeState(state)
 }
