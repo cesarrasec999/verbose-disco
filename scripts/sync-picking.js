@@ -194,7 +194,10 @@ function requestLinesQuery() {
     WHERE ir.OutToStore IS NOT NULL
       -- Ventana solapada e indexable: evita huecos por una caida temporal o por
       -- un cambio de estado que ocurra entre dos ciclos del sincronizador.
-      AND COALESCE(ir.CreationDate, ir.InvRequestDate) >= CONVERT(datetime2, @sinceDate)
+      AND (
+        COALESCE(ir.CreationDate, ir.InvRequestDate) >= CONVERT(datetime2, @sinceDate)
+        OR ir.ChangeDate >= CONVERT(datetime2, @sinceDate)
+      )
       -- Se conservan todos los estados de la ventana. Si RMS completa o recibe
       -- una solicitud durante una caida, debe quedar como evidencia de solo
       -- lectura en Picking en vez de desaparecer por no haber pasado por A.
