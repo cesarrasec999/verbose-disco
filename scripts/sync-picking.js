@@ -19,12 +19,12 @@ const BATCH_SIZE = Number(process.env.PICKING_BATCH_SIZE || 500)
 const REQUEST_LOOKUP_BATCH_SIZE = 100
 const INTERVAL_MS = Number(process.env.PICKING_SYNC_INTERVAL_MS || 5 * 60 * 1000)
 const RETRY_ATTEMPTS = Number(process.env.PICKING_RETRY_ATTEMPTS || process.env.RETRY_ATTEMPTS || 3)
-// Cada ciclo vuelve a leer una ventana solapada. De esa forma un requerimiento
-// no se pierde si RMS lo crea mientras el sincronizador esta caido o si cambia
-// de A (activo) a D (aprobado) antes del siguiente ciclo de cinco minutos.
-// La sincronizacion sigue siendo aditiva: nunca elimina solicitudes, lineas,
-// asignaciones ni escaneos que ya existen en Rasecorp.
-const LOOKBACK_DAYS = Math.max(1, Number(process.env.PICKING_LOOKBACK_DAYS || 7))
+// Cada ciclo retoma el ultimo cursor con una hora de solapamiento. Si el
+// proceso permanece detenido varias horas, el cursor queda atras y al volver
+// recupera automaticamente todo el intervalo perdido. Los siete dias solo se
+// usan al crear/reconstruir el estado local o mediante --since.
+const OVERLAP_MS = Math.max(5, Number(process.env.PICKING_OVERLAP_MINUTES || 60)) * 60 * 1000
+const INITIAL_LOOKBACK_DAYS = Math.max(1, Number(process.env.PICKING_INITIAL_LOOKBACK_DAYS || 7))
 const STATUS_FILE = path.join(__dirname, 'picking-sync-status.txt')
 const LOG_FILE = path.join(__dirname, 'picking-sync.log')
 const STATE_FILE = path.join(__dirname, 'picking-sync-state.json')
@@ -194,7 +194,7 @@ function requestLinesQuery() {
     WHERE ir.OutToStore IS NOT NULL
       -- Ventana solapada e indexable: evita huecos por una caida temporal o por
       -- un cambio de estado que ocurra entre dos ciclos del sincronizador.
-      AND COALESCE(ir.CreationDate, ir.InvRequestDate) >= DATEADD(day, -@lookbackDays, CONVERT(date, GETDATE()))
+      AND COALESCE(ir.CreationDate, ir.InvRequestDate) >= CONVERT(datetime2, @sinceDate)
       -- Se conservan todos los estados de la ventana. Si RMS completa o recibe
       -- una solicitud durante una caida, debe quedar como evidencia de solo
       -- lectura en Picking en vez de desaparecer por no haber pasado por A.
@@ -253,13 +253,13 @@ function mapRequests(rows) {
   return [...grouped.values()].filter(row => row.destination_store_code && row.source_store_code)
 }
 
-async function syncOnce() {
+async function syncOnce(sinceDate) {
   let pool
-  writeStatus(`Reconciliando picking ERP: todos los estados de los ultimos ${LOOKBACK_DAYS} dias`)
+  writeStatus(`Reconciliando picking ERP: todos los estados desde ${localDateTime(sinceDate)}`)
   try {
     pool = await withRetry('SQL: conectar', () => new sql.ConnectionPool(sqlConfig).connect())
     const result = await withRetry('SQL: leer requerimientos picking', () => pool.request()
-      .input('lookbackDays', sql.Int, LOOKBACK_DAYS)
+      .input('sinceDate', sql.VarChar, sqlLocalDateTime(sinceDate))
       .query(requestLinesQuery()))
 
     const requests = mapRequests(result.recordset)
@@ -309,14 +309,23 @@ async function main() {
   const now = new Date()
 
   if (!state) {
-    const startedAt = args.since ? new Date(String(args.since)) : now
+    const startedAt = args.since
+      ? new Date(String(args.since))
+      : new Date(now.getTime() - INITIAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
     state = { startedAt: startedAt.toISOString(), lastSyncAt: startedAt.toISOString() }
     writeState(state)
-    writeStatus(`Estado inicial creado. No se importo historial anterior a ${localDateTime(state.startedAt)} hora local`)
+    writeStatus(`Estado inicial creado. Recuperacion desde ${localDateTime(state.startedAt)} hora local`)
   }
 
-  await syncOnce()
-  state.lastSyncAt = now.toISOString()
+  const forcedSince = args.since ? new Date(String(args.since)) : null
+  const cursorDate = new Date(state.lastSyncAt || state.startedAt)
+  const safeCursor = Number.isNaN(cursorDate.getTime())
+    ? new Date(now.getTime() - INITIAL_LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
+    : new Date(cursorDate.getTime() - OVERLAP_MS)
+  const sinceDate = forcedSince && !Number.isNaN(forcedSince.getTime()) ? forcedSince : safeCursor
+
+  await syncOnce(sinceDate)
+  state.lastSyncAt = new Date().toISOString()
   writeState(state)
 }
 
