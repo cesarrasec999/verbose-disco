@@ -222,8 +222,18 @@ function pickingDocumentLabel(request: PickingRequest | null | undefined) {
   return request?.doc_number || request?.inv_request_no || request?.erp_inv_request_id || "";
 }
 
+// Desde este corte los requerimientos deben poder asignarse aunque RMS cambie
+// rapidamente su estado a aprobado, cerrado o recepcionado. El estado X sigue
+// siendo anulacion y nunca se habilita. Los activos anteriores conservan el
+// comportamiento historico para no interrumpir trabajos que sigan abiertos.
+const PICKING_ASSIGNABLE_FROM_DATE = "2026-10-07";
+
 function isOperationalPickingRequest(request: PickingRequest | null | undefined) {
-  return normalize(request?.status_code) === "A";
+  const status = normalize(request?.status_code);
+  if (status === "X") return false;
+  if (status === "A") return true;
+  const createdDate = String(request?.creation_date || request?.request_date || "").slice(0, 10);
+  return createdDate >= PICKING_ASSIGNABLE_FROM_DATE;
 }
 
 function tabHref(target: PickingPanel) {
