@@ -117,6 +117,12 @@ const FINISHED_REPORT_PAGE_SIZE = 50;
 // la escritura chica permite reanudar sin volver a procesar toda la sesión.
 const STOCK_SNAPSHOT_WRITE_BATCH_SIZE = 100;
 const STOCK_SNAPSHOT_WRITE_MAX_ATTEMPTS = 4;
+// El conteo es una operacion de piso: el operador no debe quedar bloqueado por
+// una consulta que PostgREST mantiene abierta mientras la base se recupera de
+// carga. El request remoto puede terminar despues, pero la UI vuelve a estar
+// disponible y el conteo se conserva en la cola local idempotente.
+const INVENTORY_INTERACTION_TIMEOUT_MS = 8_000;
+const INVENTORY_SAVE_TIMEOUT_MS = 12_000;
 
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -134,6 +140,22 @@ function isStatementTimeout(error: unknown) {
 
 function pause(milliseconds: number) {
   return new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+function withInteractionTimeout<T>(request: PromiseLike<T>, timeoutMs: number, action: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`Tiempo de espera agotado al ${action}.`)), timeoutMs);
+    Promise.resolve(request).then(
+      value => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        window.clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 type SummaryCacheEntry = {
@@ -1619,7 +1641,11 @@ export default function InventariosPage() {
     const requestId = ++productLookupRequestRef.current;
     const timer = window.setTimeout(async () => {
       try {
-        const result = await findProductCandidates(raw, productLookupModeRef.current);
+        const result = await withInteractionTimeout(
+          findProductCandidates(raw, productLookupModeRef.current),
+          INVENTORY_INTERACTION_TIMEOUT_MS,
+          "consultar el producto"
+        );
         if (requestId !== productLookupRequestRef.current) return;
         setProductCandidates(result.products);
         setProductLookupMessage(result.message);
@@ -1863,7 +1889,11 @@ export default function InventariosPage() {
     setProductLookupMessage("");
     setMessage("Código escaneado. Buscando en maestro...");
     try {
-      const result = await findProductCandidates(code, "scan");
+      const result = await withInteractionTimeout(
+        findProductCandidates(code, "scan"),
+        INVENTORY_INTERACTION_TIMEOUT_MS,
+        "validar el código escaneado"
+      );
       if (requestId !== productLookupRequestRef.current) return;
       setProductCandidates(result.products);
       setProductLookupMessage(result.message);
@@ -4708,7 +4738,9 @@ export default function InventariosPage() {
         }
       }
 
-      setMessage("Inventario finalizado. Los operadores ya no podrán entrar. Las ubicaciones se actualizarán de forma automática en segundo plano.");
+      setTrashRows([]);
+      setTrashTotal(0);
+      setMessage("Inventario finalizado. La papelera de esta sesión fue eliminada definitivamente y las ubicaciones se actualizarán de forma automática en segundo plano.");
 
       // Acelera la cola cuando el navegador sigue abierto. No se espera este
       // trabajo: el cierre ya quedó confirmado y pg_cron lo reintentará aunque
@@ -5110,7 +5142,11 @@ export default function InventariosPage() {
 
     try {
       const locCode = normalizeLocationCode(locationCode);
-      const loc = await resolveInventoryLocation(locCode, { allowCreate: true, sourceLabel: locCode });
+      const loc = await withInteractionTimeout(
+        resolveInventoryLocation(locCode, { allowCreate: true, sourceLabel: locCode }),
+        INVENTORY_INTERACTION_TIMEOUT_MS,
+        "validar la ubicación"
+      );
       if (!loc) {
         setMessage(selectedSession.location_lock_enabled
           ? "Ubicacion no autorizada para esta sesion. Desactiva el seguro o carga la ubicacion por Excel."
@@ -5125,7 +5161,13 @@ export default function InventariosPage() {
         return;
       }
 
-      const latestCandidates = selectedProduct ? productCandidates : (await findProductCandidates(productCode, productLookupModeRef.current)).products;
+      const latestCandidates = selectedProduct
+        ? productCandidates
+        : (await withInteractionTimeout(
+          findProductCandidates(productCode, productLookupModeRef.current),
+          INVENTORY_INTERACTION_TIMEOUT_MS,
+          "validar el producto"
+        )).products;
       const product = selectedProduct || (latestCandidates.length === 1 ? latestCandidates[0] : null);
       if (!product) {
         setProductCandidates(latestCandidates);
@@ -5133,14 +5175,25 @@ export default function InventariosPage() {
         return;
       }
 
-      const snapshot = navigator.onLine
-        ? await supabase
-          .from("general_inventory_stock_snapshot")
-          .select("cost")
-          .eq("session_id", selectedSession.id)
-          .eq("product_id", product.id)
-          .maybeSingle()
-        : { data: null };
+      let snapshot: { data: { cost?: number | null } | null } = { data: null };
+      if (navigator.onLine) {
+        try {
+          snapshot = await withInteractionTimeout(
+            supabase
+              .from("general_inventory_stock_snapshot")
+              .select("cost")
+              .eq("session_id", selectedSession.id)
+              .eq("product_id", product.id)
+              .maybeSingle(),
+            INVENTORY_INTERACTION_TIMEOUT_MS,
+            "consultar el costo"
+          );
+        } catch (error) {
+          // El costo del producto ya está disponible en el catálogo. No se
+          // impide el conteo si solo la foto de stock está lenta.
+          console.warn("No se pudo leer el snapshot de costo:", error);
+        }
+      }
 
       const pendingEdit = editingCountId ? await getOfflineItem(editingCountId) : undefined;
       if (!navigator.onLine && editingCountId && !pendingEdit) {
