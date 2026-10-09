@@ -312,6 +312,8 @@ export default function InventariosPage() {
   // contando. Nunca se deben superponer dos resúmenes completos para ella:
   // eso multiplica lecturas y empeora una base que ya esté bajo presión.
   const summaryLoadInFlightRef = useRef<Set<string>>(new Set());
+  const summaryRetryRef = useRef(new Map<string, { failures: number; nextAttempt: number }>());
+  const summaryLastAttemptRef = useRef(new Map<string, number>());
   // La rotación usada por una sesión es histórica (del período previo al
   // inventario). Mantenerla en memoria evita volver a consultar miles de
   // códigos cada vez que un operador registra una unidad.
@@ -1423,8 +1425,9 @@ export default function InventariosPage() {
 
     let timer: number | null = null;
     const reloadInventoryCounts = () => {
-      if (timer) window.clearTimeout(timer);
+      if (timer !== null) return;
       timer = window.setTimeout(() => {
+        timer = null;
         // La preparación muestra el estado del control de tickets a partir de
         // `countedLocationCodes`. Antes solo se refrescaban registros,
         // productividad y resumen; por eso una ubicación podía seguir como
@@ -1553,8 +1556,9 @@ export default function InventariosPage() {
     // habilitada para Realtime en Supabase (canal muerto, jamas disparaba).
     let timer: number | null = null;
     const flushStockChanges = () => {
-      if (timer) window.clearTimeout(timer);
+      if (timer !== null) return;
       timer = window.setTimeout(() => {
+        timer = null;
         if (!pendingStockRefreshRef.current) return;
         pendingStockRefreshRef.current = false;
         void loadSummary(selectedSessionId, true)
@@ -1579,6 +1583,32 @@ export default function InventariosPage() {
       supabase.removeChannel(channel);
     };
   }, [selectedSessionId, isValidator, validatorTab, summaryLoadedSessionId, sessions, stores, selectedSession?.stock_frozen_at, selectedSession?.status]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !isValidator || validatorTab !== "resumen") return;
+    const recoverSummary = () => {
+      if (document.visibilityState !== "visible" || !navigator.onLine) return;
+      const retry = summaryRetryRef.current.get(selectedSessionId);
+      if (!retry && (selectedSession?.status === "finished" || selectedSession?.status === "cancelled")) return;
+      const lastAttempt = summaryLastAttemptRef.current.get(selectedSessionId) || 0;
+      // Realtime sigue siendo la vía principal. Este respaldo recupera errores
+      // y eventos perdidos, con una sola consulta por sesión en vuelo.
+      if (retry ? Date.now() < retry.nextAttempt : Date.now() - lastAttempt < 60_000) return;
+      void loadSummary(selectedSessionId, true, sessionLoadGenRef.current).catch(error => {
+        console.warn("No se pudo recuperar el resumen:", error);
+        markSessionTabStale(selectedSessionId, "resumen");
+        summaryRetryRef.current.set(selectedSessionId, { failures: 1, nextAttempt: Date.now() + 60_000 });
+      });
+    };
+    const timer = window.setInterval(recoverSummary, 10_000);
+    window.addEventListener("online", recoverSummary);
+    document.addEventListener("visibilitychange", recoverSummary);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", recoverSummary);
+      document.removeEventListener("visibilitychange", recoverSummary);
+    };
+  }, [selectedSessionId, isValidator, validatorTab, sessions, stores, selectedSession?.status]);
 
   useEffect(() => {
     if (!selectedSessionId || !operator || isValidator) return;
@@ -2070,7 +2100,6 @@ export default function InventariosPage() {
         return;
       }
       await loadSummary(sessionId, summaryHasPendingChanges, gen);
-      markSessionTabLoaded(sessionId, "resumen");
       return;
     }
 
@@ -3254,7 +3283,10 @@ export default function InventariosPage() {
 
   async function loadSummaryFromRpc(sessionId: string): Promise<SummaryRow[] | null> {
     const session = sessions.find(row => row.id === sessionId) || selectedSession;
-    return fetchSummaryRowsFromRpc(supabase, { sessionId, session, stores });
+    return fetchSummaryRowsFromRpc(supabase, {
+      sessionId, session, stores,
+      loadRotations: skus => loadProductRotationsForSession(session, skus),
+    });
   }
 
   function sessionSede(sessionId: string) {
@@ -3493,16 +3525,20 @@ export default function InventariosPage() {
   }
 
   async function loadSummary(sessionId: string, force = false, gen?: number) {
+    gen ??= sessionLoadGenRef.current;
     // Ambos checks de "ya cargado, no volver a pedir" deben respetar
     // isSessionTabFresh -- si no, un markSessionTabStale (ej. tras editar un
     // registro) no tiene efecto: este primer check devolvia temprano igual,
     // ignorando por completo que la sesion quedo marcada como desactualizada.
     if (!force && summaryLoadedSessionId === sessionId && isSessionTabFresh(sessionId, "resumen")) return;
     if (summaryLoadInFlightRef.current.has(sessionId)) return;
+    if (Date.now() < (summaryRetryRef.current.get(sessionId)?.nextAttempt || 0)) return;
     const hadCachedSummary = applyCachedSummary(sessionId);
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
     summaryLoadInFlightRef.current.add(sessionId);
+    summaryLastAttemptRef.current.set(sessionId, Date.now());
     setSummaryLoading(true);
+    try {
     try {
       // NO se llama mas a refreshFullSessionSnapshotFromErp() aca de forma
       // automatica. Ese barrido BORRA todas las filas no-OK del snapshot y
@@ -3531,6 +3567,8 @@ export default function InventariosPage() {
         setSummaryLoadedSessionId(sessionId);
         setSummaryHasPendingChanges(false);
         markSessionTabLoaded(sessionId, "resumen");
+        summaryRetryRef.current.delete(sessionId);
+        setMessage(previous => previous.startsWith("El resumen está") ? "" : previous);
         setSummaryLoading(false);
         summaryLoadInFlightRef.current.delete(sessionId);
         return;
@@ -3542,10 +3580,14 @@ export default function InventariosPage() {
       // (caso en que loadSummaryFromRpc devuelve null); ante una falla real se
       // conserva el último resumen válido y los conteos continúan operativos.
       console.warn("No se pudo cargar el resumen SQL optimizado:", error);
+      if (gen !== sessionLoadGenRef.current) return;
       const restoredCache = applyCachedSummary(sessionId);
+      const failures = (summaryRetryRef.current.get(sessionId)?.failures || 0) + 1;
+      summaryRetryRef.current.set(sessionId, { failures, nextAttempt: Date.now() + Math.min(120_000, 15_000 * 2 ** Math.min(failures, 3)) });
+      markSessionTabStale(sessionId, "resumen");
       setMessage(restoredCache
-        ? "El resumen está temporalmente en espera por carga de base. Se muestra la última información válida; los conteos siguen guardándose."
-        : "El resumen está temporalmente en espera por carga de base. No se recalculará localmente para no saturar la operación; los conteos siguen guardándose.");
+        ? "El resumen está pendiente de actualización. Se muestra la última información válida y se reintentará automáticamente."
+        : "El resumen está pendiente de carga. Se reintentará automáticamente.");
       setSummaryLoading(false);
       summaryLoadInFlightRef.current.delete(sessionId);
       return;
@@ -3753,8 +3795,13 @@ export default function InventariosPage() {
     setSummaryLoadedSessionId(sessionId);
     setSummaryHasPendingChanges(false);
     markSessionTabLoaded(sessionId, "resumen");
+    summaryRetryRef.current.delete(sessionId);
     setSummaryLoading(false);
     summaryLoadInFlightRef.current.delete(sessionId);
+    } finally {
+      summaryLoadInFlightRef.current.delete(sessionId);
+      if (gen === sessionLoadGenRef.current) setSummaryLoading(false);
+    }
   }
 
   async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
