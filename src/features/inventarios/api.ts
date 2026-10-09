@@ -36,26 +36,6 @@ export async function fetchPagedSessionRows(
   return rows;
 }
 
-/**
- * Returns only the location identifiers that already have a count.  The
- * preparation screen used to download every count row from a session just to
- * paint this state.  In an active inventory that multiplied disk reads for
- * every realtime event and could exhaust the database IO budget.
- */
-export async function fetchInventoryCountedLocationCodes(
-  supabase: SupabaseLike,
-  sessionId: string
-): Promise<string[]> {
-  const { data, error } = await supabase.rpc("get_general_inventory_counted_location_codes", {
-    p_session_id: sessionId,
-  });
-  if (error) throw error;
-
-  return [...new Set(((data || []) as Array<{ location_code?: string | null }>)
-    .map((row: { location_code?: string | null }) => normalizeLocationCode(row.location_code || ""))
-    .filter(Boolean))];
-}
-
 async function fetchAllActiveNonInventorySkus(supabase: SupabaseLike): Promise<Array<{ sku: string }>> {
   const rows: Array<{ sku: string }> = [];
   const pageSize = 1000;

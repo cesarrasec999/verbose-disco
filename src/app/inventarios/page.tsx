@@ -15,7 +15,6 @@ import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import {
   fetchAllInventoryCounts,
-  fetchInventoryCountedLocationCodes,
   fetchInventoryNonInventoryRows,
   fetchNonInventorySkuSetForProducts,
   fetchOperatorCountsPage,
@@ -284,7 +283,6 @@ export default function InventariosPage() {
   const loadedSessionTabsRef = useRef<Set<string>>(new Set());
   const staleSessionTabsRef = useRef<Set<string>>(new Set());
   const lastSummaryReloadRef = useRef<number>(0);
-  const lastPreparationReloadRef = useRef<number>(0);
   const summaryThrottleTimerRef = useRef<number | null>(null);
   const sessionLoadGenRef = useRef(0);
 
@@ -1402,15 +1400,7 @@ export default function InventariosPage() {
         // Volver a leer solo ubicaciones y códigos mantiene el control
         // sincronizado sin recalcular ni modificar stock/conteos.
         if (validatorTab === "preparacion" && canManageInventory) {
-          // La pantalla de preparación es administrativa. En sesiones con
-          // muchos operadores, cada conteo no debe disparar una nueva lectura
-          // completa: la refrescamos como máximo cada 10 segundos.
-          const PREPARATION_THROTTLE_MS = 10_000;
-          const now = Date.now();
-          if (now - lastPreparationReloadRef.current >= PREPARATION_THROTTLE_MS) {
-            lastPreparationReloadRef.current = now;
-            void loadPreparationData(selectedSessionId);
-          }
+          void loadPreparationData(selectedSessionId);
         } else {
           // Si el conteo entra mientras el usuario está en otra pestaña,
           // preparación no debe conservar una lista de ubicaciones antigua.
@@ -1445,7 +1435,7 @@ export default function InventariosPage() {
         else markSessionTabStale(selectedSessionId, "reconteo");
         if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
         else markSessionTabStale(selectedSessionId, "validacion");
-      }, 2_500);
+      }, 800);
     };
 
     const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
@@ -2112,9 +2102,11 @@ export default function InventariosPage() {
   }
 
   async function loadPreparationData(sessionId: string) {
-    const [locationRows, directCountedLocationCodes] = await Promise.all([
+    const [locationRows, countRows] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "*", sessionId, "location_code"),
-      fetchInventoryCountedLocationCodes(supabase, sessionId),
+      // Incluimos location_id porque algunos registros históricos conservan
+      // la ubicación por FK aunque location_code haya quedado vacío.
+      loadPagedSessionRows("general_inventory_counts", "location_id,location_code", sessionId, "location_code"),
     ]);
 
     const activeLocations = (locationRows as InventoryLocation[]).filter(row => row.is_active !== false).map(row => ({
@@ -2124,15 +2116,11 @@ export default function InventariosPage() {
     }));
     setLocations(activeLocations);
 
-    // Un conteo antiguo puede conservar ticket o ubicación como clave. Al
-    // encontrar una de ambas, marcamos las dos sin descargar el detalle de
-    // todos los conteos de la sesión.
-    const equivalentLocationKeys = new Map<string, string[]>();
-    for (const row of activeLocations) {
-      const keys = [...new Set([row.location_code, row.ticket || ""].map(normalizeLocationCode).filter(Boolean))];
-      for (const key of keys) equivalentLocationKeys.set(key, keys);
-    }
-    const countedCodes = directCountedLocationCodes.flatMap(code => equivalentLocationKeys.get(code) || [code]);
+    const locationKeysById = new Map(activeLocations.map(row => [String(row.id), [row.location_code, row.ticket || ""]]));
+    const countedCodes = countRows.flatMap(row => [
+      normalizeLocationCode(row.location_code),
+      ...(locationKeysById.get(String(row.location_id || "")) || []),
+    ]).map(normalizeLocationCode).filter(Boolean);
     setCountedLocationCodes([...new Set(countedCodes)]);
   }
 
