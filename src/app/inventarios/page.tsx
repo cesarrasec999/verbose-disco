@@ -4738,9 +4738,7 @@ export default function InventariosPage() {
         }
       }
 
-      setTrashRows([]);
-      setTrashTotal(0);
-      setMessage("Inventario finalizado. La papelera de esta sesión fue eliminada definitivamente y las ubicaciones se actualizarán de forma automática en segundo plano.");
+      setMessage("Inventario finalizado. Los operadores ya no podrán entrar. Las ubicaciones se actualizarán de forma automática en segundo plano.");
 
       // Acelera la cola cuando el navegador sigue abierto. No se espera este
       // trabajo: el cierre ya quedó confirmado y pg_cron lo reintentará aunque
