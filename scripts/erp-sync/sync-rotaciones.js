@@ -18,46 +18,17 @@ const RECONCILE_LOOKBACK_DAYS = Math.max(
   HOT_LOOKBACK_DAYS,
   Number(process.env.MOVEMENTS_RECONCILE_LOOKBACK_DAYS || 7),
 )
-// La conciliacion amplia es costosa y no debe competir con los usuarios.
-// El watchdog sigue lanzando el incremental cada cinco minutos, pero la
-// ventana de siete dias solo se habilita una vez al dia entre 02:00 y 05:00
-// (hora de Lima). Si falla dentro de la ventana, el siguiente ciclo reintenta.
-const RECONCILE_WINDOW_START_HOUR = Math.min(
-  23,
-  Math.max(0, Number(process.env.MOVEMENTS_RECONCILE_START_HOUR || 2)),
-)
-const RECONCILE_WINDOW_END_HOUR = Math.min(
-  24,
-  Math.max(RECONCILE_WINDOW_START_HOUR + 1, Number(process.env.MOVEMENTS_RECONCILE_END_HOUR || 5)),
+const RECONCILE_INTERVAL_MS = Math.max(
+  15 * 60 * 1000,
+  Number(process.env.MOVEMENTS_RECONCILE_INTERVAL_MS || 60 * 60 * 1000),
 )
 const RECONCILE_STATE_FILE = path.join(__dirname, 'movements-reconcile-state.json')
 
-function limaDateAndHour(value = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Lima',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(value)
-  const get = type => parts.find(part => part.type === type)?.value
-  return {
-    date: `${get('year')}-${get('month')}-${get('day')}`,
-    hour: Number(get('hour')),
-  }
-}
-
 function periodicReconciliationDue() {
-  const now = limaDateAndHour()
-  if (now.hour < RECONCILE_WINDOW_START_HOUR || now.hour >= RECONCILE_WINDOW_END_HOUR) {
-    return false
-  }
   try {
     const state = JSON.parse(fs.readFileSync(RECONCILE_STATE_FILE, 'utf8'))
-    const lastRun = new Date(state.last_success_at)
-    if (Number.isNaN(lastRun.getTime())) return true
-    return limaDateAndHour(lastRun).date !== now.date
+    const lastRun = new Date(state.last_success_at).getTime()
+    return !Number.isFinite(lastRun) || Date.now() - lastRun >= RECONCILE_INTERVAL_MS
   } catch {
     return true
   }
@@ -451,27 +422,16 @@ async function upsertBatch(batch) {
     // La conciliacion se ejecuta dentro de Postgres en una sola transaccion.
     // Evita un DELETE con cientos de claves seguido de un POST por cada lote,
     // conserva la deduplicacion por movement_key y reduce drasticamente logs.
-    const { data, error } = await supabase.rpc('sync_erp_movements_batch', { p_rows: batch })
+    const { error } = await supabase.rpc('sync_erp_movements_batch', { p_rows: batch })
     if (error) throw error
-    return {
-      changed: Number(data?.upserted || 0),
-      provisionalChanged: Object.prototype.hasOwnProperty.call(data || {}, 'provisional_changed')
-        ? Number(data.provisional_changed || 0)
-        : null,
-    }
   } catch (error) {
     const code = error?.code || ''
     const message = error?.message || ''
     if (batch.length > 25 && (code === '57014' || message.includes('timeout'))) {
       const middle = Math.ceil(batch.length / 2)
-      const left = await upsertBatch(batch.slice(0, middle))
-      const right = await upsertBatch(batch.slice(middle))
-      return {
-        changed: left.changed + right.changed,
-        provisionalChanged: left.provisionalChanged === null || right.provisionalChanged === null
-          ? null
-          : left.provisionalChanged + right.provisionalChanged,
-      }
+      await upsertBatch(batch.slice(0, middle))
+      await upsertBatch(batch.slice(middle))
+      return
     }
     throw error
   }
@@ -479,20 +439,13 @@ async function upsertBatch(batch) {
 
 async function upsertRows(rows) {
   let synced = 0
-  let changed = 0
-  let provisionalChanged = 0
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE)
-    const result = await upsertBatch(batch)
-    changed += result.changed
-    provisionalChanged = provisionalChanged === null || result.provisionalChanged === null
-      ? null
-      : provisionalChanged + result.provisionalChanged
+    await upsertBatch(batch)
     synced += batch.length
     process.stdout.write(`\rMovimientos subidos: ${synced}/${rows.length}`)
   }
   if (rows.length) process.stdout.write('\n')
-  return { changed, provisionalChanged }
 }
 
 async function main() {
@@ -571,21 +524,16 @@ async function main() {
       .filter(row => row.store_code && row.product_code))
 
     console.log('Filas ERP leidas:', rows.length)
-    const syncStats = await upsertRows(rows)
-    console.log(`Movimientos aplicados: ${syncStats.changed}/${rows.length}`)
+    await upsertRows(rows)
 
     // Ajustes Provisionales consulta un read model pequeno para que la pantalla
     // y el Excel no compitan con las escrituras masivas de erp_movements. El
     // watchdog ejecuta este script, por lo que el cache se actualiza en el
     // mismo ciclo sin depender del navegador ni de tareas duplicadas.
-    if (syncStats.provisionalChanged === null || syncStats.provisionalChanged > 0) {
-      const { data: provisionalRows, error: provisionalRefreshError } = await supabase
-        .rpc('refresh_erp_provisional_adjustments_cache')
-      if (provisionalRefreshError) throw provisionalRefreshError
-      console.log('Ajustes provisionales actualizados:', provisionalRows)
-    } else {
-      console.log('Ajustes provisionales sin cambios; cache conservado')
-    }
+    const { data: provisionalRows, error: provisionalRefreshError } = await supabase
+      .rpc('refresh_erp_provisional_adjustments_cache')
+    if (provisionalRefreshError) throw provisionalRefreshError
+    console.log('Ajustes provisionales actualizados:', provisionalRows)
 
     const syncedAt = new Date().toISOString()
     const { error: syncStatusError } = await supabase
