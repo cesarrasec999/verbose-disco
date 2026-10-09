@@ -308,10 +308,6 @@ export default function InventariosPage() {
   const lastSummaryReloadRef = useRef<number>(0);
   const lastPreparationReloadRef = useRef<number>(0);
   const summaryThrottleTimerRef = useRef<number | null>(null);
-  // Una sesión puede recibir decenas de eventos Realtime mientras se está
-  // contando. Nunca se deben superponer dos resúmenes completos para ella:
-  // eso multiplica lecturas y empeora una base que ya esté bajo presión.
-  const summaryLoadInFlightRef = useRef<Set<string>>(new Set());
   const sessionLoadGenRef = useRef(0);
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
@@ -3475,10 +3471,8 @@ export default function InventariosPage() {
     // registro) no tiene efecto: este primer check devolvia temprano igual,
     // ignorando por completo que la sesion quedo marcada como desactualizada.
     if (!force && summaryLoadedSessionId === sessionId && isSessionTabFresh(sessionId, "resumen")) return;
-    if (summaryLoadInFlightRef.current.has(sessionId)) return;
     const hadCachedSummary = applyCachedSummary(sessionId);
     if (!force && hadCachedSummary && isSessionTabFresh(sessionId, "resumen")) return;
-    summaryLoadInFlightRef.current.add(sessionId);
     setSummaryLoading(true);
     try {
       // NO se llama mas a refreshFullSessionSnapshotFromErp() aca de forma
@@ -3499,7 +3493,7 @@ export default function InventariosPage() {
       // barrido puntual al desfinalizar una sesion (unfinishSession), para
       // el caso borde de cambios de ERP perdidos mientras estuvo finalizada.
       const rpcRows = await loadSummaryFromRpc(sessionId);
-      if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); summaryLoadInFlightRef.current.delete(sessionId); return; }
+      if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
       if (rpcRows) {
         rpcRows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
         cacheSummary(sessionId, rpcRows);
@@ -3509,23 +3503,10 @@ export default function InventariosPage() {
         setSummaryHasPendingChanges(false);
         markSessionTabLoaded(sessionId, "resumen");
         setSummaryLoading(false);
-        summaryLoadInFlightRef.current.delete(sessionId);
         return;
       }
     } catch (error) {
-      // El cálculo local descarga todas las capas de inventario. Usarlo como
-      // fallback ante timeout/25P02 dispara muchas lecturas concurrentes y
-      // agrava la saturación. Solo se permite el fallback si el RPC no existe
-      // (caso en que loadSummaryFromRpc devuelve null); ante una falla real se
-      // conserva el último resumen válido y los conteos continúan operativos.
-      console.warn("No se pudo cargar el resumen SQL optimizado:", error);
-      const restoredCache = applyCachedSummary(sessionId);
-      setMessage(restoredCache
-        ? "El resumen está temporalmente en espera por carga de base. Se muestra la última información válida; los conteos siguen guardándose."
-        : "El resumen está temporalmente en espera por carga de base. No se recalculará localmente para no saturar la operación; los conteos siguen guardándose.");
-      setSummaryLoading(false);
-      summaryLoadInFlightRef.current.delete(sessionId);
-      return;
+      console.warn("No se pudo usar resumen SQL optimizado; uso calculo local:", error);
     }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
@@ -3539,7 +3520,7 @@ export default function InventariosPage() {
       loadPagedSessionRows("general_inventory_recount_items", "id,product_id,status,recount_type,created_at,updated_at", sessionId, "product_id"),
       loadValidationSummaryRows(sessionId, validationEnabled),
     ]);
-    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); summaryLoadInFlightRef.current.delete(sessionId); return; }
+    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
     const { validationCountRows, validationItemRows } = validationRows;
     const liveStockBySku = useFrozenSnapshot ? new Map<string, StockGeneralRow>() : await loadStockGeneralBySkuForSession(sessionId, [
         ...snapshotRows.map(row => row.sku),
@@ -3723,7 +3704,7 @@ export default function InventariosPage() {
     }
 
     rows.sort((a, b) => Math.abs(b.valueDiff) - Math.abs(a.valueDiff));
-    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); summaryLoadInFlightRef.current.delete(sessionId); return; }
+    if (gen !== undefined && gen !== sessionLoadGenRef.current) { setSummaryLoading(false); return; }
     cacheSummary(sessionId, rows);
     setSummary(rows);
     applyObservationDraftsFromServer(sessionId, summaryCacheRef.current.get(sessionId)?.observationDrafts || {});
@@ -3731,7 +3712,6 @@ export default function InventariosPage() {
     setSummaryHasPendingChanges(false);
     markSessionTabLoaded(sessionId, "resumen");
     setSummaryLoading(false);
-    summaryLoadInFlightRef.current.delete(sessionId);
   }
 
   async function assignRecountBlock(limit?: number, explicitRows?: RecountCandidate[]) {
