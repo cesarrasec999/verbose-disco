@@ -312,10 +312,6 @@ export default function InventariosPage() {
   // contando. Nunca se deben superponer dos resúmenes completos para ella:
   // eso multiplica lecturas y empeora una base que ya esté bajo presión.
   const summaryLoadInFlightRef = useRef<Set<string>>(new Set());
-  // La rotación usada por una sesión es histórica (del período previo al
-  // inventario). Mantenerla en memoria evita volver a consultar miles de
-  // códigos cada vez que un operador registra una unidad.
-  const rotationCacheRef = useRef<Map<string, { values: Map<string, string>; loadedSkus: Set<string> }>>(new Map());
   const sessionLoadGenRef = useRef(0);
 
   const [summary, setSummary] = useState<SummaryRow[]>([]);
@@ -1453,9 +1449,7 @@ export default function InventariosPage() {
           markSessionTabStale(selectedSessionId, "productividad");
         }
         if (validatorTab === "resumen") {
-          // Los conteos se escriben de inmediato; el tablero se actualiza por
-          // lotes para que una sesión muy activa no sature Supabase.
-          const THROTTLE_MS = 30_000;
+          const THROTTLE_MS = 6_000;
           const now = Date.now();
           const elapsed = now - lastSummaryReloadRef.current;
           if (elapsed >= THROTTLE_MS) {
@@ -3228,24 +3222,7 @@ export default function InventariosPage() {
 
   async function loadProductRotationsForSession(session: InventorySession | null | undefined, skus: string[]) {
     try {
-      const cacheKey = session?.id || "";
-      const normalizedSkus = [...new Set(skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
-      if (!cacheKey || normalizedSkus.length === 0) return new Map<string, string>();
-      let cache = rotationCacheRef.current.get(cacheKey);
-      if (!cache) {
-        cache = { values: new Map<string, string>(), loadedSkus: new Set<string>() };
-        rotationCacheRef.current.set(cacheKey, cache);
-      }
-      const missingSkus = normalizedSkus.filter(sku => !cache.loadedSkus.has(sku));
-      if (missingSkus.length > 0) {
-        const fetched = await fetchProductRotationsForSession(supabase, { session, stores, skus: missingSkus });
-        for (const sku of missingSkus) cache.loadedSkus.add(sku);
-        for (const [sku, category] of fetched) cache.values.set(sku, category);
-      }
-      return new Map(normalizedSkus.flatMap(sku => {
-        const category = cache!.values.get(sku);
-        return category ? [[sku, category] as [string, string]] : [];
-      }));
+      return await fetchProductRotationsForSession(supabase, { session, stores, skus });
     } catch (error) {
       console.warn("No se pudieron cargar rotaciones mensuales:", error);
       return new Map<string, string>();
