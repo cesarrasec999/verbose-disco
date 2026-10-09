@@ -526,6 +526,15 @@ async function main() {
     console.log('Filas ERP leidas:', rows.length)
     await upsertRows(rows)
 
+    // Ajustes Provisionales consulta un read model pequeno para que la pantalla
+    // y el Excel no compitan con las escrituras masivas de erp_movements. El
+    // watchdog ejecuta este script, por lo que el cache se actualiza en el
+    // mismo ciclo sin depender del navegador ni de tareas duplicadas.
+    const { data: provisionalRows, error: provisionalRefreshError } = await supabase
+      .rpc('refresh_erp_provisional_adjustments_cache')
+    if (provisionalRefreshError) throw provisionalRefreshError
+    console.log('Ajustes provisionales actualizados:', provisionalRows)
+
     const syncedAt = new Date().toISOString()
     const { error: syncStatusError } = await supabase
       .from('erp_sync_status')
