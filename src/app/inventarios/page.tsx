@@ -4783,30 +4783,8 @@ export default function InventariosPage() {
       return;
     }
 
-    const sessionPhoneLookup = await supabase
-      .from("general_inventory_session_operators")
-      .select("operator_id,general_inventory_operators(phone)")
-      .eq("session_id", selectedSession.id);
-    if (sessionPhoneLookup.error) {
-      setMessage("No se pudo validar el celular en esta sesion: " + sessionPhoneLookup.error.message);
-      return;
-    }
-    const linkedWithPhone = (sessionPhoneLookup.data || []).find(link => {
-      const related = link.general_inventory_operators as unknown as { phone?: string } | Array<{ phone?: string }> | null;
-      const relatedPhone = Array.isArray(related) ? related[0]?.phone : related?.phone;
-      return normalizePhone(relatedPhone || "") === phone;
-    });
-
     let operatorRow: InventoryOperator | null = null;
     const existing = await supabase.from("general_inventory_operators").select("*").eq("phone", phone).maybeSingle();
-    if (existing.error) {
-      setMessage("No se pudo validar el celular: " + existing.error.message);
-      return;
-    }
-    if (linkedWithPhone && linkedWithPhone.operator_id !== existing.data?.id) {
-      setMessage("Este celular ya esta registrado por otro usuario en esta sesion. Usa ese usuario o solicita al validador que lo revise.");
-      return;
-    }
     if (existing.data) {
       operatorRow = existing.data as InventoryOperator;
       const currentSessionOperator = await supabase
@@ -5144,7 +5122,7 @@ export default function InventariosPage() {
         session_id: selectedSession.id,
         operator_id: operator.id,
         location_id: loc.id,
-        location_code: normalizeLocationCode(loc.location_code || locCode),
+        location_code: loc.location_code,
         product_id: product.id,
         sku: product.sku,
         description: product.description,
@@ -5191,8 +5169,7 @@ export default function InventariosPage() {
           ? prev.map(item => item.id === editingCountId ? localRow : item)
           : [localRow, ...prev]
         );
-        const savedLocationCode = normalizeLocationCode(loc.location_code || locCode);
-        setCountedLocationCodes(prev => prev.includes(savedLocationCode) ? prev : [...prev, savedLocationCode]);
+        setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
         setProductCode("");
         setProductCandidates([]);
         setSelectedProduct(null);
@@ -5266,7 +5243,7 @@ export default function InventariosPage() {
         session_id: selectedSession.id,
         operator_id: operator.id,
         location_id: loc.id,
-        location_code: normalizeLocationCode(loc.location_code || locCode),
+        location_code: loc.location_code,
         product_id: product.id,
         sku: product.sku,
         description: product.description,
@@ -5280,8 +5257,7 @@ export default function InventariosPage() {
         ? prev.map(item => item.id === editingCountId ? localRow : item)
         : [localRow, ...prev]
       );
-      const savedLocationCode = normalizeLocationCode(loc.location_code || locCode);
-      setCountedLocationCodes(prev => prev.includes(savedLocationCode) ? prev : [...prev, savedLocationCode]);
+      setCountedLocationCodes(prev => prev.includes(loc.location_code) ? prev : [...prev, loc.location_code]);
       setProductCode("");
       setProductCandidates([]);
       setSelectedProduct(null);
@@ -5467,7 +5443,7 @@ export default function InventariosPage() {
       }
       const existing = locationRows.find(item => normalizeLocationCode(item.locationCode) === normalizeLocationCode(loc.location_code));
       if (existing) existing.quantity += line.quantity;
-      else locationRows.push({ loc, locationCode: normalizeLocationCode(loc.location_code || line.locationCode), quantity: line.quantity });
+      else locationRows.push({ loc, locationCode: loc.location_code, quantity: line.quantity });
     }
 
     setSavingRecountId(row.id);
@@ -5516,7 +5492,7 @@ export default function InventariosPage() {
           session_id: selectedSessionId,
           operator_id: operator.id,
           location_id: loc?.id || null,
-          location_code: normalizeLocationCode(loc?.location_code || locationCode),
+          location_code: loc?.location_code || locationCode,
           product_id: product.id,
           sku: product.sku,
           description: product.description,
@@ -5649,7 +5625,7 @@ export default function InventariosPage() {
         savingRecountIdsRef.current.delete(row.id);
         return;
       }
-      locationRows.push({ loc, locationCode: normalizeLocationCode(loc.location_code || line.locationCode), quantity: line.quantity });
+      locationRows.push({ loc, locationCode: loc.location_code, quantity: line.quantity });
     }
 
     setSavingRecountId(row.id);
@@ -5670,7 +5646,7 @@ export default function InventariosPage() {
         session_id: selectedSessionId,
         operator_id: row.assigned_operator_id,
         location_id: loc?.id || null,
-        location_code: normalizeLocationCode(loc?.location_code || locationCode),
+        location_code: loc?.location_code || locationCode,
         product_id: row.product_id,
         sku: row.sku,
         description: row.description,
