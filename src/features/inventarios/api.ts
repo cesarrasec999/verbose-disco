@@ -397,7 +397,6 @@ export async function fetchSummaryRowsFromRpc(
     sessionId: string;
     session: InventorySession | null | undefined;
     stores: Store[];
-    loadRotations?: (skus: string[]) => Promise<Map<string, string>>;
   }
 ): Promise<SummaryRow[] | null> {
   const rows: any[] = [];
@@ -409,7 +408,7 @@ export async function fetchSummaryRowsFromRpc(
       .range(from, from + pageSize - 1);
     if (error) {
       const message = String(error.message || "").toLowerCase();
-      if (error.code === "PGRST202" || (error.code === "42883" && message.includes("get_general_inventory_summary"))) return null;
+      if (message.includes("get_general_inventory_summary") || message.includes("could not find") || message.includes("schema cache")) return null;
       throw error;
     }
     rows.push(...(data || []));
@@ -417,9 +416,7 @@ export async function fetchSummaryRowsFromRpc(
     from += pageSize;
   }
 
-  const productRotations = params.loadRotations
-    ? await params.loadRotations(rows.map(row => row.sku))
-    : await fetchProductRotationsForSession(supabase, {
+  const productRotations = await fetchProductRotationsForSession(supabase, {
     session: params.session,
     stores: params.stores,
     skus: rows.map(row => row.sku),
