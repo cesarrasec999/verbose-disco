@@ -41,6 +41,7 @@ const UPDATE_IN_BATCH_SIZE = 150
 const INTERVAL_MS          = Number(process.env.RECEPTION_SYNC_INTERVAL_MS     || 5 * 60 * 1000)
 const RETRY_ATTEMPTS       = Number(process.env.RETRY_ATTEMPTS                 || 3)
 const LOOKBACK_DAYS        = Number(process.env.RECEPTION_LOOKBACK_DAYS        || 0)   // 0 = todos los slips en transito
+const DRY_RUN              = process.argv.includes('--dry-run')
 const RECENT_RECEIVED_DAYS = Number(process.env.RECEPTION_RECENT_RECEIVED_DAYS || 30)  // slips recibidos en ERP en los ultimos N dias
 const STATUS_FILE    = path.join(__dirname, 'reception-sync-status.txt')
 const LOG_FILE       = path.join(__dirname, 'reception-sync.log')
@@ -85,14 +86,17 @@ function clean(v)  { return String(v ?? '').trim() }
 function num(v, d=6) { const n = Number(v ?? 0); return Number.isFinite(n) ? Number(n.toFixed(d)) : 0 }
 function writeStatus(text) {
   const line = `${new Date().toLocaleString('es-PE', { hour12: false })} | ${text}`
-  fs.writeFileSync(STATUS_FILE, line + '\n', 'utf8')
-  fs.appendFileSync(LOG_FILE, line + '\n', 'utf8')
-  fs.writeFileSync(WATCHDOG_HB, new Date().toISOString(), 'utf8')  // heartbeat para watchdog
+  if (!DRY_RUN) {
+    fs.writeFileSync(STATUS_FILE, line + '\n', 'utf8')
+    fs.appendFileSync(LOG_FILE, line + '\n', 'utf8')
+    fs.writeFileSync(WATCHDOG_HB, new Date().toISOString(), 'utf8')  // heartbeat para watchdog
+  }
   console.log(text)
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 function acquireLock() {
+  if (DRY_RUN) return true
   try {
     const currentPid = String(process.pid)
     if (fs.existsSync(LOCK_FILE)) {
@@ -115,6 +119,7 @@ function acquireLock() {
 }
 
 function releaseLock() {
+  if (DRY_RUN) return
   try {
     if (!fs.existsSync(LOCK_FILE)) return
     const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'))
@@ -147,6 +152,37 @@ async function upsert(table, rows, conflict, batchSize) {
     process.stdout.write(`\r${table}: ${Math.min(i + batch.length, rows.length)}/${rows.length}`)
   }
   if (rows.length) process.stdout.write('\n')
+}
+
+async function readExistingBy(table, column, values) {
+  const rows = []
+  for (let i = 0; i < values.length; i += IN_BATCH_SIZE) {
+    const chunk = values.slice(i, i + IN_BATCH_SIZE)
+    for (let from = 0; ; from += 1000) {
+      const res = await withRetry(`${table}: comparar`, () =>
+        supabase.from(table).select('*').in(column, chunk).order('id').range(from, from + 999)
+      )
+      rows.push(...(res.data || []))
+      if (!res.data || res.data.length < 1000) break
+    }
+  }
+  return rows
+}
+
+function sameMappedRow(current, incoming) {
+  if (!current) return false
+  for (const [key, value] of Object.entries(incoming)) {
+    if (key === 'source_updated_at' || key === 'updated_at') continue
+    const oldValue = current[key]
+    if (typeof value === 'number') {
+      if (num(oldValue) !== value) return false
+    } else if (value instanceof Date || key === 'request_date' || key === 'creation_date') {
+      const oldTime = oldValue ? new Date(oldValue).getTime() : null
+      const newTime = value ? new Date(value).getTime() : null
+      if (oldTime !== newTime) return false
+    } else if (clean(oldValue) !== clean(value)) return false
+  }
+  return true
 }
 
 async function markReceptionSynced() {
@@ -429,29 +465,34 @@ async function syncOnce() {
     const receivedCount = requests.filter(r => r.erp_status !== 'T').length
     writeStatus(`Slips encontrados: ${transitCount} en transito, ${receivedCount} recibidos en ERP, ${lines.length} lineas`)
 
-    if (requests.length) {
+    const existingRequests = requests.length
+      ? await readExistingBy('reception_requests', 'erp_inv_request_id', requests.map(row => row.erp_inv_request_id))
+      : []
+    const existingRequestsById = new Map(existingRequests.map(row => [row.erp_inv_request_id, row]))
+    const changedRequests = requests.filter(row => !sameMappedRow(existingRequestsById.get(row.erp_inv_request_id), row))
+    if (!DRY_RUN && changedRequests.length) {
       // Upsert: NO toca reception_status ni completed_at si ya existe
-      await upsert('reception_requests', requests, 'erp_inv_request_id', REQUEST_BATCH_SIZE)
+      await upsert('reception_requests', changedRequests, 'erp_inv_request_id', REQUEST_BATCH_SIZE)
     }
 
+    let changedLinesCount = 0
     if (lines.length) {
       const uniqueErpIds = [...new Set(lines.map(r => r.erp_inv_request_id))]
-      const allReqRows = []
-      for (let i = 0; i < uniqueErpIds.length; i += IN_BATCH_SIZE) {
-        const chunk = uniqueErpIds.slice(i, i + IN_BATCH_SIZE)
-        const res = await withRetry('Supabase: leer IDs', () =>
-          supabase.from('reception_requests')
-            .select('id,erp_inv_request_id')
-            .in('erp_inv_request_id', chunk)
-        )
-        allReqRows.push(...(res.data || []))
-      }
+      const allReqRows = DRY_RUN || changedRequests.length === 0
+        ? existingRequests
+        : await readExistingBy('reception_requests', 'erp_inv_request_id', uniqueErpIds)
       const idMap = new Map(allReqRows.map(r => [r.erp_inv_request_id, r.id]))
       const linesWithId = lines
         .map(r => ({ ...r, request_id: idMap.get(r.erp_inv_request_id) || null }))
         .filter(r => r.request_id)
-      await upsert('reception_request_lines', linesWithId, 'id', LINE_BATCH_SIZE)
+      const existingLines = await readExistingBy('reception_request_lines', 'erp_inv_request_id', uniqueErpIds)
+      const existingLinesById = new Map(existingLines.map(row => [row.id, row]))
+      const changedLines = linesWithId.filter(row => !sameMappedRow(existingLinesById.get(row.id), row))
+      changedLinesCount = changedLines.length
+      if (!DRY_RUN && changedLines.length) await upsert('reception_request_lines', changedLines, 'id', LINE_BATCH_SIZE)
     }
+    writeStatus(`Recepcion: ${changedRequests.length}/${requests.length} slips y ${changedLinesCount}/${lines.length} lineas modificadas`)
+    if (DRY_RUN) return
 
     // La carga principal ya esta completa. El chequeo de anulados/recibidos es
     // complementario y no debe provocar una alerta falsa de ERP detenido.
@@ -480,7 +521,7 @@ async function loop() {
 }
 
 const args = process.argv.slice(2)
-if (args.includes('--once')) {
+if (args.includes('--once') || DRY_RUN) {
   syncOnce().catch(e => { writeStatus(`ERROR: ${e.message || e}`); process.exit(1) })
 } else {
   loop()
