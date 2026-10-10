@@ -1393,24 +1393,31 @@ export default function InventariosPage() {
     if (!selectedSessionId || !isValidator) return;
 
     let timer: number | null = null;
-    const reloadInventoryCounts = () => {
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        // La preparación muestra el estado del control de tickets a partir de
-        // `countedLocationCodes`. Antes solo se refrescaban registros,
-        // productividad y resumen; por eso una ubicación podía seguir como
-        // pendiente/vacía aunque acabara de registrarse un conteo en ella.
-        // Volver a leer solo ubicaciones y códigos mantiene el control
-        // sincronizado sin recalcular ni modificar stock/conteos.
+    let refreshing = false;
+    let refreshQueued = false;
+    let disposed = false;
+    let lastRefreshAt = 0;
+    const MIN_REFRESH_INTERVAL_MS = 3_000;
+    const runInventoryRefresh = async () => {
+      if (refreshing) {
+        refreshQueued = true;
+        return;
+      }
+      refreshing = true;
+      refreshQueued = false;
+      lastRefreshAt = Date.now();
+      const refreshes: Promise<unknown>[] = [];
+      try {
+        // One refresh at a time per validator tab. Realtime can emit a burst
+        // for every count line; serializing the read fan-out prevents that
+        // burst from multiplying large paged queries against Supabase.
         if (validatorTab === "preparacion" && canManageInventory) {
-          void loadPreparationData(selectedSessionId);
+          refreshes.push(loadPreparationData(selectedSessionId));
         } else {
-          // Si el conteo entra mientras el usuario está en otra pestaña,
-          // preparación no debe conservar una lista de ubicaciones antigua.
           markSessionTabStale(selectedSessionId, "preparacion");
         }
-        if (validatorTab === "registros") void loadRecordsData(selectedSessionId);
-        else if (validatorTab === "productividad") void loadProductivityData(selectedSessionId);
+        if (validatorTab === "registros") refreshes.push(loadRecordsData(selectedSessionId));
+        else if (validatorTab === "productividad") refreshes.push(loadProductivityData(selectedSessionId));
         else {
           markSessionTabStale(selectedSessionId, "registros");
           markSessionTabStale(selectedSessionId, "productividad");
@@ -1425,7 +1432,7 @@ export default function InventariosPage() {
               window.clearTimeout(summaryThrottleTimerRef.current);
               summaryThrottleTimerRef.current = null;
             }
-            void loadSummary(selectedSessionId, true);
+            refreshes.push(loadSummary(selectedSessionId, true));
           } else if (summaryThrottleTimerRef.current === null) {
             summaryThrottleTimerRef.current = window.setTimeout(() => {
               summaryThrottleTimerRef.current = null;
@@ -1434,11 +1441,35 @@ export default function InventariosPage() {
             }, THROTTLE_MS - elapsed);
           }
         } else markSessionTabStale(selectedSessionId, "resumen");
-        if (validatorTab === "reconteo") void loadRecountData(selectedSessionId, false);
+        if (validatorTab === "reconteo") refreshes.push(loadRecountData(selectedSessionId, false));
         else markSessionTabStale(selectedSessionId, "reconteo");
-        if (validatorTab === "validacion") void loadRecountData(selectedSessionId, true);
+        if (validatorTab === "validacion") refreshes.push(loadRecountData(selectedSessionId, true));
         else markSessionTabStale(selectedSessionId, "validacion");
-      }, 800);
+        await Promise.all(refreshes);
+      } finally {
+        refreshing = false;
+        if (refreshQueued) {
+          refreshQueued = false;
+          scheduleInventoryRefresh();
+        }
+      }
+    };
+    const scheduleInventoryRefresh = () => {
+      if (disposed) return;
+      if (timer !== null) return;
+      const delay = Math.max(800, MIN_REFRESH_INTERVAL_MS - (Date.now() - lastRefreshAt));
+      timer = window.setTimeout(() => {
+        timer = null;
+        void runInventoryRefresh().catch(error => {
+          console.warn("No se pudo actualizar inventario en tiempo real:", error);
+        });
+      }, delay);
+    };
+    const reloadInventoryCounts = () => {
+      // Keep the display live during sustained traffic without running a full
+      // page load for every Realtime notification.
+      if (refreshing) refreshQueued = true;
+      scheduleInventoryRefresh();
     };
 
     const validationRealtimeEnabled = Boolean(selectedSession?.validation_enabled);
@@ -1475,6 +1506,7 @@ export default function InventariosPage() {
     channel.subscribe();
 
     return () => {
+      disposed = true;
       if (timer) window.clearTimeout(timer);
       if (summaryThrottleTimerRef.current !== null) {
         window.clearTimeout(summaryThrottleTimerRef.current);
@@ -4866,6 +4898,30 @@ export default function InventariosPage() {
       };
     }
 
+    // The installed PWA keeps the product/barcode catalog locally. Exact
+    // scanner matches can use it first and avoid several PostgREST lookups
+    // per scan; the session-specific non-inventory rule is still checked on
+    // the server before presenting a product as countable.
+    if (mode === "scan") {
+      const cachedScannerProducts = (await Promise.all(
+        variants.map(code => findCachedProductsByCode(code, { includeSkuContains: false }))
+      ))
+        .flat()
+        .filter((product, index, rows) => rows.findIndex(item => item.sku === product.sku) === index);
+      if (cachedScannerProducts.length > 0) {
+        const products = cachedScannerProducts as Product[];
+        const nonInventorySkus = await loadNonInventorySkuSetForProducts(selectedSessionId, products.map(product => product.sku));
+        const allowedProducts = products.filter(product => !nonInventorySkus.has(normalizeCode(product.sku).toUpperCase()));
+        if (allowedProducts.length === 0) {
+          return { products: [], message: "Este codigo esta en la lista de no inventariables y no puede registrarse." };
+        }
+        return {
+          products: allowedProducts.sort((a, b) => codeMatchRank(a, raw) - codeMatchRank(b, raw) || a.sku.localeCompare(b.sku, "es", { numeric: true })),
+          message: allowedProducts.length > 1 ? "El codigo coincide con varios productos. Elige el correcto antes de guardar." : "",
+        };
+      }
+    }
+
     const productMap = new Map<string, Product>();
 
     if (shouldSearchDescription) {
@@ -5231,10 +5287,19 @@ export default function InventariosPage() {
         updateTargetId = syncedRow.id;
       }
 
-      const request = updateTargetId
-        ? supabase.from("general_inventory_counts").update(row).eq("id", updateTargetId)
-        : supabase.from("general_inventory_counts").insert(insertRow);
-      const { error } = await request;
+      const { error } = updateTargetId
+        ? await supabase.from("general_inventory_counts").update(row).eq("id", updateTargetId)
+        : await supabase.rpc("save_mobile_inventory_count", {
+          p_client_uuid: clientUuid,
+          p_session_id: selectedSession.id,
+          p_operator_id: operator.id,
+          p_location_id: loc.id,
+          p_location_code: loc.location_code,
+          p_product_id: product.id,
+          p_quantity: qty,
+          p_counted_at: countedAt,
+          p_client_device_id: deviceId,
+        });
 
       if (error) {
         if (!editingCountId) {
@@ -5476,12 +5541,14 @@ export default function InventariosPage() {
         return;
       }
 
-      const snapshot = await supabase
-        .from("general_inventory_stock_snapshot")
-        .select("cost")
-        .eq("session_id", selectedSessionId)
-        .eq("product_id", product.id)
-        .maybeSingle();
+      const snapshot = navigator.onLine
+        ? await supabase
+          .from("general_inventory_stock_snapshot")
+          .select("cost")
+          .eq("session_id", selectedSessionId)
+          .eq("product_id", product.id)
+          .maybeSingle()
+        : { data: null, error: null };
 
       const cost = Number(snapshot.data?.cost ?? product.cost ?? row.cost_snapshot ?? 0);
       const rows = locationRows.map(({ loc, locationCode, quantity }) => ({
@@ -5498,10 +5565,60 @@ export default function InventariosPage() {
           cost_snapshot: cost,
           client_uuid: createClientUuid(validationMode ? "gi-validation" : "gi-recount"),
           client_device_id: getOrCreateDeviceId(),
-          sync_origin: "web",
+          sync_origin: navigator.onLine ? "pwa" : "pwa_offline",
           updated_at: new Date().toISOString(),
       }));
       const operationId = createClientUuid("gi-item-replace");
+      const layer = validationMode ? "validation" : "recount";
+      const operationPayload = {
+        p_layer: layer,
+        p_item_id: row.id,
+        p_operation_id: operationId,
+        p_rows: rows,
+      };
+      const deviceId = getOrCreateDeviceId();
+      const queuePayload = { ...operationPayload };
+      const queuedAt = new Date().toISOString();
+      const localId = `gi-${layer}:${row.id}`;
+      if (!navigator.onLine) {
+        const isPwa = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+        if (!isPwa) {
+          setMessage("Sin conexion. Instala la PWA para guardar reconteos y validaciones sin conexion.");
+          return;
+        }
+        await enqueueOfflineItem({
+          localId,
+          clientUuid: operationId,
+          deviceId,
+          module: "general_inventory",
+          entity: validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts",
+          operation: "insert",
+          payload: queuePayload,
+          status: "pending",
+          attempts: 0,
+          createdAt: queuedAt,
+          updatedAt: queuedAt,
+        });
+        setRecountDrafts(prev => { const next = { ...prev }; delete next[row.id]; return next; });
+        setEditingRecountItemId(null);
+        setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado en este dispositivo. Se sincronizara al recuperar conexion.`);
+        return;
+      }
+
+      const queuedPayload = { ...operationPayload };
+      await enqueueOfflineItem({
+        localId,
+        clientUuid: operationId,
+        deviceId,
+        module: "general_inventory",
+        entity: validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts",
+        operation: "insert",
+        payload: queuedPayload,
+        status: "pending",
+        attempts: 0,
+        createdAt: queuedAt,
+        updatedAt: queuedAt,
+      });
       const replaceCounts = () => supabase.rpc("replace_general_inventory_item_counts", {
         p_layer: validationMode ? "validation" : "recount",
         p_item_id: row.id,
@@ -5514,6 +5631,7 @@ export default function InventariosPage() {
         setMessage(`No se pudo confirmar ${actionLabel}; se conservaron las lineas anteriores: ` + error.message);
         return;
       }
+      await removeOfflineItemIfUnchanged(localId, queuedAt, queuedPayload);
 
       setRecountDrafts(prev => {
         const next = { ...prev };

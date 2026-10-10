@@ -29,6 +29,7 @@ export interface OfflineQueueItem<TPayload = unknown> {
   updatedAt: string;
   syncedAt?: string;
   lastError?: string;
+  nextAttemptAt?: string;
 }
 
 export const OFFLINE_DB_NAME = "rasecorp-offline" as const;

@@ -221,7 +221,10 @@ function getAllFromStore<T>(storeName: string): Promise<T[]> {
   return runOfflineTransaction(storeName, "readonly", (store) => store.getAll()).then((rows) => rows as T[]);
 }
 
-export async function findCachedProductsByCode(code: string): Promise<CachedProduct[]> {
+export async function findCachedProductsByCode(
+  code: string,
+  options: { includeSkuContains?: boolean } = {}
+): Promise<CachedProduct[]> {
   const raw = code.trim().toUpperCase();
   if (!raw) return [];
 
@@ -245,7 +248,7 @@ export async function findCachedProductsByCode(code: string): Promise<CachedProd
     if (product?.is_active) productMap.set(product.sku, product);
   }
 
-  if (raw.length >= 4) {
+  if (options.includeSkuContains !== false && raw.length >= 4) {
     const allProducts = await getAllFromStore<CachedProduct>(OFFLINE_PRODUCTS_STORE).catch(() => []);
     for (const product of allProducts) {
       if (product.is_active && product.sku.toUpperCase().includes(raw)) {

@@ -45,17 +45,28 @@ export async function removeOfflineItemIfUnchanged(localId: string, updatedAt: s
   });
 }
 
-export function listPendingOfflineItems(): Promise<OfflineQueueItem[]> {
+export function listPendingOfflineItems(options: { limit?: number; now?: string } = {}): Promise<OfflineQueueItem[]> {
   return openOfflineDb().then(
     (db) =>
       new Promise((resolve, reject) => {
         const transaction = db.transaction(OFFLINE_QUEUE_STORE, "readonly");
         const store = transaction.objectStore(OFFLINE_QUEUE_STORE);
-        const index = store.index("status");
-        const request = index.getAll("pending");
+        const pending: OfflineQueueItem[] = [];
+        const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : Number.POSITIVE_INFINITY;
+        const now = Date.parse(options.now ?? new Date().toISOString());
+        const request = store.index("createdAt").openCursor();
 
         request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result as OfflineQueueItem[]);
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor || pending.length >= limit) {
+            resolve(pending);
+            return;
+          }
+          const item = cursor.value as OfflineQueueItem;
+          if (item.status === "pending" && (!item.nextAttemptAt || Date.parse(item.nextAttemptAt) <= now)) pending.push(item);
+          cursor.continue();
+        };
         transaction.oncomplete = () => db.close();
         transaction.onerror = () => {
           db.close();
@@ -63,6 +74,33 @@ export function listPendingOfflineItems(): Promise<OfflineQueueItem[]> {
         };
       })
   );
+}
+
+// Record retry metadata without changing updatedAt or payload. A successful in-flight
+// sync can still safely remove the exact payload it sent.
+export async function recordOfflineItemAttemptIfUnchanged(
+  localId: string,
+  updatedAt: string,
+  payload: unknown,
+  attempt: { attempts: number; lastError: string; nextAttemptAt: string },
+): Promise<boolean> {
+  const db = await openOfflineDb();
+  return new Promise((resolve, reject) => {
+    let updated = false;
+    const transaction = db.transaction(OFFLINE_QUEUE_STORE, "readwrite");
+    const store = transaction.objectStore(OFFLINE_QUEUE_STORE);
+    const request = store.get(localId);
+    request.onsuccess = () => {
+      const current = request.result as OfflineQueueItem | undefined;
+      if (current?.status === "pending" && current.updatedAt === updatedAt
+        && JSON.stringify(current.payload) === JSON.stringify(payload)) {
+        store.put({ ...current, ...attempt });
+        updated = true;
+      }
+    };
+    transaction.oncomplete = () => { db.close(); resolve(updated); };
+    transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error); };
+  });
 }
 
 export function countPendingOfflineItems(): Promise<number> {

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { listPendingOfflineItems, removeOfflineItemIfUnchanged } from "./pendingQueue";
+import { listPendingOfflineItems, recordOfflineItemAttemptIfUnchanged, removeOfflineItemIfUnchanged } from "./pendingQueue";
 import type { OfflineQueueItem } from "./types";
 
 async function syncItem(supabase: SupabaseClient, item: OfflineQueueItem): Promise<boolean> {
@@ -21,6 +21,43 @@ async function syncItem(supabase: SupabaseClient, item: OfflineQueueItem): Promi
   };
 
   if (item.entity === "general_inventory_counts") {
+    const countPayload = payload as {
+      session_id?: string; operator_id?: string; location_id?: string; location_code?: string;
+      product_id?: string; quantity?: number; counted_at?: string;
+    };
+    if (countPayload.session_id && countPayload.operator_id && countPayload.product_id && countPayload.location_id) {
+      const { error } = await supabase.rpc("save_mobile_inventory_count", {
+        p_client_uuid: item.clientUuid,
+        p_session_id: countPayload.session_id,
+        p_operator_id: countPayload.operator_id,
+        p_location_id: countPayload.location_id,
+        p_location_code: countPayload.location_code,
+        p_product_id: countPayload.product_id,
+        p_quantity: countPayload.quantity,
+        p_counted_at: countPayload.counted_at,
+        p_client_device_id: item.deviceId,
+      });
+      if (!error) return true;
+      // Only allow a queued edit to update its own previously inserted row.
+      const { data: existing } = await supabase.from("general_inventory_counts")
+        .select("session_id,operator_id,client_device_id,updated_at")
+        .eq("client_uuid", item.clientUuid).maybeSingle();
+      if (!existing || existing.session_id !== countPayload.session_id || existing.operator_id !== countPayload.operator_id
+        || existing.client_device_id !== item.deviceId
+        || Date.parse(String(payload.updated_at)) <= Date.parse(existing.updated_at)) return false;
+      const { data: updated, error: updateError } = await supabase.from("general_inventory_counts")
+        .update({
+          location_id: countPayload.location_id, location_code: countPayload.location_code,
+          product_id: countPayload.product_id, sku: payload.sku, description: payload.description,
+          unit: payload.unit, quantity: countPayload.quantity, cost_snapshot: payload.cost_snapshot,
+          updated_at: payload.updated_at,
+        })
+        .eq("client_uuid", item.clientUuid).eq("updated_at", existing.updated_at)
+        .select("session_id,operator_id,product_id,location_id,quantity").maybeSingle();
+      return !updateError && !!updated && updated.session_id === countPayload.session_id
+        && updated.operator_id === countPayload.operator_id && updated.product_id === countPayload.product_id
+        && updated.location_id === countPayload.location_id && Number(updated.quantity) === Number(countPayload.quantity);
+    }
     const sessionId = (item.payload as { session_id?: string }).session_id;
     if (sessionId) {
       const { data } = await supabase
@@ -54,6 +91,19 @@ async function syncItem(supabase: SupabaseClient, item: OfflineQueueItem): Promi
       && updated.location_id === payload.location_id && Number(updated.quantity) === Number(payload.quantity);
   }
 
+  for (const entity of ["general_inventory_recount_counts", "general_inventory_validation_counts"] as const) {
+    if (item.entity !== entity) continue;
+    if (payload.p_item_id && payload.p_operation_id && Array.isArray(payload.p_rows)) {
+      const { error } = await supabase.rpc("replace_general_inventory_item_counts", {
+        p_layer: payload.p_layer,
+        p_item_id: payload.p_item_id,
+        p_operation_id: payload.p_operation_id,
+        p_rows: payload.p_rows,
+      });
+      return !error;
+    }
+  }
+
   if (item.entity === "general_inventory_recount_counts") {
     const sessionId = (item.payload as { session_id?: string }).session_id;
     if (sessionId) {
@@ -85,8 +135,8 @@ async function syncItem(supabase: SupabaseClient, item: OfflineQueueItem): Promi
   return false;
 }
 
-export async function syncPendingOfflineItems(supabase: SupabaseClient): Promise<number> {
-  const pending = await listPendingOfflineItems();
+export async function syncPendingOfflineItems(supabase: SupabaseClient, limit = 20): Promise<number> {
+  const pending = await listPendingOfflineItems({ limit });
   let synced = 0;
 
   for (const item of pending) {
@@ -94,7 +144,20 @@ export async function syncPendingOfflineItems(supabase: SupabaseClient): Promise
     try { ok = await syncItem(supabase, item); } catch { /* Keep this item for the next retry. */ }
     if (ok) {
       if (await removeOfflineItemIfUnchanged(item.localId, item.updatedAt, item.payload)) synced += 1;
+      continue;
     }
+
+    const attempts = (item.attempts ?? 0) + 1;
+    const backoffMs = Math.min(5 * 60_000, 5_000 * 2 ** Math.min(attempts - 1, 6));
+    const jitteredBackoffMs = Math.round(backoffMs * (0.75 + Math.random() * 0.5));
+    await recordOfflineItemAttemptIfUnchanged(item.localId, item.updatedAt, item.payload, {
+      attempts,
+      lastError: "No se pudo confirmar la sincronización. El registro sigue guardado en este dispositivo.",
+      nextAttemptAt: new Date(Date.now() + jitteredBackoffMs).toISOString(),
+    }).catch(() => false);
+    // If connectivity or Supabase is unhealthy, one failed write is enough for this
+    // pass. Keep later rows durable and avoid turning an outage into a request burst.
+    break;
   }
 
   return synced;

@@ -24,6 +24,14 @@ export default function PwaCatalogSync() {
 
     let cancelled = false;
     let running = false;
+    let retryTimer: number | undefined;
+    let completed = false;
+    const scheduleCatalogSync = (minDelayMs = 5_000, maxDelayMs = 30_000) => {
+      if (cancelled) return;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(runCatalogSync, minDelayMs + Math.random() * (maxDelayMs - minDelayMs));
+    };
+
     const runCatalogSync = () => {
       if (!navigator.onLine || running) return;
       const lastSync = Number(localStorage.getItem(LAST_SYNC_KEY) || 0);
@@ -34,6 +42,7 @@ export default function PwaCatalogSync() {
 
       if (cancelled) return;
       running = true;
+      completed = false;
       setSyncing(true);
       const mode = currentVersion === CATALOG_VERSION && lastSync ? "delta" : "full";
       const since = lastSync ? new Date(lastSync).toISOString() : undefined;
@@ -48,6 +57,7 @@ export default function PwaCatalogSync() {
           }, { mode: "full" });
         })
         .then(() => {
+          completed = true;
           localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
           localStorage.setItem(LAST_SYNC_DAY_KEY, today);
           localStorage.setItem(CATALOG_VERSION_KEY, CATALOG_VERSION);
@@ -63,16 +73,18 @@ export default function PwaCatalogSync() {
             }, 900);
           }
           running = false;
+          if (!completed) scheduleCatalogSync(60_000, 180_000);
         });
     };
 
-    const startTimer = window.setTimeout(runCatalogSync, 0);
-    window.addEventListener("online", runCatalogSync);
+    scheduleCatalogSync();
+    const scheduleAfterReconnect = () => scheduleCatalogSync(5_000, 30_000);
+    window.addEventListener("online", scheduleAfterReconnect);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(startTimer);
-      window.removeEventListener("online", runCatalogSync);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      window.removeEventListener("online", scheduleAfterReconnect);
     };
   }, []);
 
