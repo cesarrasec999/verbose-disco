@@ -15,6 +15,7 @@ import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
 import {
   fetchAllInventoryCounts,
+  fetchInventoryCountedLocationCodes,
   fetchInventoryNonInventoryRows,
   fetchNonInventorySkuSetForProducts,
   fetchOperatorCountsPage,
@@ -2103,11 +2104,9 @@ export default function InventariosPage() {
   }
 
   async function loadPreparationData(sessionId: string) {
-    const [locationRows, countRows] = await Promise.all([
+    const [locationRows, countedCodes] = await Promise.all([
       loadPagedSessionRows("general_inventory_locations", "*", sessionId, "location_code"),
-      // Incluimos location_id porque algunos registros históricos conservan
-      // la ubicación por FK aunque location_code haya quedado vacío.
-      loadPagedSessionRows("general_inventory_counts", "location_id,location_code", sessionId, "location_code"),
+      fetchInventoryCountedLocationCodes(supabase, sessionId),
     ]);
 
     const activeLocations = (locationRows as InventoryLocation[]).filter(row => row.is_active !== false).map(row => ({
@@ -2117,12 +2116,7 @@ export default function InventariosPage() {
     }));
     setLocations(activeLocations);
 
-    const locationKeysById = new Map(activeLocations.map(row => [String(row.id), [row.location_code, row.ticket || ""]]));
-    const countedCodes = countRows.flatMap(row => [
-      normalizeLocationCode(row.location_code),
-      ...(locationKeysById.get(String(row.location_id || "")) || []),
-    ]).map(normalizeLocationCode).filter(Boolean);
-    setCountedLocationCodes([...new Set(countedCodes)]);
+    setCountedLocationCodes(countedCodes);
   }
 
   async function loadRecordsData(sessionId: string, operatorId: string | null = isValidator ? null : operator?.id || null, gen?: number) {

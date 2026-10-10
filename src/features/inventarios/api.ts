@@ -36,6 +36,20 @@ export async function fetchPagedSessionRows(
   return rows;
 }
 
+/** One row per counted location key, including legacy rows whose code is empty. */
+export async function fetchInventoryCountedLocationCodes(
+  supabase: SupabaseLike,
+  sessionId: string
+): Promise<string[]> {
+  const { data, error } = await supabase.rpc("get_general_inventory_counted_location_codes", {
+    p_session_id: sessionId,
+  });
+  if (error) throw error;
+  return [...new Set(((data || []) as Array<{ location_code?: string | null }>)
+    .map(row => normalizeLocationCode(row.location_code || ""))
+    .filter(Boolean))];
+}
+
 async function fetchAllActiveNonInventorySkus(supabase: SupabaseLike): Promise<Array<{ sku: string }>> {
   const rows: Array<{ sku: string }> = [];
   const pageSize = 1000;
