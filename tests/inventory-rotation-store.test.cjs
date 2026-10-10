@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { loadInventoryModule } = require('./inventory-rotation-loader.cjs');
-const { fetchProductRotationsForSession } = loadInventoryModule('api');
+const { fetchProductRotationsForSession, fetchSummaryRowsFromRpc } = loadInventoryModule('api');
 const session = { store_id:'abancay',store_name:'GPC025 APU - ABANCAY',scheduled_date:'2026-09-04' };
 const row = (key, month, code, category) => ({store_key:key,period_month:month,product_code:code,rotation_category:category});
 function fakeClient(source) {
@@ -63,4 +63,25 @@ test('2,323 SKUs are read in bounded batches without losing classifications',asy
 test('no invented rotation when no preceding period exists',async()=>{
   const result=await fetchProductRotationsForSession(fakeClient([]),{session,stores:[],skus:['AU1']});
   assert.equal(result.size,0);
+});
+test('rotation lookups are reused for the same session and client',async()=>{
+  const client=fakeClient([row(session.store_name,'2026-08-01','AU1','A')]);
+  await fetchProductRotationsForSession(client,{session,stores:[],skus:['AU1']});
+  const result=await fetchProductRotationsForSession(client,{session,stores:[],skus:['AU1']});
+  assert.equal(result.get('AU1'),'A');
+  assert.equal(client.calls.length,2);
+});
+test('summary remains available when the optional rotation lookup fails',async()=>{
+  const client={
+    rpc(){return {range(){return Promise.resolve({data:[{product_id:'p1',sku:'AU1',system_stock:3,counted:2,cost:5}],error:null});}};},
+    from(){return {select(){return this;},in(){return this;},lt(){return this;},order(){return this;},limit(){return Promise.resolve({data:null,error:{message:'temporary rotation timeout'}});}};},
+  };
+  const originalWarn=console.warn;
+  console.warn=()=>{};
+  try {
+    const result=await fetchSummaryRowsFromRpc(client,{sessionId:'s1',session,stores:[]});
+    assert.equal(result.length,1);
+    assert.equal(result[0].rotation_category,null);
+    assert.equal(result[0].valueDiff,-5);
+  } finally { console.warn=originalWarn; }
 });

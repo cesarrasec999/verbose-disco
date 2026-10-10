@@ -325,6 +325,14 @@ function sessionRotationPeriod(session: InventorySession | null | undefined) {
   return `${year}-${month}-01`;
 }
 
+const rotationCache = new WeakMap<object, Map<string, {
+  expiresAt: number;
+  completePeriod: string | null;
+  checkedSkus: Set<string>;
+  rotations: Map<string, string>;
+}>>();
+const ROTATION_CACHE_MS = 10 * 60 * 1000;
+
 export async function fetchProductRotationsForSession(
   supabase: SupabaseLike,
   params: {
@@ -333,42 +341,59 @@ export async function fetchProductRotationsForSession(
     skus: string[];
   }
 ): Promise<Map<string, string>> {
-  const rotations = new Map<string, string>();
   const cleanSkus = [...new Set(params.skus.map(sku => normalizeCode(sku).toUpperCase()).filter(Boolean))];
   const storeKeys = rotationStoreKeysForSession(params.session, params.stores);
-  if (cleanSkus.length === 0 || storeKeys.length === 0) return rotations;
+  if (cleanSkus.length === 0 || storeKeys.length === 0) return new Map<string, string>();
 
   // El mes en curso todavía está incompleto. Para reportes de inventario se
   // debe usar el último período mensual cerrado, sin mezclar categorías
   // parciales que aún están recalculándose en ERP.
   const sessionPeriod = sessionRotationPeriod(params.session);
-  const { data: periodRows, error: periodError } = await supabase
-    .from("product_rotation_monthly")
-    .select("period_month")
-    .in("store_key", storeKeys)
-    .lt("period_month", sessionPeriod)
-    .order("period_month", { ascending: false })
-    .limit(1);
-  if (periodError) throw periodError;
-  const completePeriod = periodRows?.[0]?.period_month ? String(periodRows[0].period_month) : null;
-  if (!completePeriod) return rotations;
+  const cacheKey = `${sessionPeriod}:${storeKeys.join("|")}`;
+  let clientCache = rotationCache.get(supabase);
+  if (!clientCache) {
+    clientCache = new Map();
+    rotationCache.set(supabase, clientCache);
+  }
+  let cached = clientCache.get(cacheKey);
+  if (!cached || cached.expiresAt < Date.now()) {
+    const { data: periodRows, error: periodError } = await supabase
+      .from("product_rotation_monthly")
+      .select("period_month")
+      .in("store_key", storeKeys)
+      .lt("period_month", sessionPeriod)
+      .order("period_month", { ascending: false })
+      .limit(1);
+    if (periodError) throw periodError;
+    cached = {
+      expiresAt: Date.now() + ROTATION_CACHE_MS,
+      completePeriod: periodRows?.[0]?.period_month ? String(periodRows[0].period_month) : null,
+      checkedSkus: new Set<string>(),
+      rotations: new Map<string, string>(),
+    };
+    clientCache.set(cacheKey, cached);
+  }
+  if (!cached.completePeriod) return new Map<string, string>();
 
-  for (let i = 0; i < cleanSkus.length; i += 500) {
+  const missingSkus = cleanSkus.filter(sku => !cached.checkedSkus.has(sku));
+  for (let i = 0; i < missingSkus.length; i += 500) {
+    const chunk = missingSkus.slice(i, i + 500);
     const { data, error } = await supabase
       .from("product_rotation_monthly")
       .select("product_code,rotation_category,period_month,store_key")
       .in("store_key", storeKeys)
-      .in("product_code", cleanSkus.slice(i, i + 500))
-      .eq("period_month", completePeriod)
+      .in("product_code", chunk)
+      .eq("period_month", cached.completePeriod)
       .order("product_code", { ascending: true });
     if (error) throw error;
     for (const row of data || []) {
       const sku = normalizeCode(row.product_code).toUpperCase();
-      if (sku && !rotations.has(sku)) rotations.set(sku, String(row.rotation_category || "").trim().toUpperCase());
+      if (sku && !cached.rotations.has(sku)) cached.rotations.set(sku, String(row.rotation_category || "").trim().toUpperCase());
     }
+    chunk.forEach(sku => cached.checkedSkus.add(sku));
   }
 
-  return rotations;
+  return new Map(cleanSkus.filter(sku => cached.rotations.has(sku)).map(sku => [sku, cached.rotations.get(sku)!]));
 }
 
 export async function fetchSummaryRowsFromRpc(
@@ -396,11 +421,18 @@ export async function fetchSummaryRowsFromRpc(
     from += pageSize;
   }
 
-  const productRotations = await fetchProductRotationsForSession(supabase, {
-    session: params.session,
-    stores: params.stores,
-    skus: rows.map(row => row.sku),
-  });
+  // Rotation is descriptive metadata. A transient error in that lookup must
+  // never turn a successful summary RPC into the expensive client fallback.
+  let productRotations = new Map<string, string>();
+  try {
+    productRotations = await fetchProductRotationsForSession(supabase, {
+      session: params.session,
+      stores: params.stores,
+      skus: rows.map(row => row.sku),
+    });
+  } catch (error) {
+    console.warn("No se pudieron cargar rotaciones del resumen:", error);
+  }
 
   return rows.map(row => {
     const sku = String(row.sku || "");

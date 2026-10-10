@@ -1387,7 +1387,9 @@ export default function InventariosPage() {
   }, [selectedSessionId, operator?.id, isValidator, selectedSession?.validation_enabled]);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    // El operario no usa este refresco; con cientos de operarios, cada
+    // conteo multiplicaba suscripciones Realtime sin aportar datos a su vista.
+    if (!selectedSessionId || !isValidator) return;
 
     let timer: number | null = null;
     const reloadInventoryCounts = () => {
@@ -1413,7 +1415,7 @@ export default function InventariosPage() {
           markSessionTabStale(selectedSessionId, "productividad");
         }
         if (validatorTab === "resumen") {
-          const THROTTLE_MS = 6_000;
+          const THROTTLE_MS = 15_000;
           const now = Date.now();
           const elapsed = now - lastSummaryReloadRef.current;
           if (elapsed >= THROTTLE_MS) {
@@ -2020,7 +2022,6 @@ export default function InventariosPage() {
         return;
       }
       await loadSummary(sessionId, summaryHasPendingChanges, gen);
-      markSessionTabLoaded(sessionId, "resumen");
       return;
     }
 
@@ -3464,7 +3465,13 @@ export default function InventariosPage() {
         return;
       }
     } catch (error) {
-      console.warn("No se pudo usar resumen SQL optimizado; uso calculo local:", error);
+      // Una falla temporal de red/timeout no debe iniciar decenas de consultas
+      // adicionales para recalcular la sesion entera en cada navegador.
+      console.warn("No se pudo cargar el resumen SQL:", error);
+      setMessage("No se pudo actualizar el resumen. Intenta de nuevo en unos segundos: " + errorMessage(error));
+      markSessionTabStale(sessionId, "resumen");
+      setSummaryLoading(false);
+      return;
     }
     const summarySession = sessions.find(session => session.id === sessionId) || selectedSession;
     const validationEnabled = Boolean(summarySession?.validation_enabled);
