@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase/client";
 import { playOperationalFeedback } from "@/lib/interactionFeedback";
 import { createClientUuid, getOrCreateDeviceId } from "@/lib/offline/clientIdentity";
 import { findCachedProductsByCode } from "@/lib/offline/catalogCache";
-import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems, removeOfflineItem } from "@/lib/offline/pendingQueue";
+import { enqueueOfflineItem, getOfflineItem, listPendingOfflineItems, removeOfflineItemIfUnchanged } from "@/lib/offline/pendingQueue";
 import { useIsMobileAccess } from "@/lib/mobileAccess";
 import { fetchDisabledModules, isModuleBlockedForUser } from "@/features/access/moduleFlags";
 import ModuleDisabledScreen from "@/features/access/ModuleDisabledScreen";
@@ -3972,11 +3972,9 @@ export default function InventariosPage() {
       unit: editingAdminRecountRecord.unit,
       quantity: qty,
       cost_snapshot: editingAdminRecountRecord.cost_snapshot,
-      ...(validationMode ? {} : {
-        client_uuid: createClientUuid("gi-recount"),
-        client_device_id: getOrCreateDeviceId(),
-        sync_origin: "web",
-      }),
+      client_uuid: createClientUuid(validationMode ? "gi-validation" : "gi-recount"),
+      client_device_id: getOrCreateDeviceId(),
+      sync_origin: "web",
       updated_at: now,
     };
 
@@ -5277,7 +5275,7 @@ export default function InventariosPage() {
       setMessage("Conteo guardado.");
 
       // Fire-and-forget: no bloquean al operador
-      void removeOfflineItem(clientUuid).catch(() => undefined);
+      void removeOfflineItemIfUnchanged(clientUuid, now, { ...insertRow, sync_origin: "pwa_offline" }).catch(() => undefined);
       void protectOkProductSnapshot(selectedSession.id, product).catch(error => {
         console.warn("No se pudo proteger snapshot OK:", error);
       });
@@ -5396,8 +5394,6 @@ export default function InventariosPage() {
     if (!operator || !selectedSessionId || savingRecountIdsRef.current.has(row.id)) return;
     savingRecountIdsRef.current.add(row.id);
     const validationMode = row.layer === "validation";
-    const itemTable = validationMode ? "general_inventory_validation_items" : "general_inventory_recount_items";
-    const countTable = validationMode ? "general_inventory_validation_counts" : "general_inventory_recount_counts";
     const itemIdColumn = validationMode ? "validation_item_id" : "recount_item_id";
     const actionLabel = validationMode ? "validacion" : "reconteo";
     if (selectedSession?.status === "finished") {
@@ -5488,15 +5484,6 @@ export default function InventariosPage() {
         .maybeSingle();
 
       const cost = Number(snapshot.data?.cost ?? product.cost ?? row.cost_snapshot ?? 0);
-      const deleteExisting = await supabase
-        .from(countTable)
-        .delete()
-        .eq(itemIdColumn, row.id);
-      if (deleteExisting.error) {
-        setMessage(`No se pudo reemplazar la ${actionLabel} anterior: ` + deleteExisting.error.message);
-        return;
-      }
-
       const rows = locationRows.map(({ loc, locationCode, quantity }) => ({
           [itemIdColumn]: row.id,
           session_id: selectedSessionId,
@@ -5509,27 +5496,22 @@ export default function InventariosPage() {
           unit: product.unit,
           quantity,
           cost_snapshot: cost,
-          ...(validationMode ? {} : {
-            client_uuid: createClientUuid("gi-recount"),
-            client_device_id: getOrCreateDeviceId(),
-            sync_origin: "web",
-          }),
+          client_uuid: createClientUuid(validationMode ? "gi-validation" : "gi-recount"),
+          client_device_id: getOrCreateDeviceId(),
+          sync_origin: "web",
           updated_at: new Date().toISOString(),
       }));
-      const { error } = await supabase
-        .from(countTable)
-        .insert(rows);
+      const operationId = createClientUuid("gi-item-replace");
+      const replaceCounts = () => supabase.rpc("replace_general_inventory_item_counts", {
+        p_layer: validationMode ? "validation" : "recount",
+        p_item_id: row.id,
+        p_operation_id: operationId,
+        p_rows: rows,
+      });
+      let { error } = await replaceCounts();
+      if (error) ({ error } = await replaceCounts());
       if (error) {
-        setMessage(`No se pudo guardar ${actionLabel}. Ejecuta el SQL actualizado: ` + error.message);
-        return;
-      }
-
-      const statusUpdate = await supabase
-        .from(itemTable)
-        .update({ status: "counted", updated_at: new Date().toISOString() })
-        .eq("id", row.id);
-      if (statusUpdate.error) {
-        setMessage(`${validationMode ? "Validacion" : "Reconteo"} guardado, pero no se pudo cerrar la linea: ` + statusUpdate.error.message);
+        setMessage(`No se pudo confirmar ${actionLabel}; se conservaron las lineas anteriores: ` + error.message);
         return;
       }
 

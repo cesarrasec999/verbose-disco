@@ -25,6 +25,26 @@ export function removeOfflineItem(localId: string): Promise<undefined> {
   return runTransaction("readwrite", (store) => store.delete(localId));
 }
 
+// A background sync must not erase an edit saved while its request was in flight.
+export async function removeOfflineItemIfUnchanged(localId: string, updatedAt: string, payload?: unknown): Promise<boolean> {
+  const db = await openOfflineDb();
+  return new Promise((resolve, reject) => {
+    let removed = false;
+    const transaction = db.transaction(OFFLINE_QUEUE_STORE, "readwrite");
+    const store = transaction.objectStore(OFFLINE_QUEUE_STORE);
+    const request = store.get(localId);
+    request.onsuccess = () => {
+      const current = request.result as OfflineQueueItem | undefined;
+      if (current?.updatedAt === updatedAt && (payload === undefined || JSON.stringify(current.payload) === JSON.stringify(payload))) {
+        store.delete(localId);
+        removed = true;
+      }
+    };
+    transaction.oncomplete = () => { db.close(); resolve(removed); };
+    transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error); };
+  });
+}
+
 export function listPendingOfflineItems(): Promise<OfflineQueueItem[]> {
   return openOfflineDb().then(
     (db) =>

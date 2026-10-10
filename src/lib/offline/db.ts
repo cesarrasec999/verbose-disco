@@ -75,10 +75,14 @@ export function runOfflineTransaction<T>(
         const store = transaction.objectStore(storeName);
         const request = callback(store);
 
+        let result: T;
         request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-        transaction.oncomplete = () => db.close();
-        transaction.onerror = () => {
+        request.onsuccess = () => { result = request.result; };
+        transaction.oncomplete = () => {
+          db.close();
+          resolve(result);
+        };
+        transaction.onabort = transaction.onerror = () => {
           db.close();
           reject(transaction.error);
         };
