@@ -1,5 +1,8 @@
 -- NO ejecutar como una sola transacción ni durante una sesión crítica.
 -- Lista preparada con pg_stat_user_indexes del 15/09/2026.
+-- Actualizada 09/10/2026: los duplicados verificables ya fueron retirados.
+-- La migración 20261009220000_remove_exact_duplicate_indexes.sql registra
+-- el estado final. Las sentencias restantes son idempotentes.
 -- Cada índice conservado tiene una definición equivalente y mayor uso, o es el
 -- índice que respalda una restricción UNIQUE.
 --
@@ -9,10 +12,8 @@
 set lock_timeout = '1s';
 set statement_timeout = '60s';
 
-drop index concurrently if exists public.idx_credito_clientes_legajo_ruc;
 drop index concurrently if exists public.idx_cyclic_assignments_recommendation_store_date_product;
 drop index concurrently if exists public.idx_assignments_store_date;
-drop index concurrently if exists public.idx_cyclic_completed_products_store_product;
 drop index concurrently if exists public.idx_cyclic_completed_store;
 drop index concurrently if exists public.idx_cyclic_counts_assignment_location;
 drop index concurrently if exists public.idx_counts_assignment;
