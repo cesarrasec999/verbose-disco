@@ -1944,32 +1944,41 @@ export default function InventariosPage() {
 
   async function loadInitial(preferredSessionId = "", storeFilterOverride?: string) {
     setLoading(true);
-    const filterValue = storeFilterOverride !== undefined ? storeFilterOverride : sessionsStoreFilter;
-    const storesRes = await supabase.from("stores").select("*").eq("is_active", true).order("name");
-    const storeRows = (storesRes.data || []) as Store[];
+    try {
+      const filterValue = storeFilterOverride !== undefined ? storeFilterOverride : sessionsStoreFilter;
+      const storesRes = await supabase.from("stores").select("*").eq("is_active", true).order("name");
+      if (storesRes.error) throw storesRes.error;
+      const storeRows = (storesRes.data || []) as Store[];
 
-    let sessionsQuery = supabase
-      .from("general_inventory_sessions")
-      .select("*, stores(name,erp_sede)")
-      .in("status", ["planned", "open", "frozen", "finished"])
-      .order("created_at", { ascending: false })
-      .limit(80);
-    if (filterValue) sessionsQuery = sessionsQuery.in("store_id", expandStoreIds(filterValue, storeRows));
-    const sessionsRes = await sessionsQuery;
+      let sessionsQuery = supabase
+        .from("general_inventory_sessions")
+        .select("*, stores(name,erp_sede)")
+        .in("status", ["planned", "open", "frozen", "finished"])
+        .order("created_at", { ascending: false })
+        .limit(80);
+      if (filterValue) sessionsQuery = sessionsQuery.in("store_id", expandStoreIds(filterValue, storeRows));
+      const sessionsRes = await sessionsQuery;
+      if (sessionsRes.error) throw sessionsRes.error;
 
-    const sessionRows = (sessionsRes.data || []).map((row: any) => ({
-      ...row,
-      store_name: row.stores?.name,
-      store_erp_sede: row.stores?.erp_sede || null,
-    })) as InventorySession[];
+      const sessionRows = (sessionsRes.data || []).map((row: any) => ({
+        ...row,
+        store_name: row.stores?.name,
+        store_erp_sede: row.stores?.erp_sede || null,
+      })) as InventorySession[];
 
-    setStores(storeRows);
-    setSessions(sessionRows);
-    setNewStoreId(storeRows[0]?.id || "");
+      setStores(storeRows);
+      setSessions(sessionRows);
+      setNewStoreId(storeRows[0]?.id || "");
+      setMessage(current => current.startsWith("No se pudieron cargar las sesiones.") ? "" : current);
 
-    const nextSessionId = preferredSessionId || sessionRows.find(session => canOperatorEnter(session.status))?.id || "";
-    if (nextSessionId) setSelectedSessionId(nextSessionId);
-    setLoading(false);
+      const nextSessionId = preferredSessionId || sessionRows.find(session => canOperatorEnter(session.status))?.id || "";
+      if (nextSessionId) setSelectedSessionId(nextSessionId);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String((error as { message?: string })?.message || error);
+      setMessage(`No se pudieron cargar las sesiones. Pulsa Actualizar para reintentar. ${reason}`);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function refreshCurrentView() {
